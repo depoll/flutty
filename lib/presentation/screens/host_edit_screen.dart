@@ -220,7 +220,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     loading: () => const LinearProgressIndicator(),
                     error: (_, _) => const Text('Error loading keys'),
                     data: (keys) => DropdownButtonFormField<int?>(
-                      initialValue: _selectedKeyId,
+                      value: _selectedKeyId,
                       decoration: const InputDecoration(
                         labelText: 'SSH Key (optional)',
                         prefixIcon: Icon(Icons.key),
@@ -387,8 +387,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 }
 
-/// Provider for all SSH keys.
-final _allKeysProvider = FutureProvider<List<SshKey>>((ref) async {
+/// Provider for all SSH keys as stream.
+final _allKeysProvider = StreamProvider<List<SshKey>>((ref) {
   final repo = ref.watch(keyRepositoryProvider);
-  return repo.getAll();
+  return repo.watchAll();
 });

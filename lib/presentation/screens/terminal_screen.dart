@@ -230,10 +230,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       );
     }
 
+    // Calculate responsive font size based on screen width
+    final screenWidth = MediaQuery.of(context).size.width;
+    final fontSize = screenWidth < 380 ? 10.0 : (screenWidth < 600 ? 12.0 : 14.0);
+
     return TerminalView(
       _terminal,
       theme: isDark ? _darkTerminalTheme : _lightTerminalTheme,
-      textStyle: const TerminalStyle(fontSize: 14),
+      textStyle: TerminalStyle(fontSize: fontSize),
+      hardwareKeyboardOnly: false,
+      deleteDetection: true,
     );
   }
 
@@ -322,6 +328,10 @@ class _KeyboardToolbar extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final isCompact = screenWidth < 380;
+    final keyHeight = isCompact ? 36.0 : 44.0;
+    final keyFontSize = isCompact ? 10.0 : 12.0;
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -335,52 +345,56 @@ class _KeyboardToolbar extends StatelessWidget {
           children: [
             // Modifier keys row
             _buildKeyRow([
-              _ToolbarKey(label: 'Esc', onTap: () => _sendKey('\x1b')),
-              _ToolbarKey(label: 'Tab', onTap: () => _sendKey('\t')),
-              const _ModifierKey(label: 'Ctrl', modifier: _Modifier.ctrl),
-              const _ModifierKey(label: 'Alt', modifier: _Modifier.alt),
-              _ToolbarKey(label: '↑', onTap: () => _sendKey('\x1b[A')),
-              _ToolbarKey(label: '↓', onTap: () => _sendKey('\x1b[B')),
-              _ToolbarKey(label: '←', onTap: () => _sendKey('\x1b[D')),
-              _ToolbarKey(label: '→', onTap: () => _sendKey('\x1b[C')),
-            ]),
+              _ToolbarKey(label: 'Esc', onTap: () => _sendTerminalKey(TerminalKey.escape), fontSize: keyFontSize),
+              _ToolbarKey(label: 'Tab', onTap: () => _sendTerminalKey(TerminalKey.tab), fontSize: keyFontSize),
+              _ModifierKey(label: 'Ctrl', modifier: _Modifier.ctrl, fontSize: keyFontSize),
+              _ModifierKey(label: 'Alt', modifier: _Modifier.alt, fontSize: keyFontSize),
+              _ToolbarKey(label: '↑', onTap: () => _sendTerminalKey(TerminalKey.arrowUp), fontSize: keyFontSize),
+              _ToolbarKey(label: '↓', onTap: () => _sendTerminalKey(TerminalKey.arrowDown), fontSize: keyFontSize),
+              _ToolbarKey(label: '←', onTap: () => _sendTerminalKey(TerminalKey.arrowLeft), fontSize: keyFontSize),
+              _ToolbarKey(label: '→', onTap: () => _sendTerminalKey(TerminalKey.arrowRight), fontSize: keyFontSize),
+            ], keyHeight),
             // Function and navigation keys
             _buildKeyRow([
-              _ToolbarKey(label: 'Home', onTap: () => _sendKey('\x1b[H')),
-              _ToolbarKey(label: 'End', onTap: () => _sendKey('\x1b[F')),
-              _ToolbarKey(label: 'PgUp', onTap: () => _sendKey('\x1b[5~')),
-              _ToolbarKey(label: 'PgDn', onTap: () => _sendKey('\x1b[6~')),
-              _ToolbarKey(label: 'Ins', onTap: () => _sendKey('\x1b[2~')),
-              _ToolbarKey(label: 'Del', onTap: () => _sendKey('\x1b[3~')),
-              _ToolbarKey(label: '|', onTap: () => _sendKey('|')),
-              _ToolbarKey(label: '/', onTap: () => _sendKey('/')),
-            ]),
+              _ToolbarKey(label: isCompact ? 'Hm' : 'Home', onTap: () => _sendTerminalKey(TerminalKey.home), fontSize: keyFontSize),
+              _ToolbarKey(label: 'End', onTap: () => _sendTerminalKey(TerminalKey.end), fontSize: keyFontSize),
+              _ToolbarKey(label: isCompact ? 'PU' : 'PgUp', onTap: () => _sendTerminalKey(TerminalKey.pageUp), fontSize: keyFontSize),
+              _ToolbarKey(label: isCompact ? 'PD' : 'PgDn', onTap: () => _sendTerminalKey(TerminalKey.pageDown), fontSize: keyFontSize),
+              _ToolbarKey(label: 'Ins', onTap: () => _sendTerminalKey(TerminalKey.insert), fontSize: keyFontSize),
+              _ToolbarKey(label: 'Del', onTap: () => _sendTerminalKey(TerminalKey.delete), fontSize: keyFontSize),
+              _ToolbarKey(label: '|', onTap: () => _sendText('|'), fontSize: keyFontSize),
+              _ToolbarKey(label: '/', onTap: () => _sendText('/'), fontSize: keyFontSize),
+            ], keyHeight),
           ],
         ),
       ),
     );
   }
 
-  Widget _buildKeyRow(List<Widget> keys) => SizedBox(
-    height: 44,
+  Widget _buildKeyRow(List<Widget> keys, double height) => SizedBox(
+    height: height,
     child: Row(children: keys.map((key) => Expanded(child: key)).toList()),
   );
 
-  void _sendKey(String key) {
+  void _sendTerminalKey(TerminalKey key) {
     HapticFeedback.lightImpact();
-    terminal
-      ..keyInput(TerminalKey.escape)
-      ..textInput(key);
+    terminal.keyInput(key);
+  }
+
+  void _sendText(String text) {
+    HapticFeedback.lightImpact();
+    terminal.textInput(text);
   }
 }
 
 enum _Modifier { ctrl, alt }
 
 class _ModifierKey extends StatefulWidget {
-  const _ModifierKey({required this.label, required this.modifier});
+  const _ModifierKey({required this.label, required this.modifier, this.fontSize = 12});
 
   final String label;
   final _Modifier modifier;
+  final double fontSize;
 
   @override
   State<_ModifierKey> createState() => _ModifierKeyState();
@@ -410,7 +424,7 @@ class _ModifierKeyState extends State<_ModifierKey> {
           child: Text(
             widget.label,
             style: TextStyle(
-              fontSize: 12,
+              fontSize: widget.fontSize,
               fontWeight: FontWeight.w500,
               color: _isActive
                   ? colorScheme.onPrimary
@@ -424,10 +438,11 @@ class _ModifierKeyState extends State<_ModifierKey> {
 }
 
 class _ToolbarKey extends StatelessWidget {
-  const _ToolbarKey({required this.label, required this.onTap});
+  const _ToolbarKey({required this.label, required this.onTap, this.fontSize = 12});
 
   final String label;
   final VoidCallback onTap;
+  final double fontSize;
 
   @override
   Widget build(BuildContext context) {
@@ -445,7 +460,7 @@ class _ToolbarKey extends StatelessWidget {
           child: Text(
             label,
             style: TextStyle(
-              fontSize: 12,
+              fontSize: fontSize,
               fontWeight: FontWeight.w500,
               color: colorScheme.onSurfaceVariant,
             ),
