@@ -127,6 +127,16 @@ class SshService {
       );
     }
 
+    // Clean up any existing stale session for this host
+    final existingSession = _sessions.remove(hostId);
+    if (existingSession != null) {
+      try {
+        existingSession.close();
+      } on Exception {
+        // Ignore errors when closing stale session
+      }
+    }
+
     final host = await hostRepository!.getById(hostId);
     if (host == null) {
       return const SshConnectionResult(success: false, error: 'Host not found');

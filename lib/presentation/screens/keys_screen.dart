@@ -286,8 +286,8 @@ class _KeyDetailsSheet extends StatelessWidget {
   }
 }
 
-/// Provider for all SSH keys.
-final _allKeysProvider = FutureProvider<List<SshKey>>((ref) async {
+/// Provider for all SSH keys - uses stream for auto-refresh on changes.
+final _allKeysProvider = StreamProvider<List<SshKey>>((ref) {
   final repo = ref.watch(keyRepositoryProvider);
-  return repo.getAll();
+  return repo.watchAll();
 });

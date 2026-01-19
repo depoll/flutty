@@ -25,26 +25,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late Terminal _terminal;
   SSHSession? _shell;
   StreamSubscription<dynamic>? _outputSubscription;
+  StreamSubscription<dynamic>? _stderrSubscription;
+  StreamSubscription<void>? _doneSubscription;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboard = true;
+  
+  // Cache the notifier for use in dispose
+  ActiveSessionsNotifier? _sessionsNotifier;
 
   @override
   void initState() {
     super.initState();
     _terminal = Terminal(maxLines: 10000);
-    _connect();
+    // Defer connection to avoid modifying provider state during widget build
+    Future.microtask(_connect);
   }
 
   Future<void> _connect() async {
+    if (!mounted) return;
+    
     setState(() {
       _isConnecting = true;
       _error = null;
     });
 
-    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-    final result = await sessionsNotifier.connect(widget.hostId);
+    _sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final result = await _sessionsNotifier!.connect(widget.hostId);
 
+    if (!mounted) return;
+    
     if (!result.success) {
       setState(() {
         _isConnecting = false;
@@ -53,7 +63,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       return;
     }
 
-    final session = sessionsNotifier.getSession(widget.hostId);
+    final session = _sessionsNotifier!.getSession(widget.hostId);
     if (session == null) {
       setState(() {
         _isConnecting = false;
@@ -70,12 +80,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         ),
       );
 
+      if (!mounted) return;
+
       _outputSubscription = _shell!.stdout.listen((data) {
         _terminal.write(utf8.decode(data));
       });
 
-      _shell!.stderr.listen((data) {
+      _stderrSubscription = _shell!.stderr.listen((data) {
         _terminal.write(utf8.decode(data));
+      });
+
+      // Listen for shell completion (logout, exit, connection drop)
+      _doneSubscription = _shell!.done.asStream().listen((_) {
+        if (mounted) {
+          _handleShellClosed();
+        }
       });
 
       _terminal.onOutput = (data) {
@@ -88,6 +107,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
       setState(() => _isConnecting = false);
     } on Exception catch (e) {
+      if (!mounted) return;
       setState(() {
         _isConnecting = false;
         _error = 'Failed to start shell: $e';
@@ -95,9 +115,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
+  void _handleShellClosed() {
+    if (!mounted) return;
+    setState(() {
+      _error = 'Connection closed';
+    });
+    // Clean up the session state
+    _sessionsNotifier?.disconnect(widget.hostId);
+  }
+
   Future<void> _disconnect() async {
     await _outputSubscription?.cancel();
-    await ref.read(activeSessionsProvider.notifier).disconnect(widget.hostId);
+    await _stderrSubscription?.cancel();
+    await _doneSubscription?.cancel();
+    _outputSubscription = null;
+    _stderrSubscription = null;
+    _doneSubscription = null;
+    await _sessionsNotifier?.disconnect(widget.hostId);
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -106,6 +140,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   @override
   void dispose() {
     _outputSubscription?.cancel();
+    _stderrSubscription?.cancel();
+    _doneSubscription?.cancel();
+    // Disconnect session when leaving the screen (use cached notifier)
+    _sessionsNotifier?.disconnect(widget.hostId);
     super.dispose();
   }
 

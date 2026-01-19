@@ -321,8 +321,8 @@ class _HostListTile extends ConsumerWidget {
   }
 }
 
-/// Provider for all hosts.
-final allHostsProvider = FutureProvider<List<Host>>((ref) async {
+/// Provider for all hosts - uses stream for auto-refresh on changes.
+final allHostsProvider = StreamProvider<List<Host>>((ref) {
   final repo = ref.watch(hostRepositoryProvider);
-  return repo.getAll();
+  return repo.watchAll();
 });

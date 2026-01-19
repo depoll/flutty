@@ -140,13 +140,14 @@ final themeModeProvider = FutureProvider<String>((ref) async {
 class ThemeModeNotifier extends StateNotifier<ThemeMode> {
   /// Creates a new [ThemeModeNotifier].
   ThemeModeNotifier(this._settings) : super(ThemeMode.system) {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
 
   Future<void> _init() async {
     final value = await _settings.getString(SettingKeys.themeMode) ?? 'system';
+    if (!mounted) return;
     state = _parseThemeMode(value);
   }
 
@@ -185,13 +186,14 @@ final fontSizeProvider = FutureProvider<double>((ref) async {
 class FontSizeNotifier extends StateNotifier<double> {
   /// Creates a new [FontSizeNotifier].
   FontSizeNotifier(this._settings) : super(14) {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
 
   Future<void> _init() async {
     final value = await _settings.getInt(SettingKeys.terminalFontSize);
+    if (!mounted) return;
     state = value?.toDouble() ?? 14.0;
   }
 
@@ -218,13 +220,14 @@ final fontFamilyProvider = FutureProvider<String>((ref) async {
 class FontFamilyNotifier extends StateNotifier<String> {
   /// Creates a new [FontFamilyNotifier].
   FontFamilyNotifier(this._settings) : super('monospace') {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
 
   Future<void> _init() async {
     final value = await _settings.getString(SettingKeys.terminalFont);
+    if (!mounted) return;
     state = value ?? 'monospace';
   }
 
@@ -251,13 +254,14 @@ final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
 class AutoLockTimeoutNotifier extends StateNotifier<int> {
   /// Creates a new [AutoLockTimeoutNotifier].
   AutoLockTimeoutNotifier(this._settings) : super(5) {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
 
   Future<void> _init() async {
     final value = await _settings.getInt(SettingKeys.autoLockTimeout);
+    if (!mounted) return;
     state = value ?? 5;
   }
 
@@ -284,7 +288,7 @@ final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
 class HapticFeedbackNotifier extends StateNotifier<bool> {
   /// Creates a new [HapticFeedbackNotifier].
   HapticFeedbackNotifier(this._settings) : super(true) {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
@@ -294,6 +298,7 @@ class HapticFeedbackNotifier extends StateNotifier<bool> {
       SettingKeys.hapticFeedback,
       defaultValue: true,
     );
+    if (!mounted) return;
     state = value;
   }
 
@@ -320,13 +325,14 @@ final cursorStyleProvider = FutureProvider<String>((ref) async {
 class CursorStyleNotifier extends StateNotifier<String> {
   /// Creates a new [CursorStyleNotifier].
   CursorStyleNotifier(this._settings) : super('block') {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
 
   Future<void> _init() async {
     final value = await _settings.getString(SettingKeys.cursorStyle);
+    if (!mounted) return;
     state = value ?? 'block';
   }
 
@@ -353,7 +359,7 @@ final bellSoundProvider = FutureProvider<bool>((ref) async {
 class BellSoundNotifier extends StateNotifier<bool> {
   /// Creates a new [BellSoundNotifier].
   BellSoundNotifier(this._settings) : super(true) {
-    _init();
+    Future.microtask(_init);
   }
 
   final SettingsService _settings;
@@ -363,6 +369,7 @@ class BellSoundNotifier extends StateNotifier<bool> {
       SettingKeys.bellSound,
       defaultValue: true,
     );
+    if (!mounted) return;
     state = value;
   }
 

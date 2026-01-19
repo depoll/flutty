@@ -206,13 +206,14 @@ final authStateProvider = StateNotifierProvider<AuthStateNotifier, AuthState>(
 class AuthStateNotifier extends StateNotifier<AuthState> {
   /// Creates a new [AuthStateNotifier].
   AuthStateNotifier(this._authService) : super(AuthState.unknown) {
-    _init();
+    Future.microtask(_init);
   }
 
   final AuthService _authService;
 
   Future<void> _init() async {
     final isEnabled = await _authService.isAuthEnabled();
+    if (!mounted) return;
     state = isEnabled ? AuthState.locked : AuthState.notConfigured;
   }
 
