@@ -132,10 +132,7 @@ abstract final class FluttyTheme {
         shadowColor: isDark ? _neonGreen.withAlpha(20) : Colors.black12,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
-          side: BorderSide(
-            color: isDark ? _borderDark : _borderLight,
-            width: 1,
-          ),
+          side: BorderSide(color: isDark ? _borderDark : _borderLight),
         ),
         margin: EdgeInsets.zero,
       ),
@@ -163,7 +160,7 @@ abstract final class FluttyTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: BorderSide(color: _neonGreen, width: 2),
+          borderSide: const BorderSide(color: _neonGreen, width: 2),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -390,10 +387,6 @@ abstract final class FluttyTheme {
 
   /// Glow box shadow for cards/buttons.
   static List<BoxShadow> glowShadow([Color? color]) => [
-    BoxShadow(
-      color: (color ?? _neonGreen).withAlpha(40),
-      blurRadius: 20,
-      spreadRadius: 0,
-    ),
+    BoxShadow(color: (color ?? _neonGreen).withAlpha(40), blurRadius: 20),
   ];
 }

@@ -185,10 +185,7 @@ void main() {
       final fakeGroup = Group(
         id: 999,
         name: 'Fake Group',
-        parentId: null,
         sortOrder: 0,
-        color: null,
-        icon: null,
         createdAt: DateTime.now(),
       );
 

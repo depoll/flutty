@@ -240,7 +240,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       _terminal,
       theme: isDark ? _darkTerminalTheme : _lightTerminalTheme,
       textStyle: TerminalStyle(fontSize: fontSize),
-      hardwareKeyboardOnly: false,
       deleteDetection: true,
     );
   }

@@ -386,16 +386,14 @@ class _HostsPanel extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     List<Host> hosts,
-  ) {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      itemCount: hosts.length,
-      itemBuilder: (context, index) {
-        final host = hosts[index];
-        return _HostRow(host: host);
-      },
-    );
-  }
+  ) => ListView.builder(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    itemCount: hosts.length,
+    itemBuilder: (context, index) {
+      final host = hosts[index];
+      return _HostRow(host: host);
+    },
+  );
 }
 
 class _HostRow extends ConsumerWidget {
@@ -572,7 +570,7 @@ class _HostRow extends ConsumerWidget {
       ),
     );
 
-    if (confirmed == true && context.mounted) {
+    if ((confirmed ?? false) && context.mounted) {
       await ref.read(hostRepositoryProvider).delete(host.id);
     }
   }
@@ -754,16 +752,14 @@ class _KeysPanel extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     List<SshKey> keys,
-  ) {
-    return ListView.builder(
-      padding: const EdgeInsets.symmetric(vertical: 4),
-      itemCount: keys.length,
-      itemBuilder: (context, index) {
-        final key = keys[index];
-        return _KeyRow(sshKey: key);
-      },
-    );
-  }
+  ) => ListView.builder(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    itemCount: keys.length,
+    itemBuilder: (context, index) {
+      final key = keys[index];
+      return _KeyRow(sshKey: key);
+    },
+  );
 }
 
 class _KeyRow extends ConsumerWidget {
@@ -868,7 +864,6 @@ class _KeyRow extends ConsumerWidget {
       context: context,
       isScrollControlled: true,
       builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.5,
         maxChildSize: 0.9,
         minChildSize: 0.3,
         expand: false,
@@ -949,7 +944,7 @@ class _KeyRow extends ConsumerWidget {
       ),
     );
 
-    if (confirmed == true && context.mounted) {
+    if ((confirmed ?? false) && context.mounted) {
       await ref.read(keyRepositoryProvider).delete(sshKey.id);
     }
   }

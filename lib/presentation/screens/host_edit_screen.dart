@@ -220,6 +220,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     loading: () => const LinearProgressIndicator(),
                     error: (_, _) => const Text('Error loading keys'),
                     data: (keys) => DropdownButtonFormField<int?>(
+                      // ignore: deprecated_member_use
                       value: _selectedKeyId,
                       decoration: const InputDecoration(
                         labelText: 'SSH Key (optional)',

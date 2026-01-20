@@ -114,7 +114,10 @@ void main() {
           },
         });
         final value = await service.getJson('nested');
-        expect(value?['level1']?['level2']?['value'], 'deep');
+        expect(
+          ((value?['level1'] as Map?)?['level2'] as Map?)?['value'],
+          'deep',
+        );
       });
     });
 

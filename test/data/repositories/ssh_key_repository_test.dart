@@ -212,8 +212,6 @@ void main() {
         keyType: 'ed25519',
         publicKey: 'ssh-ed25519 AAAA...',
         privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
-        passphrase: null,
-        fingerprint: null,
         createdAt: DateTime.now(),
       );
 
