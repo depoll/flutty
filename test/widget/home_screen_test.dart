@@ -1,16 +1,21 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:flutty/data/database/database.dart';
 import 'package:flutty/presentation/screens/home_screen.dart';
 
 void main() {
-  group('HomeScreen', () {
-    testWidgets('displays app bar with title', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
+  Widget buildTestWidget(AppDatabase db, {Size size = const Size(800, 600)}) {
+    return ProviderScope(
+      overrides: [databaseProvider.overrideWithValue(db)],
+      child: MediaQuery(
+        data: MediaQueryData(size: size),
+        child: MaterialApp.router(
           routerConfig: GoRouter(
             routes: [
               GoRoute(
@@ -22,11 +27,19 @@ void main() {
                 builder: (context, state) => const Scaffold(),
               ),
               GoRoute(
-                path: '/hosts',
+                path: '/hosts/add',
                 builder: (context, state) => const Scaffold(),
               ),
               GoRoute(
-                path: '/keys',
+                path: '/hosts/:id/edit',
+                builder: (context, state) => const Scaffold(),
+              ),
+              GoRoute(
+                path: '/terminal/:hostId',
+                builder: (context, state) => const Scaffold(),
+              ),
+              GoRoute(
+                path: '/keys/add',
                 builder: (context, state) => const Scaffold(),
               ),
               GoRoute(
@@ -37,378 +50,157 @@ void main() {
                 path: '/port-forwards',
                 builder: (context, state) => const Scaffold(),
               ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
             ],
           ),
         ),
-      );
+      ),
+    );
+  }
 
+  group('HomeScreen Desktop Layout', () {
+    testWidgets('displays app title in sidebar', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(buildTestWidget(db));
       await tester.pumpAndSettle();
 
       expect(find.text('Flutty'), findsOneWidget);
     });
 
-    testWidgets('displays settings icon button', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
+    testWidgets('displays navigation items in sidebar', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
 
-      await tester.pumpAndSettle();
-
-      expect(find.byIcon(Icons.settings_outlined), findsOneWidget);
-    });
-
-    testWidgets('displays quick connect card', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
-
-      await tester.pumpAndSettle();
-
-      expect(find.text('Quick Connect'), findsOneWidget);
-      expect(find.text('SSH to any host'), findsOneWidget);
-    });
-
-    testWidgets('displays navigation cards', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
-
+      await tester.pumpWidget(buildTestWidget(db));
       await tester.pumpAndSettle();
 
       expect(find.text('Hosts'), findsOneWidget);
       expect(find.text('Keys'), findsOneWidget);
       expect(find.text('Snippets'), findsOneWidget);
-      expect(find.text('Port Forward'), findsOneWidget);
+      expect(find.text('Port Forwarding'), findsOneWidget);
+      expect(find.text('Settings'), findsOneWidget);
     });
 
-    testWidgets('displays manage section header', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
+    testWidgets('displays settings icon', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
 
+      await tester.pumpWidget(buildTestWidget(db));
       await tester.pumpAndSettle();
 
-      expect(find.text('Manage'), findsOneWidget);
+      expect(find.byIcon(Icons.settings_outlined), findsOneWidget);
     });
 
-    testWidgets('shows quick connect dialog on tap', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
+    testWidgets('displays hosts panel by default', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
 
+      await tester.pumpWidget(buildTestWidget(db));
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Quick Connect'));
-      await tester.pumpAndSettle();
-
-      expect(find.text('Host'), findsOneWidget);
-      expect(find.text('Username'), findsOneWidget);
-      expect(find.text('Cancel'), findsOneWidget);
-      expect(find.text('Connect'), findsOneWidget);
+      // Hosts panel should have "Hosts" header and Add Host button
+      expect(find.text('Add Host'), findsOneWidget);
     });
 
-    testWidgets('displays correct icons for navigation cards', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
+    testWidgets('displays sidebar navigation icons', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
 
+      await tester.pumpWidget(buildTestWidget(db));
       await tester.pumpAndSettle();
 
-      expect(find.byIcon(Icons.dns_outlined), findsOneWidget);
-      expect(find.byIcon(Icons.vpn_key_outlined), findsOneWidget);
-      expect(find.byIcon(Icons.code_outlined), findsOneWidget);
-      expect(find.byIcon(Icons.swap_horiz_outlined), findsOneWidget);
+      expect(find.byIcon(Icons.dns_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.key_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.code_rounded), findsOneWidget);
+      expect(find.byIcon(Icons.swap_horiz_rounded), findsOneWidget);
     });
 
-    testWidgets('displays card subtitles', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
+    testWidgets('switches to keys panel when Keys is tapped', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
 
+      await tester.pumpWidget(buildTestWidget(db));
       await tester.pumpAndSettle();
 
-      expect(find.text('Manage connections'), findsOneWidget);
-      expect(find.text('SSH keys'), findsOneWidget);
-      expect(find.text('Saved commands'), findsOneWidget);
-      expect(find.text('Tunnels'), findsOneWidget);
+      await tester.tap(find.text('Keys'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('SSH Keys'), findsOneWidget);
+      expect(find.text('Add Key'), findsOneWidget);
+    });
+  });
+
+  group('HomeScreen Mobile Layout', () {
+    testWidgets('displays bottom navigation bar on narrow screens', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(buildTestWidget(db, size: const Size(400, 800)));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(NavigationBar), findsOneWidget);
     });
 
-    testWidgets('has GridView for navigation cards', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp.router(
-          routerConfig: GoRouter(
-            routes: [
-              GoRoute(
-                path: '/',
-                builder: (context, state) => const HomeScreen(),
-              ),
-              GoRoute(
-                path: '/settings',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/keys',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/snippets',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/port-forwards',
-                builder: (context, state) => const Scaffold(),
-              ),
-              GoRoute(
-                path: '/hosts/add',
-                builder: (context, state) => const Scaffold(),
-              ),
-            ],
-          ),
-        ),
-      );
+    testWidgets('displays app bar on narrow screens', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
 
+      await tester.pumpWidget(buildTestWidget(db, size: const Size(400, 800)));
       await tester.pumpAndSettle();
 
-      expect(find.byType(GridView), findsOneWidget);
+      expect(find.byType(AppBar), findsOneWidget);
+      expect(find.text('Flutty'), findsOneWidget);
+    });
+
+    testWidgets('displays settings icon in app bar on mobile', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(buildTestWidget(db, size: const Size(400, 800)));
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.settings_outlined), findsOneWidget);
+    });
+
+    testWidgets('bottom nav has correct destinations', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(buildTestWidget(db, size: const Size(400, 800)));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Hosts'), findsOneWidget);
+      expect(find.text('Keys'), findsOneWidget);
+      expect(find.text('Snippets'), findsOneWidget);
+      expect(find.text('Ports'), findsOneWidget);
+    });
+  });
+
+  group('HomeScreen Empty States', () {
+    testWidgets('shows empty state when no hosts', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(buildTestWidget(db));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No hosts yet'), findsOneWidget);
+    });
+
+    testWidgets('shows empty state when no keys', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(buildTestWidget(db));
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Keys'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No SSH keys yet'), findsOneWidget);
     });
   });
 }

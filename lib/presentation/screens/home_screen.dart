@@ -67,7 +67,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       body: _buildContent(),
       bottomNavigationBar: NavigationBar(
         selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+        onDestinationSelected: (index) =>
+            setState(() => _selectedIndex = index),
         labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
         height: 65,
         destinations: const [
@@ -110,9 +111,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             decoration: BoxDecoration(
               color: isDark ? const Color(0xFF0F0F14) : Colors.grey.shade50,
               border: Border(
-                right: BorderSide(
-                  color: colorScheme.outline.withAlpha(60),
-                ),
+                right: BorderSide(color: colorScheme.outline.withAlpha(60)),
               ),
             ),
             child: Column(
@@ -145,7 +144,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   ),
                 ),
                 const SizedBox(height: 8),
-                
+
                 // Navigation items
                 _NavItem(
                   icon: Icons.dns_rounded,
@@ -171,9 +170,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   selected: _selectedIndex == 3,
                   onTap: () => setState(() => _selectedIndex = 3),
                 ),
-                
+
                 const Spacer(),
-                
+
                 // Settings at bottom
                 _NavItem(
                   icon: Icons.settings_outlined,
@@ -185,11 +184,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ],
             ),
           ),
-          
+
           // Main content
-          Expanded(
-            child: _buildContent(),
-          ),
+          Expanded(child: _buildContent()),
         ],
       ),
     );
@@ -204,7 +201,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case 2:
         return _buildPlaceholder('Snippets', Icons.code_rounded, '/snippets');
       case 3:
-        return _buildPlaceholder('Port Forwarding', Icons.swap_horiz_rounded, '/port-forwards');
+        return _buildPlaceholder(
+          'Port Forwarding',
+          Icons.swap_horiz_rounded,
+          '/port-forwards',
+        );
       default:
         return const _HostsPanel();
     }
@@ -327,13 +328,12 @@ class _HostsPanel extends ConsumerWidget {
             ],
           ),
         ),
-        
+
         // Hosts list
         Expanded(
           child: hostsAsync.when(
-            loading: () => const Center(
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
+            loading: () =>
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
             error: (e, _) => Center(child: Text('Error: $e')),
             data: (hosts) => hosts.isEmpty
                 ? _buildEmptyState(context)
@@ -347,7 +347,7 @@ class _HostsPanel extends ConsumerWidget {
   Widget _buildEmptyState(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    
+
     return Center(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
@@ -382,7 +382,11 @@ class _HostsPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildHostsList(BuildContext context, WidgetRef ref, List<Host> hosts) {
+  Widget _buildHostsList(
+    BuildContext context,
+    WidgetRef ref,
+    List<Host> hosts,
+  ) {
     return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 4),
       itemCount: hosts.length,
@@ -404,10 +408,12 @@ class _HostRow extends ConsumerWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
-    
+
     final connectionStates = ref.watch(activeSessionsProvider);
-    final isConnected = connectionStates[host.id] == SshConnectionState.connected;
-    final isConnecting = connectionStates[host.id] == SshConnectionState.connecting;
+    final isConnected =
+        connectionStates[host.id] == SshConnectionState.connected;
+    final isConnecting =
+        connectionStates[host.id] == SshConnectionState.connecting;
 
     return Material(
       color: Colors.transparent,
@@ -417,9 +423,7 @@ class _HostRow extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
             border: Border(
-              bottom: BorderSide(
-                color: colorScheme.outline.withAlpha(30),
-              ),
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
             ),
           ),
           child: Row(
@@ -433,8 +437,8 @@ class _HostRow extends ConsumerWidget {
                   color: isConnected
                       ? colorScheme.primary
                       : isConnecting
-                          ? Colors.orange
-                          : colorScheme.onSurface.withAlpha(40),
+                      ? Colors.orange
+                      : colorScheme.onSurface.withAlpha(40),
                   boxShadow: isConnected && isDark
                       ? [
                           BoxShadow(
@@ -446,7 +450,7 @@ class _HostRow extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 12),
-              
+
               // Host info
               Expanded(
                 child: Column(
@@ -481,7 +485,7 @@ class _HostRow extends ConsumerWidget {
                   ],
                 ),
               ),
-              
+
               // Port badge
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
@@ -498,7 +502,7 @@ class _HostRow extends ConsumerWidget {
                 ),
               ),
               const SizedBox(width: 8),
-              
+
               // Actions
               _SmallIconButton(
                 icon: Icons.edit_outlined,
@@ -517,7 +521,7 @@ class _HostRow extends ConsumerWidget {
 
   void _showMenu(BuildContext context, WidgetRef ref) {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     showModalBottomSheet<void>(
       context: context,
       builder: (context) => SafeArea(
@@ -626,7 +630,7 @@ class _SmallIconButton extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(4),
@@ -696,9 +700,8 @@ class _KeysPanel extends ConsumerWidget {
         // Keys list
         Expanded(
           child: keysAsync.when(
-            loading: () => const Center(
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
+            loading: () =>
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
             error: (e, _) => Center(child: Text('Error: $e')),
             data: (keys) => keys.isEmpty
                 ? _buildEmptyState(context)
@@ -747,7 +750,11 @@ class _KeysPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildKeysList(BuildContext context, WidgetRef ref, List<SshKey> keys) {
+  Widget _buildKeysList(
+    BuildContext context,
+    WidgetRef ref,
+    List<SshKey> keys,
+  ) {
     return ListView.builder(
       padding: const EdgeInsets.symmetric(vertical: 4),
       itemCount: keys.length,
@@ -778,9 +785,7 @@ class _KeyRow extends ConsumerWidget {
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
             border: Border(
-              bottom: BorderSide(
-                color: colorScheme.outline.withAlpha(30),
-              ),
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
             ),
           ),
           child: Row(
@@ -850,9 +855,9 @@ class _KeyRow extends ConsumerWidget {
 
   void _copyPublicKey(BuildContext context) {
     Clipboard.setData(ClipboardData(text: sshKey.publicKey));
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Public key copied')),
-    );
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Public key copied')));
   }
 
   void _showKeyDetails(BuildContext context) {

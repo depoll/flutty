@@ -30,7 +30,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboard = true;
-  
+
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
 
@@ -44,7 +44,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   Future<void> _connect() async {
     if (!mounted) return;
-    
+
     setState(() {
       _isConnecting = true;
       _error = null;
@@ -54,7 +54,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final result = await _sessionsNotifier!.connect(widget.hostId);
 
     if (!mounted) return;
-    
+
     if (!result.success) {
       setState(() {
         _isConnecting = false;
@@ -232,7 +232,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
     // Calculate responsive font size based on screen width
     final screenWidth = MediaQuery.of(context).size.width;
-    final fontSize = screenWidth < 380 ? 10.0 : (screenWidth < 600 ? 12.0 : 14.0);
+    final fontSize = screenWidth < 380
+        ? 10.0
+        : (screenWidth < 600 ? 12.0 : 14.0);
 
     return TerminalView(
       _terminal,
@@ -345,25 +347,89 @@ class _KeyboardToolbar extends StatelessWidget {
           children: [
             // Modifier keys row
             _buildKeyRow([
-              _ToolbarKey(label: 'Esc', onTap: () => _sendTerminalKey(TerminalKey.escape), fontSize: keyFontSize),
-              _ToolbarKey(label: 'Tab', onTap: () => _sendTerminalKey(TerminalKey.tab), fontSize: keyFontSize),
-              _ModifierKey(label: 'Ctrl', modifier: _Modifier.ctrl, fontSize: keyFontSize),
-              _ModifierKey(label: 'Alt', modifier: _Modifier.alt, fontSize: keyFontSize),
-              _ToolbarKey(label: '↑', onTap: () => _sendTerminalKey(TerminalKey.arrowUp), fontSize: keyFontSize),
-              _ToolbarKey(label: '↓', onTap: () => _sendTerminalKey(TerminalKey.arrowDown), fontSize: keyFontSize),
-              _ToolbarKey(label: '←', onTap: () => _sendTerminalKey(TerminalKey.arrowLeft), fontSize: keyFontSize),
-              _ToolbarKey(label: '→', onTap: () => _sendTerminalKey(TerminalKey.arrowRight), fontSize: keyFontSize),
+              _ToolbarKey(
+                label: 'Esc',
+                onTap: () => _sendTerminalKey(TerminalKey.escape),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: 'Tab',
+                onTap: () => _sendTerminalKey(TerminalKey.tab),
+                fontSize: keyFontSize,
+              ),
+              _ModifierKey(
+                label: 'Ctrl',
+                modifier: _Modifier.ctrl,
+                fontSize: keyFontSize,
+              ),
+              _ModifierKey(
+                label: 'Alt',
+                modifier: _Modifier.alt,
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: '↑',
+                onTap: () => _sendTerminalKey(TerminalKey.arrowUp),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: '↓',
+                onTap: () => _sendTerminalKey(TerminalKey.arrowDown),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: '←',
+                onTap: () => _sendTerminalKey(TerminalKey.arrowLeft),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: '→',
+                onTap: () => _sendTerminalKey(TerminalKey.arrowRight),
+                fontSize: keyFontSize,
+              ),
             ], keyHeight),
             // Function and navigation keys
             _buildKeyRow([
-              _ToolbarKey(label: isCompact ? 'Hm' : 'Home', onTap: () => _sendTerminalKey(TerminalKey.home), fontSize: keyFontSize),
-              _ToolbarKey(label: 'End', onTap: () => _sendTerminalKey(TerminalKey.end), fontSize: keyFontSize),
-              _ToolbarKey(label: isCompact ? 'PU' : 'PgUp', onTap: () => _sendTerminalKey(TerminalKey.pageUp), fontSize: keyFontSize),
-              _ToolbarKey(label: isCompact ? 'PD' : 'PgDn', onTap: () => _sendTerminalKey(TerminalKey.pageDown), fontSize: keyFontSize),
-              _ToolbarKey(label: 'Ins', onTap: () => _sendTerminalKey(TerminalKey.insert), fontSize: keyFontSize),
-              _ToolbarKey(label: 'Del', onTap: () => _sendTerminalKey(TerminalKey.delete), fontSize: keyFontSize),
-              _ToolbarKey(label: '|', onTap: () => _sendText('|'), fontSize: keyFontSize),
-              _ToolbarKey(label: '/', onTap: () => _sendText('/'), fontSize: keyFontSize),
+              _ToolbarKey(
+                label: isCompact ? 'Hm' : 'Home',
+                onTap: () => _sendTerminalKey(TerminalKey.home),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: 'End',
+                onTap: () => _sendTerminalKey(TerminalKey.end),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: isCompact ? 'PU' : 'PgUp',
+                onTap: () => _sendTerminalKey(TerminalKey.pageUp),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: isCompact ? 'PD' : 'PgDn',
+                onTap: () => _sendTerminalKey(TerminalKey.pageDown),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: 'Ins',
+                onTap: () => _sendTerminalKey(TerminalKey.insert),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: 'Del',
+                onTap: () => _sendTerminalKey(TerminalKey.delete),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: '|',
+                onTap: () => _sendText('|'),
+                fontSize: keyFontSize,
+              ),
+              _ToolbarKey(
+                label: '/',
+                onTap: () => _sendText('/'),
+                fontSize: keyFontSize,
+              ),
             ], keyHeight),
           ],
         ),
@@ -390,7 +456,11 @@ class _KeyboardToolbar extends StatelessWidget {
 enum _Modifier { ctrl, alt }
 
 class _ModifierKey extends StatefulWidget {
-  const _ModifierKey({required this.label, required this.modifier, this.fontSize = 12});
+  const _ModifierKey({
+    required this.label,
+    required this.modifier,
+    this.fontSize = 12,
+  });
 
   final String label;
   final _Modifier modifier;
@@ -438,7 +508,11 @@ class _ModifierKeyState extends State<_ModifierKey> {
 }
 
 class _ToolbarKey extends StatelessWidget {
-  const _ToolbarKey({required this.label, required this.onTap, this.fontSize = 12});
+  const _ToolbarKey({
+    required this.label,
+    required this.onTap,
+    this.fontSize = 12,
+  });
 
   final String label;
   final VoidCallback onTap;
