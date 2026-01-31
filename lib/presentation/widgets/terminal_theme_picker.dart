@@ -233,10 +233,10 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final itemsPerRow = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
     
     // Constants for layout calculations
-    const headerHeight = 28.0;
-    // Approximate row height based on aspect ratio 0.9 and padding
+    const headerHeight = 40.0; // Section header with bottom padding
+    // Approximate row height based on aspect ratio 0.9 and grid spacing
     final gridItemWidth = (screenWidth - 32 - ((itemsPerRow - 1) * 12)) / itemsPerRow;
-    final gridItemHeight = gridItemWidth / 0.9 + 12; // aspect ratio + spacing
+    final gridItemHeight = gridItemWidth / 0.9 + 12; // aspect ratio + mainAxisSpacing
     const sectionSpacing = 16.0;
 
     double offset = 0;
@@ -246,11 +246,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     if (customIndex >= 0) {
       final rowIndex = customIndex ~/ itemsPerRow;
       offset = headerHeight + (rowIndex * gridItemHeight);
-      _scrollController.animateTo(
-        offset,
-        duration: const Duration(milliseconds: 300),
-        curve: Curves.easeOut,
-      );
+      _animateToOffset(offset);
       return;
     }
 
@@ -266,11 +262,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       if (darkIndex >= 0) {
         final rowIndex = darkIndex ~/ itemsPerRow;
         offset += headerHeight + (rowIndex * gridItemHeight);
-        _scrollController.animateTo(
-          offset,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        _animateToOffset(offset);
         return;
       }
       if (darkThemes.isNotEmpty) {
@@ -285,13 +277,19 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       if (lightIndex >= 0) {
         final rowIndex = lightIndex ~/ itemsPerRow;
         offset += headerHeight + (rowIndex * gridItemHeight);
-        _scrollController.animateTo(
-          offset,
-          duration: const Duration(milliseconds: 300),
-          curve: Curves.easeOut,
-        );
+        _animateToOffset(offset);
       }
     }
+  }
+
+  void _animateToOffset(double offset) {
+    // Subtract some pixels to show the item more centered/visible
+    final adjustedOffset = (offset - 20).clamp(0.0, double.infinity);
+    _scrollController.animateTo(
+      adjustedOffset,
+      duration: const Duration(milliseconds: 300),
+      curve: Curves.easeOut,
+    );
   }
 
   void _handleCustomThemeLongPress(TerminalThemeData theme) {
