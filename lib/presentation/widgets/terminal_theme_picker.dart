@@ -233,7 +233,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final itemsPerRow = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
     
     // Constants for layout calculations
-    const headerHeight = 40.0; // Section header with bottom padding
+    const headerHeight = 28.0; // Section header text (~16px) + bottom padding (12px)
     // Approximate row height based on aspect ratio 0.9 and grid spacing
     final gridItemWidth = (screenWidth - 32 - ((itemsPerRow - 1) * 12)) / itemsPerRow;
     final gridItemHeight = gridItemWidth / 0.9 + 12; // aspect ratio + mainAxisSpacing
@@ -283,10 +283,8 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   }
 
   void _animateToOffset(double offset) {
-    // Subtract some pixels to show the item more centered/visible
-    final adjustedOffset = (offset - 20).clamp(0.0, double.infinity);
     _scrollController.animateTo(
-      adjustedOffset,
+      offset,
       duration: const Duration(milliseconds: 300),
       curve: Curves.easeOut,
     );
