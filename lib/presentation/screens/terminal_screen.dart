@@ -117,11 +117,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       if (!mounted) return;
 
       _outputSubscription = _shell!.stdout.listen((data) {
-        _terminal.write(utf8.decode(data));
+        _terminal.write(const Utf8Decoder(allowMalformed: true).convert(data));
       });
 
       _stderrSubscription = _shell!.stderr.listen((data) {
-        _terminal.write(utf8.decode(data));
+        _terminal.write(const Utf8Decoder(allowMalformed: true).convert(data));
       });
 
       // Listen for shell completion (logout, exit, connection drop)
