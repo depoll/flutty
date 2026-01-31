@@ -232,12 +232,14 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final screenWidth = MediaQuery.of(context).size.width;
     final itemsPerRow = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
     
-    // Constants for layout calculations
-    const headerHeight = 28.0; // Section header text (~16px) + bottom padding (12px)
-    // Approximate row height based on aspect ratio 0.9 and grid spacing
-    final gridItemWidth = (screenWidth - 32 - ((itemsPerRow - 1) * 12)) / itemsPerRow;
-    final gridItemHeight = gridItemWidth / 0.9 + 12; // aspect ratio + mainAxisSpacing
+    // Layout calculations
+    const headerHeight = 28.0; // Section header text + bottom padding
+    const mainAxisSpacing = 12.0;
     const sectionSpacing = 16.0;
+    
+    // Calculate item height from width and aspect ratio
+    final gridItemWidth = (screenWidth - 32 - ((itemsPerRow - 1) * mainAxisSpacing)) / itemsPerRow;
+    final gridItemHeight = gridItemWidth / 0.9;
 
     double offset = 0;
 
@@ -245,7 +247,8 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final customIndex = customThemes.indexWhere((t) => t.id == widget.selectedThemeId);
     if (customIndex >= 0) {
       final rowIndex = customIndex ~/ itemsPerRow;
-      offset = headerHeight + (rowIndex * gridItemHeight);
+      // First row has no spacing above, subsequent rows have mainAxisSpacing
+      offset = headerHeight + (rowIndex * (gridItemHeight + mainAxisSpacing));
       _animateToOffset(offset);
       return;
     }
@@ -253,7 +256,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     // Add custom section height if it exists
     if (customThemes.isNotEmpty) {
       final customRows = (customThemes.length + itemsPerRow - 1) ~/ itemsPerRow;
-      offset += headerHeight + (customRows * gridItemHeight) + sectionSpacing;
+      offset += headerHeight + (customRows * gridItemHeight) + ((customRows - 1) * mainAxisSpacing) + sectionSpacing;
     }
 
     // Check dark themes (if visible)
@@ -261,13 +264,13 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       final darkIndex = darkThemes.indexWhere((t) => t.id == widget.selectedThemeId);
       if (darkIndex >= 0) {
         final rowIndex = darkIndex ~/ itemsPerRow;
-        offset += headerHeight + (rowIndex * gridItemHeight);
+        offset += headerHeight + (rowIndex * (gridItemHeight + mainAxisSpacing));
         _animateToOffset(offset);
         return;
       }
       if (darkThemes.isNotEmpty) {
         final darkRows = (darkThemes.length + itemsPerRow - 1) ~/ itemsPerRow;
-        offset += headerHeight + (darkRows * gridItemHeight) + sectionSpacing;
+        offset += headerHeight + (darkRows * gridItemHeight) + ((darkRows - 1) * mainAxisSpacing) + sectionSpacing;
       }
     }
 
@@ -276,7 +279,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       final lightIndex = lightThemes.indexWhere((t) => t.id == widget.selectedThemeId);
       if (lightIndex >= 0) {
         final rowIndex = lightIndex ~/ itemsPerRow;
-        offset += headerHeight + (rowIndex * gridItemHeight);
+        offset += headerHeight + (rowIndex * (gridItemHeight + mainAxisSpacing));
         _animateToOffset(offset);
       }
     }
