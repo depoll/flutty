@@ -226,12 +226,18 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     List<TerminalThemeData> lightThemes,
   ) {
     if (widget.selectedThemeId == null) return;
+    if (!_scrollController.hasClients) return;
 
+    // Get screen width to determine column count (matches _ThemeGridSection)
+    final screenWidth = MediaQuery.of(context).size.width;
+    final itemsPerRow = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
+    
     // Constants for layout calculations
     const headerHeight = 28.0;
-    const gridItemHeight = 140.0; // Approximate height per row (aspect ratio 0.85)
+    // Approximate row height based on aspect ratio 0.9 and padding
+    final gridItemWidth = (screenWidth - 32 - ((itemsPerRow - 1) * 12)) / itemsPerRow;
+    final gridItemHeight = gridItemWidth / 0.9 + 12; // aspect ratio + spacing
     const sectionSpacing = 16.0;
-    const itemsPerRow = 3;
 
     double offset = 0;
 
@@ -421,14 +427,19 @@ class _ThemeGridSection extends StatelessWidget {
   final ValueChanged<TerminalThemeData>? onLongPress;
 
   @override
-  Widget build(BuildContext context) => GridView.builder(
+  Widget build(BuildContext context) {
+    // Use responsive grid based on screen width
+    final screenWidth = MediaQuery.of(context).size.width;
+    final crossAxisCount = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
+    
+    return GridView.builder(
         shrinkWrap: true,
         physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: 3,
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: crossAxisCount,
           mainAxisSpacing: 12,
           crossAxisSpacing: 12,
-          childAspectRatio: 0.85,
+          childAspectRatio: 0.9,
         ),
         itemCount: themes.length,
         itemBuilder: (context, index) {
@@ -441,6 +452,7 @@ class _ThemeGridSection extends StatelessWidget {
           );
         },
       );
+  }
 }
 
 /// Shows a theme picker dialog and returns the selected theme.
