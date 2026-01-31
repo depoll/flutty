@@ -33,6 +33,7 @@ class TerminalThemeData {
     required this.brightMagenta,
     required this.brightCyan,
     required this.brightWhite,
+    this.fontFamily = 'JetBrains Mono',
     this.isCustom = false,
     this.searchHitBackground,
     this.searchHitBackgroundCurrent,
@@ -50,6 +51,9 @@ class TerminalThemeData {
 
   /// Whether this is a user-created custom theme.
   final bool isCustom;
+
+  /// Font family for the terminal (Google Fonts name).
+  final String fontFamily;
 
   /// Main text color.
   final Color foreground;
@@ -122,6 +126,7 @@ class TerminalThemeData {
     String? name,
     bool? isDark,
     bool? isCustom,
+    String? fontFamily,
     Color? foreground,
     Color? background,
     Color? cursor,
@@ -151,6 +156,7 @@ class TerminalThemeData {
         name: name ?? this.name,
         isDark: isDark ?? this.isDark,
         isCustom: isCustom ?? this.isCustom,
+        fontFamily: fontFamily ?? this.fontFamily,
         foreground: foreground ?? this.foreground,
         background: background ?? this.background,
         cursor: cursor ?? this.cursor,
@@ -183,6 +189,7 @@ class TerminalThemeData {
         'name': name,
         'isDark': isDark,
         'isCustom': isCustom,
+        'fontFamily': fontFamily,
         'foreground': foreground.value,
         'background': background.value,
         'cursor': cursor.value,
@@ -218,6 +225,7 @@ class TerminalThemeData {
         name: json['name'] as String,
         isDark: json['isDark'] as bool,
         isCustom: json['isCustom'] as bool? ?? true,
+        fontFamily: json['fontFamily'] as String? ?? 'JetBrains Mono',
         foreground: Color(json['foreground'] as int),
         background: Color(json['background'] as int),
         cursor: Color(json['cursor'] as int),

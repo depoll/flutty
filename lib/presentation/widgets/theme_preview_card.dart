@@ -29,6 +29,28 @@ class ThemePreviewCard extends StatelessWidget {
   /// Called when the card is long-pressed (for custom themes).
   final VoidCallback? onLongPress;
 
+  TextStyle _getThemeFontStyle({double fontSize = 8, Color? color}) {
+    final baseStyle = switch (theme.fontFamily) {
+      'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
+      'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
+      'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
+      'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
+      'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
+      'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
+      'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
+      'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
+      'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
+      'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
+      'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
+      'VT323' => GoogleFonts.vt323(fontSize: fontSize),
+      'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
+      'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
+      'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
+      _ => GoogleFonts.jetBrainsMono(fontSize: fontSize),
+    };
+    return color != null ? baseStyle.copyWith(color: color) : baseStyle;
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -127,41 +149,26 @@ class ThemePreviewCard extends StatelessWidget {
         children: [
           Text(
             'user@host',
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 8,
-              color: theme.green,
-            ),
+            style: _getThemeFontStyle(color: theme.green),
           ),
           Text(
             ':',
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 8,
-              color: theme.foreground,
-            ),
+            style: _getThemeFontStyle(color: theme.foreground),
           ),
           Text(
             '~',
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 8,
-              color: theme.blue,
-            ),
+            style: _getThemeFontStyle(color: theme.blue),
           ),
           Text(
             r'$',
-            style: GoogleFonts.jetBrainsMono(
-              fontSize: 8,
-              color: theme.foreground,
-            ),
+            style: _getThemeFontStyle(color: theme.foreground),
           ),
         ],
       );
 
   Widget _buildSampleLine(String text, Color color) => Text(
         text,
-        style: GoogleFonts.jetBrainsMono(
-          fontSize: 8,
-          color: color,
-        ),
+        style: _getThemeFontStyle(color: color),
       );
 
   Widget _buildColorSwatches() => Row(

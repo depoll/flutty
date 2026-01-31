@@ -13,7 +13,6 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
-import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -252,17 +251,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       if (_host != null) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final scaffoldMessenger = ScaffoldMessenger.of(context);
-        final colorScheme = Theme.of(context).colorScheme;
 
         scaffoldMessenger.showSnackBar(
           SnackBar(
-            content: Text('Theme: ${theme.name}'),
-            action: SnackBarAction(
-              label: 'SAVE TO HOST',
-              textColor: colorScheme.inversePrimary,
-              onPressed: () => _saveThemeToHost(theme, isDark: isDark),
+            content: Row(
+              children: [
+                Expanded(child: Text('Theme: ${theme.name}')),
+                const SizedBox(width: 8),
+                FilledButton.tonal(
+                  onPressed: () {
+                    scaffoldMessenger.hideCurrentSnackBar();
+                    _saveThemeToHost(theme, isDark: isDark);
+                  },
+                  child: const Text('Save to Host'),
+                ),
+              ],
             ),
-            duration: const Duration(seconds: 5),
+            duration: const Duration(seconds: 6),
           ),
         );
       }
@@ -338,9 +343,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         ? 10.0
         : (screenWidth < 600 ? 12.0 : 14.0);
 
-    // Get font family from settings and create terminal style
-    final fontFamily = ref.watch(fontFamilyNotifierProvider);
-    final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
+    // Use the theme's font family
+    final textStyle = _getTerminalTextStyle(terminalTheme.fontFamily, fontSize);
 
     return TerminalView(
       _terminal,
