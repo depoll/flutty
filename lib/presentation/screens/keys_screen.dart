@@ -167,10 +167,7 @@ class _KeyListTile extends StatelessWidget {
         child: Icon(_getKeyIcon(), color: theme.colorScheme.onPrimaryContainer),
       ),
       title: Text(sshKey.name),
-      subtitle: Text(
-        sshKey.keyType.toUpperCase(),
-        style: theme.textTheme.bodySmall,
-      ),
+      subtitle: Text(_getKeyTypeLabel(), style: theme.textTheme.bodySmall),
       trailing: PopupMenuButton<String>(
         onSelected: (action) {
           switch (action) {
@@ -197,8 +194,26 @@ class _KeyListTile extends StatelessWidget {
       return Icons.enhanced_encryption;
     } else if (sshKey.keyType.toLowerCase().contains('rsa')) {
       return Icons.key;
+    } else if (sshKey.keyType.toLowerCase().contains('ecdsa')) {
+      return Icons.security;
+    } else if (sshKey.keyType.toLowerCase().contains('dsa')) {
+      return Icons.key_off;
     }
     return Icons.vpn_key;
+  }
+
+  String _getKeyTypeLabel() {
+    final type = sshKey.keyType.toLowerCase();
+    if (type == 'unknown') {
+      // Try to extract from public key prefix
+      final pubKey = sshKey.publicKey.trim();
+      final firstSpace = pubKey.indexOf(' ');
+      if (firstSpace > 0) {
+        return pubKey.substring(0, firstSpace).toUpperCase();
+      }
+      return 'SSH Key';
+    }
+    return sshKey.keyType.toUpperCase();
   }
 }
 
@@ -237,7 +252,7 @@ class _KeyDetailsSheet extends StatelessWidget {
           Text(sshKey.name, style: theme.textTheme.headlineSmall),
           const SizedBox(height: 4),
           Text(
-            sshKey.keyType.toUpperCase(),
+            _getKeyTypeLabel(),
             style: theme.textTheme.bodyMedium?.copyWith(
               color: theme.colorScheme.primary,
             ),
@@ -283,6 +298,20 @@ class _KeyDetailsSheet extends StatelessWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+  }
+
+  String _getKeyTypeLabel() {
+    final type = sshKey.keyType.toLowerCase();
+    if (type == 'unknown') {
+      // Try to extract from public key prefix
+      final pubKey = sshKey.publicKey.trim();
+      final firstSpace = pubKey.indexOf(' ');
+      if (firstSpace > 0) {
+        return pubKey.substring(0, firstSpace).toUpperCase();
+      }
+      return 'SSH Key';
+    }
+    return sshKey.keyType.toUpperCase();
   }
 }
 

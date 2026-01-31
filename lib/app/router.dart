@@ -17,6 +17,7 @@ import '../presentation/screens/sftp_screen.dart';
 import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
+import '../presentation/screens/theme_editor_screen.dart';
 
 /// Provider for the app router.
 final routerProvider = Provider<GoRouter>((ref) {
@@ -156,6 +157,19 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: 'settings',
         builder: (context, state) => const SettingsScreen(),
       ),
+      GoRoute(
+        path: '/theme-editor',
+        name: 'theme-editor-new',
+        builder: (context, state) => const ThemeEditorScreen(),
+      ),
+      GoRoute(
+        path: '/theme-editor/:themeId',
+        name: 'theme-editor',
+        builder: (context, state) {
+          final themeId = state.pathParameters['themeId'];
+          return ThemeEditorScreen(themeId: themeId);
+        },
+      ),
     ],
   );
 });
@@ -188,4 +202,10 @@ abstract final class Routes {
 
   /// Settings route.
   static const settings = 'settings';
+
+  /// Theme editor route.
+  static const themeEditor = 'theme-editor';
+
+  /// Theme editor route for new theme.
+  static const themeEditorNew = 'theme-editor-new';
 }

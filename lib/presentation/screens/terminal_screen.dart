@@ -2,12 +2,21 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:xterm/xterm.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:xterm/xterm.dart' hide TerminalThemes;
 
+import '../../data/database/database.dart';
+import '../../data/repositories/host_repository.dart';
+import '../../domain/models/terminal_theme.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/terminal_theme_picker.dart';
 
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
@@ -31,6 +40,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   String? _error;
   bool _showKeyboard = true;
 
+  // Theme state
+  Host? _host;
+  TerminalThemeData? _currentTheme;
+  TerminalThemeData? _sessionThemeOverride;
+
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
 
@@ -39,7 +53,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     super.initState();
     _terminal = Terminal(maxLines: 10000);
     // Defer connection to avoid modifying provider state during widget build
-    Future.microtask(_connect);
+    Future.microtask(_loadHostAndConnect);
+  }
+
+  Future<void> _loadHostAndConnect() async {
+    // Load host data first for theme
+    final hostRepo = ref.read(hostRepositoryProvider);
+    _host = await hostRepo.getById(widget.hostId);
+    await _loadTheme();
+    await _connect();
+  }
+
+  Future<void> _loadTheme() async {
+    if (!mounted) return;
+
+    final brightness = MediaQuery.of(context).platformBrightness;
+    final themeService = ref.read(terminalThemeServiceProvider);
+    final theme = await themeService.getThemeForHost(_host, brightness);
+
+    if (mounted) {
+      setState(() => _currentTheme = theme);
+    }
   }
 
   Future<void> _connect() async {
@@ -82,13 +116,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
       if (!mounted) return;
 
-      _outputSubscription = _shell!.stdout.listen((data) {
-        _terminal.write(utf8.decode(data));
-      });
+      // Use streaming UTF-8 decoder that properly handles chunked data
+      _outputSubscription = _shell!.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((data) => _terminal.write(data));
 
-      _stderrSubscription = _shell!.stderr.listen((data) {
-        _terminal.write(utf8.decode(data));
-      });
+      _stderrSubscription = _shell!.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((data) => _terminal.write(data));
 
       // Listen for shell completion (logout, exit, connection drop)
       _doneSubscription = _shell!.done.asStream().listen((_) {
@@ -148,14 +185,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 
   @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    // Reload theme when system brightness changes
+    if (_currentTheme != null && _sessionThemeOverride == null) {
+      _loadTheme();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
 
+    // Use session override, or loaded theme, or fallback
+    final terminalTheme =
+        _sessionThemeOverride ??
+        _currentTheme ??
+        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+
     return Scaffold(
       appBar: AppBar(
-        title: const Text('Terminal'),
+        title: Text(_host?.label ?? 'Terminal'),
         actions: [
+          IconButton(
+            icon: const Icon(Icons.palette_outlined),
+            onPressed: _showThemePicker,
+            tooltip: 'Change theme',
+          ),
           IconButton(
             icon: Icon(_showKeyboard ? Icons.keyboard_hide : Icons.keyboard),
             onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
@@ -178,14 +235,75 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(isDark)),
+          Expanded(child: _buildTerminalView(terminalTheme)),
           if (_showKeyboard) _KeyboardToolbar(terminal: _terminal),
         ],
       ),
     );
   }
 
-  Widget _buildTerminalView(bool isDark) {
+  Future<void> _showThemePicker() async {
+    final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
+    final theme = await showThemePickerDialog(
+      context: context,
+      currentThemeId: currentId,
+    );
+
+    if (theme != null && mounted) {
+      setState(() => _sessionThemeOverride = theme);
+
+      // Show option to save to host
+      if (_host != null) {
+        final isDark = Theme.of(context).brightness == Brightness.dark;
+        final scaffoldMessenger = ScaffoldMessenger.of(context);
+
+        // Clear any existing snackbar first to prevent stacking
+        scaffoldMessenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  Expanded(child: Text('Theme: ${theme.name}')),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: () {
+                      scaffoldMessenger.hideCurrentSnackBar();
+                      _saveThemeToHost(theme, isDark: isDark);
+                    },
+                    child: const Text('Save to Host'),
+                  ),
+                ],
+              ),
+              duration: const Duration(seconds: 6),
+            ),
+          );
+      }
+    }
+  }
+
+  Future<void> _saveThemeToHost(
+    TerminalThemeData theme, {
+    required bool isDark,
+  }) async {
+    if (_host == null) return;
+
+    final hostRepo = ref.read(hostRepositoryProvider);
+    final updatedHost = isDark
+        ? _host!.copyWith(terminalThemeDarkId: drift.Value(theme.id))
+        : _host!.copyWith(terminalThemeLightId: drift.Value(theme.id));
+
+    await hostRepo.update(updatedHost);
+    _host = updatedHost;
+
+    if (mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Theme saved to ${_host!.label}')));
+    }
+  }
+
+  Widget _buildTerminalView(TerminalThemeData terminalTheme) {
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -230,18 +348,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       );
     }
 
-    // Calculate responsive font size based on screen width
-    final screenWidth = MediaQuery.of(context).size.width;
-    final fontSize = screenWidth < 380
-        ? 10.0
-        : (screenWidth < 600 ? 12.0 : 14.0);
+    // Get font size from settings (use setting value, not responsive calculation)
+    final fontSize = ref.watch(fontSizeNotifierProvider);
+
+    // Get font family from host (if set) or global settings
+    final hostFont = _host?.terminalFontFamily;
+    final globalFont = ref.watch(fontFamilyNotifierProvider);
+    final fontFamily = hostFont ?? globalFont;
+    final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
 
     return TerminalView(
       _terminal,
-      theme: isDark ? _darkTerminalTheme : _lightTerminalTheme,
-      textStyle: TerminalStyle(fontSize: fontSize),
+      theme: terminalTheme.toXtermTheme(),
+      textStyle: textStyle,
+      padding: const EdgeInsets.all(8),
       deleteDetection: true,
+      autofocus: true,
     );
+  }
+
+  /// Gets the terminal text style for the given font family using Google Fonts.
+  TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
+    final textStyle = switch (fontFamily) {
+      'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
+      'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
+      'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
+      'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
+      'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
+      'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
+      'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
+      'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
+      'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
+      'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
+      'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
+      'VT323' => GoogleFonts.vt323(fontSize: fontSize),
+      'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
+      'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
+      'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
+      _ => null,
+    };
+
+    if (textStyle != null) {
+      return TerminalStyle.fromTextStyle(textStyle);
+    }
+    return TerminalStyle(fontSize: fontSize);
   }
 
   Future<void> _handleMenuAction(String action) async {
@@ -265,58 +415,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         await _disconnect();
     }
   }
-
-  static const _darkTerminalTheme = TerminalTheme(
-    cursor: Color(0xFFE5E5E5),
-    selection: Color(0xFF4D4D4D),
-    foreground: Color(0xFFE5E5E5),
-    background: Color(0xFF1E1E2E),
-    black: Color(0xFF000000),
-    red: Color(0xFFCD3131),
-    green: Color(0xFF0DBC79),
-    yellow: Color(0xFFE5E510),
-    blue: Color(0xFF2472C8),
-    magenta: Color(0xFFBC3FBC),
-    cyan: Color(0xFF11A8CD),
-    white: Color(0xFFE5E5E5),
-    brightBlack: Color(0xFF666666),
-    brightRed: Color(0xFFF14C4C),
-    brightGreen: Color(0xFF23D18B),
-    brightYellow: Color(0xFFF5F543),
-    brightBlue: Color(0xFF3B8EEA),
-    brightMagenta: Color(0xFFD670D6),
-    brightCyan: Color(0xFF29B8DB),
-    brightWhite: Color(0xFFFFFFFF),
-    searchHitBackground: Color(0xFFFFDF5D),
-    searchHitBackgroundCurrent: Color(0xFFFF9632),
-    searchHitForeground: Color(0xFF000000),
-  );
-
-  static const _lightTerminalTheme = TerminalTheme(
-    cursor: Color(0xFF000000),
-    selection: Color(0xFFADD6FF),
-    foreground: Color(0xFF000000),
-    background: Color(0xFFFFFFFF),
-    black: Color(0xFF000000),
-    red: Color(0xFFCD3131),
-    green: Color(0xFF00BC00),
-    yellow: Color(0xFFA5A900),
-    blue: Color(0xFF0451A5),
-    magenta: Color(0xFFBC05BC),
-    cyan: Color(0xFF0598BC),
-    white: Color(0xFF555555),
-    brightBlack: Color(0xFF666666),
-    brightRed: Color(0xFFCD3131),
-    brightGreen: Color(0xFF14CE14),
-    brightYellow: Color(0xFFB5BA00),
-    brightBlue: Color(0xFF0451A5),
-    brightMagenta: Color(0xFFBC05BC),
-    brightCyan: Color(0xFF0598BC),
-    brightWhite: Color(0xFFA5A5A5),
-    searchHitBackground: Color(0xFFFFDF5D),
-    searchHitBackgroundCurrent: Color(0xFFFF9632),
-    searchHitForeground: Color(0xFF000000),
-  );
 }
 
 /// Keyboard toolbar with special keys for terminal input.

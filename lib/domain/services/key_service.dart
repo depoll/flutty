@@ -41,9 +41,12 @@ class KeyService {
       if (keyPairs.isEmpty) return null;
 
       final keyPair = keyPairs.first;
-      final publicKey = keyPair.toPublicKey().toString();
+      // Get key type from the key pair itself
+      final keyType = keyPair.type;
+      // Convert public key to OpenSSH format: type + space + base64-encoded key
+      final publicKeyBytes = keyPair.toPublicKey().encode();
+      final publicKey = '$keyType ${base64.encode(publicKeyBytes)}';
       final fingerprint = _computeFingerprint(publicKey);
-      final keyType = _detectKeyType(publicKey);
 
       final id = await _keyRepository.insert(
         SshKeysCompanion.insert(
@@ -119,12 +122,33 @@ class KeyService {
   Future<SshKey?> getById(int id) => _keyRepository.getById(id);
 
   String _detectKeyType(String publicKey) {
-    if (publicKey.startsWith('ssh-ed25519')) {
+    final trimmed = publicKey.trim();
+    if (trimmed.startsWith('ssh-ed25519')) {
       return 'ed25519';
-    } else if (publicKey.startsWith('ssh-rsa')) {
+    } else if (trimmed.startsWith('ssh-rsa')) {
       return 'rsa';
-    } else if (publicKey.startsWith('ecdsa-')) {
+    } else if (trimmed.startsWith('ecdsa-sha2-nistp256')) {
+      return 'ecdsa-256';
+    } else if (trimmed.startsWith('ecdsa-sha2-nistp384')) {
+      return 'ecdsa-384';
+    } else if (trimmed.startsWith('ecdsa-sha2-nistp521')) {
+      return 'ecdsa-521';
+    } else if (trimmed.startsWith('ecdsa-')) {
       return 'ecdsa';
+    } else if (trimmed.startsWith('ssh-dss')) {
+      return 'dsa';
+    } else if (trimmed.startsWith('sk-ssh-ed25519')) {
+      return 'ed25519-sk';
+    } else if (trimmed.startsWith('sk-ecdsa-')) {
+      return 'ecdsa-sk';
+    }
+    // Try to extract type from first space-separated token
+    final firstSpace = trimmed.indexOf(' ');
+    if (firstSpace > 0) {
+      final typePrefix = trimmed.substring(0, firstSpace);
+      if (typePrefix.startsWith('ssh-') || typePrefix.startsWith('ecdsa-')) {
+        return typePrefix.replaceFirst('ssh-', '');
+      }
     }
     return 'unknown';
   }

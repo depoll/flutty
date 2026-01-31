@@ -19,6 +19,15 @@ abstract final class SettingKeys {
   /// Terminal color scheme name.
   static const terminalColorScheme = 'terminal_color_scheme';
 
+  /// Default terminal theme ID for light mode.
+  static const defaultTerminalThemeLight = 'default_terminal_theme_light';
+
+  /// Default terminal theme ID for dark mode.
+  static const defaultTerminalThemeDark = 'default_terminal_theme_dark';
+
+  /// Custom terminal themes (JSON array).
+  static const customTerminalThemes = 'custom_terminal_themes';
+
   /// Terminal cursor style.
   static const cursorStyle = 'cursor_style';
 
@@ -384,4 +393,76 @@ class BellSoundNotifier extends StateNotifier<bool> {
 final bellSoundNotifierProvider =
     StateNotifierProvider<BellSoundNotifier, bool>(
       (ref) => BellSoundNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// State for terminal theme settings (light and dark).
+class TerminalThemeSettings {
+  /// Creates a new [TerminalThemeSettings].
+  const TerminalThemeSettings({
+    required this.lightThemeId,
+    required this.darkThemeId,
+  });
+
+  /// Theme ID for light mode.
+  final String lightThemeId;
+
+  /// Theme ID for dark mode.
+  final String darkThemeId;
+
+  /// Creates a copy with the given fields replaced.
+  TerminalThemeSettings copyWith({String? lightThemeId, String? darkThemeId}) =>
+      TerminalThemeSettings(
+        lightThemeId: lightThemeId ?? this.lightThemeId,
+        darkThemeId: darkThemeId ?? this.darkThemeId,
+      );
+}
+
+/// Notifier for terminal theme settings.
+class TerminalThemeSettingsNotifier
+    extends StateNotifier<TerminalThemeSettings> {
+  /// Creates a new [TerminalThemeSettingsNotifier].
+  TerminalThemeSettingsNotifier(this._settings)
+    : super(
+        const TerminalThemeSettings(
+          lightThemeId: 'github-light',
+          darkThemeId: 'dracula',
+        ),
+      ) {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final light = await _settings.getString(
+      SettingKeys.defaultTerminalThemeLight,
+    );
+    final dark = await _settings.getString(
+      SettingKeys.defaultTerminalThemeDark,
+    );
+    if (!mounted) return;
+    state = TerminalThemeSettings(
+      lightThemeId: light ?? 'github-light',
+      darkThemeId: dark ?? 'dracula',
+    );
+  }
+
+  /// Set the light mode theme.
+  Future<void> setLightTheme(String themeId) async {
+    await _settings.setString(SettingKeys.defaultTerminalThemeLight, themeId);
+    state = state.copyWith(lightThemeId: themeId);
+  }
+
+  /// Set the dark mode theme.
+  Future<void> setDarkTheme(String themeId) async {
+    await _settings.setString(SettingKeys.defaultTerminalThemeDark, themeId);
+    state = state.copyWith(darkThemeId: themeId);
+  }
+}
+
+/// Provider for terminal theme settings.
+final terminalThemeSettingsProvider =
+    StateNotifierProvider<TerminalThemeSettingsNotifier, TerminalThemeSettings>(
+      (ref) =>
+          TerminalThemeSettingsNotifier(ref.watch(settingsServiceProvider)),
     );

@@ -2,10 +2,13 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../widgets/terminal_theme_picker.dart';
 import 'hosts_screen.dart';
 
 /// Screen for adding or editing a host.
@@ -32,6 +35,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   int? _selectedKeyId;
   int? _selectedGroupId;
   int? _selectedJumpHostId;
+  String? _selectedLightThemeId;
+  String? _selectedDarkThemeId;
+  String? _selectedFontFamily;
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
@@ -66,6 +72,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _selectedKeyId = host.keyId;
         _selectedGroupId = host.groupId;
         _selectedJumpHostId = host.jumpHostId;
+        _selectedLightThemeId = host.terminalThemeLightId;
+        _selectedDarkThemeId = host.terminalThemeDarkId;
+        _selectedFontFamily = host.terminalFontFamily;
         _isFavorite = host.isFavorite;
         _isLoading = false;
       });
@@ -219,25 +228,39 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   keysAsync.when(
                     loading: () => const LinearProgressIndicator(),
                     error: (_, _) => const Text('Error loading keys'),
-                    data: (keys) => DropdownButtonFormField<int?>(
-                      // ignore: deprecated_member_use
-                      value: _selectedKeyId,
-                      decoration: const InputDecoration(
-                        labelText: 'SSH Key (optional)',
-                        prefixIcon: Icon(Icons.key),
-                      ),
-                      items: [
-                        const DropdownMenuItem(child: Text('None')),
-                        ...keys.map(
-                          (key) => DropdownMenuItem(
-                            value: key.id,
-                            child: Text(key.name),
-                          ),
+                    data: (keys) {
+                      // Validate selected key still exists
+                      final validKeyId =
+                          _selectedKeyId != null &&
+                              keys.any((k) => k.id == _selectedKeyId)
+                          ? _selectedKeyId
+                          : null;
+                      if (validKeyId != _selectedKeyId) {
+                        // Schedule state update for next frame
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) setState(() => _selectedKeyId = null);
+                        });
+                      }
+                      return DropdownButtonFormField<int?>(
+                        // ignore: deprecated_member_use
+                        value: validKeyId,
+                        decoration: const InputDecoration(
+                          labelText: 'SSH Key (optional)',
+                          prefixIcon: Icon(Icons.key),
                         ),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _selectedKeyId = value),
-                    ),
+                        items: [
+                          const DropdownMenuItem(child: Text('None')),
+                          ...keys.map(
+                            (key) => DropdownMenuItem(
+                              value: key.id,
+                              child: Text(key.name),
+                            ),
+                          ),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => _selectedKeyId = value),
+                      );
+                    },
                   ),
                   const SizedBox(height: 24),
 
@@ -256,8 +279,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           final availableHosts = hosts
                               .where((h) => h.id != widget.hostId)
                               .toList();
+                          // Validate selected jump host still exists
+                          final validJumpHostId =
+                              _selectedJumpHostId != null &&
+                                  availableHosts.any(
+                                    (h) => h.id == _selectedJumpHostId,
+                                  )
+                              ? _selectedJumpHostId
+                              : null;
+                          if (validJumpHostId != _selectedJumpHostId) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                setState(() => _selectedJumpHostId = null);
+                              }
+                            });
+                          }
                           return DropdownButtonFormField<int?>(
-                            initialValue: _selectedJumpHostId,
+                            // ignore: deprecated_member_use
+                            value: validJumpHostId,
                             decoration: const InputDecoration(
                               labelText: 'Jump Host (optional)',
                               prefixIcon: Icon(Icons.hub),
@@ -277,6 +316,38 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                 setState(() => _selectedJumpHostId = value),
                           );
                         },
+                      ),
+                      const SizedBox(height: 24),
+                      // Terminal theme section
+                      Text(
+                        'Terminal Theme',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Light mode theme
+                      _ThemeSelectionTile(
+                        label: 'Light Mode Theme',
+                        themeId: _selectedLightThemeId,
+                        defaultLabel: 'Use default',
+                        onTap: () => _selectTheme(isLight: true),
+                      ),
+                      const SizedBox(height: 8),
+                      // Dark mode theme
+                      _ThemeSelectionTile(
+                        label: 'Dark Mode Theme',
+                        themeId: _selectedDarkThemeId,
+                        defaultLabel: 'Use default',
+                        onTap: () => _selectTheme(isLight: false),
+                      ),
+                      const SizedBox(height: 16),
+                      // Terminal font section
+                      _FontSelectionTile(
+                        fontFamily: _selectedFontFamily,
+                        defaultLabel: 'Use default',
+                        onTap: _selectFont,
                       ),
                       const SizedBox(height: 16),
                     ],
@@ -327,6 +398,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
+            terminalThemeLightId: drift.Value(_selectedLightThemeId),
+            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
+            terminalFontFamily: drift.Value(_selectedFontFamily),
             isFavorite: _isFavorite,
           ),
         );
@@ -342,6 +416,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
+            terminalThemeLightId: drift.Value(_selectedLightThemeId),
+            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
+            terminalFontFamily: drift.Value(_selectedFontFamily),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -385,6 +462,310 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         const SnackBar(content: Text('Connection test not yet implemented')),
       );
     }
+  }
+
+  Future<void> _selectTheme({required bool isLight}) async {
+    final currentId = isLight ? _selectedLightThemeId : _selectedDarkThemeId;
+    final theme = await showThemePickerDialog(
+      context: context,
+      currentThemeId: currentId,
+    );
+    if (theme != null && mounted) {
+      setState(() {
+        if (isLight) {
+          _selectedLightThemeId = theme.id;
+        } else {
+          _selectedDarkThemeId = theme.id;
+        }
+      });
+    }
+  }
+
+  Future<void> _selectFont() async {
+    final selected = await showFontPickerDialog(
+      context: context,
+      currentFontFamily: _selectedFontFamily,
+    );
+    if (selected != null && mounted) {
+      setState(() {
+        _selectedFontFamily = selected;
+      });
+    }
+  }
+}
+
+class _ThemeSelectionTile extends StatelessWidget {
+  const _ThemeSelectionTile({
+    required this.label,
+    required this.themeId,
+    required this.defaultLabel,
+    required this.onTap,
+  });
+
+  final String label;
+  final String? themeId;
+  final String defaultLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = themeId != null ? TerminalThemes.getById(themeId!) : null;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: theme?.background ?? colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: colorScheme.outline),
+        ),
+        child: theme != null
+            ? Center(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _colorDot(theme.red),
+                    _colorDot(theme.green),
+                    _colorDot(theme.blue),
+                  ],
+                ),
+              )
+            : Icon(
+                Icons.palette_outlined,
+                size: 20,
+                color: colorScheme.onSurfaceVariant,
+              ),
+      ),
+      title: Text(label),
+      subtitle: Text(theme?.name ?? defaultLabel),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (themeId != null)
+            IconButton(
+              icon: const Icon(Icons.clear, size: 18),
+              onPressed: () {
+                // Clear theme selection - handled via callback
+              },
+              tooltip: 'Reset to default',
+            ),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
+
+  Widget _colorDot(Color color) => Container(
+    width: 6,
+    height: 6,
+    margin: const EdgeInsets.symmetric(horizontal: 1),
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
+}
+
+class _FontSelectionTile extends StatelessWidget {
+  const _FontSelectionTile({
+    required this.fontFamily,
+    required this.defaultLabel,
+    required this.onTap,
+  });
+
+  final String? fontFamily;
+  final String defaultLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final displayName = fontFamily ?? defaultLabel;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: colorScheme.outline),
+        ),
+        child: Icon(
+          Icons.font_download_outlined,
+          size: 20,
+          color: colorScheme.onSurfaceVariant,
+        ),
+      ),
+      title: const Text('Terminal Font'),
+      subtitle: Text(displayName),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (fontFamily != null)
+            IconButton(
+              icon: const Icon(Icons.clear, size: 18),
+              onPressed: () {
+                // Clear font selection - handled via callback
+              },
+              tooltip: 'Reset to default',
+            ),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+/// Shows a font picker dialog and returns the selected font family.
+Future<String?> showFontPickerDialog({
+  required BuildContext context,
+  required String? currentFontFamily,
+}) async {
+  const options = [
+    'monospace',
+    'JetBrains Mono',
+    'Fira Code',
+    'Source Code Pro',
+    'Ubuntu Mono',
+    'Roboto Mono',
+    'IBM Plex Mono',
+    'Inconsolata',
+    'Anonymous Pro',
+    'Cousine',
+    'PT Mono',
+    'Space Mono',
+    'VT323',
+    'Share Tech Mono',
+    'Overpass Mono',
+    'Oxygen Mono',
+  ];
+  const previewText = 'AaBbCc 0123 {}[]';
+
+  return showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Terminal Font'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 450,
+        child: Column(
+          children: [
+            // Current selection preview
+            if (currentFontFamily != null)
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer.withAlpha(50),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary.withAlpha(100),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Currently Selected',
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                          Text(
+                            currentFontFamily,
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          Text(
+                            previewText,
+                            style: _getFontStyle(currentFontFamily),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            // Font list
+            Expanded(
+              child: ListView.builder(
+                itemCount: options.length,
+                itemBuilder: (context, index) {
+                  final family = options[index];
+                  final isSelected = family == currentFontFamily;
+                  return ListTile(
+                    title: Text(family),
+                    subtitle: Text(previewText, style: _getFontStyle(family)),
+                    selected: isSelected,
+                    trailing: isSelected ? const Icon(Icons.check) : null,
+                    onTap: () => Navigator.pop(context, family),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+      ],
+    ),
+  );
+}
+
+TextStyle _getFontStyle(String family) {
+  switch (family) {
+    case 'JetBrains Mono':
+      return GoogleFonts.jetBrainsMono(fontSize: 14);
+    case 'Fira Code':
+      return GoogleFonts.firaCode(fontSize: 14);
+    case 'Source Code Pro':
+      return GoogleFonts.sourceCodePro(fontSize: 14);
+    case 'Ubuntu Mono':
+      return GoogleFonts.ubuntuMono(fontSize: 14);
+    case 'Roboto Mono':
+      return GoogleFonts.robotoMono(fontSize: 14);
+    case 'IBM Plex Mono':
+      return GoogleFonts.ibmPlexMono(fontSize: 14);
+    case 'Inconsolata':
+      return GoogleFonts.inconsolata(fontSize: 14);
+    case 'Anonymous Pro':
+      return GoogleFonts.anonymousPro(fontSize: 14);
+    case 'Cousine':
+      return GoogleFonts.cousine(fontSize: 14);
+    case 'PT Mono':
+      return GoogleFonts.ptMono(fontSize: 14);
+    case 'Space Mono':
+      return GoogleFonts.spaceMono(fontSize: 14);
+    case 'VT323':
+      return GoogleFonts.vt323(fontSize: 14);
+    case 'Share Tech Mono':
+      return GoogleFonts.shareTechMono(fontSize: 14);
+    case 'Overpass Mono':
+      return GoogleFonts.overpassMono(fontSize: 14);
+    case 'Oxygen Mono':
+      return GoogleFonts.oxygenMono(fontSize: 14);
+    default:
+      return const TextStyle(fontFamily: 'monospace', fontSize: 14);
   }
 }
 
