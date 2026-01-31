@@ -448,6 +448,9 @@ class _TerminalSection extends ConsumerWidget {
     double current,
   ) {
     var tempValue = current;
+    final currentFont = ref.read(fontFamilyNotifierProvider);
+    const previewText = 'AaBbCc 0123 {}[]';
+    
     showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -456,9 +459,29 @@ class _TerminalSection extends ConsumerWidget {
           content: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                '${tempValue.round()} pt',
-                style: const TextStyle(fontSize: 24),
+              // Live preview with current font
+              Container(
+                width: double.infinity,
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Column(
+                  children: [
+                    Text(
+                      previewText,
+                      style: _getFontStyle(currentFont).copyWith(
+                        fontSize: tempValue,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '${tempValue.round()} pt',
+                      style: Theme.of(context).textTheme.titleLarge,
+                    ),
+                  ],
+                ),
               ),
               const SizedBox(height: 16),
               Slider(

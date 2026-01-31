@@ -45,6 +45,13 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   String _searchQuery = '';
   _ThemeFilter _filter = _ThemeFilter.all;
+  final TextEditingController _searchController = TextEditingController();
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -56,104 +63,115 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         ? TerminalThemes.getById(widget.selectedThemeId!)
         : null;
 
-    return Column(
-      children: [
-        // Currently selected preview
+    return NestedScrollView(
+      headerSliverBuilder: (context, innerBoxIsScrolled) => [
+        // Currently selected preview (always visible)
         if (currentTheme != null)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: _CurrentSelectionPreview(
-              theme: currentTheme,
-              onTap: () => widget.onThemeSelected(currentTheme),
+          SliverToBoxAdapter(
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+              child: _CurrentSelectionPreview(
+                theme: currentTheme,
+                onTap: () => widget.onThemeSelected(currentTheme),
+              ),
             ),
           ),
         
-        // Search and filter bar
-        Padding(
-          padding: const EdgeInsets.all(16),
-          child: Column(
-            children: [
-              // Search field
-              TextField(
-                decoration: InputDecoration(
-                  hintText: 'Search themes...',
-                  prefixIcon: const Icon(Icons.search),
-                  suffixIcon: _searchQuery.isNotEmpty
-                      ? IconButton(
-                          icon: const Icon(Icons.clear),
-                          onPressed: () => setState(() => _searchQuery = ''),
-                        )
-                      : null,
-                  isDense: true,
+        // Collapsible search and filter bar
+        SliverAppBar(
+          floating: true,
+          snap: true,
+          automaticallyImplyLeading: false,
+          backgroundColor: Theme.of(context).scaffoldBackgroundColor,
+          surfaceTintColor: Colors.transparent,
+          toolbarHeight: 110,
+          flexibleSpace: Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                // Search field
+                TextField(
+                  controller: _searchController,
+                  decoration: InputDecoration(
+                    hintText: 'Search themes...',
+                    prefixIcon: const Icon(Icons.search),
+                    suffixIcon: _searchQuery.isNotEmpty
+                        ? IconButton(
+                            icon: const Icon(Icons.clear),
+                            onPressed: () {
+                              _searchController.clear();
+                              setState(() => _searchQuery = '');
+                            },
+                          )
+                        : null,
+                    isDense: true,
+                  ),
+                  onChanged: (value) => setState(() => _searchQuery = value),
                 ),
-                onChanged: (value) => setState(() => _searchQuery = value),
-              ),
-              const SizedBox(height: 12),
-              // Filter chips
-              Row(
-                children: [
-                  _FilterChip(
-                    label: 'All',
-                    isSelected: _filter == _ThemeFilter.all,
-                    onTap: () => setState(() => _filter = _ThemeFilter.all),
-                  ),
-                  const SizedBox(width: 8),
-                  _FilterChip(
-                    label: 'Dark',
-                    isSelected: _filter == _ThemeFilter.dark,
-                    onTap: () => setState(() => _filter = _ThemeFilter.dark),
-                  ),
-                  const SizedBox(width: 8),
-                  _FilterChip(
-                    label: 'Light',
-                    isSelected: _filter == _ThemeFilter.light,
-                    onTap: () => setState(() => _filter = _ThemeFilter.light),
-                  ),
-                  const Spacer(),
-                  if (widget.onCreateCustomTheme != null)
-                    TextButton.icon(
-                      onPressed: widget.onCreateCustomTheme,
-                      icon: const Icon(Icons.add, size: 18),
-                      label: const Text('Custom'),
+                const SizedBox(height: 12),
+                // Filter chips
+                Row(
+                  children: [
+                    _FilterChip(
+                      label: 'All',
+                      isSelected: _filter == _ThemeFilter.all,
+                      onTap: () => setState(() => _filter = _ThemeFilter.all),
                     ),
-                ],
-              ),
-            ],
-          ),
-        ),
-
-        // Theme grid
-        Expanded(
-          child: themesAsync.when(
-            loading: () => const Center(child: CircularProgressIndicator()),
-            error: (e, _) => Center(child: Text('Error: $e')),
-            data: (themes) {
-              final filtered = _filterThemes(themes);
-              if (filtered.isEmpty) {
-                return Center(
-                  child: Column(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(
-                        Icons.palette_outlined,
-                        size: 48,
-                        color: colorScheme.onSurfaceVariant,
+                    const SizedBox(width: 8),
+                    _FilterChip(
+                      label: 'Dark',
+                      isSelected: _filter == _ThemeFilter.dark,
+                      onTap: () => setState(() => _filter = _ThemeFilter.dark),
+                    ),
+                    const SizedBox(width: 8),
+                    _FilterChip(
+                      label: 'Light',
+                      isSelected: _filter == _ThemeFilter.light,
+                      onTap: () => setState(() => _filter = _ThemeFilter.light),
+                    ),
+                    const Spacer(),
+                    if (widget.onCreateCustomTheme != null)
+                      TextButton.icon(
+                        onPressed: widget.onCreateCustomTheme,
+                        icon: const Icon(Icons.add, size: 18),
+                        label: const Text('Custom'),
                       ),
-                      const SizedBox(height: 16),
-                      Text(
-                        'No themes found',
-                        style: Theme.of(context).textTheme.bodyLarge,
-                      ),
-                    ],
-                  ),
-                );
-              }
-
-              return _buildThemeGrid(filtered);
-            },
+                  ],
+                ),
+              ],
+            ),
           ),
         ),
       ],
+      body: themesAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (e, _) => Center(child: Text('Error: $e')),
+        data: (themes) {
+          final filtered = _filterThemes(themes);
+          if (filtered.isEmpty) {
+            return Center(
+              child: Column(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Icon(
+                    Icons.palette_outlined,
+                    size: 48,
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(height: 16),
+                  Text(
+                    'No themes found',
+                    style: Theme.of(context).textTheme.bodyLarge,
+                  ),
+                ],
+              ),
+            );
+          }
+
+          return _buildThemeGrid(filtered);
+        },
+      ),
     );
   }
 
