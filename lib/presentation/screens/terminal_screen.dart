@@ -251,15 +251,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       if (_host != null) {
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final scaffoldMessenger = ScaffoldMessenger.of(context);
+        final colorScheme = Theme.of(context).colorScheme;
 
         scaffoldMessenger.showSnackBar(
           SnackBar(
             content: Text('Theme: ${theme.name}'),
             action: SnackBarAction(
-              label: 'Save to host',
+              label: 'SAVE TO HOST',
+              textColor: colorScheme.inversePrimary,
               onPressed: () => _saveThemeToHost(theme, isDark: isDark),
             ),
-            duration: const Duration(seconds: 4),
+            duration: const Duration(seconds: 5),
           ),
         );
       }
