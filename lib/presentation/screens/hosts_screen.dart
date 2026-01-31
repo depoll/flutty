@@ -1,0 +1,328 @@
+import 'dart:async';
+
+import 'package:drift/drift.dart' as drift;
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
+
+import '../../data/database/database.dart';
+import '../../data/repositories/host_repository.dart';
+import '../../domain/services/ssh_service.dart';
+
+/// Screen displaying list of saved hosts.
+class HostsScreen extends ConsumerStatefulWidget {
+  /// Creates a new [HostsScreen].
+  const HostsScreen({super.key});
+
+  @override
+  ConsumerState<HostsScreen> createState() => _HostsScreenState();
+}
+
+class _HostsScreenState extends ConsumerState<HostsScreen> {
+  String _searchQuery = '';
+  int? _selectedGroupId;
+
+  @override
+  Widget build(BuildContext context) {
+    final hostsAsync = ref.watch(allHostsProvider);
+    final theme = Theme.of(context);
+
+    return Scaffold(
+      appBar: AppBar(
+        title: const Text('Hosts'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.search),
+            onPressed: _showSearchDialog,
+            tooltip: 'Search',
+          ),
+          IconButton(
+            icon: const Icon(Icons.folder),
+            onPressed: _showGroupsDialog,
+            tooltip: 'Groups',
+          ),
+        ],
+      ),
+      body: hostsAsync.when(
+        loading: () => const Center(child: CircularProgressIndicator()),
+        error: (error, stack) => Center(
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                Icons.error_outline,
+                size: 48,
+                color: theme.colorScheme.error,
+              ),
+              const SizedBox(height: 16),
+              Text('Error loading hosts: $error'),
+              const SizedBox(height: 16),
+              ElevatedButton(
+                onPressed: () => ref.invalidate(allHostsProvider),
+                child: const Text('Retry'),
+              ),
+            ],
+          ),
+        ),
+        data: _buildHostList,
+      ),
+      floatingActionButton: FloatingActionButton.extended(
+        onPressed: () => context.push('/hosts/add'),
+        icon: const Icon(Icons.add),
+        label: const Text('Add Host'),
+      ),
+    );
+  }
+
+  Widget _buildHostList(List<Host> hosts) {
+    var filteredHosts = hosts;
+
+    // Apply search filter
+    if (_searchQuery.isNotEmpty) {
+      final query = _searchQuery.toLowerCase();
+      filteredHosts = filteredHosts
+          .where(
+            (h) =>
+                h.label.toLowerCase().contains(query) ||
+                h.hostname.toLowerCase().contains(query) ||
+                h.username.toLowerCase().contains(query),
+          )
+          .toList();
+    }
+
+    // Apply group filter
+    if (_selectedGroupId != null) {
+      filteredHosts = filteredHosts
+          .where((h) => h.groupId == _selectedGroupId)
+          .toList();
+    }
+
+    if (filteredHosts.isEmpty) {
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              _searchQuery.isNotEmpty ? Icons.search_off : Icons.dns_outlined,
+              size: 64,
+              color: Theme.of(context).colorScheme.outline,
+            ),
+            const SizedBox(height: 16),
+            Text(
+              _searchQuery.isNotEmpty
+                  ? 'No hosts match your search'
+                  : 'No hosts yet',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            if (_searchQuery.isEmpty) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Tap + to add your first host',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+            ],
+          ],
+        ),
+      );
+    }
+
+    return ListView.builder(
+      padding: const EdgeInsets.only(bottom: 88),
+      itemCount: filteredHosts.length,
+      itemBuilder: (context, index) {
+        final host = filteredHosts[index];
+        return _HostListTile(
+          host: host,
+          onTap: () => _connectToHost(host),
+          onEdit: () => context.push('/hosts/edit/${host.id}'),
+          onDelete: () => _deleteHost(host),
+        );
+      },
+    );
+  }
+
+  Future<void> _connectToHost(Host host) async {
+    unawaited(context.push('/terminal/${host.id}'));
+  }
+
+  Future<void> _deleteHost(Host host) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Host'),
+        content: Text('Are you sure you want to delete "${host.label}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: TextButton.styleFrom(
+              foregroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if (confirmed ?? false) {
+      await ref.read(hostRepositoryProvider).delete(host.id);
+      ref.invalidate(allHostsProvider);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "${host.label}"')));
+      }
+    }
+  }
+
+  void _showSearchDialog() {
+    showDialog<void>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Search Hosts'),
+        content: TextField(
+          autofocus: true,
+          decoration: const InputDecoration(
+            hintText: 'Search by name, hostname, or username',
+            prefixIcon: Icon(Icons.search),
+          ),
+          onChanged: (value) {
+            setState(() => _searchQuery = value);
+            Navigator.pop(context);
+          },
+        ),
+        actions: [
+          if (_searchQuery.isNotEmpty)
+            TextButton(
+              onPressed: () {
+                setState(() => _searchQuery = '');
+                Navigator.pop(context);
+              },
+              child: const Text('Clear'),
+            ),
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Close'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  void _showGroupsDialog() {
+    // TODO: Implement groups dialog
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Groups coming soon')));
+  }
+}
+
+class _HostListTile extends ConsumerWidget {
+  const _HostListTile({
+    required this.host,
+    required this.onTap,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  final Host host;
+  final VoidCallback onTap;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final connectionStates = ref.watch(activeSessionsProvider);
+    final isConnected =
+        connectionStates[host.id] == SshConnectionState.connected;
+    final isConnecting =
+        connectionStates[host.id] == SshConnectionState.connecting;
+
+    return ListTile(
+      leading: CircleAvatar(
+        backgroundColor: isConnected
+            ? Colors.green.withAlpha(50)
+            : theme.colorScheme.surfaceContainerHighest,
+        child: Icon(
+          isConnected ? Icons.link : Icons.dns,
+          color: isConnected ? Colors.green : theme.colorScheme.primary,
+        ),
+      ),
+      title: Text(host.label),
+      subtitle: Text(
+        '${host.username}@${host.hostname}:${host.port}',
+        style: theme.textTheme.bodySmall,
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (host.isFavorite)
+            const Icon(Icons.star, color: Colors.amber, size: 20),
+          if (isConnecting)
+            const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+          PopupMenuButton<String>(
+            onSelected: (action) {
+              switch (action) {
+                case 'edit':
+                  onEdit();
+                case 'delete':
+                  onDelete();
+                case 'duplicate':
+                  _duplicateHost(context, ref);
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
+              PopupMenuItem(
+                value: 'delete',
+                child: Text(
+                  'Delete',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
+
+  Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
+    final repo = ref.read(hostRepositoryProvider);
+    await repo.insert(
+      HostsCompanion.insert(
+        label: '${host.label} (copy)',
+        hostname: host.hostname,
+        port: drift.Value(host.port),
+        username: host.username,
+        password: drift.Value(host.password),
+        keyId: drift.Value(host.keyId),
+        groupId: drift.Value(host.groupId),
+        jumpHostId: drift.Value(host.jumpHostId),
+        color: drift.Value(host.color),
+      ),
+    );
+    ref.invalidate(allHostsProvider);
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
+    }
+  }
+}
+
+/// Provider for all hosts - uses stream for auto-refresh on changes.
+final allHostsProvider = StreamProvider<List<Host>>((ref) {
+  final repo = ref.watch(hostRepositoryProvider);
+  return repo.watchAll();
+});

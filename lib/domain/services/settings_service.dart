@@ -1,0 +1,387 @@
+import 'dart:convert';
+
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+
+import '../../data/database/database.dart';
+
+/// Keys for app settings.
+abstract final class SettingKeys {
+  /// Theme mode: 'system', 'light', 'dark'.
+  static const themeMode = 'theme_mode';
+
+  /// Terminal font family.
+  static const terminalFont = 'terminal_font';
+
+  /// Terminal font size.
+  static const terminalFontSize = 'terminal_font_size';
+
+  /// Terminal color scheme name.
+  static const terminalColorScheme = 'terminal_color_scheme';
+
+  /// Terminal cursor style.
+  static const cursorStyle = 'cursor_style';
+
+  /// Terminal bell sound enabled.
+  static const bellSound = 'bell_sound';
+
+  /// Enable haptic feedback.
+  static const hapticFeedback = 'haptic_feedback';
+
+  /// Keyboard toolbar configuration.
+  static const keyboardToolbar = 'keyboard_toolbar';
+
+  /// Auto-reconnect on connection drop.
+  static const autoReconnect = 'auto_reconnect';
+
+  /// Keep-alive interval in seconds.
+  static const keepAliveInterval = 'keep_alive_interval';
+
+  /// Default SSH port.
+  static const defaultPort = 'default_port';
+
+  /// Default username.
+  static const defaultUsername = 'default_username';
+
+  /// Auto-lock timeout in minutes.
+  static const autoLockTimeout = 'auto_lock_timeout';
+}
+
+/// Service for managing app settings.
+class SettingsService {
+  /// Creates a new [SettingsService].
+  SettingsService(this._db);
+
+  final AppDatabase _db;
+
+  /// Get a string setting.
+  Future<String?> getString(String key) async {
+    final result = await (_db.select(
+      _db.settings,
+    )..where((s) => s.key.equals(key))).getSingleOrNull();
+    return result?.value;
+  }
+
+  /// Get an int setting.
+  Future<int?> getInt(String key) async {
+    final value = await getString(key);
+    return value != null ? int.tryParse(value) : null;
+  }
+
+  /// Get a bool setting.
+  Future<bool> getBool(String key, {bool defaultValue = false}) async {
+    final value = await getString(key);
+    if (value == 'true') return true;
+    if (value == 'false') return false;
+    return defaultValue;
+  }
+
+  /// Get a JSON setting.
+  Future<Map<String, dynamic>?> getJson(String key) async {
+    final value = await getString(key);
+    if (value == null) return null;
+    try {
+      return jsonDecode(value) as Map<String, dynamic>;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  /// Set a string setting.
+  Future<void> setString(String key, String value) async {
+    await _db
+        .into(_db.settings)
+        .insertOnConflictUpdate(
+          SettingsCompanion.insert(key: key, value: value),
+        );
+  }
+
+  /// Set an int setting.
+  Future<void> setInt(String key, int value) =>
+      setString(key, value.toString());
+
+  /// Set a bool setting.
+  Future<void> setBool(String key, {required bool value}) =>
+      setString(key, value.toString());
+
+  /// Set a JSON setting.
+  Future<void> setJson(String key, Map<String, dynamic> value) =>
+      setString(key, jsonEncode(value));
+
+  /// Delete a setting.
+  Future<void> delete(String key) async {
+    await (_db.delete(_db.settings)..where((s) => s.key.equals(key))).go();
+  }
+
+  /// Get all settings.
+  Future<Map<String, String>> getAll() async {
+    final results = await _db.select(_db.settings).get();
+    return Map.fromEntries(results.map((s) => MapEntry(s.key, s.value)));
+  }
+
+  /// Watch a setting.
+  Stream<String?> watchString(String key) => (_db.select(
+    _db.settings,
+  )..where((s) => s.key.equals(key))).watchSingleOrNull().map((s) => s?.value);
+}
+
+/// Provider for [SettingsService].
+final settingsServiceProvider = Provider<SettingsService>(
+  (ref) => SettingsService(ref.watch(databaseProvider)),
+);
+
+/// Provider for theme mode setting.
+final themeModeProvider = FutureProvider<String>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return await settings.getString(SettingKeys.themeMode) ?? 'system';
+});
+
+/// Notifier for theme mode with write capability.
+class ThemeModeNotifier extends StateNotifier<ThemeMode> {
+  /// Creates a new [ThemeModeNotifier].
+  ThemeModeNotifier(this._settings) : super(ThemeMode.system) {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getString(SettingKeys.themeMode) ?? 'system';
+    if (!mounted) return;
+    state = _parseThemeMode(value);
+  }
+
+  /// Set the theme mode.
+  Future<void> setThemeMode(ThemeMode mode) async {
+    final value = switch (mode) {
+      ThemeMode.light => 'light',
+      ThemeMode.dark => 'dark',
+      ThemeMode.system => 'system',
+    };
+    await _settings.setString(SettingKeys.themeMode, value);
+    state = mode;
+  }
+
+  ThemeMode _parseThemeMode(String value) => switch (value) {
+    'light' => ThemeMode.light,
+    'dark' => ThemeMode.dark,
+    _ => ThemeMode.system,
+  };
+}
+
+/// Provider for theme mode with write capability.
+final themeModeNotifierProvider =
+    StateNotifierProvider<ThemeModeNotifier, ThemeMode>(
+      (ref) => ThemeModeNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// Provider for font size setting.
+final fontSizeProvider = FutureProvider<double>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  final value = await settings.getInt(SettingKeys.terminalFontSize);
+  return value?.toDouble() ?? 14.0;
+});
+
+/// Notifier for font size with write capability.
+class FontSizeNotifier extends StateNotifier<double> {
+  /// Creates a new [FontSizeNotifier].
+  FontSizeNotifier(this._settings) : super(14) {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getInt(SettingKeys.terminalFontSize);
+    if (!mounted) return;
+    state = value?.toDouble() ?? 14.0;
+  }
+
+  /// Set the font size.
+  Future<void> setFontSize(double size) async {
+    await _settings.setInt(SettingKeys.terminalFontSize, size.round());
+    state = size;
+  }
+}
+
+/// Provider for font size with write capability.
+final fontSizeNotifierProvider =
+    StateNotifierProvider<FontSizeNotifier, double>(
+      (ref) => FontSizeNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// Provider for font family setting.
+final fontFamilyProvider = FutureProvider<String>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return await settings.getString(SettingKeys.terminalFont) ?? 'monospace';
+});
+
+/// Notifier for font family with write capability.
+class FontFamilyNotifier extends StateNotifier<String> {
+  /// Creates a new [FontFamilyNotifier].
+  FontFamilyNotifier(this._settings) : super('monospace') {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getString(SettingKeys.terminalFont);
+    if (!mounted) return;
+    state = value ?? 'monospace';
+  }
+
+  /// Set the font family.
+  Future<void> setFontFamily(String family) async {
+    await _settings.setString(SettingKeys.terminalFont, family);
+    state = family;
+  }
+}
+
+/// Provider for font family with write capability.
+final fontFamilyNotifierProvider =
+    StateNotifierProvider<FontFamilyNotifier, String>(
+      (ref) => FontFamilyNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// Provider for auto-lock timeout setting.
+final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return await settings.getInt(SettingKeys.autoLockTimeout) ?? 5;
+});
+
+/// Notifier for auto-lock timeout with write capability.
+class AutoLockTimeoutNotifier extends StateNotifier<int> {
+  /// Creates a new [AutoLockTimeoutNotifier].
+  AutoLockTimeoutNotifier(this._settings) : super(5) {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getInt(SettingKeys.autoLockTimeout);
+    if (!mounted) return;
+    state = value ?? 5;
+  }
+
+  /// Set the auto-lock timeout in minutes.
+  Future<void> setTimeout(int minutes) async {
+    await _settings.setInt(SettingKeys.autoLockTimeout, minutes);
+    state = minutes;
+  }
+}
+
+/// Provider for auto-lock timeout with write capability.
+final autoLockTimeoutNotifierProvider =
+    StateNotifierProvider<AutoLockTimeoutNotifier, int>(
+      (ref) => AutoLockTimeoutNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// Provider for haptic feedback setting.
+final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(SettingKeys.hapticFeedback, defaultValue: true);
+});
+
+/// Notifier for haptic feedback with write capability.
+class HapticFeedbackNotifier extends StateNotifier<bool> {
+  /// Creates a new [HapticFeedbackNotifier].
+  HapticFeedbackNotifier(this._settings) : super(true) {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.hapticFeedback,
+      defaultValue: true,
+    );
+    if (!mounted) return;
+    state = value;
+  }
+
+  /// Set haptic feedback enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.hapticFeedback, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for haptic feedback with write capability.
+final hapticFeedbackNotifierProvider =
+    StateNotifierProvider<HapticFeedbackNotifier, bool>(
+      (ref) => HapticFeedbackNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// Provider for cursor style setting.
+final cursorStyleProvider = FutureProvider<String>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return await settings.getString(SettingKeys.cursorStyle) ?? 'block';
+});
+
+/// Notifier for cursor style with write capability.
+class CursorStyleNotifier extends StateNotifier<String> {
+  /// Creates a new [CursorStyleNotifier].
+  CursorStyleNotifier(this._settings) : super('block') {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getString(SettingKeys.cursorStyle);
+    if (!mounted) return;
+    state = value ?? 'block';
+  }
+
+  /// Set the cursor style.
+  Future<void> setCursorStyle(String style) async {
+    await _settings.setString(SettingKeys.cursorStyle, style);
+    state = style;
+  }
+}
+
+/// Provider for cursor style with write capability.
+final cursorStyleNotifierProvider =
+    StateNotifierProvider<CursorStyleNotifier, String>(
+      (ref) => CursorStyleNotifier(ref.watch(settingsServiceProvider)),
+    );
+
+/// Provider for bell sound setting.
+final bellSoundProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(SettingKeys.bellSound, defaultValue: true);
+});
+
+/// Notifier for bell sound with write capability.
+class BellSoundNotifier extends StateNotifier<bool> {
+  /// Creates a new [BellSoundNotifier].
+  BellSoundNotifier(this._settings) : super(true) {
+    Future.microtask(_init);
+  }
+
+  final SettingsService _settings;
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.bellSound,
+      defaultValue: true,
+    );
+    if (!mounted) return;
+    state = value;
+  }
+
+  /// Set bell sound enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.bellSound, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for bell sound with write capability.
+final bellSoundNotifierProvider =
+    StateNotifierProvider<BellSoundNotifier, bool>(
+      (ref) => BellSoundNotifier(ref.watch(settingsServiceProvider)),
+    );
