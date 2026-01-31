@@ -338,11 +338,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       );
     }
 
-    // Calculate responsive font size based on screen width
-    final screenWidth = MediaQuery.of(context).size.width;
-    final fontSize = screenWidth < 380
-        ? 10.0
-        : (screenWidth < 600 ? 12.0 : 14.0);
+    // Get font size from settings (use setting value, not responsive calculation)
+    final fontSize = ref.watch(fontSizeNotifierProvider);
 
     // Get font family from host (if set) or global settings
     final hostFont = _host?.terminalFontFamily;
