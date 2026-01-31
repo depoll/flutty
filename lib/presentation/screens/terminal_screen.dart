@@ -116,13 +116,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
       if (!mounted) return;
 
-      _outputSubscription = _shell!.stdout.listen((data) {
-        _terminal.write(const Utf8Decoder(allowMalformed: true).convert(data));
-      });
+      // Use streaming UTF-8 decoder that properly handles chunked data
+      _outputSubscription = _shell!.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((data) => _terminal.write(data));
 
-      _stderrSubscription = _shell!.stderr.listen((data) {
-        _terminal.write(const Utf8Decoder(allowMalformed: true).convert(data));
-      });
+      _stderrSubscription = _shell!.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .listen((data) => _terminal.write(data));
 
       // Listen for shell completion (logout, exit, connection drop)
       _doneSubscription = _shell!.done.asStream().listen((_) {
