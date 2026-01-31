@@ -254,6 +254,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         final isDark = Theme.of(context).brightness == Brightness.dark;
         final scaffoldMessenger = ScaffoldMessenger.of(context);
 
+        // Clear any existing snackbar first to prevent stacking
+        scaffoldMessenger.hideCurrentSnackBar();
+
         scaffoldMessenger.showSnackBar(
           SnackBar(
             content: Row(
