@@ -52,7 +52,7 @@ class TerminalThemeService {
     }
 
     // 3. Built-in default
-    return isDark ? TerminalThemes.dracula : TerminalThemes.githubLight;
+    return isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite;
   }
 
   /// Gets a theme by ID (checks built-in themes first, then custom).
@@ -63,11 +63,10 @@ class TerminalThemeService {
 
     // Check custom themes
     final customThemes = await getCustomThemes();
-    try {
-      return customThemes.firstWhere((t) => t.id == id);
-    } on StateError {
-      return null;
+    for (final theme in customThemes) {
+      if (theme.id == id) return theme;
     }
+    return null;
   }
 
   /// Gets all available themes (built-in + custom).

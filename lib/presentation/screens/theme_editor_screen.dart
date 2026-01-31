@@ -63,8 +63,8 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   }
 
   void _initializeFromDefaults() {
-    // Start with Dracula as base
-    final base = TerminalThemes.dracula;
+    // Start with Midnight Purple as base
+    final base = TerminalThemes.midnightPurple;
     _foreground = base.foreground;
     _background = base.background;
     _cursor = base.cursor;

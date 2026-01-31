@@ -199,7 +199,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final terminalTheme =
         _sessionThemeOverride ??
         _currentTheme ??
-        (isDark ? TerminalThemes.dracula : TerminalThemes.githubLight);
+        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
 
     return Scaffold(
       appBar: AppBar(
