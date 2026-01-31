@@ -41,9 +41,12 @@ class KeyService {
       if (keyPairs.isEmpty) return null;
 
       final keyPair = keyPairs.first;
-      final publicKey = keyPair.toPublicKey().toString();
+      // Get key type from the key pair itself
+      final keyType = keyPair.type;
+      // Convert public key to OpenSSH format: type + space + base64-encoded key
+      final publicKeyBytes = keyPair.toPublicKey().encode();
+      final publicKey = '$keyType ${base64.encode(publicKeyBytes)}';
       final fingerprint = _computeFingerprint(publicKey);
-      final keyType = _detectKeyType(publicKey);
 
       final id = await _keyRepository.insert(
         SshKeysCompanion.insert(

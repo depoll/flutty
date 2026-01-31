@@ -281,7 +281,64 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(hosts, hosts.terminalFontFamily);
       }
     },
+    beforeOpen: (details) async {
+      // Fix any keys with "unknown" type or malformed public keys
+      // by re-extracting from the private key
+      final unknownKeys = await (select(sshKeys)
+            ..where((k) => k.keyType.equals('unknown')))
+          .get();
+      for (final key in unknownKeys) {
+        // If public key looks malformed (debug toString format), try to fix it
+        if (key.publicKey.startsWith('SSH') && key.privateKey.isNotEmpty) {
+          // We can't easily fix this without dartssh2 in the database layer
+          // Just detect type from the malformed string
+          var detectedType = 'unknown';
+          if (key.publicKey.contains('Ed25519')) {
+            detectedType = 'ssh-ed25519';
+          } else if (key.publicKey.contains('Rsa')) {
+            detectedType = 'ssh-rsa';
+          } else if (key.publicKey.contains('Ecdsa')) {
+            detectedType = 'ecdsa-sha2-nistp256';
+          }
+          if (detectedType != 'unknown') {
+            await (update(sshKeys)..where((k) => k.id.equals(key.id)))
+                .write(SshKeysCompanion(keyType: Value(detectedType)));
+          }
+        } else {
+          // Try standard detection from public key prefix
+          final detectedType = _detectKeyTypeFromPublicKey(key.publicKey);
+          if (detectedType != 'unknown') {
+            await (update(sshKeys)..where((k) => k.id.equals(key.id)))
+                .write(SshKeysCompanion(keyType: Value(detectedType)));
+          }
+        }
+      }
+    },
   );
+
+  String _detectKeyTypeFromPublicKey(String publicKey) {
+    final trimmed = publicKey.trim();
+    if (trimmed.startsWith('ssh-ed25519')) {
+      return 'ed25519';
+    } else if (trimmed.startsWith('ssh-rsa')) {
+      return 'rsa';
+    } else if (trimmed.startsWith('ecdsa-sha2-nistp256')) {
+      return 'ecdsa-256';
+    } else if (trimmed.startsWith('ecdsa-sha2-nistp384')) {
+      return 'ecdsa-384';
+    } else if (trimmed.startsWith('ecdsa-sha2-nistp521')) {
+      return 'ecdsa-521';
+    } else if (trimmed.startsWith('ecdsa-')) {
+      return 'ecdsa';
+    } else if (trimmed.startsWith('ssh-dss')) {
+      return 'dsa';
+    } else if (trimmed.startsWith('sk-ssh-ed25519')) {
+      return 'ed25519-sk';
+    } else if (trimmed.startsWith('sk-ecdsa-')) {
+      return 'ecdsa-sk';
+    }
+    return 'unknown';
+  }
 }
 
 LazyDatabase _openConnection() => LazyDatabase(() async {
