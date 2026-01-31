@@ -85,15 +85,10 @@ class ThemePreviewCard extends StatelessWidget {
               ),
               // Theme name footer
               Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 6,
-                ),
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                 decoration: BoxDecoration(
                   color: colorScheme.surfaceContainerHighest,
-                  border: Border(
-                    top: BorderSide(color: colorScheme.outline),
-                  ),
+                  border: Border(top: BorderSide(color: colorScheme.outline)),
                 ),
                 child: Row(
                   children: [
@@ -101,8 +96,8 @@ class ThemePreviewCard extends StatelessWidget {
                       child: Text(
                         theme.name,
                         style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                              fontWeight: FontWeight.w500,
-                            ),
+                          fontWeight: FontWeight.w500,
+                        ),
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
@@ -129,49 +124,32 @@ class ThemePreviewCard extends StatelessWidget {
   }
 
   Widget _buildPromptLine() => Row(
-        children: [
-          Text(
-            'user@host',
-            style: _getPreviewFontStyle(color: theme.green),
-          ),
-          Text(
-            ':',
-            style: _getPreviewFontStyle(color: theme.foreground),
-          ),
-          Text(
-            '~',
-            style: _getPreviewFontStyle(color: theme.blue),
-          ),
-          Text(
-            r'$',
-            style: _getPreviewFontStyle(color: theme.foreground),
-          ),
-        ],
-      );
+    children: [
+      Text('user@host', style: _getPreviewFontStyle(color: theme.green)),
+      Text(':', style: _getPreviewFontStyle(color: theme.foreground)),
+      Text('~', style: _getPreviewFontStyle(color: theme.blue)),
+      Text(r'$', style: _getPreviewFontStyle(color: theme.foreground)),
+    ],
+  );
 
-  Widget _buildSampleLine(String text, Color color) => Text(
-        text,
-        style: _getPreviewFontStyle(color: color),
-      );
+  Widget _buildSampleLine(String text, Color color) =>
+      Text(text, style: _getPreviewFontStyle(color: color));
 
   Widget _buildColorSwatches() => Row(
-        children: [
-          _colorDot(theme.red),
-          _colorDot(theme.green),
-          _colorDot(theme.yellow),
-          _colorDot(theme.blue),
-          _colorDot(theme.magenta),
-          _colorDot(theme.cyan),
-        ],
-      );
+    children: [
+      _colorDot(theme.red),
+      _colorDot(theme.green),
+      _colorDot(theme.yellow),
+      _colorDot(theme.blue),
+      _colorDot(theme.magenta),
+      _colorDot(theme.cyan),
+    ],
+  );
 
   Widget _colorDot(Color color) => Container(
-        width: 8,
-        height: 8,
-        margin: const EdgeInsets.only(right: 3),
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        ),
-      );
+    width: 8,
+    height: 8,
+    margin: const EdgeInsets.only(right: 3),
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
 }

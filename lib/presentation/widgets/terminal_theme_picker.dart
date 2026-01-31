@@ -57,7 +57,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   Widget build(BuildContext context) {
     final themesAsync = ref.watch(allTerminalThemesProvider);
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     // Get the currently selected theme for the preview
     final currentTheme = widget.selectedThemeId != null
         ? TerminalThemes.getById(widget.selectedThemeId!)
@@ -76,7 +76,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               ),
             ),
           ),
-        
+
         // Collapsible search and filter bar
         SliverAppBar(
           floating: true,
@@ -188,7 +188,9 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     // Apply search filter
     if (_searchQuery.isNotEmpty) {
       final query = _searchQuery.toLowerCase();
-      result = result.where((t) => t.name.toLowerCase().contains(query)).toList();
+      result = result
+          .where((t) => t.name.toLowerCase().contains(query))
+          .toList();
     }
 
     return result;
@@ -254,7 +256,10 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
               },
             ),
             ListTile(
-              leading: Icon(Icons.delete, color: Theme.of(context).colorScheme.error),
+              leading: Icon(
+                Icons.delete,
+                color: Theme.of(context).colorScheme.error,
+              ),
               title: Text(
                 'Delete theme',
                 style: TextStyle(color: Theme.of(context).colorScheme.error),
@@ -346,22 +351,19 @@ class _SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 12),
-        child: Text(
-          title,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-      );
+    padding: const EdgeInsets.only(bottom: 12),
+    child: Text(
+      title,
+      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+        color: Theme.of(context).colorScheme.primary,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
 }
 
 class _CurrentSelectionPreview extends StatelessWidget {
-  const _CurrentSelectionPreview({
-    required this.theme,
-    required this.onTap,
-  });
+  const _CurrentSelectionPreview({required this.theme, required this.onTap});
 
   final TerminalThemeData theme;
   final VoidCallback onTap;
@@ -369,7 +371,7 @@ class _CurrentSelectionPreview extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -433,25 +435,18 @@ class _CurrentSelectionPreview extends StatelessWidget {
             ),
           ),
           // Check icon
-          Icon(
-            Icons.check_circle,
-            color: colorScheme.primary,
-            size: 24,
-          ),
+          Icon(Icons.check_circle, color: colorScheme.primary, size: 24),
         ],
       ),
     );
   }
 
   Widget _colorDot(Color color) => Container(
-        width: 6,
-        height: 6,
-        margin: const EdgeInsets.only(right: 2),
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        ),
-      );
+    width: 6,
+    height: 6,
+    margin: const EdgeInsets.only(right: 2),
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
 }
 
 class _ThemeGridSection extends StatelessWidget {
@@ -472,27 +467,27 @@ class _ThemeGridSection extends StatelessWidget {
     // Use responsive grid based on screen width
     final screenWidth = MediaQuery.of(context).size.width;
     final crossAxisCount = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
-    
+
     return GridView.builder(
-        shrinkWrap: true,
-        physics: const NeverScrollableScrollPhysics(),
-        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-          crossAxisCount: crossAxisCount,
-          mainAxisSpacing: 12,
-          crossAxisSpacing: 12,
-          childAspectRatio: 0.9,
-        ),
-        itemCount: themes.length,
-        itemBuilder: (context, index) {
-          final theme = themes[index];
-          return ThemePreviewCard(
-            theme: theme,
-            isSelected: theme.id == selectedThemeId,
-            onTap: () => onThemeSelected(theme),
-            onLongPress: onLongPress != null ? () => onLongPress!(theme) : null,
-          );
-        },
-      );
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: crossAxisCount,
+        mainAxisSpacing: 12,
+        crossAxisSpacing: 12,
+        childAspectRatio: 0.9,
+      ),
+      itemCount: themes.length,
+      itemBuilder: (context, index) {
+        final theme = themes[index];
+        return ThemePreviewCard(
+          theme: theme,
+          isSelected: theme.id == selectedThemeId,
+          onTap: () => onThemeSelected(theme),
+          onLongPress: onLongPress != null ? () => onLongPress!(theme) : null,
+        );
+      },
+    );
   }
 }
 
@@ -502,52 +497,52 @@ Future<TerminalThemeData?> showThemePickerDialog({
   required String? currentThemeId,
   VoidCallback? onCreateCustomTheme,
 }) async => showModalBottomSheet<TerminalThemeData>(
-      context: context,
-      isScrollControlled: true,
-      useSafeArea: true,
-      builder: (context) => DraggableScrollableSheet(
-        initialChildSize: 0.85,
-        minChildSize: 0.5,
-        maxChildSize: 0.95,
-        expand: false,
-        builder: (context, scrollController) => Column(
-          children: [
-            // Handle bar
-            Container(
-              margin: const EdgeInsets.only(top: 12),
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: Theme.of(context).colorScheme.outline,
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            // Title
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Row(
-                children: [
-                  Text(
-                    'Select Theme',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const Spacer(),
-                  IconButton(
-                    icon: const Icon(Icons.close),
-                    onPressed: () => Navigator.pop(context),
-                  ),
-                ],
-              ),
-            ),
-            // Picker
-            Expanded(
-              child: TerminalThemePicker(
-                selectedThemeId: currentThemeId,
-                onThemeSelected: (theme) => Navigator.pop(context, theme),
-                onCreateCustomTheme: onCreateCustomTheme,
-              ),
-            ),
-          ],
+  context: context,
+  isScrollControlled: true,
+  useSafeArea: true,
+  builder: (context) => DraggableScrollableSheet(
+    initialChildSize: 0.85,
+    minChildSize: 0.5,
+    maxChildSize: 0.95,
+    expand: false,
+    builder: (context, scrollController) => Column(
+      children: [
+        // Handle bar
+        Container(
+          margin: const EdgeInsets.only(top: 12),
+          width: 40,
+          height: 4,
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.outline,
+            borderRadius: BorderRadius.circular(2),
+          ),
         ),
-      ),
-    );
+        // Title
+        Padding(
+          padding: const EdgeInsets.all(16),
+          child: Row(
+            children: [
+              Text(
+                'Select Theme',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
+              const Spacer(),
+              IconButton(
+                icon: const Icon(Icons.close),
+                onPressed: () => Navigator.pop(context),
+              ),
+            ],
+          ),
+        ),
+        // Picker
+        Expanded(
+          child: TerminalThemePicker(
+            selectedThemeId: currentThemeId,
+            onThemeSelected: (theme) => Navigator.pop(context, theme),
+            onCreateCustomTheme: onCreateCustomTheme,
+          ),
+        ),
+      ],
+    ),
+  ),
+);

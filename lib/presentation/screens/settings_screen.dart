@@ -450,7 +450,7 @@ class _TerminalSection extends ConsumerWidget {
     var tempValue = current;
     final currentFont = ref.read(fontFamilyNotifierProvider);
     const previewText = 'AaBbCc 0123 {}[]';
-    
+
     showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -471,9 +471,9 @@ class _TerminalSection extends ConsumerWidget {
                   children: [
                     Text(
                       previewText,
-                      style: _getFontStyle(currentFont).copyWith(
-                        fontSize: tempValue,
-                      ),
+                      style: _getFontStyle(
+                        currentFont,
+                      ).copyWith(fontSize: tempValue),
                     ),
                     const SizedBox(height: 8),
                     Text(
@@ -538,7 +538,7 @@ class _TerminalSection extends ConsumerWidget {
       'Oxygen Mono',
     ];
     const previewText = 'AaBbCc 0123 {}[]';
-    
+
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
@@ -553,7 +553,9 @@ class _TerminalSection extends ConsumerWidget {
                 padding: const EdgeInsets.all(12),
                 margin: const EdgeInsets.only(bottom: 12),
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer.withAlpha(50),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer.withAlpha(50),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: Theme.of(context).colorScheme.primary.withAlpha(100),
@@ -573,19 +575,17 @@ class _TerminalSection extends ConsumerWidget {
                         children: [
                           Text(
                             'Currently Selected',
-                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: Theme.of(context).colorScheme.primary,
-                              fontWeight: FontWeight.w600,
-                            ),
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
                           ),
                           Text(
                             _fontFamilyLabel(current),
                             style: Theme.of(context).textTheme.titleSmall,
                           ),
-                          Text(
-                            previewText,
-                            style: _getFontStyle(current),
-                          ),
+                          Text(previewText, style: _getFontStyle(current)),
                         ],
                       ),
                     ),

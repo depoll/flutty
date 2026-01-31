@@ -196,7 +196,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final isDark = theme.brightness == Brightness.dark;
 
     // Use session override, or loaded theme, or fallback
-    final terminalTheme = _sessionThemeOverride ??
+    final terminalTheme =
+        _sessionThemeOverride ??
         _currentTheme ??
         (isDark ? TerminalThemes.dracula : TerminalThemes.githubLight);
 
@@ -275,7 +276,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
-  Future<void> _saveThemeToHost(TerminalThemeData theme, {required bool isDark}) async {
+  Future<void> _saveThemeToHost(
+    TerminalThemeData theme, {
+    required bool isDark,
+  }) async {
     if (_host == null) return;
 
     final hostRepo = ref.read(hostRepositoryProvider);
@@ -287,9 +291,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _host = updatedHost;
 
     if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Theme saved to ${_host!.label}')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Theme saved to ${_host!.label}')));
     }
   }
 

@@ -167,10 +167,7 @@ class _KeyListTile extends StatelessWidget {
         child: Icon(_getKeyIcon(), color: theme.colorScheme.onPrimaryContainer),
       ),
       title: Text(sshKey.name),
-      subtitle: Text(
-        _getKeyTypeLabel(),
-        style: theme.textTheme.bodySmall,
-      ),
+      subtitle: Text(_getKeyTypeLabel(), style: theme.textTheme.bodySmall),
       trailing: PopupMenuButton<String>(
         onSelected: (action) {
           switch (action) {

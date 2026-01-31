@@ -230,7 +230,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     error: (_, _) => const Text('Error loading keys'),
                     data: (keys) {
                       // Validate selected key still exists
-                      final validKeyId = _selectedKeyId != null &&
+                      final validKeyId =
+                          _selectedKeyId != null &&
                               keys.any((k) => k.id == _selectedKeyId)
                           ? _selectedKeyId
                           : null;
@@ -279,9 +280,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                               .where((h) => h.id != widget.hostId)
                               .toList();
                           // Validate selected jump host still exists
-                          final validJumpHostId = _selectedJumpHostId != null &&
-                                  availableHosts
-                                      .any((h) => h.id == _selectedJumpHostId)
+                          final validJumpHostId =
+                              _selectedJumpHostId != null &&
+                                  availableHosts.any(
+                                    (h) => h.id == _selectedJumpHostId,
+                                  )
                               ? _selectedJumpHostId
                               : null;
                           if (validJumpHostId != _selectedJumpHostId) {
@@ -319,9 +322,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                       Text(
                         'Terminal Theme',
                         style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                              color: Theme.of(context).colorScheme.primary,
-                              fontWeight: FontWeight.w600,
-                            ),
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
                       ),
                       const SizedBox(height: 12),
                       // Light mode theme
@@ -557,14 +560,11 @@ class _ThemeSelectionTile extends StatelessWidget {
   }
 
   Widget _colorDot(Color color) => Container(
-        width: 6,
-        height: 6,
-        margin: const EdgeInsets.symmetric(horizontal: 1),
-        decoration: BoxDecoration(
-          color: color,
-          shape: BoxShape.circle,
-        ),
-      );
+    width: 6,
+    height: 6,
+    margin: const EdgeInsets.symmetric(horizontal: 1),
+    decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+  );
 }
 
 class _FontSelectionTile extends StatelessWidget {
@@ -660,7 +660,9 @@ Future<String?> showFontPickerDialog({
                 padding: const EdgeInsets.all(12),
                 margin: const EdgeInsets.only(bottom: 12),
                 decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.primaryContainer.withAlpha(50),
+                  color: Theme.of(
+                    context,
+                  ).colorScheme.primaryContainer.withAlpha(50),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(
                     color: Theme.of(context).colorScheme.primary.withAlpha(100),
@@ -680,10 +682,11 @@ Future<String?> showFontPickerDialog({
                         children: [
                           Text(
                             'Currently Selected',
-                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                              color: Theme.of(context).colorScheme.primary,
-                              fontWeight: FontWeight.w600,
-                            ),
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
                           ),
                           Text(
                             currentFontFamily,
@@ -708,10 +711,7 @@ Future<String?> showFontPickerDialog({
                   final isSelected = family == currentFontFamily;
                   return ListTile(
                     title: Text(family),
-                    subtitle: Text(
-                      previewText,
-                      style: _getFontStyle(family),
-                    ),
+                    subtitle: Text(previewText, style: _getFontStyle(family)),
                     selected: isSelected,
                     trailing: isSelected ? const Icon(Icons.check) : null,
                     onTap: () => Navigator.pop(context, family),

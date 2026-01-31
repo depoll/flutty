@@ -14,42 +14,39 @@ abstract final class TerminalThemes {
   static const defaultLightThemeId = 'github-light';
 
   /// All built-in themes.
-  static List<TerminalThemeData> get all => [
-        ...darkThemes,
-        ...lightThemes,
-      ];
+  static List<TerminalThemeData> get all => [...darkThemes, ...lightThemes];
 
   /// Dark themes collection.
   static List<TerminalThemeData> get darkThemes => [
-        dracula,
-        oneDark,
-        nord,
-        tokyoNight,
-        catppuccinMocha,
-        gruvboxDark,
-        monokaiPro,
-        ayuDark,
-        materialDark,
-        nightfox,
-        kanagawa,
-        synthwave84,
-        matrixGreen,
-        cyberpunk,
-        solarizedDark,
-        tokyoNightStorm,
-      ];
+    dracula,
+    oneDark,
+    nord,
+    tokyoNight,
+    catppuccinMocha,
+    gruvboxDark,
+    monokaiPro,
+    ayuDark,
+    materialDark,
+    nightfox,
+    kanagawa,
+    synthwave84,
+    matrixGreen,
+    cyberpunk,
+    solarizedDark,
+    tokyoNightStorm,
+  ];
 
   /// Light themes collection.
   static List<TerminalThemeData> get lightThemes => [
-        githubLight,
-        solarizedLight,
-        oneLight,
-        catppuccinLatte,
-        gruvboxLight,
-        ayuLight,
-        paper,
-        retroGreen,
-      ];
+    githubLight,
+    solarizedLight,
+    oneLight,
+    catppuccinLatte,
+    gruvboxLight,
+    ayuLight,
+    paper,
+    retroGreen,
+  ];
 
   /// Gets a theme by ID, returns null if not found.
   static TerminalThemeData? getById(String id) {

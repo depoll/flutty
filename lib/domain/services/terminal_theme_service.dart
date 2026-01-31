@@ -32,8 +32,9 @@ class TerminalThemeService {
 
     // 1. Check host-specific override
     if (host != null) {
-      final hostThemeId =
-          isDark ? host.terminalThemeDarkId : host.terminalThemeLightId;
+      final hostThemeId = isDark
+          ? host.terminalThemeDarkId
+          : host.terminalThemeLightId;
       if (hostThemeId != null) {
         final theme = await getThemeById(hostThemeId);
         if (theme != null) return theme;
@@ -136,14 +137,17 @@ final terminalThemeServiceProvider = Provider<TerminalThemeService>(
 );
 
 /// Provider for all available themes.
-final allTerminalThemesProvider = FutureProvider<List<TerminalThemeData>>((ref) {
+final allTerminalThemesProvider = FutureProvider<List<TerminalThemeData>>((
+  ref,
+) {
   final service = ref.watch(terminalThemeServiceProvider);
   return service.getAllThemes();
 });
 
 /// Provider for custom themes only.
-final customTerminalThemesProvider =
-    FutureProvider<List<TerminalThemeData>>((ref) {
+final customTerminalThemesProvider = FutureProvider<List<TerminalThemeData>>((
+  ref,
+) {
   final service = ref.watch(terminalThemeServiceProvider);
   return service.getCustomThemes();
 });

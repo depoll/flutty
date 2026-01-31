@@ -284,9 +284,9 @@ class AppDatabase extends _$AppDatabase {
     beforeOpen: (details) async {
       // Fix any keys with "unknown" type or malformed public keys
       // by re-extracting from the private key
-      final unknownKeys = await (select(sshKeys)
-            ..where((k) => k.keyType.equals('unknown')))
-          .get();
+      final unknownKeys = await (select(
+        sshKeys,
+      )..where((k) => k.keyType.equals('unknown'))).get();
       for (final key in unknownKeys) {
         // If public key looks malformed (debug toString format), try to fix it
         if (key.publicKey.startsWith('SSH') && key.privateKey.isNotEmpty) {
@@ -301,15 +301,17 @@ class AppDatabase extends _$AppDatabase {
             detectedType = 'ecdsa-sha2-nistp256';
           }
           if (detectedType != 'unknown') {
-            await (update(sshKeys)..where((k) => k.id.equals(key.id)))
-                .write(SshKeysCompanion(keyType: Value(detectedType)));
+            await (update(sshKeys)..where((k) => k.id.equals(key.id))).write(
+              SshKeysCompanion(keyType: Value(detectedType)),
+            );
           }
         } else {
           // Try standard detection from public key prefix
           final detectedType = _detectKeyTypeFromPublicKey(key.publicKey);
           if (detectedType != 'unknown') {
-            await (update(sshKeys)..where((k) => k.id.equals(key.id)))
-                .write(SshKeysCompanion(keyType: Value(detectedType)));
+            await (update(sshKeys)..where((k) => k.id.equals(key.id))).write(
+              SshKeysCompanion(keyType: Value(detectedType)),
+            );
           }
         }
       }

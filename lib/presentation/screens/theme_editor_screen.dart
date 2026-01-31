@@ -129,31 +129,31 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   }
 
   TerminalThemeData _buildTheme() => TerminalThemeData(
-        id: _existingTheme?.id ?? const Uuid().v4(),
-        name: _nameController.text.trim(),
-        isDark: _isDark,
-        isCustom: true,
-        foreground: _foreground,
-        background: _background,
-        cursor: _cursor,
-        selection: _selection,
-        black: _black,
-        red: _red,
-        green: _green,
-        yellow: _yellow,
-        blue: _blue,
-        magenta: _magenta,
-        cyan: _cyan,
-        white: _white,
-        brightBlack: _brightBlack,
-        brightRed: _brightRed,
-        brightGreen: _brightGreen,
-        brightYellow: _brightYellow,
-        brightBlue: _brightBlue,
-        brightMagenta: _brightMagenta,
-        brightCyan: _brightCyan,
-        brightWhite: _brightWhite,
-      );
+    id: _existingTheme?.id ?? const Uuid().v4(),
+    name: _nameController.text.trim(),
+    isDark: _isDark,
+    isCustom: true,
+    foreground: _foreground,
+    background: _background,
+    cursor: _cursor,
+    selection: _selection,
+    black: _black,
+    red: _red,
+    green: _green,
+    yellow: _yellow,
+    blue: _blue,
+    magenta: _magenta,
+    cyan: _cyan,
+    white: _white,
+    brightBlack: _brightBlack,
+    brightRed: _brightRed,
+    brightGreen: _brightGreen,
+    brightYellow: _brightYellow,
+    brightBlue: _brightBlue,
+    brightMagenta: _brightMagenta,
+    brightCyan: _brightCyan,
+    brightWhite: _brightWhite,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -162,12 +162,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
     return Scaffold(
       appBar: AppBar(
         title: Text(isEditing ? 'Edit Theme' : 'Create Theme'),
-        actions: [
-          TextButton(
-            onPressed: _saveTheme,
-            child: const Text('Save'),
-          ),
-        ],
+        actions: [TextButton(onPressed: _saveTheme, child: const Text('Save'))],
       ),
       body: _isLoading
           ? const Center(child: CircularProgressIndicator())
@@ -196,7 +191,9 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
                         // Dark/Light toggle
                         SwitchListTile(
                           title: const Text('Dark Theme'),
-                          subtitle: Text(_isDark ? 'Dark background' : 'Light background'),
+                          subtitle: Text(
+                            _isDark ? 'Dark background' : 'Light background',
+                          ),
                           value: _isDark,
                           onChanged: (v) => setState(() => _isDark = v),
                         ),
@@ -340,74 +337,73 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   }
 
   Widget _buildPreview() => Container(
-        color: _background,
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+    color: _background,
+    padding: const EdgeInsets.all(16),
+    child: Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          'Preview',
+          style: GoogleFonts.jetBrainsMono(
+            color: _foreground,
+            fontSize: 12,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        const SizedBox(height: 12),
+        _previewLine('user@host', _green, ':', _foreground, '~', _blue),
+        _previewText(r'$ ls -la', _foreground),
+        _previewText('drwxr-xr-x  5 user  staff   160 Jan 31 12:00 .', _blue),
+        _previewText(
+          '-rw-r--r--  1 user  staff  1024 Jan 31 12:00 file.txt',
+          _foreground,
+        ),
+        const SizedBox(height: 8),
+        _previewLine('user@host', _green, ':', _foreground, '~', _blue),
+        _previewText(r'$ echo "Hello World"', _foreground),
+        _previewText('Hello World', _yellow),
+        const SizedBox(height: 8),
+        _previewLine('user@host', _green, ':', _foreground, '~', _blue),
+        Row(
           children: [
-            Text(
-              'Preview',
-              style: GoogleFonts.jetBrainsMono(
-                color: _foreground,
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-              ),
-            ),
-            const SizedBox(height: 12),
-            _previewLine('user@host', _green, ':', _foreground, '~', _blue),
-            _previewText(r'$ ls -la', _foreground),
-            _previewText('drwxr-xr-x  5 user  staff   160 Jan 31 12:00 .', _blue),
-            _previewText('-rw-r--r--  1 user  staff  1024 Jan 31 12:00 file.txt', _foreground),
-            const SizedBox(height: 8),
-            _previewLine('user@host', _green, ':', _foreground, '~', _blue),
-            _previewText(r'$ echo "Hello World"', _foreground),
-            _previewText('Hello World', _yellow),
-            const SizedBox(height: 8),
-            _previewLine('user@host', _green, ':', _foreground, '~', _blue),
-            Row(
-              children: [
-                _previewText(r'$ ', _foreground),
-                Container(
-                  width: 8,
-                  height: 14,
-                  color: _cursor,
-                ),
-              ],
-            ),
-            const Spacer(),
-            // Color swatches
-            Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: [
-                _swatch(_black),
-                _swatch(_red),
-                _swatch(_green),
-                _swatch(_yellow),
-                _swatch(_blue),
-                _swatch(_magenta),
-                _swatch(_cyan),
-                _swatch(_white),
-              ],
-            ),
-            const SizedBox(height: 4),
-            Wrap(
-              spacing: 4,
-              runSpacing: 4,
-              children: [
-                _swatch(_brightBlack),
-                _swatch(_brightRed),
-                _swatch(_brightGreen),
-                _swatch(_brightYellow),
-                _swatch(_brightBlue),
-                _swatch(_brightMagenta),
-                _swatch(_brightCyan),
-                _swatch(_brightWhite),
-              ],
-            ),
+            _previewText(r'$ ', _foreground),
+            Container(width: 8, height: 14, color: _cursor),
           ],
         ),
-      );
+        const Spacer(),
+        // Color swatches
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          children: [
+            _swatch(_black),
+            _swatch(_red),
+            _swatch(_green),
+            _swatch(_yellow),
+            _swatch(_blue),
+            _swatch(_magenta),
+            _swatch(_cyan),
+            _swatch(_white),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Wrap(
+          spacing: 4,
+          runSpacing: 4,
+          children: [
+            _swatch(_brightBlack),
+            _swatch(_brightRed),
+            _swatch(_brightGreen),
+            _swatch(_brightYellow),
+            _swatch(_brightBlue),
+            _swatch(_brightMagenta),
+            _swatch(_brightCyan),
+            _swatch(_brightWhite),
+          ],
+        ),
+      ],
+    ),
+  );
 
   Widget _previewLine(
     String user,
@@ -416,29 +412,38 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
     Color sepColor,
     String path,
     Color pathColor,
-  ) =>
-      Row(
-        children: [
-          Text(user, style: GoogleFonts.jetBrainsMono(color: userColor, fontSize: 11)),
-          Text(sep, style: GoogleFonts.jetBrainsMono(color: sepColor, fontSize: 11)),
-          Text(path, style: GoogleFonts.jetBrainsMono(color: pathColor, fontSize: 11)),
-          Text(r'$ ', style: GoogleFonts.jetBrainsMono(color: sepColor, fontSize: 11)),
-        ],
-      );
+  ) => Row(
+    children: [
+      Text(
+        user,
+        style: GoogleFonts.jetBrainsMono(color: userColor, fontSize: 11),
+      ),
+      Text(
+        sep,
+        style: GoogleFonts.jetBrainsMono(color: sepColor, fontSize: 11),
+      ),
+      Text(
+        path,
+        style: GoogleFonts.jetBrainsMono(color: pathColor, fontSize: 11),
+      ),
+      Text(
+        r'$ ',
+        style: GoogleFonts.jetBrainsMono(color: sepColor, fontSize: 11),
+      ),
+    ],
+  );
 
-  Widget _previewText(String text, Color color) => Text(
-        text,
-        style: GoogleFonts.jetBrainsMono(color: color, fontSize: 11),
-      );
+  Widget _previewText(String text, Color color) =>
+      Text(text, style: GoogleFonts.jetBrainsMono(color: color, fontSize: 11));
 
   Widget _swatch(Color color) => Container(
-        width: 16,
-        height: 16,
-        decoration: BoxDecoration(
-          color: color,
-          borderRadius: BorderRadius.circular(4),
-        ),
-      );
+    width: 16,
+    height: 16,
+    decoration: BoxDecoration(
+      color: color,
+      borderRadius: BorderRadius.circular(4),
+    ),
+  );
 
   Future<void> _saveTheme() async {
     if (!_formKey.currentState!.validate()) return;
@@ -455,15 +460,15 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
 
       if (mounted) {
         context.pop();
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Theme "${theme.name}" saved')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Theme "${theme.name}" saved')));
       }
     } on Exception catch (e) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Error saving theme: $e')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error saving theme: $e')));
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -478,15 +483,15 @@ class _SectionHeader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => Padding(
-        padding: const EdgeInsets.only(bottom: 8),
-        child: Text(
-          title,
-          style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                color: Theme.of(context).colorScheme.primary,
-                fontWeight: FontWeight.w600,
-              ),
-        ),
-      );
+    padding: const EdgeInsets.only(bottom: 8),
+    child: Text(
+      title,
+      style: Theme.of(context).textTheme.titleSmall?.copyWith(
+        color: Theme.of(context).colorScheme.primary,
+        fontWeight: FontWeight.w600,
+      ),
+    ),
+  );
 }
 
 class _ColorRow extends StatelessWidget {
@@ -502,31 +507,27 @@ class _ColorRow extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) => ListTile(
-        contentPadding: EdgeInsets.zero,
-        title: Text(label),
-        trailing: GestureDetector(
-          onTap: () => _showColorPicker(context),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              color: color,
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
-                color: Theme.of(context).colorScheme.outline,
-              ),
-            ),
-          ),
+    contentPadding: EdgeInsets.zero,
+    title: Text(label),
+    trailing: GestureDetector(
+      onTap: () => _showColorPicker(context),
+      child: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: color,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: Theme.of(context).colorScheme.outline),
         ),
-      );
+      ),
+    ),
+  );
 
   void _showColorPicker(BuildContext context) {
     showDialog<Color>(
       context: context,
-      builder: (context) => _SimpleColorPicker(
-        initialColor: color,
-        onColorSelected: onChanged,
-      ),
+      builder: (context) =>
+          _SimpleColorPicker(initialColor: color, onColorSelected: onChanged),
     );
   }
 }
@@ -552,9 +553,7 @@ class _SimpleColorPickerState extends State<_SimpleColorPicker> {
   void initState() {
     super.initState();
     _currentColor = widget.initialColor;
-    _hexController = TextEditingController(
-      text: _colorToHex(_currentColor),
-    );
+    _hexController = TextEditingController(text: _colorToHex(_currentColor));
   }
 
   @override
@@ -578,90 +577,86 @@ class _SimpleColorPickerState extends State<_SimpleColorPicker> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-        title: const Text('Pick a Color'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
+    title: const Text('Pick a Color'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        // Preview
+        Container(
+          width: 100,
+          height: 100,
+          decoration: BoxDecoration(
+            color: _currentColor,
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Theme.of(context).colorScheme.outline),
+          ),
+        ),
+        const SizedBox(height: 16),
+        // Hex input
+        TextField(
+          controller: _hexController,
+          decoration: const InputDecoration(
+            labelText: 'Hex Color',
+            hintText: '#FF0000',
+          ),
+          onChanged: (value) {
+            final color = _hexToColor(value);
+            if (color != null) {
+              setState(() => _currentColor = color);
+            }
+          },
+        ),
+        const SizedBox(height: 16),
+        // Quick presets
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            // Preview
-            Container(
-              width: 100,
-              height: 100,
-              decoration: BoxDecoration(
-                color: _currentColor,
-                borderRadius: BorderRadius.circular(12),
-                border: Border.all(
-                  color: Theme.of(context).colorScheme.outline,
-                ),
-              ),
-            ),
-            const SizedBox(height: 16),
-            // Hex input
-            TextField(
-              controller: _hexController,
-              decoration: const InputDecoration(
-                labelText: 'Hex Color',
-                hintText: '#FF0000',
-              ),
-              onChanged: (value) {
-                final color = _hexToColor(value);
-                if (color != null) {
-                  setState(() => _currentColor = color);
-                }
-              },
-            ),
-            const SizedBox(height: 16),
-            // Quick presets
-            Wrap(
-              spacing: 8,
-              runSpacing: 8,
-              children: [
-                _preset(Colors.red),
-                _preset(Colors.green),
-                _preset(Colors.blue),
-                _preset(Colors.yellow),
-                _preset(Colors.purple),
-                _preset(Colors.cyan),
-                _preset(Colors.orange),
-                _preset(Colors.pink),
-                _preset(Colors.white),
-                _preset(Colors.black),
-                _preset(Colors.grey),
-              ],
-            ),
+            _preset(Colors.red),
+            _preset(Colors.green),
+            _preset(Colors.blue),
+            _preset(Colors.yellow),
+            _preset(Colors.purple),
+            _preset(Colors.cyan),
+            _preset(Colors.orange),
+            _preset(Colors.pink),
+            _preset(Colors.white),
+            _preset(Colors.black),
+            _preset(Colors.grey),
           ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () {
-              widget.onColorSelected(_currentColor);
-              Navigator.pop(context);
-            },
-            child: const Text('Select'),
-          ),
-        ],
-      );
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () {
+          widget.onColorSelected(_currentColor);
+          Navigator.pop(context);
+        },
+        child: const Text('Select'),
+      ),
+    ],
+  );
 
   Widget _preset(Color color) => GestureDetector(
-        onTap: () {
-          setState(() {
-            _currentColor = color;
-            _hexController.text = _colorToHex(color);
-          });
-        },
-        child: Container(
-          width: 32,
-          height: 32,
-          decoration: BoxDecoration(
-            color: color,
-            shape: BoxShape.circle,
-            border: Border.all(
-              color: Theme.of(context).colorScheme.outline,
-            ),
-          ),
-        ),
-      );
+    onTap: () {
+      setState(() {
+        _currentColor = color;
+        _hexController.text = _colorToHex(color);
+      });
+    },
+    child: Container(
+      width: 32,
+      height: 32,
+      decoration: BoxDecoration(
+        color: color,
+        shape: BoxShape.circle,
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+      ),
+    ),
+  );
 }

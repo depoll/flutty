@@ -418,21 +418,28 @@ class TerminalThemeSettings {
 }
 
 /// Notifier for terminal theme settings.
-class TerminalThemeSettingsNotifier extends StateNotifier<TerminalThemeSettings> {
+class TerminalThemeSettingsNotifier
+    extends StateNotifier<TerminalThemeSettings> {
   /// Creates a new [TerminalThemeSettingsNotifier].
   TerminalThemeSettingsNotifier(this._settings)
-      : super(const TerminalThemeSettings(
+    : super(
+        const TerminalThemeSettings(
           lightThemeId: 'github-light',
           darkThemeId: 'dracula',
-        )) {
+        ),
+      ) {
     Future.microtask(_init);
   }
 
   final SettingsService _settings;
 
   Future<void> _init() async {
-    final light = await _settings.getString(SettingKeys.defaultTerminalThemeLight);
-    final dark = await _settings.getString(SettingKeys.defaultTerminalThemeDark);
+    final light = await _settings.getString(
+      SettingKeys.defaultTerminalThemeLight,
+    );
+    final dark = await _settings.getString(
+      SettingKeys.defaultTerminalThemeDark,
+    );
     if (!mounted) return;
     state = TerminalThemeSettings(
       lightThemeId: light ?? 'github-light',
@@ -456,5 +463,6 @@ class TerminalThemeSettingsNotifier extends StateNotifier<TerminalThemeSettings>
 /// Provider for terminal theme settings.
 final terminalThemeSettingsProvider =
     StateNotifierProvider<TerminalThemeSettingsNotifier, TerminalThemeSettings>(
-      (ref) => TerminalThemeSettingsNotifier(ref.watch(settingsServiceProvider)),
+      (ref) =>
+          TerminalThemeSettingsNotifier(ref.watch(settingsServiceProvider)),
     );
