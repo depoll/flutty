@@ -1191,6 +1191,28 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         type: DriftSqlType.dateTime,
         requiredDuringInsert: false,
       );
+  static const VerificationMeta _terminalThemeLightIdMeta =
+      const VerificationMeta('terminalThemeLightId');
+  @override
+  late final GeneratedColumn<String> terminalThemeLightId =
+      GeneratedColumn<String>(
+        'terminal_theme_light_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _terminalThemeDarkIdMeta =
+      const VerificationMeta('terminalThemeDarkId');
+  @override
+  late final GeneratedColumn<String> terminalThemeDarkId =
+      GeneratedColumn<String>(
+        'terminal_theme_dark_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1209,6 +1231,8 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     createdAt,
     updatedAt,
     lastConnectedAt,
+    terminalThemeLightId,
+    terminalThemeDarkId,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1327,6 +1351,24 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
       );
     }
+    if (data.containsKey('terminal_theme_light_id')) {
+      context.handle(
+        _terminalThemeLightIdMeta,
+        terminalThemeLightId.isAcceptableOrUnknown(
+          data['terminal_theme_light_id']!,
+          _terminalThemeLightIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('terminal_theme_dark_id')) {
+      context.handle(
+        _terminalThemeDarkIdMeta,
+        terminalThemeDarkId.isAcceptableOrUnknown(
+          data['terminal_theme_dark_id']!,
+          _terminalThemeDarkIdMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -1400,6 +1442,14 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.dateTime,
         data['${effectivePrefix}last_connected_at'],
       ),
+      terminalThemeLightId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}terminal_theme_light_id'],
+      ),
+      terminalThemeDarkId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}terminal_theme_dark_id'],
+      ),
     );
   }
 
@@ -1457,6 +1507,12 @@ class Host extends DataClass implements Insertable<Host> {
 
   /// Last connection timestamp.
   final DateTime? lastConnectedAt;
+
+  /// Terminal theme ID for light mode (null = use global default).
+  final String? terminalThemeLightId;
+
+  /// Terminal theme ID for dark mode (null = use global default).
+  final String? terminalThemeDarkId;
   const Host({
     required this.id,
     required this.label,
@@ -1474,6 +1530,8 @@ class Host extends DataClass implements Insertable<Host> {
     required this.createdAt,
     required this.updatedAt,
     this.lastConnectedAt,
+    this.terminalThemeLightId,
+    this.terminalThemeDarkId,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1510,6 +1568,12 @@ class Host extends DataClass implements Insertable<Host> {
     if (!nullToAbsent || lastConnectedAt != null) {
       map['last_connected_at'] = Variable<DateTime>(lastConnectedAt);
     }
+    if (!nullToAbsent || terminalThemeLightId != null) {
+      map['terminal_theme_light_id'] = Variable<String>(terminalThemeLightId);
+    }
+    if (!nullToAbsent || terminalThemeDarkId != null) {
+      map['terminal_theme_dark_id'] = Variable<String>(terminalThemeDarkId);
+    }
     return map;
   }
 
@@ -1545,6 +1609,12 @@ class Host extends DataClass implements Insertable<Host> {
       lastConnectedAt: lastConnectedAt == null && nullToAbsent
           ? const Value.absent()
           : Value(lastConnectedAt),
+      terminalThemeLightId: terminalThemeLightId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(terminalThemeLightId),
+      terminalThemeDarkId: terminalThemeDarkId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(terminalThemeDarkId),
     );
   }
 
@@ -1570,6 +1640,12 @@ class Host extends DataClass implements Insertable<Host> {
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
       lastConnectedAt: serializer.fromJson<DateTime?>(json['lastConnectedAt']),
+      terminalThemeLightId: serializer.fromJson<String?>(
+        json['terminalThemeLightId'],
+      ),
+      terminalThemeDarkId: serializer.fromJson<String?>(
+        json['terminalThemeDarkId'],
+      ),
     );
   }
   @override
@@ -1592,6 +1668,8 @@ class Host extends DataClass implements Insertable<Host> {
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'updatedAt': serializer.toJson<DateTime>(updatedAt),
       'lastConnectedAt': serializer.toJson<DateTime?>(lastConnectedAt),
+      'terminalThemeLightId': serializer.toJson<String?>(terminalThemeLightId),
+      'terminalThemeDarkId': serializer.toJson<String?>(terminalThemeDarkId),
     };
   }
 
@@ -1612,6 +1690,8 @@ class Host extends DataClass implements Insertable<Host> {
     DateTime? createdAt,
     DateTime? updatedAt,
     Value<DateTime?> lastConnectedAt = const Value.absent(),
+    Value<String?> terminalThemeLightId = const Value.absent(),
+    Value<String?> terminalThemeDarkId = const Value.absent(),
   }) => Host(
     id: id ?? this.id,
     label: label ?? this.label,
@@ -1631,6 +1711,12 @@ class Host extends DataClass implements Insertable<Host> {
     lastConnectedAt: lastConnectedAt.present
         ? lastConnectedAt.value
         : this.lastConnectedAt,
+    terminalThemeLightId: terminalThemeLightId.present
+        ? terminalThemeLightId.value
+        : this.terminalThemeLightId,
+    terminalThemeDarkId: terminalThemeDarkId.present
+        ? terminalThemeDarkId.value
+        : this.terminalThemeDarkId,
   );
   Host copyWithCompanion(HostsCompanion data) {
     return Host(
@@ -1656,6 +1742,12 @@ class Host extends DataClass implements Insertable<Host> {
       lastConnectedAt: data.lastConnectedAt.present
           ? data.lastConnectedAt.value
           : this.lastConnectedAt,
+      terminalThemeLightId: data.terminalThemeLightId.present
+          ? data.terminalThemeLightId.value
+          : this.terminalThemeLightId,
+      terminalThemeDarkId: data.terminalThemeDarkId.present
+          ? data.terminalThemeDarkId.value
+          : this.terminalThemeDarkId,
     );
   }
 
@@ -1677,7 +1769,9 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('tags: $tags, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
-          ..write('lastConnectedAt: $lastConnectedAt')
+          ..write('lastConnectedAt: $lastConnectedAt, ')
+          ..write('terminalThemeLightId: $terminalThemeLightId, ')
+          ..write('terminalThemeDarkId: $terminalThemeDarkId')
           ..write(')'))
         .toString();
   }
@@ -1700,6 +1794,8 @@ class Host extends DataClass implements Insertable<Host> {
     createdAt,
     updatedAt,
     lastConnectedAt,
+    terminalThemeLightId,
+    terminalThemeDarkId,
   );
   @override
   bool operator ==(Object other) =>
@@ -1720,7 +1816,9 @@ class Host extends DataClass implements Insertable<Host> {
           other.tags == this.tags &&
           other.createdAt == this.createdAt &&
           other.updatedAt == this.updatedAt &&
-          other.lastConnectedAt == this.lastConnectedAt);
+          other.lastConnectedAt == this.lastConnectedAt &&
+          other.terminalThemeLightId == this.terminalThemeLightId &&
+          other.terminalThemeDarkId == this.terminalThemeDarkId);
 }
 
 class HostsCompanion extends UpdateCompanion<Host> {
@@ -1740,6 +1838,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<DateTime> createdAt;
   final Value<DateTime> updatedAt;
   final Value<DateTime?> lastConnectedAt;
+  final Value<String?> terminalThemeLightId;
+  final Value<String?> terminalThemeDarkId;
   const HostsCompanion({
     this.id = const Value.absent(),
     this.label = const Value.absent(),
@@ -1757,6 +1857,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
     this.lastConnectedAt = const Value.absent(),
+    this.terminalThemeLightId = const Value.absent(),
+    this.terminalThemeDarkId = const Value.absent(),
   });
   HostsCompanion.insert({
     this.id = const Value.absent(),
@@ -1775,6 +1877,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.createdAt = const Value.absent(),
     this.updatedAt = const Value.absent(),
     this.lastConnectedAt = const Value.absent(),
+    this.terminalThemeLightId = const Value.absent(),
+    this.terminalThemeDarkId = const Value.absent(),
   }) : label = Value(label),
        hostname = Value(hostname),
        username = Value(username);
@@ -1795,6 +1899,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<DateTime>? createdAt,
     Expression<DateTime>? updatedAt,
     Expression<DateTime>? lastConnectedAt,
+    Expression<String>? terminalThemeLightId,
+    Expression<String>? terminalThemeDarkId,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1813,6 +1919,10 @@ class HostsCompanion extends UpdateCompanion<Host> {
       if (createdAt != null) 'created_at': createdAt,
       if (updatedAt != null) 'updated_at': updatedAt,
       if (lastConnectedAt != null) 'last_connected_at': lastConnectedAt,
+      if (terminalThemeLightId != null)
+        'terminal_theme_light_id': terminalThemeLightId,
+      if (terminalThemeDarkId != null)
+        'terminal_theme_dark_id': terminalThemeDarkId,
     });
   }
 
@@ -1833,6 +1943,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<DateTime>? createdAt,
     Value<DateTime>? updatedAt,
     Value<DateTime?>? lastConnectedAt,
+    Value<String?>? terminalThemeLightId,
+    Value<String?>? terminalThemeDarkId,
   }) {
     return HostsCompanion(
       id: id ?? this.id,
@@ -1851,6 +1963,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
       createdAt: createdAt ?? this.createdAt,
       updatedAt: updatedAt ?? this.updatedAt,
       lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
+      terminalThemeLightId: terminalThemeLightId ?? this.terminalThemeLightId,
+      terminalThemeDarkId: terminalThemeDarkId ?? this.terminalThemeDarkId,
     );
   }
 
@@ -1905,6 +2019,16 @@ class HostsCompanion extends UpdateCompanion<Host> {
     if (lastConnectedAt.present) {
       map['last_connected_at'] = Variable<DateTime>(lastConnectedAt.value);
     }
+    if (terminalThemeLightId.present) {
+      map['terminal_theme_light_id'] = Variable<String>(
+        terminalThemeLightId.value,
+      );
+    }
+    if (terminalThemeDarkId.present) {
+      map['terminal_theme_dark_id'] = Variable<String>(
+        terminalThemeDarkId.value,
+      );
+    }
     return map;
   }
 
@@ -1926,7 +2050,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('tags: $tags, ')
           ..write('createdAt: $createdAt, ')
           ..write('updatedAt: $updatedAt, ')
-          ..write('lastConnectedAt: $lastConnectedAt')
+          ..write('lastConnectedAt: $lastConnectedAt, ')
+          ..write('terminalThemeLightId: $terminalThemeLightId, ')
+          ..write('terminalThemeDarkId: $terminalThemeDarkId')
           ..write(')'))
         .toString();
   }
@@ -5068,6 +5194,8 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<DateTime> createdAt,
       Value<DateTime> updatedAt,
       Value<DateTime?> lastConnectedAt,
+      Value<String?> terminalThemeLightId,
+      Value<String?> terminalThemeDarkId,
     });
 typedef $$HostsTableUpdateCompanionBuilder =
     HostsCompanion Function({
@@ -5087,6 +5215,8 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<DateTime> createdAt,
       Value<DateTime> updatedAt,
       Value<DateTime?> lastConnectedAt,
+      Value<String?> terminalThemeLightId,
+      Value<String?> terminalThemeDarkId,
     });
 
 final class $$HostsTableReferences
@@ -5236,6 +5366,16 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<DateTime> get lastConnectedAt => $composableBuilder(
     column: $table.lastConnectedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get terminalThemeLightId => $composableBuilder(
+    column: $table.terminalThemeLightId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get terminalThemeDarkId => $composableBuilder(
+    column: $table.terminalThemeDarkId,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -5408,6 +5548,16 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get terminalThemeLightId => $composableBuilder(
+    column: $table.terminalThemeLightId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get terminalThemeDarkId => $composableBuilder(
+    column: $table.terminalThemeDarkId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$SshKeysTableOrderingComposer get keyId {
     final $$SshKeysTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -5527,6 +5677,16 @@ class $$HostsTableAnnotationComposer
 
   GeneratedColumn<DateTime> get lastConnectedAt => $composableBuilder(
     column: $table.lastConnectedAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get terminalThemeLightId => $composableBuilder(
+    column: $table.terminalThemeLightId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get terminalThemeDarkId => $composableBuilder(
+    column: $table.terminalThemeDarkId,
     builder: (column) => column,
   );
 
@@ -5674,6 +5834,8 @@ class $$HostsTableTableManager
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<DateTime> updatedAt = const Value.absent(),
                 Value<DateTime?> lastConnectedAt = const Value.absent(),
+                Value<String?> terminalThemeLightId = const Value.absent(),
+                Value<String?> terminalThemeDarkId = const Value.absent(),
               }) => HostsCompanion(
                 id: id,
                 label: label,
@@ -5691,6 +5853,8 @@ class $$HostsTableTableManager
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 lastConnectedAt: lastConnectedAt,
+                terminalThemeLightId: terminalThemeLightId,
+                terminalThemeDarkId: terminalThemeDarkId,
               ),
           createCompanionCallback:
               ({
@@ -5710,6 +5874,8 @@ class $$HostsTableTableManager
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<DateTime> updatedAt = const Value.absent(),
                 Value<DateTime?> lastConnectedAt = const Value.absent(),
+                Value<String?> terminalThemeLightId = const Value.absent(),
+                Value<String?> terminalThemeDarkId = const Value.absent(),
               }) => HostsCompanion.insert(
                 id: id,
                 label: label,
@@ -5727,6 +5893,8 @@ class $$HostsTableTableManager
                 createdAt: createdAt,
                 updatedAt: updatedAt,
                 lastConnectedAt: lastConnectedAt,
+                terminalThemeLightId: terminalThemeLightId,
+                terminalThemeDarkId: terminalThemeDarkId,
               ),
           withReferenceMapper: (p0) => p0
               .map(

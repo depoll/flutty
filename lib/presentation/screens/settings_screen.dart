@@ -1,8 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../widgets/terminal_theme_picker.dart';
 
 /// Settings screen with appearance, security, terminal, and about sections.
 class SettingsScreen extends ConsumerWidget {
@@ -312,11 +314,27 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final themeSettings = ref.watch(terminalThemeSettingsProvider);
+
+    final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
+    final darkTheme = TerminalThemes.getById(themeSettings.darkThemeId);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(title: 'Terminal'),
+        ListTile(
+          leading: const Icon(Icons.palette_outlined),
+          title: const Text('Light Mode Theme'),
+          subtitle: Text(lightTheme?.name ?? 'Default'),
+          onTap: () => _showThemePicker(context, ref, isLight: true),
+        ),
+        ListTile(
+          leading: const Icon(Icons.palette),
+          title: const Text('Dark Mode Theme'),
+          subtitle: Text(darkTheme?.name ?? 'Default'),
+          onTap: () => _showThemePicker(context, ref, isLight: false),
+        ),
         ListTile(
           leading: const Icon(Icons.format_size),
           title: const Text('Font size'),
@@ -348,6 +366,29 @@ class _TerminalSection extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  Future<void> _showThemePicker(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool isLight,
+  }) async {
+    final settings = ref.read(terminalThemeSettingsProvider);
+    final currentId = isLight ? settings.lightThemeId : settings.darkThemeId;
+
+    final theme = await showThemePickerDialog(
+      context: context,
+      currentThemeId: currentId,
+    );
+
+    if (theme != null) {
+      final notifier = ref.read(terminalThemeSettingsProvider.notifier);
+      if (isLight) {
+        await notifier.setLightTheme(theme.id);
+      } else {
+        await notifier.setDarkTheme(theme.id);
+      }
+    }
   }
 
   String _fontFamilyLabel(String family) => switch (family) {

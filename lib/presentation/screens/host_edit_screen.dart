@@ -6,6 +6,8 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../widgets/terminal_theme_picker.dart';
 import 'hosts_screen.dart';
 
 /// Screen for adding or editing a host.
@@ -32,6 +34,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   int? _selectedKeyId;
   int? _selectedGroupId;
   int? _selectedJumpHostId;
+  String? _selectedLightThemeId;
+  String? _selectedDarkThemeId;
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
@@ -66,6 +70,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _selectedKeyId = host.keyId;
         _selectedGroupId = host.groupId;
         _selectedJumpHostId = host.jumpHostId;
+        _selectedLightThemeId = host.terminalThemeLightId;
+        _selectedDarkThemeId = host.terminalThemeDarkId;
         _isFavorite = host.isFavorite;
         _isLoading = false;
       });
@@ -278,6 +284,31 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           );
                         },
                       ),
+                      const SizedBox(height: 24),
+                      // Terminal theme section
+                      Text(
+                        'Terminal Theme',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                      ),
+                      const SizedBox(height: 12),
+                      // Light mode theme
+                      _ThemeSelectionTile(
+                        label: 'Light Mode Theme',
+                        themeId: _selectedLightThemeId,
+                        defaultLabel: 'Use default',
+                        onTap: () => _selectTheme(isLight: true),
+                      ),
+                      const SizedBox(height: 8),
+                      // Dark mode theme
+                      _ThemeSelectionTile(
+                        label: 'Dark Mode Theme',
+                        themeId: _selectedDarkThemeId,
+                        defaultLabel: 'Use default',
+                        onTap: () => _selectTheme(isLight: false),
+                      ),
                       const SizedBox(height: 16),
                     ],
                   ),
@@ -327,6 +358,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
+            terminalThemeLightId: drift.Value(_selectedLightThemeId),
+            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
             isFavorite: _isFavorite,
           ),
         );
@@ -342,6 +375,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
+            terminalThemeLightId: drift.Value(_selectedLightThemeId),
+            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -386,6 +421,99 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
     }
   }
+
+  Future<void> _selectTheme({required bool isLight}) async {
+    final currentId = isLight ? _selectedLightThemeId : _selectedDarkThemeId;
+    final theme = await showThemePickerDialog(
+      context: context,
+      currentThemeId: currentId,
+    );
+    if (theme != null && mounted) {
+      setState(() {
+        if (isLight) {
+          _selectedLightThemeId = theme.id;
+        } else {
+          _selectedDarkThemeId = theme.id;
+        }
+      });
+    }
+  }
+}
+
+class _ThemeSelectionTile extends StatelessWidget {
+  const _ThemeSelectionTile({
+    required this.label,
+    required this.themeId,
+    required this.defaultLabel,
+    required this.onTap,
+  });
+
+  final String label;
+  final String? themeId;
+  final String defaultLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = themeId != null ? TerminalThemes.getById(themeId!) : null;
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: theme?.background ?? colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: colorScheme.outline),
+        ),
+        child: theme != null
+            ? Center(
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    _colorDot(theme.red),
+                    _colorDot(theme.green),
+                    _colorDot(theme.blue),
+                  ],
+                ),
+              )
+            : Icon(
+                Icons.palette_outlined,
+                size: 20,
+                color: colorScheme.onSurfaceVariant,
+              ),
+      ),
+      title: Text(label),
+      subtitle: Text(theme?.name ?? defaultLabel),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (themeId != null)
+            IconButton(
+              icon: const Icon(Icons.clear, size: 18),
+              onPressed: () {
+                // Clear theme selection - handled via callback
+              },
+              tooltip: 'Reset to default',
+            ),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
+
+  Widget _colorDot(Color color) => Container(
+        width: 6,
+        height: 6,
+        margin: const EdgeInsets.symmetric(horizontal: 1),
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
+        ),
+      );
 }
 
 /// Provider for all SSH keys as stream.

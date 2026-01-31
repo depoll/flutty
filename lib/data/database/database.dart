@@ -57,6 +57,12 @@ class Hosts extends Table {
 
   /// Last connection timestamp.
   DateTimeColumn get lastConnectedAt => dateTime().nullable()();
+
+  /// Terminal theme ID for light mode (null = use global default).
+  TextColumn get terminalThemeLightId => text().nullable()();
+
+  /// Terminal theme ID for dark mode (null = use global default).
+  TextColumn get terminalThemeDarkId => text().nullable()();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -258,13 +264,16 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 1;
+  int get schemaVersion => 2;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
     onCreate: (m) => m.createAll(),
     onUpgrade: (m, from, to) async {
-      // Handle future migrations here
+      if (from < 2) {
+        await m.addColumn(hosts, hosts.terminalThemeLightId);
+        await m.addColumn(hosts, hosts.terminalThemeDarkId);
+      }
     },
   );
 }
