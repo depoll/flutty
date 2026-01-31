@@ -43,6 +43,14 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   String _searchQuery = '';
   _ThemeFilter _filter = _ThemeFilter.all;
+  final ScrollController _scrollController = ScrollController();
+  bool _hasScrolledToSelected = false;
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -168,7 +176,16 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final darkThemes = builtInThemes.where((t) => t.isDark).toList();
     final lightThemes = builtInThemes.where((t) => !t.isDark).toList();
 
+    // Calculate scroll offset to selected theme (once)
+    if (!_hasScrolledToSelected && widget.selectedThemeId != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _scrollToSelectedTheme(customThemes, darkThemes, lightThemes);
+      });
+      _hasScrolledToSelected = true;
+    }
+
     return ListView(
+      controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 16),
       children: [
         if (customThemes.isNotEmpty) ...[
@@ -201,6 +218,74 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         const SizedBox(height: 24),
       ],
     );
+  }
+
+  void _scrollToSelectedTheme(
+    List<TerminalThemeData> customThemes,
+    List<TerminalThemeData> darkThemes,
+    List<TerminalThemeData> lightThemes,
+  ) {
+    if (widget.selectedThemeId == null) return;
+
+    // Constants for layout calculations
+    const headerHeight = 28.0;
+    const gridItemHeight = 140.0; // Approximate height per row (aspect ratio 0.85)
+    const sectionSpacing = 16.0;
+    const itemsPerRow = 3;
+
+    double offset = 0;
+
+    // Check custom themes
+    final customIndex = customThemes.indexWhere((t) => t.id == widget.selectedThemeId);
+    if (customIndex >= 0) {
+      final rowIndex = customIndex ~/ itemsPerRow;
+      offset = headerHeight + (rowIndex * gridItemHeight);
+      _scrollController.animateTo(
+        offset,
+        duration: const Duration(milliseconds: 300),
+        curve: Curves.easeOut,
+      );
+      return;
+    }
+
+    // Add custom section height if it exists
+    if (customThemes.isNotEmpty) {
+      final customRows = (customThemes.length + itemsPerRow - 1) ~/ itemsPerRow;
+      offset += headerHeight + (customRows * gridItemHeight) + sectionSpacing;
+    }
+
+    // Check dark themes (if visible)
+    if (_filter != _ThemeFilter.light) {
+      final darkIndex = darkThemes.indexWhere((t) => t.id == widget.selectedThemeId);
+      if (darkIndex >= 0) {
+        final rowIndex = darkIndex ~/ itemsPerRow;
+        offset += headerHeight + (rowIndex * gridItemHeight);
+        _scrollController.animateTo(
+          offset,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+        return;
+      }
+      if (darkThemes.isNotEmpty) {
+        final darkRows = (darkThemes.length + itemsPerRow - 1) ~/ itemsPerRow;
+        offset += headerHeight + (darkRows * gridItemHeight) + sectionSpacing;
+      }
+    }
+
+    // Check light themes (if visible)
+    if (_filter != _ThemeFilter.dark) {
+      final lightIndex = lightThemes.indexWhere((t) => t.id == widget.selectedThemeId);
+      if (lightIndex >= 0) {
+        final rowIndex = lightIndex ~/ itemsPerRow;
+        offset += headerHeight + (rowIndex * gridItemHeight);
+        _scrollController.animateTo(
+          offset,
+          duration: const Duration(milliseconds: 300),
+          curve: Curves.easeOut,
+        );
+      }
+    }
   }
 
   void _handleCustomThemeLongPress(TerminalThemeData theme) {

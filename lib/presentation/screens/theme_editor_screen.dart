@@ -48,28 +48,8 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   late Color _brightWhite;
 
   bool _isDark = true;
-  String _fontFamily = 'JetBrains Mono';
   bool _isLoading = false;
   TerminalThemeData? _existingTheme;
-
-  /// Available font families for selection.
-  static const _fontOptions = [
-    'JetBrains Mono',
-    'Fira Code',
-    'Source Code Pro',
-    'Ubuntu Mono',
-    'Roboto Mono',
-    'IBM Plex Mono',
-    'Inconsolata',
-    'Anonymous Pro',
-    'Cousine',
-    'PT Mono',
-    'Space Mono',
-    'VT323',
-    'Share Tech Mono',
-    'Overpass Mono',
-    'Oxygen Mono',
-  ];
 
   @override
   void initState() {
@@ -85,7 +65,6 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   void _initializeFromDefaults() {
     // Start with Dracula as base
     final base = TerminalThemes.dracula;
-    _fontFamily = base.fontFamily;
     _foreground = base.foreground;
     _background = base.background;
     _cursor = base.cursor;
@@ -118,7 +97,6 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         _existingTheme = theme;
         _nameController.text = theme.name;
         _isDark = theme.isDark;
-        _fontFamily = theme.fontFamily;
         _foreground = theme.foreground;
         _background = theme.background;
         _cursor = theme.cursor;
@@ -155,7 +133,6 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         name: _nameController.text.trim(),
         isDark: _isDark,
         isCustom: true,
-        fontFamily: _fontFamily,
         foreground: _foreground,
         background: _background,
         cursor: _cursor,
@@ -177,60 +154,6 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         brightCyan: _brightCyan,
         brightWhite: _brightWhite,
       );
-
-  TextStyle _getFontTextStyle(String fontFamily) {
-    return switch (fontFamily) {
-      'JetBrains Mono' => GoogleFonts.jetBrainsMono(),
-      'Fira Code' => GoogleFonts.firaCode(),
-      'Source Code Pro' => GoogleFonts.sourceCodePro(),
-      'Ubuntu Mono' => GoogleFonts.ubuntuMono(),
-      'Roboto Mono' => GoogleFonts.robotoMono(),
-      'IBM Plex Mono' => GoogleFonts.ibmPlexMono(),
-      'Inconsolata' => GoogleFonts.inconsolata(),
-      'Anonymous Pro' => GoogleFonts.anonymousPro(),
-      'Cousine' => GoogleFonts.cousine(),
-      'PT Mono' => GoogleFonts.ptMono(),
-      'Space Mono' => GoogleFonts.spaceMono(),
-      'VT323' => GoogleFonts.vt323(),
-      'Share Tech Mono' => GoogleFonts.shareTechMono(),
-      'Overpass Mono' => GoogleFonts.overpassMono(),
-      'Oxygen Mono' => GoogleFonts.oxygenMono(),
-      _ => const TextStyle(),
-    };
-  }
-
-  void _showFontPicker() {
-    showDialog<void>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Select Font'),
-        content: SizedBox(
-          width: double.maxFinite,
-          height: 400,
-          child: ListView.builder(
-            itemCount: _fontOptions.length,
-            itemBuilder: (context, index) {
-              final font = _fontOptions[index];
-              final isSelected = font == _fontFamily;
-              return ListTile(
-                title: Text(font),
-                subtitle: Text(
-                  'AaBbCc 0123 {}[]',
-                  style: _getFontTextStyle(font).copyWith(fontSize: 16),
-                ),
-                trailing: isSelected ? const Icon(Icons.check) : null,
-                selected: isSelected,
-                onTap: () {
-                  setState(() => _fontFamily = font);
-                  Navigator.pop(context);
-                },
-              );
-            },
-          ),
-        ),
-      ),
-    );
-  }
 
   @override
   Widget build(BuildContext context) {
@@ -276,18 +199,6 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
                           subtitle: Text(_isDark ? 'Dark background' : 'Light background'),
                           value: _isDark,
                           onChanged: (v) => setState(() => _isDark = v),
-                        ),
-                        const SizedBox(height: 8),
-
-                        // Font family picker
-                        ListTile(
-                          title: const Text('Font Family'),
-                          subtitle: Text(
-                            _fontFamily,
-                            style: _getFontTextStyle(_fontFamily),
-                          ),
-                          trailing: const Icon(Icons.chevron_right),
-                          onTap: _showFontPicker,
                         ),
                         const Divider(height: 32),
 

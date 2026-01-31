@@ -13,6 +13,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -343,8 +344,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         ? 10.0
         : (screenWidth < 600 ? 12.0 : 14.0);
 
-    // Use the theme's font family
-    final textStyle = _getTerminalTextStyle(terminalTheme.fontFamily, fontSize);
+    // Get font family from host (if set) or global settings
+    final hostFont = _host?.terminalFontFamily;
+    final globalFont = ref.watch(fontFamilyNotifierProvider);
+    final fontFamily = hostFont ?? globalFont;
+    final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
 
     return TerminalView(
       _terminal,

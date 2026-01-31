@@ -2,6 +2,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -36,6 +37,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   int? _selectedJumpHostId;
   String? _selectedLightThemeId;
   String? _selectedDarkThemeId;
+  String? _selectedFontFamily;
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
@@ -72,6 +74,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _selectedJumpHostId = host.jumpHostId;
         _selectedLightThemeId = host.terminalThemeLightId;
         _selectedDarkThemeId = host.terminalThemeDarkId;
+        _selectedFontFamily = host.terminalFontFamily;
         _isFavorite = host.isFavorite;
         _isLoading = false;
       });
@@ -310,6 +313,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         onTap: () => _selectTheme(isLight: false),
                       ),
                       const SizedBox(height: 16),
+                      // Terminal font section
+                      _FontSelectionTile(
+                        fontFamily: _selectedFontFamily,
+                        defaultLabel: 'Use default',
+                        onTap: _selectFont,
+                      ),
+                      const SizedBox(height: 16),
                     ],
                   ),
                   const SizedBox(height: 32),
@@ -360,6 +370,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             jumpHostId: drift.Value(_selectedJumpHostId),
             terminalThemeLightId: drift.Value(_selectedLightThemeId),
             terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
+            terminalFontFamily: drift.Value(_selectedFontFamily),
             isFavorite: _isFavorite,
           ),
         );
@@ -377,6 +388,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             jumpHostId: drift.Value(_selectedJumpHostId),
             terminalThemeLightId: drift.Value(_selectedLightThemeId),
             terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
+            terminalFontFamily: drift.Value(_selectedFontFamily),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -435,6 +447,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         } else {
           _selectedDarkThemeId = theme.id;
         }
+      });
+    }
+  }
+
+  Future<void> _selectFont() async {
+    final selected = await showFontPickerDialog(
+      context: context,
+      currentFontFamily: _selectedFontFamily,
+    );
+    if (selected != null && mounted) {
+      setState(() {
+        _selectedFontFamily = selected;
       });
     }
   }
@@ -514,6 +538,166 @@ class _ThemeSelectionTile extends StatelessWidget {
           shape: BoxShape.circle,
         ),
       );
+}
+
+class _FontSelectionTile extends StatelessWidget {
+  const _FontSelectionTile({
+    required this.fontFamily,
+    required this.defaultLabel,
+    required this.onTap,
+  });
+
+  final String? fontFamily;
+  final String defaultLabel;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final displayName = fontFamily ?? defaultLabel;
+
+    return ListTile(
+      contentPadding: EdgeInsets.zero,
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: colorScheme.surfaceContainerHighest,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: colorScheme.outline),
+        ),
+        child: Icon(
+          Icons.font_download_outlined,
+          size: 20,
+          color: colorScheme.onSurfaceVariant,
+        ),
+      ),
+      title: const Text('Terminal Font'),
+      subtitle: Text(displayName),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (fontFamily != null)
+            IconButton(
+              icon: const Icon(Icons.clear, size: 18),
+              onPressed: () {
+                // Clear font selection - handled via callback
+              },
+              tooltip: 'Reset to default',
+            ),
+          const Icon(Icons.chevron_right),
+        ],
+      ),
+      onTap: onTap,
+    );
+  }
+}
+
+/// Shows a font picker dialog and returns the selected font family.
+Future<String?> showFontPickerDialog({
+  required BuildContext context,
+  required String? currentFontFamily,
+}) async {
+  const options = [
+    'monospace',
+    'JetBrains Mono',
+    'Fira Code',
+    'Source Code Pro',
+    'Ubuntu Mono',
+    'Roboto Mono',
+    'IBM Plex Mono',
+    'Inconsolata',
+    'Anonymous Pro',
+    'Cousine',
+    'PT Mono',
+    'Space Mono',
+    'VT323',
+    'Share Tech Mono',
+    'Overpass Mono',
+    'Oxygen Mono',
+  ];
+  const previewText = 'AaBbCc 0123 {}[]';
+  const itemHeight = 72.0;
+
+  // Find index of current selection and create scroll controller
+  final currentIndex = currentFontFamily != null 
+      ? options.indexOf(currentFontFamily) 
+      : -1;
+  final initialOffset = currentIndex > 0 ? (currentIndex * itemHeight) : 0.0;
+  final scrollController = ScrollController(initialScrollOffset: initialOffset);
+
+  return showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Terminal Font'),
+      content: SizedBox(
+        width: double.maxFinite,
+        height: 400,
+        child: ListView.builder(
+          controller: scrollController,
+          itemCount: options.length,
+          itemExtent: itemHeight,
+          itemBuilder: (context, index) {
+            final family = options[index];
+            final isSelected = family == currentFontFamily;
+            return ListTile(
+              title: Text(family),
+              subtitle: Text(
+                previewText,
+                style: _getFontStyle(family),
+              ),
+              selected: isSelected,
+              trailing: isSelected ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(context, family),
+            );
+          },
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+      ],
+    ),
+  );
+}
+
+TextStyle _getFontStyle(String family) {
+  switch (family) {
+    case 'JetBrains Mono':
+      return GoogleFonts.jetBrainsMono(fontSize: 14);
+    case 'Fira Code':
+      return GoogleFonts.firaCode(fontSize: 14);
+    case 'Source Code Pro':
+      return GoogleFonts.sourceCodePro(fontSize: 14);
+    case 'Ubuntu Mono':
+      return GoogleFonts.ubuntuMono(fontSize: 14);
+    case 'Roboto Mono':
+      return GoogleFonts.robotoMono(fontSize: 14);
+    case 'IBM Plex Mono':
+      return GoogleFonts.ibmPlexMono(fontSize: 14);
+    case 'Inconsolata':
+      return GoogleFonts.inconsolata(fontSize: 14);
+    case 'Anonymous Pro':
+      return GoogleFonts.anonymousPro(fontSize: 14);
+    case 'Cousine':
+      return GoogleFonts.cousine(fontSize: 14);
+    case 'PT Mono':
+      return GoogleFonts.ptMono(fontSize: 14);
+    case 'Space Mono':
+      return GoogleFonts.spaceMono(fontSize: 14);
+    case 'VT323':
+      return GoogleFonts.vt323(fontSize: 14);
+    case 'Share Tech Mono':
+      return GoogleFonts.shareTechMono(fontSize: 14);
+    case 'Overpass Mono':
+      return GoogleFonts.overpassMono(fontSize: 14);
+    case 'Oxygen Mono':
+      return GoogleFonts.oxygenMono(fontSize: 14);
+    default:
+      return const TextStyle(fontFamily: 'monospace', fontSize: 14);
+  }
 }
 
 /// Provider for all SSH keys as stream.

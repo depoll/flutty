@@ -515,12 +515,20 @@ class _TerminalSection extends ConsumerWidget {
       'Oxygen Mono',
     ];
     const previewText = 'AaBbCc 0123 {}[]';
+    const itemHeight = 72.0;
+    
+    // Find index of current selection and create scroll controller
+    final currentIndex = options.indexOf(current);
+    final initialOffset = currentIndex > 0 ? (currentIndex * itemHeight) : 0.0;
+    final scrollController = ScrollController(initialScrollOffset: initialOffset);
+    
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Font family'),
         content: SizedBox(
           width: double.maxFinite,
+          height: 400,
           child: RadioGroup<String>(
             groupValue: current,
             onChanged: (value) {
@@ -532,8 +540,9 @@ class _TerminalSection extends ConsumerWidget {
               }
             },
             child: ListView.builder(
-              shrinkWrap: true,
+              controller: scrollController,
               itemCount: options.length,
+              itemExtent: itemHeight,
               itemBuilder: (context, index) {
                 final family = options[index];
                 return RadioListTile<String>(

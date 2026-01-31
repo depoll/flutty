@@ -63,6 +63,9 @@ class Hosts extends Table {
 
   /// Terminal theme ID for dark mode (null = use global default).
   TextColumn get terminalThemeDarkId => text().nullable()();
+
+  /// Terminal font family (null = use global default).
+  TextColumn get terminalFontFamily => text().nullable()();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -264,7 +267,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 2;
+  int get schemaVersion => 3;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -273,6 +276,9 @@ class AppDatabase extends _$AppDatabase {
       if (from < 2) {
         await m.addColumn(hosts, hosts.terminalThemeLightId);
         await m.addColumn(hosts, hosts.terminalThemeDarkId);
+      }
+      if (from < 3) {
+        await m.addColumn(hosts, hosts.terminalFontFamily);
       }
     },
   );
