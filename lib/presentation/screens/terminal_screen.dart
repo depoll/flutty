@@ -12,6 +12,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -334,10 +335,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         ? 10.0
         : (screenWidth < 600 ? 12.0 : 14.0);
 
+    // Get font family from settings
+    final fontFamily = ref.watch(fontFamilyNotifierProvider);
+
     return TerminalView(
       _terminal,
       theme: terminalTheme.toXtermTheme(),
-      textStyle: TerminalStyle(fontSize: fontSize),
+      textStyle: TerminalStyle(
+        fontSize: fontSize,
+        fontFamily: fontFamily,
+      ),
+      padding: const EdgeInsets.all(8),
       deleteDetection: true,
     );
   }

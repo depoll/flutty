@@ -397,6 +397,17 @@ class _TerminalSection extends ConsumerWidget {
     'Fira Code' => 'Fira Code',
     'Source Code Pro' => 'Source Code Pro',
     'Cascadia Code' => 'Cascadia Code',
+    'SF Mono' => 'SF Mono',
+    'Menlo' => 'Menlo',
+    'Monaco' => 'Monaco',
+    'Consolas' => 'Consolas',
+    'Ubuntu Mono' => 'Ubuntu Mono',
+    'Roboto Mono' => 'Roboto Mono',
+    'IBM Plex Mono' => 'IBM Plex Mono',
+    'Inconsolata' => 'Inconsolata',
+    'Hack' => 'Hack',
+    'Anonymous Pro' => 'Anonymous Pro',
+    'Courier New' => 'Courier New',
     _ => family,
   };
 
@@ -467,31 +478,53 @@ class _TerminalSection extends ConsumerWidget {
       'Fira Code',
       'Source Code Pro',
       'Cascadia Code',
+      'SF Mono',
+      'Menlo',
+      'Monaco',
+      'Consolas',
+      'Ubuntu Mono',
+      'Roboto Mono',
+      'IBM Plex Mono',
+      'Inconsolata',
+      'Hack',
+      'Anonymous Pro',
+      'Courier New',
     ];
+    const previewText = 'AaBbCc 0123 {}[]';
     showDialog<void>(
       context: context,
       builder: (context) => AlertDialog(
         title: const Text('Font family'),
-        content: RadioGroup<String>(
-          groupValue: current,
-          onChanged: (value) {
-            if (value != null) {
-              ref
-                  .read(fontFamilyNotifierProvider.notifier)
-                  .setFontFamily(value);
-              Navigator.pop(context);
-            }
-          },
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: options
-                .map(
-                  (family) => RadioListTile<String>(
-                    title: Text(_fontFamilyLabel(family)),
-                    value: family,
+        content: SizedBox(
+          width: double.maxFinite,
+          child: RadioGroup<String>(
+            groupValue: current,
+            onChanged: (value) {
+              if (value != null) {
+                ref
+                    .read(fontFamilyNotifierProvider.notifier)
+                    .setFontFamily(value);
+                Navigator.pop(context);
+              }
+            },
+            child: ListView.builder(
+              shrinkWrap: true,
+              itemCount: options.length,
+              itemBuilder: (context, index) {
+                final family = options[index];
+                return RadioListTile<String>(
+                  title: Text(_fontFamilyLabel(family)),
+                  subtitle: Text(
+                    previewText,
+                    style: TextStyle(
+                      fontFamily: family,
+                      fontSize: 16,
+                    ),
                   ),
-                )
-                .toList(),
+                  value: family,
+                );
+              },
+            ),
           ),
         ),
       ),
