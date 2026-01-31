@@ -1,7 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_theme.dart';
+import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import 'theme_preview_card.dart';
 
@@ -43,22 +45,29 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   String _searchQuery = '';
   _ThemeFilter _filter = _ThemeFilter.all;
-  final ScrollController _scrollController = ScrollController();
-  bool _hasScrolledToSelected = false;
-
-  @override
-  void dispose() {
-    _scrollController.dispose();
-    super.dispose();
-  }
 
   @override
   Widget build(BuildContext context) {
     final themesAsync = ref.watch(allTerminalThemesProvider);
     final colorScheme = Theme.of(context).colorScheme;
+    
+    // Get the currently selected theme for the preview
+    final currentTheme = widget.selectedThemeId != null
+        ? TerminalThemes.getById(widget.selectedThemeId!)
+        : null;
 
     return Column(
       children: [
+        // Currently selected preview
+        if (currentTheme != null)
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: _CurrentSelectionPreview(
+              theme: currentTheme,
+              onTap: () => widget.onThemeSelected(currentTheme),
+            ),
+          ),
+        
         // Search and filter bar
         Padding(
           padding: const EdgeInsets.all(16),
@@ -176,16 +185,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final darkThemes = builtInThemes.where((t) => t.isDark).toList();
     final lightThemes = builtInThemes.where((t) => !t.isDark).toList();
 
-    // Calculate scroll offset to selected theme (once)
-    if (!_hasScrolledToSelected && widget.selectedThemeId != null) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        _scrollToSelectedTheme(customThemes, darkThemes, lightThemes);
-      });
-      _hasScrolledToSelected = true;
-    }
-
     return ListView(
-      controller: _scrollController,
       padding: const EdgeInsets.symmetric(horizontal: 16),
       children: [
         if (customThemes.isNotEmpty) ...[
@@ -217,79 +217,6 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         ],
         const SizedBox(height: 24),
       ],
-    );
-  }
-
-  void _scrollToSelectedTheme(
-    List<TerminalThemeData> customThemes,
-    List<TerminalThemeData> darkThemes,
-    List<TerminalThemeData> lightThemes,
-  ) {
-    if (widget.selectedThemeId == null) return;
-    if (!_scrollController.hasClients) return;
-
-    // Get screen width to determine column count (matches _ThemeGridSection)
-    final screenWidth = MediaQuery.of(context).size.width;
-    final itemsPerRow = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
-    
-    // Layout calculations
-    const headerHeight = 28.0; // Section header text + bottom padding
-    const mainAxisSpacing = 12.0;
-    const sectionSpacing = 16.0;
-    
-    // Calculate item height from width and aspect ratio
-    final gridItemWidth = (screenWidth - 32 - ((itemsPerRow - 1) * mainAxisSpacing)) / itemsPerRow;
-    final gridItemHeight = gridItemWidth / 0.9;
-
-    double offset = 0;
-
-    // Check custom themes
-    final customIndex = customThemes.indexWhere((t) => t.id == widget.selectedThemeId);
-    if (customIndex >= 0) {
-      final rowIndex = customIndex ~/ itemsPerRow;
-      // First row has no spacing above, subsequent rows have mainAxisSpacing
-      offset = headerHeight + (rowIndex * (gridItemHeight + mainAxisSpacing));
-      _animateToOffset(offset);
-      return;
-    }
-
-    // Add custom section height if it exists
-    if (customThemes.isNotEmpty) {
-      final customRows = (customThemes.length + itemsPerRow - 1) ~/ itemsPerRow;
-      offset += headerHeight + (customRows * gridItemHeight) + ((customRows - 1) * mainAxisSpacing) + sectionSpacing;
-    }
-
-    // Check dark themes (if visible)
-    if (_filter != _ThemeFilter.light) {
-      final darkIndex = darkThemes.indexWhere((t) => t.id == widget.selectedThemeId);
-      if (darkIndex >= 0) {
-        final rowIndex = darkIndex ~/ itemsPerRow;
-        offset += headerHeight + (rowIndex * (gridItemHeight + mainAxisSpacing));
-        _animateToOffset(offset);
-        return;
-      }
-      if (darkThemes.isNotEmpty) {
-        final darkRows = (darkThemes.length + itemsPerRow - 1) ~/ itemsPerRow;
-        offset += headerHeight + (darkRows * gridItemHeight) + ((darkRows - 1) * mainAxisSpacing) + sectionSpacing;
-      }
-    }
-
-    // Check light themes (if visible)
-    if (_filter != _ThemeFilter.dark) {
-      final lightIndex = lightThemes.indexWhere((t) => t.id == widget.selectedThemeId);
-      if (lightIndex >= 0) {
-        final rowIndex = lightIndex ~/ itemsPerRow;
-        offset += headerHeight + (rowIndex * (gridItemHeight + mainAxisSpacing));
-        _animateToOffset(offset);
-      }
-    }
-  }
-
-  void _animateToOffset(double offset) {
-    _scrollController.animateTo(
-      offset,
-      duration: const Duration(milliseconds: 300),
-      curve: Curves.easeOut,
     );
   }
 
@@ -408,6 +335,103 @@ class _SectionHeader extends StatelessWidget {
                 color: Theme.of(context).colorScheme.primary,
                 fontWeight: FontWeight.w600,
               ),
+        ),
+      );
+}
+
+class _CurrentSelectionPreview extends StatelessWidget {
+  const _CurrentSelectionPreview({
+    required this.theme,
+    required this.onTap,
+  });
+
+  final TerminalThemeData theme;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: colorScheme.primaryContainer.withAlpha(50),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.primary.withAlpha(100)),
+      ),
+      child: Row(
+        children: [
+          // Mini preview
+          Container(
+            width: 60,
+            height: 44,
+            decoration: BoxDecoration(
+              color: theme.background,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: colorScheme.outline),
+            ),
+            padding: const EdgeInsets.all(6),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Row(
+                  children: [
+                    _colorDot(theme.green),
+                    _colorDot(theme.blue),
+                    _colorDot(theme.red),
+                  ],
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  r'$ _',
+                  style: GoogleFonts.jetBrainsMono(
+                    fontSize: 8,
+                    color: theme.foreground,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          // Info
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Currently Selected',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  theme.name,
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ],
+            ),
+          ),
+          // Check icon
+          Icon(
+            Icons.check_circle,
+            color: colorScheme.primary,
+            size: 24,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _colorDot(Color color) => Container(
+        width: 6,
+        height: 6,
+        margin: const EdgeInsets.only(right: 2),
+        decoration: BoxDecoration(
+          color: color,
+          shape: BoxShape.circle,
         ),
       );
 }

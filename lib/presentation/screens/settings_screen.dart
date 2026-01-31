@@ -515,12 +515,6 @@ class _TerminalSection extends ConsumerWidget {
       'Oxygen Mono',
     ];
     const previewText = 'AaBbCc 0123 {}[]';
-    const itemHeight = 72.0;
-    
-    // Find index of current selection and create scroll controller
-    final currentIndex = options.indexOf(current);
-    final initialOffset = currentIndex > 0 ? (currentIndex * itemHeight) : 0.0;
-    final scrollController = ScrollController(initialScrollOffset: initialOffset);
     
     showDialog<void>(
       context: context,
@@ -528,33 +522,82 @@ class _TerminalSection extends ConsumerWidget {
         title: const Text('Font family'),
         content: SizedBox(
           width: double.maxFinite,
-          height: 400,
-          child: RadioGroup<String>(
-            groupValue: current,
-            onChanged: (value) {
-              if (value != null) {
-                ref
-                    .read(fontFamilyNotifierProvider.notifier)
-                    .setFontFamily(value);
-                Navigator.pop(context);
-              }
-            },
-            child: ListView.builder(
-              controller: scrollController,
-              itemCount: options.length,
-              itemExtent: itemHeight,
-              itemBuilder: (context, index) {
-                final family = options[index];
-                return RadioListTile<String>(
-                  title: Text(_fontFamilyLabel(family)),
-                  subtitle: Text(
-                    previewText,
-                    style: _getFontStyle(family),
+          height: 450,
+          child: Column(
+            children: [
+              // Current selection preview
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer.withAlpha(50),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary.withAlpha(100),
                   ),
-                  value: family,
-                );
-              },
-            ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Currently Selected',
+                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            _fontFamilyLabel(current),
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          Text(
+                            previewText,
+                            style: _getFontStyle(current),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              // Font list
+              Expanded(
+                child: RadioGroup<String>(
+                  groupValue: current,
+                  onChanged: (value) {
+                    if (value != null) {
+                      ref
+                          .read(fontFamilyNotifierProvider.notifier)
+                          .setFontFamily(value);
+                      Navigator.pop(context);
+                    }
+                  },
+                  child: ListView.builder(
+                    itemCount: options.length,
+                    itemBuilder: (context, index) {
+                      final family = options[index];
+                      return RadioListTile<String>(
+                        title: Text(_fontFamilyLabel(family)),
+                        subtitle: Text(
+                          previewText,
+                          style: _getFontStyle(family),
+                        ),
+                        value: family,
+                      );
+                    },
+                  ),
+                ),
+              ),
+            ],
           ),
         ),
       ),

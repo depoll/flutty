@@ -617,14 +617,6 @@ Future<String?> showFontPickerDialog({
     'Oxygen Mono',
   ];
   const previewText = 'AaBbCc 0123 {}[]';
-  const itemHeight = 72.0;
-
-  // Find index of current selection and create scroll controller
-  final currentIndex = currentFontFamily != null 
-      ? options.indexOf(currentFontFamily) 
-      : -1;
-  final initialOffset = currentIndex > 0 ? (currentIndex * itemHeight) : 0.0;
-  final scrollController = ScrollController(initialScrollOffset: initialOffset);
 
   return showDialog<String>(
     context: context,
@@ -632,25 +624,75 @@ Future<String?> showFontPickerDialog({
       title: const Text('Terminal Font'),
       content: SizedBox(
         width: double.maxFinite,
-        height: 400,
-        child: ListView.builder(
-          controller: scrollController,
-          itemCount: options.length,
-          itemExtent: itemHeight,
-          itemBuilder: (context, index) {
-            final family = options[index];
-            final isSelected = family == currentFontFamily;
-            return ListTile(
-              title: Text(family),
-              subtitle: Text(
-                previewText,
-                style: _getFontStyle(family),
+        height: 450,
+        child: Column(
+          children: [
+            // Current selection preview
+            if (currentFontFamily != null)
+              Container(
+                padding: const EdgeInsets.all(12),
+                margin: const EdgeInsets.only(bottom: 12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer.withAlpha(50),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary.withAlpha(100),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.check_circle,
+                      color: Theme.of(context).colorScheme.primary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            'Currently Selected',
+                            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                              color: Theme.of(context).colorScheme.primary,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            currentFontFamily,
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          Text(
+                            previewText,
+                            style: _getFontStyle(currentFontFamily),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
               ),
-              selected: isSelected,
-              trailing: isSelected ? const Icon(Icons.check) : null,
-              onTap: () => Navigator.pop(context, family),
-            );
-          },
+            // Font list
+            Expanded(
+              child: ListView.builder(
+                itemCount: options.length,
+                itemBuilder: (context, index) {
+                  final family = options[index];
+                  final isSelected = family == currentFontFamily;
+                  return ListTile(
+                    title: Text(family),
+                    subtitle: Text(
+                      previewText,
+                      style: _getFontStyle(family),
+                    ),
+                    selected: isSelected,
+                    trailing: isSelected ? const Icon(Icons.check) : null,
+                    onTap: () => Navigator.pop(context, family),
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
       actions: [
