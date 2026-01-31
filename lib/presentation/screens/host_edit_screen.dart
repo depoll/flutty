@@ -228,25 +228,38 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   keysAsync.when(
                     loading: () => const LinearProgressIndicator(),
                     error: (_, _) => const Text('Error loading keys'),
-                    data: (keys) => DropdownButtonFormField<int?>(
-                      // ignore: deprecated_member_use
-                      value: _selectedKeyId,
-                      decoration: const InputDecoration(
-                        labelText: 'SSH Key (optional)',
-                        prefixIcon: Icon(Icons.key),
-                      ),
-                      items: [
-                        const DropdownMenuItem(child: Text('None')),
-                        ...keys.map(
-                          (key) => DropdownMenuItem(
-                            value: key.id,
-                            child: Text(key.name),
-                          ),
+                    data: (keys) {
+                      // Validate selected key still exists
+                      final validKeyId = _selectedKeyId != null &&
+                              keys.any((k) => k.id == _selectedKeyId)
+                          ? _selectedKeyId
+                          : null;
+                      if (validKeyId != _selectedKeyId) {
+                        // Schedule state update for next frame
+                        WidgetsBinding.instance.addPostFrameCallback((_) {
+                          if (mounted) setState(() => _selectedKeyId = null);
+                        });
+                      }
+                      return DropdownButtonFormField<int?>(
+                        // ignore: deprecated_member_use
+                        value: validKeyId,
+                        decoration: const InputDecoration(
+                          labelText: 'SSH Key (optional)',
+                          prefixIcon: Icon(Icons.key),
                         ),
-                      ],
-                      onChanged: (value) =>
-                          setState(() => _selectedKeyId = value),
-                    ),
+                        items: [
+                          const DropdownMenuItem(child: Text('None')),
+                          ...keys.map(
+                            (key) => DropdownMenuItem(
+                              value: key.id,
+                              child: Text(key.name),
+                            ),
+                          ),
+                        ],
+                        onChanged: (value) =>
+                            setState(() => _selectedKeyId = value),
+                      );
+                    },
                   ),
                   const SizedBox(height: 24),
 
@@ -265,8 +278,22 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           final availableHosts = hosts
                               .where((h) => h.id != widget.hostId)
                               .toList();
+                          // Validate selected jump host still exists
+                          final validJumpHostId = _selectedJumpHostId != null &&
+                                  availableHosts
+                                      .any((h) => h.id == _selectedJumpHostId)
+                              ? _selectedJumpHostId
+                              : null;
+                          if (validJumpHostId != _selectedJumpHostId) {
+                            WidgetsBinding.instance.addPostFrameCallback((_) {
+                              if (mounted) {
+                                setState(() => _selectedJumpHostId = null);
+                              }
+                            });
+                          }
                           return DropdownButtonFormField<int?>(
-                            initialValue: _selectedJumpHostId,
+                            // ignore: deprecated_member_use
+                            value: validJumpHostId,
                             decoration: const InputDecoration(
                               labelText: 'Jump Host (optional)',
                               prefixIcon: Icon(Icons.hub),
