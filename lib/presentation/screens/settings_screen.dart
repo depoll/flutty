@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
@@ -396,20 +397,43 @@ class _TerminalSection extends ConsumerWidget {
     'JetBrains Mono' => 'JetBrains Mono',
     'Fira Code' => 'Fira Code',
     'Source Code Pro' => 'Source Code Pro',
-    'Cascadia Code' => 'Cascadia Code',
-    'SF Mono' => 'SF Mono',
-    'Menlo' => 'Menlo',
-    'Monaco' => 'Monaco',
-    'Consolas' => 'Consolas',
     'Ubuntu Mono' => 'Ubuntu Mono',
     'Roboto Mono' => 'Roboto Mono',
     'IBM Plex Mono' => 'IBM Plex Mono',
     'Inconsolata' => 'Inconsolata',
-    'Hack' => 'Hack',
     'Anonymous Pro' => 'Anonymous Pro',
-    'Courier New' => 'Courier New',
+    'Cousine' => 'Cousine',
+    'PT Mono' => 'PT Mono',
+    'Space Mono' => 'Space Mono',
+    'VT323' => 'VT323 (Retro)',
+    'Share Tech Mono' => 'Share Tech Mono',
+    'Overpass Mono' => 'Overpass Mono',
+    'Oxygen Mono' => 'Oxygen Mono',
     _ => family,
   };
+
+  /// Gets a TextStyle for the given font family using Google Fonts.
+  TextStyle _getFontStyle(String family, {double fontSize = 16}) {
+    return switch (family) {
+      'monospace' => TextStyle(fontFamily: 'monospace', fontSize: fontSize),
+      'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
+      'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
+      'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
+      'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
+      'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
+      'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
+      'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
+      'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
+      'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
+      'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
+      'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
+      'VT323' => GoogleFonts.vt323(fontSize: fontSize),
+      'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
+      'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
+      'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
+      _ => TextStyle(fontFamily: family, fontSize: fontSize),
+    };
+  }
 
   String _cursorStyleLabel(String style) => switch (style) {
     'block' => 'Block',
@@ -477,18 +501,18 @@ class _TerminalSection extends ConsumerWidget {
       'JetBrains Mono',
       'Fira Code',
       'Source Code Pro',
-      'Cascadia Code',
-      'SF Mono',
-      'Menlo',
-      'Monaco',
-      'Consolas',
       'Ubuntu Mono',
       'Roboto Mono',
       'IBM Plex Mono',
       'Inconsolata',
-      'Hack',
       'Anonymous Pro',
-      'Courier New',
+      'Cousine',
+      'PT Mono',
+      'Space Mono',
+      'VT323',
+      'Share Tech Mono',
+      'Overpass Mono',
+      'Oxygen Mono',
     ];
     const previewText = 'AaBbCc 0123 {}[]';
     showDialog<void>(
@@ -516,10 +540,7 @@ class _TerminalSection extends ConsumerWidget {
                   title: Text(_fontFamilyLabel(family)),
                   subtitle: Text(
                     previewText,
-                    style: TextStyle(
-                      fontFamily: family,
-                      fontSize: 16,
-                    ),
+                    style: _getFontStyle(family),
                   ),
                   value: family,
                 );

@@ -6,6 +6,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:google_fonts/google_fonts.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../data/database/database.dart';
@@ -337,19 +338,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         ? 10.0
         : (screenWidth < 600 ? 12.0 : 14.0);
 
-    // Get font family from settings
+    // Get font family from settings and create terminal style
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
+    final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
 
     return TerminalView(
       _terminal,
       theme: terminalTheme.toXtermTheme(),
-      textStyle: TerminalStyle(
-        fontSize: fontSize,
-        fontFamily: fontFamily,
-      ),
+      textStyle: textStyle,
       padding: const EdgeInsets.all(8),
       deleteDetection: true,
     );
+  }
+
+  /// Gets the terminal text style for the given font family using Google Fonts.
+  TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
+    final textStyle = switch (fontFamily) {
+      'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
+      'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
+      'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
+      'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
+      'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
+      'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
+      'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
+      'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
+      'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
+      'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
+      'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
+      'VT323' => GoogleFonts.vt323(fontSize: fontSize),
+      'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
+      'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
+      'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
+      _ => null,
+    };
+
+    if (textStyle != null) {
+      return TerminalStyle.fromTextStyle(textStyle);
+    }
+    return TerminalStyle(fontSize: fontSize);
   }
 
   Future<void> _handleMenuAction(String action) async {
