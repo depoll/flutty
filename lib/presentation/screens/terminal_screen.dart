@@ -353,6 +353,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       textStyle: textStyle,
       padding: const EdgeInsets.all(8),
       deleteDetection: true,
+      autofocus: true,
     );
   }
 
