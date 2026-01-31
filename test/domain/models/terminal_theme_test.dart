@@ -239,10 +239,10 @@ void main() {
     });
 
     test('getById returns theme when exists', () {
-      final theme = TerminalThemes.getById('dracula');
+      final theme = TerminalThemes.getById('midnight-purple');
       expect(theme, isNotNull);
-      expect(theme!.id, 'dracula');
-      expect(theme.name, 'Dracula');
+      expect(theme!.id, 'midnight-purple');
+      expect(theme.name, 'Midnight Purple');
     });
 
     test('getById returns null when not exists', () {
@@ -257,10 +257,10 @@ void main() {
     });
 
     test('contains expected themes', () {
-      expect(TerminalThemes.getById('dracula'), isNotNull);
-      expect(TerminalThemes.getById('github-light'), isNotNull);
-      expect(TerminalThemes.getById('monokai-pro'), isNotNull);
-      expect(TerminalThemes.getById('solarized-dark'), isNotNull);
+      expect(TerminalThemes.getById('midnight-purple'), isNotNull);
+      expect(TerminalThemes.getById('clean-white'), isNotNull);
+      expect(TerminalThemes.getById('vivid'), isNotNull);
+      expect(TerminalThemes.getById('ocean-dark'), isNotNull);
     });
   });
 }

@@ -8,63 +8,62 @@ import 'terminal_theme.dart';
 /// dark themes, light themes, and retro/fun themes.
 abstract final class TerminalThemes {
   /// Default theme ID for dark mode.
-  static const defaultDarkThemeId = 'dracula';
+  static const defaultDarkThemeId = 'midnight-purple';
 
   /// Default theme ID for light mode.
-  static const defaultLightThemeId = 'github-light';
+  static const defaultLightThemeId = 'clean-white';
 
   /// All built-in themes.
   static List<TerminalThemeData> get all => [...darkThemes, ...lightThemes];
 
   /// Dark themes collection.
   static List<TerminalThemeData> get darkThemes => [
-    dracula,
-    oneDark,
-    nord,
-    tokyoNight,
-    catppuccinMocha,
-    gruvboxDark,
-    monokaiPro,
-    ayuDark,
-    materialDark,
-    nightfox,
-    kanagawa,
-    synthwave84,
-    matrixGreen,
-    cyberpunk,
-    solarizedDark,
-    tokyoNightStorm,
+    midnightPurple,
+    slate,
+    arctic,
+    cityLights,
+    velvet,
+    ember,
+    vivid,
+    goldenDark,
+    charcoal,
+    twilight,
+    inkWash,
+    retrowave,
+    hacker,
+    neonPunk,
+    oceanDark,
+    stormCloud,
   ];
 
   /// Light themes collection.
   static List<TerminalThemeData> get lightThemes => [
-    githubLight,
-    solarizedLight,
-    oneLight,
-    catppuccinLatte,
-    gruvboxLight,
-    ayuLight,
+    cleanWhite,
+    parchment,
+    daylight,
+    roseMilk,
+    wheat,
+    sunrise,
     paper,
-    retroGreen,
+    mintGreen,
   ];
 
   /// Gets a theme by ID, returns null if not found.
   static TerminalThemeData? getById(String id) {
-    try {
-      return all.firstWhere((t) => t.id == id);
-    } on StateError {
-      return null;
+    for (final theme in all) {
+      if (theme.id == id) return theme;
     }
+    return null;
   }
 
   // ============================================
   // DARK THEMES
   // ============================================
 
-  /// Dracula theme - popular dark theme with purple accents.
-  static const dracula = TerminalThemeData(
-    id: 'dracula',
-    name: 'Dracula',
+  /// Midnight Purple - dark theme with purple and pink accents.
+  static const midnightPurple = TerminalThemeData(
+    id: 'midnight-purple',
+    name: 'Midnight Purple',
     isDark: true,
     foreground: Color(0xFFF8F8F2),
     background: Color(0xFF282A36),
@@ -88,10 +87,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// One Dark theme - Atom's iconic dark theme.
-  static const oneDark = TerminalThemeData(
-    id: 'one-dark',
-    name: 'One Dark',
+  /// Slate - muted dark theme with soft blue accents.
+  static const slate = TerminalThemeData(
+    id: 'slate',
+    name: 'Slate',
     isDark: true,
     foreground: Color(0xFFABB2BF),
     background: Color(0xFF282C34),
@@ -115,10 +114,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// Nord theme - arctic, north-bluish color palette.
-  static const nord = TerminalThemeData(
-    id: 'nord',
-    name: 'Nord',
+  /// Arctic - cool blue palette inspired by northern lights.
+  static const arctic = TerminalThemeData(
+    id: 'arctic',
+    name: 'Arctic',
     isDark: true,
     foreground: Color(0xFFD8DEE9),
     background: Color(0xFF2E3440),
@@ -142,10 +141,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFECEFF4),
   );
 
-  /// Tokyo Night theme - clean dark theme inspired by Tokyo city lights.
-  static const tokyoNight = TerminalThemeData(
-    id: 'tokyo-night',
-    name: 'Tokyo Night',
+  /// City Lights - clean dark theme inspired by urban nightscapes.
+  static const cityLights = TerminalThemeData(
+    id: 'city-lights',
+    name: 'City Lights',
     isDark: true,
     foreground: Color(0xFFC0CAF5),
     background: Color(0xFF1A1B26),
@@ -169,10 +168,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFC0CAF5),
   );
 
-  /// Tokyo Night Storm - darker variant of Tokyo Night.
-  static const tokyoNightStorm = TerminalThemeData(
-    id: 'tokyo-night-storm',
-    name: 'Tokyo Night Storm',
+  /// Storm Cloud - darker variant with blue-purple tones.
+  static const stormCloud = TerminalThemeData(
+    id: 'storm-cloud',
+    name: 'Storm Cloud',
     isDark: true,
     foreground: Color(0xFFC0CAF5),
     background: Color(0xFF24283B),
@@ -196,10 +195,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFC0CAF5),
   );
 
-  /// Catppuccin Mocha - soothing pastel dark theme.
-  static const catppuccinMocha = TerminalThemeData(
-    id: 'catppuccin-mocha',
-    name: 'Catppuccin Mocha',
+  /// Velvet - soothing pastel dark theme.
+  static const velvet = TerminalThemeData(
+    id: 'velvet',
+    name: 'Velvet',
     isDark: true,
     foreground: Color(0xFFCDD6F4),
     background: Color(0xFF1E1E2E),
@@ -223,10 +222,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFA6ADC8),
   );
 
-  /// Gruvbox Dark - retro groove dark theme.
-  static const gruvboxDark = TerminalThemeData(
-    id: 'gruvbox-dark',
-    name: 'Gruvbox Dark',
+  /// Ember - warm retro theme with earthy orange and brown tones.
+  static const ember = TerminalThemeData(
+    id: 'ember',
+    name: 'Ember',
     isDark: true,
     foreground: Color(0xFFEBDBB2),
     background: Color(0xFF282828),
@@ -250,10 +249,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFEBDBB2),
   );
 
-  /// Monokai Pro - refined Monokai with modern colors.
-  static const monokaiPro = TerminalThemeData(
-    id: 'monokai-pro',
-    name: 'Monokai Pro',
+  /// Vivid - high contrast with vibrant warm colors.
+  static const vivid = TerminalThemeData(
+    id: 'vivid',
+    name: 'Vivid',
     isDark: true,
     foreground: Color(0xFFFCFCFA),
     background: Color(0xFF2D2A2E),
@@ -277,10 +276,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFCFCFA),
   );
 
-  /// Ayu Dark theme - modern dark theme with vibrant accents.
-  static const ayuDark = TerminalThemeData(
-    id: 'ayu-dark',
-    name: 'Ayu Dark',
+  /// Golden Dark - deep black with golden yellow accents.
+  static const goldenDark = TerminalThemeData(
+    id: 'golden-dark',
+    name: 'Golden Dark',
     isDark: true,
     foreground: Color(0xFFBFBDB6),
     background: Color(0xFF0D1017),
@@ -304,10 +303,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFBFBDB6),
   );
 
-  /// Material Dark theme - Google Material Design inspired.
-  static const materialDark = TerminalThemeData(
-    id: 'material-dark',
-    name: 'Material Dark',
+  /// Charcoal - clean dark gray theme.
+  static const charcoal = TerminalThemeData(
+    id: 'charcoal',
+    name: 'Charcoal',
     isDark: true,
     foreground: Color(0xFFEEFFFF),
     background: Color(0xFF212121),
@@ -331,10 +330,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// Nightfox theme - clean and minimal dark theme.
-  static const nightfox = TerminalThemeData(
-    id: 'nightfox',
-    name: 'Nightfox',
+  /// Twilight - clean minimal dark blue theme.
+  static const twilight = TerminalThemeData(
+    id: 'twilight',
+    name: 'Twilight',
     isDark: true,
     foreground: Color(0xFFCDCECF),
     background: Color(0xFF192330),
@@ -358,10 +357,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFE4E4E5),
   );
 
-  /// Kanagawa theme - dark theme inspired by Japanese art.
-  static const kanagawa = TerminalThemeData(
-    id: 'kanagawa',
-    name: 'Kanagawa',
+  /// Ink Wash - dark theme with muted traditional palette.
+  static const inkWash = TerminalThemeData(
+    id: 'ink-wash',
+    name: 'Ink Wash',
     isDark: true,
     foreground: Color(0xFFDCD7BA),
     background: Color(0xFF1F1F28),
@@ -385,10 +384,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFDCD7BA),
   );
 
-  /// Synthwave '84 theme - retro 80s neon aesthetic.
-  static const synthwave84 = TerminalThemeData(
-    id: 'synthwave-84',
-    name: "Synthwave '84",
+  /// Retrowave - retro 80s neon aesthetic with pink and cyan.
+  static const retrowave = TerminalThemeData(
+    id: 'retrowave',
+    name: 'Retrowave',
     isDark: true,
     foreground: Color(0xFFFFFFFF),
     background: Color(0xFF262335),
@@ -412,10 +411,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// Matrix Green theme - classic hacker aesthetic.
-  static const matrixGreen = TerminalThemeData(
-    id: 'matrix-green',
-    name: 'Matrix',
+  /// Hacker - classic green-on-black terminal aesthetic.
+  static const hacker = TerminalThemeData(
+    id: 'hacker',
+    name: 'Hacker',
     isDark: true,
     foreground: Color(0xFF00FF00),
     background: Color(0xFF0D0D0D),
@@ -439,10 +438,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFF00FF00),
   );
 
-  /// Cyberpunk theme - neon pink and cyan on dark.
-  static const cyberpunk = TerminalThemeData(
-    id: 'cyberpunk',
-    name: 'Cyberpunk',
+  /// Neon Punk - bold neon pink and cyan on deep black.
+  static const neonPunk = TerminalThemeData(
+    id: 'neon-punk',
+    name: 'Neon Punk',
     isDark: true,
     foreground: Color(0xFFEAEAEA),
     background: Color(0xFF0A0A0F),
@@ -466,10 +465,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// Solarized Dark theme - precision colors for machines and people.
-  static const solarizedDark = TerminalThemeData(
-    id: 'solarized-dark',
-    name: 'Solarized Dark',
+  /// Ocean Dark - deep teal background with balanced colors.
+  static const oceanDark = TerminalThemeData(
+    id: 'ocean-dark',
+    name: 'Ocean Dark',
     isDark: true,
     foreground: Color(0xFF839496),
     background: Color(0xFF002B36),
@@ -497,10 +496,10 @@ abstract final class TerminalThemes {
   // LIGHT THEMES
   // ============================================
 
-  /// GitHub Light theme - clean and minimal.
-  static const githubLight = TerminalThemeData(
-    id: 'github-light',
-    name: 'GitHub Light',
+  /// Clean White - minimal and crisp light theme.
+  static const cleanWhite = TerminalThemeData(
+    id: 'clean-white',
+    name: 'Clean White',
     isDark: false,
     foreground: Color(0xFF24292F),
     background: Color(0xFFFFFFFF),
@@ -524,10 +523,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFF8C959F),
   );
 
-  /// Solarized Light theme.
-  static const solarizedLight = TerminalThemeData(
-    id: 'solarized-light',
-    name: 'Solarized Light',
+  /// Parchment - warm cream background with soft colors.
+  static const parchment = TerminalThemeData(
+    id: 'parchment',
+    name: 'Parchment',
     isDark: false,
     foreground: Color(0xFF657B83),
     background: Color(0xFFFDF6E3),
@@ -551,10 +550,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFDF6E3),
   );
 
-  /// One Light theme - Atom's light theme.
-  static const oneLight = TerminalThemeData(
-    id: 'one-light',
-    name: 'One Light',
+  /// Daylight - bright and airy with blue accents.
+  static const daylight = TerminalThemeData(
+    id: 'daylight',
+    name: 'Daylight',
     isDark: false,
     foreground: Color(0xFF383A42),
     background: Color(0xFFFAFAFA),
@@ -578,10 +577,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// Catppuccin Latte - light variant of Catppuccin.
-  static const catppuccinLatte = TerminalThemeData(
-    id: 'catppuccin-latte',
-    name: 'Catppuccin Latte',
+  /// Rose Milk - soft pastel light theme with pink tints.
+  static const roseMilk = TerminalThemeData(
+    id: 'rose-milk',
+    name: 'Rose Milk',
     isDark: false,
     foreground: Color(0xFF4C4F69),
     background: Color(0xFFEFF1F5),
@@ -605,10 +604,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFBCC0CC),
   );
 
-  /// Gruvbox Light theme.
-  static const gruvboxLight = TerminalThemeData(
-    id: 'gruvbox-light',
-    name: 'Gruvbox Light',
+  /// Wheat - warm cream background with earthy accents.
+  static const wheat = TerminalThemeData(
+    id: 'wheat',
+    name: 'Wheat',
     isDark: false,
     foreground: Color(0xFF3C3836),
     background: Color(0xFFFBF1C7),
@@ -632,10 +631,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFF3C3836),
   );
 
-  /// Ayu Light theme.
-  static const ayuLight = TerminalThemeData(
-    id: 'ayu-light',
-    name: 'Ayu Light',
+  /// Sunrise - bright white with warm orange accents.
+  static const sunrise = TerminalThemeData(
+    id: 'sunrise',
+    name: 'Sunrise',
     isDark: false,
     foreground: Color(0xFF5C6166),
     background: Color(0xFFFCFCFC),
@@ -659,7 +658,7 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFF3F4F5),
   );
 
-  /// Paper theme - minimal light theme.
+  /// Paper - neutral minimal light theme.
   static const paper = TerminalThemeData(
     id: 'paper',
     name: 'Paper',
@@ -686,10 +685,10 @@ abstract final class TerminalThemes {
     brightWhite: Color(0xFFFFFFFF),
   );
 
-  /// Retro Green theme - classic green terminal on light background.
-  static const retroGreen = TerminalThemeData(
-    id: 'retro-green',
-    name: 'Retro Green',
+  /// Mint Green - soft green tinted light theme.
+  static const mintGreen = TerminalThemeData(
+    id: 'mint-green',
+    name: 'Mint Green',
     isDark: false,
     foreground: Color(0xFF00AA00),
     background: Color(0xFFE8F5E9),
