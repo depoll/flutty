@@ -31,6 +31,31 @@ flutter test --coverage
 flutter test integration_test
 ```
 
+## Pre-Commit Checklist
+
+**IMPORTANT**: Before committing any code changes, always run these checks:
+
+```bash
+# 1. Analyze for ALL issues (not just warnings - CI fails on info too)
+flutter analyze
+
+# 2. Format all code
+dart format .
+
+# 3. Run tests
+flutter test
+```
+
+CI will fail if there are ANY analyzer issues (including `info` level). Common issues to watch for:
+
+- **`public_member_api_docs`**: Add `///` documentation to all public members
+- **`prefer_const_constructors`**: Use `const` for widget constructors when possible
+- **`deprecated_member_use`**: Replace deprecated APIs (e.g., `Color.value` → `Color.toARGB32()`)
+- **`cascade_invocations`**: Use `..` cascade notation for chained method calls on same object
+- **`sort_constructors_first`**: Place factory constructors before field declarations
+- **`avoid_equals_and_hash_code_on_mutable_classes`**: Add `@immutable` annotation to immutable classes
+- **`prefer_expression_function_bodies`**: Use `=>` for single-expression functions
+
 ## Architecture
 
 This is a cross-platform SSH client using **Clean Architecture** with three layers:
