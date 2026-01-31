@@ -64,7 +64,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
 
   void _initializeFromDefaults() {
     // Start with Midnight Purple as base
-    final base = TerminalThemes.midnightPurple;
+    const base = TerminalThemes.midnightPurple;
     _foreground = base.foreground;
     _background = base.background;
     _cursor = base.cursor;
@@ -200,7 +200,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
                         const Divider(height: 32),
 
                         // Special colors section
-                        _SectionHeader(title: 'Special Colors'),
+                        const _SectionHeader(title: 'Special Colors'),
                         _ColorRow(
                           label: 'Background',
                           color: _background,
@@ -224,7 +224,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
                         const Divider(height: 32),
 
                         // Standard ANSI colors
-                        _SectionHeader(title: 'Standard Colors'),
+                        const _SectionHeader(title: 'Standard Colors'),
                         _ColorRow(
                           label: 'Black',
                           color: _black,
@@ -268,7 +268,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
                         const Divider(height: 32),
 
                         // Bright ANSI colors
-                        _SectionHeader(title: 'Bright Colors'),
+                        const _SectionHeader(title: 'Bright Colors'),
                         _ColorRow(
                           label: 'Bright Black',
                           color: _brightBlack,
@@ -316,7 +316,6 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
                 ),
                 // Preview panel
                 Expanded(
-                  flex: 1,
                   child: Container(
                     margin: const EdgeInsets.all(16),
                     decoration: BoxDecoration(
@@ -455,8 +454,9 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
       final theme = _buildTheme();
       await service.saveCustomTheme(theme);
 
-      ref.invalidate(allTerminalThemesProvider);
-      ref.invalidate(customTerminalThemesProvider);
+      ref
+        ..invalidate(allTerminalThemesProvider)
+        ..invalidate(customTerminalThemesProvider);
 
       if (mounted) {
         context.pop();
@@ -563,7 +563,7 @@ class _SimpleColorPickerState extends State<_SimpleColorPicker> {
   }
 
   String _colorToHex(Color color) =>
-      '#${color.value.toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
+      '#${color.toARGB32().toRadixString(16).padLeft(8, '0').substring(2).toUpperCase()}';
 
   Color? _hexToColor(String hex) {
     var cleanHex = hex.replaceAll('#', '').replaceAll('0x', '');

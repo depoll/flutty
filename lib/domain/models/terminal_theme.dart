@@ -7,6 +7,7 @@ import 'package:xterm/xterm.dart';
 ///
 /// Contains all 16 ANSI colors plus special colors for cursor, selection,
 /// foreground, and background. Can be converted to xterm's [TerminalTheme].
+@immutable
 class TerminalThemeData {
   /// Creates a new [TerminalThemeData].
   const TerminalThemeData({
@@ -39,6 +40,50 @@ class TerminalThemeData {
     this.searchHitForeground,
   });
 
+  /// Creates a theme from a JSON map.
+  factory TerminalThemeData.fromJson(Map<String, dynamic> json) =>
+      TerminalThemeData(
+        id: json['id'] as String,
+        name: json['name'] as String,
+        isDark: json['isDark'] as bool,
+        isCustom: json['isCustom'] as bool? ?? true,
+        foreground: Color(json['foreground'] as int),
+        background: Color(json['background'] as int),
+        cursor: Color(json['cursor'] as int),
+        selection: Color(json['selection'] as int),
+        black: Color(json['black'] as int),
+        red: Color(json['red'] as int),
+        green: Color(json['green'] as int),
+        yellow: Color(json['yellow'] as int),
+        blue: Color(json['blue'] as int),
+        magenta: Color(json['magenta'] as int),
+        cyan: Color(json['cyan'] as int),
+        white: Color(json['white'] as int),
+        brightBlack: Color(json['brightBlack'] as int),
+        brightRed: Color(json['brightRed'] as int),
+        brightGreen: Color(json['brightGreen'] as int),
+        brightYellow: Color(json['brightYellow'] as int),
+        brightBlue: Color(json['brightBlue'] as int),
+        brightMagenta: Color(json['brightMagenta'] as int),
+        brightCyan: Color(json['brightCyan'] as int),
+        brightWhite: Color(json['brightWhite'] as int),
+        searchHitBackground: json['searchHitBackground'] != null
+            ? Color(json['searchHitBackground'] as int)
+            : null,
+        searchHitBackgroundCurrent: json['searchHitBackgroundCurrent'] != null
+            ? Color(json['searchHitBackgroundCurrent'] as int)
+            : null,
+        searchHitForeground: json['searchHitForeground'] != null
+            ? Color(json['searchHitForeground'] as int)
+            : null,
+      );
+
+  /// Creates a theme from a JSON string.
+  factory TerminalThemeData.fromJsonString(String jsonString) =>
+      TerminalThemeData.fromJson(
+        jsonDecode(jsonString) as Map<String, dynamic>,
+      );
+
   /// Unique identifier for the theme.
   final String id;
 
@@ -63,29 +108,61 @@ class TerminalThemeData {
   /// Selection highlight color.
   final Color selection;
 
-  // Standard ANSI colors (0-7)
+  /// ANSI color 0 (black).
   final Color black;
+
+  /// ANSI color 1 (red).
   final Color red;
+
+  /// ANSI color 2 (green).
   final Color green;
+
+  /// ANSI color 3 (yellow).
   final Color yellow;
+
+  /// ANSI color 4 (blue).
   final Color blue;
+
+  /// ANSI color 5 (magenta).
   final Color magenta;
+
+  /// ANSI color 6 (cyan).
   final Color cyan;
+
+  /// ANSI color 7 (white).
   final Color white;
 
-  // Bright ANSI colors (8-15)
+  /// ANSI color 8 (bright black).
   final Color brightBlack;
+
+  /// ANSI color 9 (bright red).
   final Color brightRed;
+
+  /// ANSI color 10 (bright green).
   final Color brightGreen;
+
+  /// ANSI color 11 (bright yellow).
   final Color brightYellow;
+
+  /// ANSI color 12 (bright blue).
   final Color brightBlue;
+
+  /// ANSI color 13 (bright magenta).
   final Color brightMagenta;
+
+  /// ANSI color 14 (bright cyan).
   final Color brightCyan;
+
+  /// ANSI color 15 (bright white).
   final Color brightWhite;
 
-  // Search highlight colors (optional, defaults provided)
+  /// Background color for search hits.
   final Color? searchHitBackground;
+
+  /// Background color for current search hit.
   final Color? searchHitBackgroundCurrent;
+
+  /// Foreground color for search hits.
   final Color? searchHitForeground;
 
   /// Converts this theme data to xterm's [TerminalTheme].
@@ -182,80 +259,36 @@ class TerminalThemeData {
     'name': name,
     'isDark': isDark,
     'isCustom': isCustom,
-    'foreground': foreground.value,
-    'background': background.value,
-    'cursor': cursor.value,
-    'selection': selection.value,
-    'black': black.value,
-    'red': red.value,
-    'green': green.value,
-    'yellow': yellow.value,
-    'blue': blue.value,
-    'magenta': magenta.value,
-    'cyan': cyan.value,
-    'white': white.value,
-    'brightBlack': brightBlack.value,
-    'brightRed': brightRed.value,
-    'brightGreen': brightGreen.value,
-    'brightYellow': brightYellow.value,
-    'brightBlue': brightBlue.value,
-    'brightMagenta': brightMagenta.value,
-    'brightCyan': brightCyan.value,
-    'brightWhite': brightWhite.value,
+    'foreground': foreground.toARGB32(),
+    'background': background.toARGB32(),
+    'cursor': cursor.toARGB32(),
+    'selection': selection.toARGB32(),
+    'black': black.toARGB32(),
+    'red': red.toARGB32(),
+    'green': green.toARGB32(),
+    'yellow': yellow.toARGB32(),
+    'blue': blue.toARGB32(),
+    'magenta': magenta.toARGB32(),
+    'cyan': cyan.toARGB32(),
+    'white': white.toARGB32(),
+    'brightBlack': brightBlack.toARGB32(),
+    'brightRed': brightRed.toARGB32(),
+    'brightGreen': brightGreen.toARGB32(),
+    'brightYellow': brightYellow.toARGB32(),
+    'brightBlue': brightBlue.toARGB32(),
+    'brightMagenta': brightMagenta.toARGB32(),
+    'brightCyan': brightCyan.toARGB32(),
+    'brightWhite': brightWhite.toARGB32(),
     if (searchHitBackground != null)
-      'searchHitBackground': searchHitBackground!.value,
+      'searchHitBackground': searchHitBackground!.toARGB32(),
     if (searchHitBackgroundCurrent != null)
-      'searchHitBackgroundCurrent': searchHitBackgroundCurrent!.value,
+      'searchHitBackgroundCurrent': searchHitBackgroundCurrent!.toARGB32(),
     if (searchHitForeground != null)
-      'searchHitForeground': searchHitForeground!.value,
+      'searchHitForeground': searchHitForeground!.toARGB32(),
   };
-
-  /// Creates a theme from a JSON map.
-  factory TerminalThemeData.fromJson(Map<String, dynamic> json) =>
-      TerminalThemeData(
-        id: json['id'] as String,
-        name: json['name'] as String,
-        isDark: json['isDark'] as bool,
-        isCustom: json['isCustom'] as bool? ?? true,
-        foreground: Color(json['foreground'] as int),
-        background: Color(json['background'] as int),
-        cursor: Color(json['cursor'] as int),
-        selection: Color(json['selection'] as int),
-        black: Color(json['black'] as int),
-        red: Color(json['red'] as int),
-        green: Color(json['green'] as int),
-        yellow: Color(json['yellow'] as int),
-        blue: Color(json['blue'] as int),
-        magenta: Color(json['magenta'] as int),
-        cyan: Color(json['cyan'] as int),
-        white: Color(json['white'] as int),
-        brightBlack: Color(json['brightBlack'] as int),
-        brightRed: Color(json['brightRed'] as int),
-        brightGreen: Color(json['brightGreen'] as int),
-        brightYellow: Color(json['brightYellow'] as int),
-        brightBlue: Color(json['brightBlue'] as int),
-        brightMagenta: Color(json['brightMagenta'] as int),
-        brightCyan: Color(json['brightCyan'] as int),
-        brightWhite: Color(json['brightWhite'] as int),
-        searchHitBackground: json['searchHitBackground'] != null
-            ? Color(json['searchHitBackground'] as int)
-            : null,
-        searchHitBackgroundCurrent: json['searchHitBackgroundCurrent'] != null
-            ? Color(json['searchHitBackgroundCurrent'] as int)
-            : null,
-        searchHitForeground: json['searchHitForeground'] != null
-            ? Color(json['searchHitForeground'] as int)
-            : null,
-      );
 
   /// Serializes this theme to a JSON string.
   String toJsonString() => jsonEncode(toJson());
-
-  /// Creates a theme from a JSON string.
-  factory TerminalThemeData.fromJsonString(String jsonString) =>
-      TerminalThemeData.fromJson(
-        jsonDecode(jsonString) as Map<String, dynamic>,
-      );
 
   @override
   bool operator ==(Object other) =>

@@ -209,7 +209,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       children: [
         if (customThemes.isNotEmpty) ...[
-          _SectionHeader(title: 'Custom Themes'),
+          const _SectionHeader(title: 'Custom Themes'),
           _ThemeGridSection(
             themes: customThemes,
             selectedThemeId: widget.selectedThemeId,
@@ -219,7 +219,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           const SizedBox(height: 16),
         ],
         if (darkThemes.isNotEmpty && _filter != _ThemeFilter.light) ...[
-          _SectionHeader(title: 'Dark Themes'),
+          const _SectionHeader(title: 'Dark Themes'),
           _ThemeGridSection(
             themes: darkThemes,
             selectedThemeId: widget.selectedThemeId,
@@ -228,7 +228,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           const SizedBox(height: 16),
         ],
         if (lightThemes.isNotEmpty && _filter != _ThemeFilter.dark) ...[
-          _SectionHeader(title: 'Light Themes'),
+          const _SectionHeader(title: 'Light Themes'),
           _ThemeGridSection(
             themes: lightThemes,
             selectedThemeId: widget.selectedThemeId,

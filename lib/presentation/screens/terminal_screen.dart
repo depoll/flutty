@@ -258,26 +258,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         final scaffoldMessenger = ScaffoldMessenger.of(context);
 
         // Clear any existing snackbar first to prevent stacking
-        scaffoldMessenger.hideCurrentSnackBar();
-
-        scaffoldMessenger.showSnackBar(
-          SnackBar(
-            content: Row(
-              children: [
-                Expanded(child: Text('Theme: ${theme.name}')),
-                const SizedBox(width: 8),
-                FilledButton.tonal(
-                  onPressed: () {
-                    scaffoldMessenger.hideCurrentSnackBar();
-                    _saveThemeToHost(theme, isDark: isDark);
-                  },
-                  child: const Text('Save to Host'),
-                ),
-              ],
+        scaffoldMessenger
+          ..hideCurrentSnackBar()
+          ..showSnackBar(
+            SnackBar(
+              content: Row(
+                children: [
+                  Expanded(child: Text('Theme: ${theme.name}')),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: () {
+                      scaffoldMessenger.hideCurrentSnackBar();
+                      _saveThemeToHost(theme, isDark: isDark);
+                    },
+                    child: const Text('Save to Host'),
+                  ),
+                ],
+              ),
+              duration: const Duration(seconds: 6),
             ),
-            duration: const Duration(seconds: 6),
-          ),
-        );
+          );
       }
     }
   }
