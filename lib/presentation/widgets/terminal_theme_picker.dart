@@ -84,7 +84,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
           automaticallyImplyLeading: false,
           backgroundColor: Theme.of(context).scaffoldBackgroundColor,
           surfaceTintColor: Colors.transparent,
-          toolbarHeight: 110,
+          toolbarHeight: 120,
           flexibleSpace: Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
             child: Column(
