@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/presentation/screens/hosts_screen.dart';
+import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
 
 // Most HostsScreen tests are skipped because the screen uses StreamProviders
 // which don't settle in widget tests (continuous database watchers).

@@ -3,8 +3,8 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/data/database/database.dart';
-import 'package:flutty/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/key_repository.dart';
 
 void main() {
   late AppDatabase db;

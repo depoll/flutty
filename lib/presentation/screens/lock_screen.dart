@@ -101,21 +101,17 @@ class _LockScreenState extends ConsumerState<LockScreen> {
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
               // Logo/icon
-              Container(
-                padding: const EdgeInsets.all(24),
-                decoration: BoxDecoration(
-                  color: colorScheme.primary.withValues(alpha: 0.15),
-                  shape: BoxShape.circle,
-                ),
-                child: Icon(
-                  Icons.terminal,
-                  size: 64,
-                  color: colorScheme.primary,
+              ClipRRect(
+                borderRadius: BorderRadius.circular(24),
+                child: Image.asset(
+                  'assets/icons/monkeyssh_icon.png',
+                  width: 112,
+                  height: 112,
                 ),
               ),
               const SizedBox(height: 32),
               Text(
-                'Flutty',
+                'MonkeySSH',
                 style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),

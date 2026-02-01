@@ -5,9 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/data/database/database.dart';
-import 'package:flutty/domain/services/auth_service.dart';
-import 'package:flutty/presentation/screens/settings_screen.dart';
+import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/services/auth_service.dart';
+import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 
 void main() {
   group('SettingsScreen', () {

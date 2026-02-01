@@ -16,7 +16,7 @@ class FluttyApp extends ConsumerWidget {
     final themeMode = ref.watch(themeModeNotifierProvider);
 
     return MaterialApp.router(
-      title: 'Flutty',
+      title: 'MonkeySSH',
       debugShowCheckedModeBanner: false,
       theme: FluttyTheme.light,
       darkTheme: FluttyTheme.dark,

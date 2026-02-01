@@ -3,9 +3,9 @@
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/data/database/database.dart';
-import 'package:flutty/data/repositories/key_repository.dart';
-import 'package:flutty/domain/services/key_service.dart';
+import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/domain/services/key_service.dart';
 
 void main() {
   late AppDatabase db;

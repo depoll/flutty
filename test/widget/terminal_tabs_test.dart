@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/presentation/widgets/terminal_tabs.dart';
+import 'package:monkeyssh/presentation/widgets/terminal_tabs.dart';
 
 // Some TerminalTabBar tests are skipped due to framework issues when running
 // in parallel with other tests.

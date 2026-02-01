@@ -1,4 +1,4 @@
-name: flutty
+name: monkeyssh
 description: >
   A cross-platform SSH client built with Flutter. Features terminal emulation,
   SFTP file transfer, key management, and port forwarding. Inspired by Termius.
@@ -71,11 +71,14 @@ dev_dependencies:
   mocktail: ^1.0.4
   integration_test:
     sdk: flutter
+  
+  # App icons
+  flutter_launcher_icons: ^0.14.3
 
 flutter:
   uses-material-design: true
   
-  # Assets will be added later
-  # assets:
+  assets:
+    - assets/icons/
   #   - assets/icons/
   #   - assets/fonts/

@@ -3,7 +3,7 @@
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/app/app.dart';
+import 'package:monkeyssh/app/app.dart';
 
 // These tests are skipped because FluttyApp uses StreamProviders
 // which don't settle in widget tests (continuous database watchers).

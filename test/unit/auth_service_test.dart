@@ -5,7 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:local_auth/local_auth.dart';
 import 'package:mocktail/mocktail.dart';
 
-import 'package:flutty/domain/services/auth_service.dart';
+import 'package:monkeyssh/domain/services/auth_service.dart';
 
 class MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
 
