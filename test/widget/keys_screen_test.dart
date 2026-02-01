@@ -4,7 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'package:flutty/presentation/screens/keys_screen.dart';
+import 'package:monkeyssh/presentation/screens/keys_screen.dart';
 
 // Most KeysScreen tests are skipped because the screen uses StreamProviders
 // which don't settle in widget tests (continuous database watchers).

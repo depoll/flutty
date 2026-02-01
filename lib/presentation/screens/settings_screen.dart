@@ -688,7 +688,7 @@ class _AboutSection extends StatelessWidget {
         subtitle: const Text('Open source licenses'),
         onTap: () => showLicensePage(
           context: context,
-          applicationName: 'Flutty',
+          applicationName: 'MonkeySSH',
           applicationVersion: '0.1.0',
         ),
       ),
@@ -697,7 +697,7 @@ class _AboutSection extends StatelessWidget {
 
   void _showGitHubInfo(BuildContext context) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('GitHub: github.com/flutty-app/flutty')),
+      const SnackBar(content: Text('GitHub: github.com/monkeyssh-app/monkeyssh')),
     );
   }
 }

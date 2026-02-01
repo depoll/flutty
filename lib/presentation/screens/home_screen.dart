@@ -54,7 +54,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
               ),
             ),
             const SizedBox(width: 8),
-            const Text('Flutty'),
+            const Text('MonkeySSH'),
           ],
         ),
         actions: [
@@ -121,21 +121,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                   child: Row(
                     children: [
-                      Container(
-                        padding: const EdgeInsets.all(6),
-                        decoration: BoxDecoration(
-                          color: colorScheme.primary,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Icon(
-                          Icons.terminal_rounded,
-                          color: Colors.black,
-                          size: 16,
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(6),
+                        child: Image.asset(
+                          'assets/icons/monkeyssh_icon.png',
+                          width: 28,
+                          height: 28,
                         ),
                       ),
                       const SizedBox(width: 10),
                       Text(
-                        'Flutty',
+                        'MonkeySSH',
                         style: theme.textTheme.titleMedium?.copyWith(
                           fontWeight: FontWeight.w700,
                         ),

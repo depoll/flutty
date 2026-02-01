@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutty/domain/models/terminal_theme.dart';
-import 'package:flutty/domain/models/terminal_themes.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 
 void main() {
   group('TerminalThemeData', () {

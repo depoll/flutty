@@ -122,7 +122,7 @@ class AuthService {
 
   /// Authenticate with biometrics.
   Future<bool> authenticateWithBiometrics({
-    String reason = 'Authenticate to access Flutty',
+    String reason = 'Authenticate to access MonkeySSH',
   }) async {
     try {
       return await _localAuth.authenticate(
@@ -140,7 +140,7 @@ class AuthService {
   /// Authenticate with any available method.
   Future<bool> authenticate({
     String? pin,
-    String reason = 'Authenticate to access Flutty',
+    String reason = 'Authenticate to access MonkeySSH',
   }) async {
     final method = await getAuthMethod();
 

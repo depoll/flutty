@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:flutty/presentation/widgets/keyboard_toolbar.dart';
+import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:xterm/xterm.dart';
 
 void main() {

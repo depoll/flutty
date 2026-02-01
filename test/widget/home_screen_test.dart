@@ -6,8 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 
-import 'package:flutty/data/database/database.dart';
-import 'package:flutty/presentation/screens/home_screen.dart';
+import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/presentation/screens/home_screen.dart';
 
 // These tests are skipped because the HomeScreen uses StreamProviders
 // which don't settle in widget tests (continuous database watchers).
