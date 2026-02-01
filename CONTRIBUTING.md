@@ -1,6 +1,6 @@
-# Contributing to Flutty
+# Contributing to MonkeySSH
 
-Thank you for your interest in contributing to Flutty! This document provides guidelines and instructions for contributing.
+Thank you for your interest in contributing to MonkeySSH! This document provides guidelines and instructions for contributing.
 
 ## ⚠️ Experimental Project Notice
 
@@ -26,12 +26,12 @@ Be respectful and constructive in all interactions.
 1. Fork the repository
 2. Clone your fork:
    ```bash
-   git clone https://github.com/YOUR_USERNAME/flutty.git
-   cd flutty
+   git clone https://github.com/YOUR_USERNAME/monkeyssh.git
+   cd monkeyssh
    ```
 3. Add upstream remote:
    ```bash
-   git remote add upstream https://github.com/ORIGINAL_OWNER/flutty.git
+   git remote add upstream https://github.com/depoll/flutty.git
    ```
 4. Install dependencies:
    ```bash

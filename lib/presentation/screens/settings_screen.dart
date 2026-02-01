@@ -697,7 +697,9 @@ class _AboutSection extends StatelessWidget {
 
   void _showGitHubInfo(BuildContext context) {
     ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('GitHub: github.com/monkeyssh-app/monkeyssh')),
+      const SnackBar(
+        content: Text('GitHub: github.com/monkeyssh-app/monkeyssh'),
+      ),
     );
   }
 }
