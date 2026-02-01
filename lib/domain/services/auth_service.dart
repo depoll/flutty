@@ -127,10 +127,8 @@ class AuthService {
     try {
       return await _localAuth.authenticate(
         localizedReason: reason,
-        options: const AuthenticationOptions(
-          stickyAuth: true,
-          biometricOnly: true,
-        ),
+        biometricOnly: true,
+        persistAcrossBackgrounding: true,
       );
     } on PlatformException {
       return false;
@@ -198,22 +196,26 @@ class AuthService {
 final authServiceProvider = Provider<AuthService>((ref) => AuthService());
 
 /// Provider for the current authentication state.
-final authStateProvider = StateNotifierProvider<AuthStateNotifier, AuthState>(
-  (ref) => AuthStateNotifier(ref.watch(authServiceProvider)),
+final authStateProvider = NotifierProvider<AuthStateNotifier, AuthState>(
+  AuthStateNotifier.new,
 );
 
 /// Notifier for authentication state.
-class AuthStateNotifier extends StateNotifier<AuthState> {
-  /// Creates a new [AuthStateNotifier].
-  AuthStateNotifier(this._authService) : super(AuthState.unknown) {
-    Future.microtask(_init);
-  }
+class AuthStateNotifier extends Notifier<AuthState> {
+  late final AuthService _authService;
+  bool _disposed = false;
 
-  final AuthService _authService;
+  @override
+  AuthState build() {
+    _authService = ref.watch(authServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return AuthState.unknown;
+  }
 
   Future<void> _init() async {
     final isEnabled = await _authService.isAuthEnabled();
-    if (!mounted) return;
+    if (_disposed) return;
     state = isEnabled ? AuthState.locked : AuthState.notConfigured;
   }
 

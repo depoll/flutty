@@ -146,17 +146,21 @@ final themeModeProvider = FutureProvider<String>((ref) async {
 });
 
 /// Notifier for theme mode with write capability.
-class ThemeModeNotifier extends StateNotifier<ThemeMode> {
-  /// Creates a new [ThemeModeNotifier].
-  ThemeModeNotifier(this._settings) : super(ThemeMode.system) {
-    Future.microtask(_init);
-  }
+class ThemeModeNotifier extends Notifier<ThemeMode> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  ThemeMode build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return ThemeMode.system;
+  }
 
   Future<void> _init() async {
     final value = await _settings.getString(SettingKeys.themeMode) ?? 'system';
-    if (!mounted) return;
+    if (_disposed) return;
     state = _parseThemeMode(value);
   }
 
@@ -180,9 +184,7 @@ class ThemeModeNotifier extends StateNotifier<ThemeMode> {
 
 /// Provider for theme mode with write capability.
 final themeModeNotifierProvider =
-    StateNotifierProvider<ThemeModeNotifier, ThemeMode>(
-      (ref) => ThemeModeNotifier(ref.watch(settingsServiceProvider)),
-    );
+    NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
 
 /// Provider for font size setting.
 final fontSizeProvider = FutureProvider<double>((ref) async {
@@ -192,17 +194,21 @@ final fontSizeProvider = FutureProvider<double>((ref) async {
 });
 
 /// Notifier for font size with write capability.
-class FontSizeNotifier extends StateNotifier<double> {
-  /// Creates a new [FontSizeNotifier].
-  FontSizeNotifier(this._settings) : super(14) {
-    Future.microtask(_init);
-  }
+class FontSizeNotifier extends Notifier<double> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  double build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return 14;
+  }
 
   Future<void> _init() async {
     final value = await _settings.getInt(SettingKeys.terminalFontSize);
-    if (!mounted) return;
+    if (_disposed) return;
     state = value?.toDouble() ?? 14.0;
   }
 
@@ -214,10 +220,9 @@ class FontSizeNotifier extends StateNotifier<double> {
 }
 
 /// Provider for font size with write capability.
-final fontSizeNotifierProvider =
-    StateNotifierProvider<FontSizeNotifier, double>(
-      (ref) => FontSizeNotifier(ref.watch(settingsServiceProvider)),
-    );
+final fontSizeNotifierProvider = NotifierProvider<FontSizeNotifier, double>(
+  FontSizeNotifier.new,
+);
 
 /// Provider for font family setting.
 final fontFamilyProvider = FutureProvider<String>((ref) async {
@@ -226,17 +231,21 @@ final fontFamilyProvider = FutureProvider<String>((ref) async {
 });
 
 /// Notifier for font family with write capability.
-class FontFamilyNotifier extends StateNotifier<String> {
-  /// Creates a new [FontFamilyNotifier].
-  FontFamilyNotifier(this._settings) : super('monospace') {
-    Future.microtask(_init);
-  }
+class FontFamilyNotifier extends Notifier<String> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  String build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return 'monospace';
+  }
 
   Future<void> _init() async {
     final value = await _settings.getString(SettingKeys.terminalFont);
-    if (!mounted) return;
+    if (_disposed) return;
     state = value ?? 'monospace';
   }
 
@@ -248,10 +257,9 @@ class FontFamilyNotifier extends StateNotifier<String> {
 }
 
 /// Provider for font family with write capability.
-final fontFamilyNotifierProvider =
-    StateNotifierProvider<FontFamilyNotifier, String>(
-      (ref) => FontFamilyNotifier(ref.watch(settingsServiceProvider)),
-    );
+final fontFamilyNotifierProvider = NotifierProvider<FontFamilyNotifier, String>(
+  FontFamilyNotifier.new,
+);
 
 /// Provider for auto-lock timeout setting.
 final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
@@ -260,17 +268,21 @@ final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
 });
 
 /// Notifier for auto-lock timeout with write capability.
-class AutoLockTimeoutNotifier extends StateNotifier<int> {
-  /// Creates a new [AutoLockTimeoutNotifier].
-  AutoLockTimeoutNotifier(this._settings) : super(5) {
-    Future.microtask(_init);
-  }
+class AutoLockTimeoutNotifier extends Notifier<int> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  int build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return 5;
+  }
 
   Future<void> _init() async {
     final value = await _settings.getInt(SettingKeys.autoLockTimeout);
-    if (!mounted) return;
+    if (_disposed) return;
     state = value ?? 5;
   }
 
@@ -283,9 +295,7 @@ class AutoLockTimeoutNotifier extends StateNotifier<int> {
 
 /// Provider for auto-lock timeout with write capability.
 final autoLockTimeoutNotifierProvider =
-    StateNotifierProvider<AutoLockTimeoutNotifier, int>(
-      (ref) => AutoLockTimeoutNotifier(ref.watch(settingsServiceProvider)),
-    );
+    NotifierProvider<AutoLockTimeoutNotifier, int>(AutoLockTimeoutNotifier.new);
 
 /// Provider for haptic feedback setting.
 final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
@@ -294,20 +304,24 @@ final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
 });
 
 /// Notifier for haptic feedback with write capability.
-class HapticFeedbackNotifier extends StateNotifier<bool> {
-  /// Creates a new [HapticFeedbackNotifier].
-  HapticFeedbackNotifier(this._settings) : super(true) {
-    Future.microtask(_init);
-  }
+class HapticFeedbackNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return true;
+  }
 
   Future<void> _init() async {
     final value = await _settings.getBool(
       SettingKeys.hapticFeedback,
       defaultValue: true,
     );
-    if (!mounted) return;
+    if (_disposed) return;
     state = value;
   }
 
@@ -320,9 +334,7 @@ class HapticFeedbackNotifier extends StateNotifier<bool> {
 
 /// Provider for haptic feedback with write capability.
 final hapticFeedbackNotifierProvider =
-    StateNotifierProvider<HapticFeedbackNotifier, bool>(
-      (ref) => HapticFeedbackNotifier(ref.watch(settingsServiceProvider)),
-    );
+    NotifierProvider<HapticFeedbackNotifier, bool>(HapticFeedbackNotifier.new);
 
 /// Provider for cursor style setting.
 final cursorStyleProvider = FutureProvider<String>((ref) async {
@@ -331,17 +343,21 @@ final cursorStyleProvider = FutureProvider<String>((ref) async {
 });
 
 /// Notifier for cursor style with write capability.
-class CursorStyleNotifier extends StateNotifier<String> {
-  /// Creates a new [CursorStyleNotifier].
-  CursorStyleNotifier(this._settings) : super('block') {
-    Future.microtask(_init);
-  }
+class CursorStyleNotifier extends Notifier<String> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  String build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return 'block';
+  }
 
   Future<void> _init() async {
     final value = await _settings.getString(SettingKeys.cursorStyle);
-    if (!mounted) return;
+    if (_disposed) return;
     state = value ?? 'block';
   }
 
@@ -354,9 +370,7 @@ class CursorStyleNotifier extends StateNotifier<String> {
 
 /// Provider for cursor style with write capability.
 final cursorStyleNotifierProvider =
-    StateNotifierProvider<CursorStyleNotifier, String>(
-      (ref) => CursorStyleNotifier(ref.watch(settingsServiceProvider)),
-    );
+    NotifierProvider<CursorStyleNotifier, String>(CursorStyleNotifier.new);
 
 /// Provider for bell sound setting.
 final bellSoundProvider = FutureProvider<bool>((ref) async {
@@ -365,20 +379,24 @@ final bellSoundProvider = FutureProvider<bool>((ref) async {
 });
 
 /// Notifier for bell sound with write capability.
-class BellSoundNotifier extends StateNotifier<bool> {
-  /// Creates a new [BellSoundNotifier].
-  BellSoundNotifier(this._settings) : super(true) {
-    Future.microtask(_init);
-  }
+class BellSoundNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return true;
+  }
 
   Future<void> _init() async {
     final value = await _settings.getBool(
       SettingKeys.bellSound,
       defaultValue: true,
     );
-    if (!mounted) return;
+    if (_disposed) return;
     state = value;
   }
 
@@ -390,10 +408,9 @@ class BellSoundNotifier extends StateNotifier<bool> {
 }
 
 /// Provider for bell sound with write capability.
-final bellSoundNotifierProvider =
-    StateNotifierProvider<BellSoundNotifier, bool>(
-      (ref) => BellSoundNotifier(ref.watch(settingsServiceProvider)),
-    );
+final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
+  BellSoundNotifier.new,
+);
 
 /// State for terminal theme settings (light and dark).
 class TerminalThemeSettings {
@@ -418,20 +435,20 @@ class TerminalThemeSettings {
 }
 
 /// Notifier for terminal theme settings.
-class TerminalThemeSettingsNotifier
-    extends StateNotifier<TerminalThemeSettings> {
-  /// Creates a new [TerminalThemeSettingsNotifier].
-  TerminalThemeSettingsNotifier(this._settings)
-    : super(
-        const TerminalThemeSettings(
-          lightThemeId: 'github-light',
-          darkThemeId: 'dracula',
-        ),
-      ) {
-    Future.microtask(_init);
-  }
+class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
+  late final SettingsService _settings;
+  bool _disposed = false;
 
-  final SettingsService _settings;
+  @override
+  TerminalThemeSettings build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    _init();
+    return const TerminalThemeSettings(
+      lightThemeId: 'github-light',
+      darkThemeId: 'dracula',
+    );
+  }
 
   Future<void> _init() async {
     final light = await _settings.getString(
@@ -440,7 +457,7 @@ class TerminalThemeSettingsNotifier
     final dark = await _settings.getString(
       SettingKeys.defaultTerminalThemeDark,
     );
-    if (!mounted) return;
+    if (_disposed) return;
     state = TerminalThemeSettings(
       lightThemeId: light ?? 'github-light',
       darkThemeId: dark ?? 'dracula',
@@ -462,7 +479,6 @@ class TerminalThemeSettingsNotifier
 
 /// Provider for terminal theme settings.
 final terminalThemeSettingsProvider =
-    StateNotifierProvider<TerminalThemeSettingsNotifier, TerminalThemeSettings>(
-      (ref) =>
-          TerminalThemeSettingsNotifier(ref.watch(settingsServiceProvider)),
+    NotifierProvider<TerminalThemeSettingsNotifier, TerminalThemeSettings>(
+      TerminalThemeSettingsNotifier.new,
     );

@@ -337,17 +337,19 @@ final sshServiceProvider = Provider<SshService>(
 
 /// Provider for tracking active SSH sessions.
 final activeSessionsProvider =
-    StateNotifierProvider<ActiveSessionsNotifier, Map<int, SshConnectionState>>(
-      (ref) => ActiveSessionsNotifier(ref.watch(sshServiceProvider)),
+    NotifierProvider<ActiveSessionsNotifier, Map<int, SshConnectionState>>(
+      ActiveSessionsNotifier.new,
     );
 
 /// Notifier for active SSH sessions state.
-class ActiveSessionsNotifier
-    extends StateNotifier<Map<int, SshConnectionState>> {
-  /// Creates a new [ActiveSessionsNotifier].
-  ActiveSessionsNotifier(this._sshService) : super({});
+class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
+  late final SshService _sshService;
 
-  final SshService _sshService;
+  @override
+  Map<int, SshConnectionState> build() {
+    _sshService = ref.watch(sshServiceProvider);
+    return {};
+  }
 
   /// Connect to a host.
   Future<SshConnectionResult> connect(int hostId) async {
