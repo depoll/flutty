@@ -20,7 +20,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -48,7 +48,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -69,7 +69,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -90,7 +90,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -111,7 +111,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -132,7 +132,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -154,7 +154,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -181,7 +181,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -203,7 +203,7 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith((ref) => _MockAuthStateNotifier()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -217,10 +217,8 @@ void main() {
 }
 
 class _MockAuthStateNotifier extends AuthStateNotifier {
-  _MockAuthStateNotifier() : super(_FakeAuthService());
-
   @override
-  AuthState get state => AuthState.notConfigured;
+  AuthState build() => AuthState.notConfigured;
 }
 
 class _FakeAuthService extends AuthService {

@@ -329,7 +329,7 @@ class _OptionCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (trailing != null) trailing!,
+              ?trailing,
               if (trailing == null)
                 Icon(
                   Icons.arrow_forward_ios,
