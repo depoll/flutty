@@ -3,8 +3,27 @@ name: CI
 on:
   push:
     branches: [main, develop]
+    paths:
+      - '**.dart'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/ci.yml'
+      - 'android/**'
+      - 'ios/**'
+      - 'lib/**'
+      - 'test/**'
   pull_request:
     branches: [main, develop]
+    paths:
+      - '**.dart'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - '.github/workflows/ci.yml'
+      - 'android/**'
+      - 'ios/**'
+      - 'lib/**'
+      - 'test/**'
+  merge_group:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
