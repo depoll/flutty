@@ -7,22 +7,28 @@ on:
       - '**.dart'
       - 'pubspec.yaml'
       - 'pubspec.lock'
+      - 'analysis_options.yaml'
       - '.github/workflows/ci.yml'
       - 'android/**'
       - 'ios/**'
-      - 'lib/**'
-      - 'test/**'
+      - 'linux/**'
+      - 'macos/**'
+      - 'windows/**'
+      - 'web/**'
   pull_request:
     branches: [main, develop]
     paths:
       - '**.dart'
       - 'pubspec.yaml'
       - 'pubspec.lock'
+      - 'analysis_options.yaml'
       - '.github/workflows/ci.yml'
       - 'android/**'
       - 'ios/**'
-      - 'lib/**'
-      - 'test/**'
+      - 'linux/**'
+      - 'macos/**'
+      - 'windows/**'
+      - 'web/**'
   merge_group:
 
 concurrency:
