@@ -219,9 +219,6 @@ void main() {
 class _MockAuthStateNotifier extends AuthStateNotifier {
   @override
   AuthState build() => AuthState.notConfigured;
-
-  @override
-  AuthState get state => AuthState.notConfigured;
 }
 
 class _FakeAuthService extends AuthService {
