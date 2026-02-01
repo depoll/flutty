@@ -1,8 +1,10 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -32,6 +34,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late Terminal _terminal;
+  late FocusNode _terminalFocusNode;
   SSHSession? _shell;
   StreamSubscription<dynamic>? _outputSubscription;
   StreamSubscription<dynamic>? _stderrSubscription;
@@ -39,6 +42,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboard = true;
+  bool _systemKeyboardVisible = true;
 
   // Theme state
   Host? _host;
@@ -52,6 +56,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   void initState() {
     super.initState();
     _terminal = Terminal(maxLines: 10000);
+    _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
   }
@@ -179,6 +184,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _outputSubscription?.cancel();
     _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
+    _terminalFocusNode.dispose();
     // Disconnect session when leaving the screen (use cached notifier)
     _sessionsNotifier?.disconnect(widget.hostId);
     super.dispose();
@@ -197,6 +203,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
+    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
@@ -213,10 +220,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
             onPressed: _showThemePicker,
             tooltip: 'Change theme',
           ),
+          if (isMobile)
+            IconButton(
+              icon: Icon(
+                _systemKeyboardVisible
+                    ? Icons.keyboard_hide
+                    : Icons.keyboard_alt_outlined,
+              ),
+              onPressed: _toggleSystemKeyboard,
+              tooltip: _systemKeyboardVisible
+                  ? 'Hide system keyboard'
+                  : 'Show system keyboard',
+            ),
           IconButton(
-            icon: Icon(_showKeyboard ? Icons.keyboard_hide : Icons.keyboard),
+            icon: Icon(_showKeyboard ? Icons.space_bar : Icons.more_horiz),
             onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
-            tooltip: _showKeyboard ? 'Hide keyboard' : 'Show keyboard',
+            tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
           ),
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
@@ -240,6 +259,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         ],
       ),
     );
+  }
+
+  /// Toggles the system keyboard visibility on mobile platforms.
+  void _toggleSystemKeyboard() {
+    setState(() {
+      _systemKeyboardVisible = !_systemKeyboardVisible;
+    });
+    if (_systemKeyboardVisible) {
+      _terminalFocusNode.requestFocus();
+    } else {
+      _terminalFocusNode.unfocus();
+    }
   }
 
   Future<void> _showThemePicker() async {
@@ -359,6 +390,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
     return TerminalView(
       _terminal,
+      focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: textStyle,
       padding: const EdgeInsets.all(8),
