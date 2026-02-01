@@ -7,8 +7,8 @@
 
 A cross-platform SSH client built with Flutter, inspired by [Termius](https://termius.com/).
 
-[![CI](https://github.com/depoll/flutty/actions/workflows/ci.yml/badge.svg)](https://github.com/depoll/flutty/actions/workflows/ci.yml)
-[![codecov](https://codecov.io/gh/depoll/flutty/branch/main/graph/badge.svg)](https://codecov.io/gh/depoll/flutty)
+[![CI](https://github.com/depoll/monkeyssh/actions/workflows/ci.yml/badge.svg)](https://github.com/depoll/monkeyssh/actions/workflows/ci.yml)
+[![codecov](https://codecov.io/gh/depoll/monkeyssh/branch/main/graph/badge.svg)](https://codecov.io/gh/depoll/monkeyssh)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 ## Features
@@ -48,8 +48,8 @@ A cross-platform SSH client built with Flutter, inspired by [Termius](https://te
 
 ```bash
 # Clone the repository
-git clone https://github.com/depoll/flutty.git
-cd flutty
+git clone https://github.com/depoll/monkeyssh.git
+cd monkeyssh
 
 # Install dependencies
 flutter pub get
