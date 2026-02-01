@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,6 +8,8 @@ import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../data/repositories/port_forward_repository.dart';
+import '../../data/repositories/snippet_repository.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -185,35 +188,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case 1:
         return const _KeysPanel();
       case 2:
-        return _buildPlaceholder('Snippets', Icons.code_rounded, '/snippets');
+        return const _SnippetsPanel();
       case 3:
-        return _buildPlaceholder(
-          'Port Forwarding',
-          Icons.swap_horiz_rounded,
-          '/port-forwards',
-        );
+        return const _PortForwardsPanel();
       default:
         return const _HostsPanel();
     }
-  }
-
-  Widget _buildPlaceholder(String title, IconData icon, String route) {
-    final theme = Theme.of(context);
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(icon, size: 48, color: theme.colorScheme.primary.withAlpha(100)),
-          const SizedBox(height: 16),
-          Text(title, style: theme.textTheme.titleLarge),
-          const SizedBox(height: 8),
-          FilledButton(
-            onPressed: () => context.push(route),
-            child: Text('Open $title'),
-          ),
-        ],
-      ),
-    );
   }
 }
 
@@ -932,6 +912,993 @@ class _KeyRow extends ConsumerWidget {
 
     if ((confirmed ?? false) && context.mounted) {
       await ref.read(keyRepositoryProvider).delete(sshKey.id);
+    }
+  }
+}
+
+/// Provider for all snippets as stream.
+final _allSnippetsStreamProvider = StreamProvider<List<Snippet>>((ref) {
+  final repo = ref.watch(snippetRepositoryProvider);
+  return repo.watchAll();
+});
+
+/// Provider for all port forwards as stream.
+final _allPortForwardsStreamProvider = StreamProvider<List<PortForward>>((ref) {
+  final repo = ref.watch(portForwardRepositoryProvider);
+  return repo.watchAll();
+});
+
+/// Panel for displaying and managing snippets inline.
+class _SnippetsPanel extends ConsumerWidget {
+  const _SnippetsPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final snippetsAsync = ref.watch(_allSnippetsStreamProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header bar
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+            ),
+          ),
+          child: Row(
+            children: [
+              Text(
+                'Snippets',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              _ActionButton(
+                icon: Icons.add,
+                label: 'Add Snippet',
+                onTap: () => _showAddEditSnippetDialog(context, ref, null),
+                primary: true,
+              ),
+            ],
+          ),
+        ),
+
+        // Snippets list
+        Expanded(
+          child: snippetsAsync.when(
+            loading: () =>
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            error: (e, _) => Center(child: Text('Error: $e')),
+            data: (snippets) => snippets.isEmpty
+                ? _buildEmptyState(context, ref)
+                : _buildSnippetsList(context, ref, snippets),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.code_outlined,
+            size: 40,
+            color: colorScheme.onSurface.withAlpha(60),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'No snippets yet',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurface.withAlpha(150),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Save commands you use often',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.onSurface.withAlpha(100),
+            ),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: () => _showAddEditSnippetDialog(context, ref, null),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add Snippet'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSnippetsList(
+    BuildContext context,
+    WidgetRef ref,
+    List<Snippet> snippets,
+  ) => ListView.builder(
+    padding: const EdgeInsets.symmetric(vertical: 4),
+    itemCount: snippets.length,
+    itemBuilder: (context, index) {
+      final snippet = snippets[index];
+      return _SnippetRow(snippet: snippet);
+    },
+  );
+
+  static Future<void> _showAddEditSnippetDialog(
+    BuildContext context,
+    WidgetRef ref,
+    Snippet? existing,
+  ) async {
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final commandController = TextEditingController(
+      text: existing?.command ?? '',
+    );
+    final descriptionController = TextEditingController(
+      text: existing?.description ?? '',
+    );
+    final formKey = GlobalKey<FormState>();
+
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => Padding(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: DraggableScrollableSheet(
+          maxChildSize: 0.9,
+          minChildSize: 0.5,
+          initialChildSize: 0.7,
+          expand: false,
+          builder: (context, scrollController) => Form(
+            key: formKey,
+            child: ListView(
+              controller: scrollController,
+              padding: const EdgeInsets.all(20),
+              children: [
+                // Handle bar
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.outline,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  existing == null ? 'Add Snippet' : 'Edit Snippet',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 20),
+                TextFormField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Name',
+                    hintText: 'Restart Docker',
+                    prefixIcon: Icon(Icons.label),
+                  ),
+                  textInputAction: TextInputAction.next,
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter a name';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: descriptionController,
+                  decoration: const InputDecoration(
+                    labelText: 'Description (optional)',
+                    hintText: 'What this snippet does',
+                    prefixIcon: Icon(Icons.description),
+                  ),
+                  textInputAction: TextInputAction.next,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: commandController,
+                  decoration: const InputDecoration(
+                    labelText: 'Command',
+                    hintText: 'docker restart {{container}}',
+                    alignLabelWithHint: true,
+                  ),
+                  maxLines: 4,
+                  style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                  validator: (value) {
+                    if (value == null || value.isEmpty) {
+                      return 'Please enter a command';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Use {{variable}} for substitution',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.outline,
+                  ),
+                ),
+                const SizedBox(height: 24),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton(
+                        onPressed: () => Navigator.pop(context, false),
+                        child: const Text('Cancel'),
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: FilledButton(
+                        onPressed: () {
+                          if (formKey.currentState!.validate()) {
+                            Navigator.pop(context, true);
+                          }
+                        },
+                        child: Text(existing == null ? 'Add' : 'Save'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (result ?? false) {
+      final repo = ref.read(snippetRepositoryProvider);
+      final description = descriptionController.text.isEmpty
+          ? null
+          : descriptionController.text;
+
+      if (existing != null) {
+        await repo.update(
+          existing.copyWith(
+            name: nameController.text,
+            command: commandController.text,
+            description: drift.Value(description),
+          ),
+        );
+      } else {
+        await repo.insert(
+          SnippetsCompanion.insert(
+            name: nameController.text,
+            command: commandController.text,
+            description: drift.Value(description),
+          ),
+        );
+      }
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              existing == null ? 'Snippet added' : 'Snippet updated',
+            ),
+          ),
+        );
+      }
+    }
+
+    nameController.dispose();
+    commandController.dispose();
+    descriptionController.dispose();
+  }
+}
+
+class _SnippetRow extends ConsumerWidget {
+  const _SnippetRow({required this.snippet});
+
+  final Snippet snippet;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _copySnippet(context, ref),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
+            ),
+          ),
+          child: Row(
+            children: [
+              // Snippet icon
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: colorScheme.primary.withAlpha(isDark ? 25 : 15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(Icons.code, size: 16, color: colorScheme.primary),
+              ),
+              const SizedBox(width: 12),
+
+              // Snippet info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      snippet.name,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        fontWeight: FontWeight.w500,
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      snippet.command.replaceAll('\n', ' '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 10,
+                        color: colorScheme.onSurface.withAlpha(100),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Actions
+              _SmallIconButton(
+                icon: Icons.copy,
+                onTap: () => _copySnippet(context, ref),
+              ),
+              _SmallIconButton(
+                icon: Icons.edit_outlined,
+                onTap: () => _SnippetsPanel._showAddEditSnippetDialog(
+                  context,
+                  ref,
+                  snippet,
+                ),
+              ),
+              _SmallIconButton(
+                icon: Icons.delete_outline,
+                onTap: () => _confirmDelete(context, ref),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  void _copySnippet(BuildContext context, WidgetRef ref) {
+    Clipboard.setData(ClipboardData(text: snippet.command));
+    ref.read(snippetRepositoryProvider).incrementUsage(snippet.id);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text('Copied "${snippet.name}" to clipboard')),
+    );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Snippet'),
+        content: Text('Delete "${snippet.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if ((confirmed ?? false) && context.mounted) {
+      await ref.read(snippetRepositoryProvider).delete(snippet.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "${snippet.name}"')));
+      }
+    }
+  }
+}
+
+/// Panel for displaying and managing port forwards inline.
+class _PortForwardsPanel extends ConsumerWidget {
+  const _PortForwardsPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final portForwardsAsync = ref.watch(_allPortForwardsStreamProvider);
+    final hostsAsync = ref.watch(_allHostsStreamProvider);
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Header bar
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+            ),
+          ),
+          child: Row(
+            children: [
+              Text(
+                'Port Forwards',
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              const Spacer(),
+              _ActionButton(
+                icon: Icons.add,
+                label: 'Add Forward',
+                onTap: () => _showAddEditPortForwardDialog(context, ref, null),
+                primary: true,
+              ),
+            ],
+          ),
+        ),
+
+        // Port forwards list
+        Expanded(
+          child: portForwardsAsync.when(
+            loading: () =>
+                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+            error: (e, _) => Center(child: Text('Error: $e')),
+            data: (portForwards) => hostsAsync.when(
+              loading: () => const Center(
+                child: CircularProgressIndicator(strokeWidth: 2),
+              ),
+              error: (e, _) => Center(child: Text('Error: $e')),
+              data: (hosts) => portForwards.isEmpty
+                  ? _buildEmptyState(context, ref)
+                  : _buildPortForwardsList(context, ref, portForwards, hosts),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.swap_horiz,
+            size: 40,
+            color: colorScheme.onSurface.withAlpha(60),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'No port forwards yet',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurface.withAlpha(150),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Create port forwarding rules',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.onSurface.withAlpha(100),
+            ),
+          ),
+          const SizedBox(height: 16),
+          FilledButton.icon(
+            onPressed: () => _showAddEditPortForwardDialog(context, ref, null),
+            icon: const Icon(Icons.add, size: 18),
+            label: const Text('Add Forward'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildPortForwardsList(
+    BuildContext context,
+    WidgetRef ref,
+    List<PortForward> portForwards,
+    List<Host> hosts,
+  ) {
+    final hostMap = {for (final h in hosts) h.id: h};
+
+    return ListView.builder(
+      padding: const EdgeInsets.symmetric(vertical: 4),
+      itemCount: portForwards.length,
+      itemBuilder: (context, index) {
+        final pf = portForwards[index];
+        final host = hostMap[pf.hostId];
+        return _PortForwardRow(
+          portForward: pf,
+          hostLabel: host?.label ?? 'Unknown Host',
+        );
+      },
+    );
+  }
+
+  static Future<void> _showAddEditPortForwardDialog(
+    BuildContext context,
+    WidgetRef ref,
+    PortForward? existing,
+  ) async {
+    final hosts = await ref.read(hostRepositoryProvider).getAll();
+
+    if (!context.mounted) return;
+
+    if (hosts.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Add a host first before creating port forwards'),
+        ),
+      );
+      return;
+    }
+
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final localHostController = TextEditingController(
+      text: existing?.localHost ?? '127.0.0.1',
+    );
+    final localPortController = TextEditingController(
+      text: existing?.localPort.toString() ?? '',
+    );
+    final remoteHostController = TextEditingController(
+      text: existing?.remoteHost ?? '',
+    );
+    final remotePortController = TextEditingController(
+      text: existing?.remotePort.toString() ?? '',
+    );
+    final formKey = GlobalKey<FormState>();
+
+    var selectedHostId = existing?.hostId ?? hosts.first.id;
+    var forwardType = existing?.forwardType ?? 'local';
+    var autoStart = existing?.autoStart ?? false;
+
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => Padding(
+          padding: EdgeInsets.only(
+            bottom: MediaQuery.of(context).viewInsets.bottom,
+          ),
+          child: DraggableScrollableSheet(
+            maxChildSize: 0.9,
+            minChildSize: 0.6,
+            initialChildSize: 0.85,
+            expand: false,
+            builder: (context, scrollController) => Form(
+              key: formKey,
+              child: ListView(
+                controller: scrollController,
+                padding: const EdgeInsets.all(20),
+                children: [
+                  // Handle bar
+                  Center(
+                    child: Container(
+                      width: 40,
+                      height: 4,
+                      decoration: BoxDecoration(
+                        color: Theme.of(context).colorScheme.outline,
+                        borderRadius: BorderRadius.circular(2),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    existing == null ? 'Add Port Forward' : 'Edit Port Forward',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const SizedBox(height: 20),
+                  TextFormField(
+                    controller: nameController,
+                    decoration: const InputDecoration(
+                      labelText: 'Name',
+                      hintText: 'Database tunnel',
+                      prefixIcon: Icon(Icons.label),
+                    ),
+                    textInputAction: TextInputAction.next,
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter a name';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  DropdownButtonFormField<int>(
+                    initialValue: selectedHostId,
+                    decoration: const InputDecoration(
+                      labelText: 'Host',
+                      prefixIcon: Icon(Icons.dns),
+                    ),
+                    items: hosts
+                        .map(
+                          (h) => DropdownMenuItem(
+                            value: h.id,
+                            child: Text(h.label),
+                          ),
+                        )
+                        .toList(),
+                    onChanged: (v) {
+                      if (v != null) {
+                        setState(() => selectedHostId = v);
+                      }
+                    },
+                    validator: (v) {
+                      if (v == null) {
+                        return 'Please select a host';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  SegmentedButton<String>(
+                    segments: const [
+                      ButtonSegment(value: 'local', label: Text('Local')),
+                      ButtonSegment(value: 'remote', label: Text('Remote')),
+                    ],
+                    selected: {forwardType},
+                    onSelectionChanged: (value) {
+                      setState(() => forwardType = value.first);
+                    },
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: TextFormField(
+                          controller: localHostController,
+                          decoration: const InputDecoration(
+                            labelText: 'Local Host',
+                            hintText: '127.0.0.1',
+                          ),
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Required';
+                            }
+                            return null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextFormField(
+                          controller: localPortController,
+                          decoration: const InputDecoration(
+                            labelText: 'Port',
+                            hintText: '3306',
+                          ),
+                          keyboardType: TextInputType.number,
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Required';
+                            }
+                            final port = int.tryParse(value);
+                            if (port == null || port < 1 || port > 65535) {
+                              return 'Invalid';
+                            }
+                            return null;
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  Row(
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: TextFormField(
+                          controller: remoteHostController,
+                          decoration: const InputDecoration(
+                            labelText: 'Remote Host',
+                            hintText: 'localhost',
+                          ),
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Required';
+                            }
+                            return null;
+                          },
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: TextFormField(
+                          controller: remotePortController,
+                          decoration: const InputDecoration(
+                            labelText: 'Port',
+                            hintText: '3306',
+                          ),
+                          keyboardType: TextInputType.number,
+                          validator: (value) {
+                            if (value == null || value.isEmpty) {
+                              return 'Required';
+                            }
+                            final port = int.tryParse(value);
+                            if (port == null || port < 1 || port > 65535) {
+                              return 'Invalid';
+                            }
+                            return null;
+                          },
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 16),
+                  SwitchListTile(
+                    title: const Text('Auto-start'),
+                    subtitle: const Text(
+                      'Start forwarding when connecting to host',
+                    ),
+                    value: autoStart,
+                    onChanged: (value) {
+                      setState(() => autoStart = value);
+                    },
+                  ),
+                  const SizedBox(height: 24),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: OutlinedButton(
+                          onPressed: () => Navigator.pop(context, false),
+                          child: const Text('Cancel'),
+                        ),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: FilledButton(
+                          onPressed: () {
+                            if (formKey.currentState!.validate()) {
+                              Navigator.pop(context, true);
+                            }
+                          },
+                          child: Text(existing == null ? 'Add' : 'Save'),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if (result ?? false) {
+      final repo = ref.read(portForwardRepositoryProvider);
+
+      if (existing != null) {
+        await repo.update(
+          existing.copyWith(
+            name: nameController.text,
+            hostId: selectedHostId,
+            forwardType: forwardType,
+            localHost: localHostController.text,
+            localPort: int.parse(localPortController.text),
+            remoteHost: remoteHostController.text,
+            remotePort: int.parse(remotePortController.text),
+            autoStart: autoStart,
+          ),
+        );
+      } else {
+        await repo.insert(
+          PortForwardsCompanion.insert(
+            name: nameController.text,
+            hostId: selectedHostId,
+            forwardType: forwardType,
+            localHost: drift.Value(localHostController.text),
+            localPort: int.parse(localPortController.text),
+            remoteHost: remoteHostController.text,
+            remotePort: int.parse(remotePortController.text),
+            autoStart: drift.Value(autoStart),
+          ),
+        );
+      }
+
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              existing == null ? 'Port forward added' : 'Port forward updated',
+            ),
+          ),
+        );
+      }
+    }
+
+    nameController.dispose();
+    localHostController.dispose();
+    localPortController.dispose();
+    remoteHostController.dispose();
+    remotePortController.dispose();
+  }
+}
+
+class _PortForwardRow extends ConsumerWidget {
+  const _PortForwardRow({required this.portForward, required this.hostLabel});
+
+  final PortForward portForward;
+  final String hostLabel;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final isDark = theme.brightness == Brightness.dark;
+    final isLocal = portForward.forwardType == 'local';
+
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: () => _PortForwardsPanel._showAddEditPortForwardDialog(
+          context,
+          ref,
+          portForward,
+        ),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
+            ),
+          ),
+          child: Row(
+            children: [
+              // Direction icon
+              Container(
+                padding: const EdgeInsets.all(8),
+                decoration: BoxDecoration(
+                  color: (isLocal ? colorScheme.primary : colorScheme.secondary)
+                      .withAlpha(isDark ? 25 : 15),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Icon(
+                  isLocal ? Icons.arrow_forward : Icons.arrow_back,
+                  size: 16,
+                  color: isLocal ? colorScheme.primary : colorScheme.secondary,
+                ),
+              ),
+              const SizedBox(width: 12),
+
+              // Forward info
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Text(
+                          portForward.name,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            fontWeight: FontWeight.w500,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
+                            vertical: 2,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(4),
+                          ),
+                          child: Text(
+                            hostLabel,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colorScheme.onSurface.withAlpha(150),
+                            ),
+                          ),
+                        ),
+                        if (portForward.autoStart) ...[
+                          const SizedBox(width: 6),
+                          Icon(
+                            Icons.play_circle_outline,
+                            size: 14,
+                            color: colorScheme.primary,
+                          ),
+                        ],
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      isLocal
+                          ? 'L ${portForward.localHost}:${portForward.localPort} → ${portForward.remoteHost}:${portForward.remotePort}'
+                          : 'R ${portForward.remoteHost}:${portForward.remotePort} → ${portForward.localHost}:${portForward.localPort}',
+                      style: FluttyTheme.monoStyle.copyWith(
+                        fontSize: 10,
+                        color: colorScheme.onSurface.withAlpha(100),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+
+              // Actions
+              _SmallIconButton(
+                icon: Icons.edit_outlined,
+                onTap: () => _PortForwardsPanel._showAddEditPortForwardDialog(
+                  context,
+                  ref,
+                  portForward,
+                ),
+              ),
+              _SmallIconButton(
+                icon: Icons.delete_outline,
+                onTap: () => _confirmDelete(context, ref),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Future<void> _confirmDelete(BuildContext context, WidgetRef ref) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Port Forward'),
+        content: Text('Delete "${portForward.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if ((confirmed ?? false) && context.mounted) {
+      await ref.read(portForwardRepositoryProvider).delete(portForward.id);
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted "${portForward.name}"')),
+        );
+      }
     }
   }
 }
