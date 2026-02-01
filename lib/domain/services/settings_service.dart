@@ -154,7 +154,7 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
   ThemeMode build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return ThemeMode.system;
   }
 
@@ -202,7 +202,7 @@ class FontSizeNotifier extends Notifier<double> {
   double build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return 14;
   }
 
@@ -239,7 +239,7 @@ class FontFamilyNotifier extends Notifier<String> {
   String build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return 'monospace';
   }
 
@@ -276,7 +276,7 @@ class AutoLockTimeoutNotifier extends Notifier<int> {
   int build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return 5;
   }
 
@@ -312,7 +312,7 @@ class HapticFeedbackNotifier extends Notifier<bool> {
   bool build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return true;
   }
 
@@ -351,7 +351,7 @@ class CursorStyleNotifier extends Notifier<String> {
   String build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return 'block';
   }
 
@@ -387,7 +387,7 @@ class BellSoundNotifier extends Notifier<bool> {
   bool build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return true;
   }
 
@@ -443,7 +443,7 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
   TerminalThemeSettings build() {
     _settings = ref.watch(settingsServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return const TerminalThemeSettings(
       lightThemeId: 'github-light',
       darkThemeId: 'dracula',

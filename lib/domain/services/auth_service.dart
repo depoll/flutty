@@ -209,7 +209,7 @@ class AuthStateNotifier extends Notifier<AuthState> {
   AuthState build() {
     _authService = ref.watch(authServiceProvider);
     ref.onDispose(() => _disposed = true);
-    _init();
+    Future.microtask(_init);
     return AuthState.unknown;
   }
 
