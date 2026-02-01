@@ -32,70 +32,60 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     return isWide ? _buildDesktopLayout() : _buildMobileLayout();
   }
 
-  Widget _buildMobileLayout() {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(4),
-              decoration: BoxDecoration(
-                color: colorScheme.primary,
-                borderRadius: BorderRadius.circular(4),
-              ),
-              child: const Icon(
-                Icons.terminal_rounded,
-                color: Colors.black,
-                size: 14,
-              ),
+  Widget _buildMobileLayout() => Scaffold(
+    appBar: AppBar(
+      title: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          ClipRRect(
+            borderRadius: BorderRadius.circular(6),
+            child: Image.asset(
+              'assets/icons/monkeyssh_icon.png',
+              width: 28,
+              height: 28,
             ),
-            const SizedBox(width: 8),
-            const Text('MonkeySSH'),
-          ],
+          ),
+          const SizedBox(width: 8),
+          const Text('MonkeySSH'),
+        ],
+      ),
+      actions: [
+        IconButton(
+          icon: const Icon(Icons.settings_outlined),
+          onPressed: () => context.push('/settings'),
         ),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.settings_outlined),
-            onPressed: () => context.push('/settings'),
-          ),
-        ],
-      ),
-      body: _buildContent(),
-      bottomNavigationBar: NavigationBar(
-        selectedIndex: _selectedIndex,
-        onDestinationSelected: (index) =>
-            setState(() => _selectedIndex = index),
-        labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
-        height: 65,
-        destinations: const [
-          NavigationDestination(
-            icon: Icon(Icons.dns_outlined),
-            selectedIcon: Icon(Icons.dns_rounded),
-            label: 'Hosts',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.key_outlined),
-            selectedIcon: Icon(Icons.key_rounded),
-            label: 'Keys',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.code_outlined),
-            selectedIcon: Icon(Icons.code_rounded),
-            label: 'Snippets',
-          ),
-          NavigationDestination(
-            icon: Icon(Icons.swap_horiz_outlined),
-            selectedIcon: Icon(Icons.swap_horiz_rounded),
-            label: 'Ports',
-          ),
-        ],
-      ),
-    );
-  }
+      ],
+    ),
+    body: _buildContent(),
+    bottomNavigationBar: NavigationBar(
+      selectedIndex: _selectedIndex,
+      onDestinationSelected: (index) => setState(() => _selectedIndex = index),
+      labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
+      height: 65,
+      destinations: const [
+        NavigationDestination(
+          icon: Icon(Icons.dns_outlined),
+          selectedIcon: Icon(Icons.dns_rounded),
+          label: 'Hosts',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.key_outlined),
+          selectedIcon: Icon(Icons.key_rounded),
+          label: 'Keys',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.code_outlined),
+          selectedIcon: Icon(Icons.code_rounded),
+          label: 'Snippets',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.swap_horiz_outlined),
+          selectedIcon: Icon(Icons.swap_horiz_rounded),
+          label: 'Ports',
+        ),
+      ],
+    ),
+  );
 
   Widget _buildDesktopLayout() {
     final theme = Theme.of(context);
