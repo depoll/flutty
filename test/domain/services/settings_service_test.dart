@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:drift/native.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -185,6 +186,82 @@ void main() {
     });
   });
 
-  // Note: Notifier tests removed as they have async _init() race conditions.
-  // The SettingsService tests above provide full coverage of the persistence layer.
+  group('Settings Providers', () {
+    late AppDatabase testDb;
+    late ProviderContainer container;
+
+    setUp(() {
+      testDb = AppDatabase.forTesting(NativeDatabase.memory());
+      container = ProviderContainer(
+        overrides: [databaseProvider.overrideWithValue(testDb)],
+      );
+    });
+
+    tearDown(() async {
+      container.dispose();
+      await testDb.close();
+    });
+
+    group('themeModeProvider', () {
+      test('returns system by default', () async {
+        final result = await container.read(themeModeProvider.future);
+        expect(result, 'system');
+      });
+
+      test('returns stored value when set', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setString(SettingKeys.themeMode, 'dark');
+        container.invalidate(themeModeProvider);
+        final result = await container.read(themeModeProvider.future);
+        expect(result, 'dark');
+      });
+    });
+
+    group('fontSizeProvider', () {
+      test('returns 14.0 by default', () async {
+        final result = await container.read(fontSizeProvider.future);
+        expect(result, 14.0);
+      });
+    });
+
+    group('fontFamilyProvider', () {
+      test('returns monospace by default', () async {
+        final result = await container.read(fontFamilyProvider.future);
+        expect(result, 'monospace');
+      });
+    });
+
+    group('hapticFeedbackProvider', () {
+      test('returns true by default', () async {
+        final result = await container.read(hapticFeedbackProvider.future);
+        expect(result, isTrue);
+      });
+    });
+
+    group('autoLockTimeoutProvider', () {
+      test('returns 5 by default', () async {
+        final result = await container.read(autoLockTimeoutProvider.future);
+        expect(result, 5);
+      });
+    });
+
+    group('cursorStyleProvider', () {
+      test('returns block by default', () async {
+        final result = await container.read(cursorStyleProvider.future);
+        expect(result, 'block');
+      });
+    });
+
+    group('bellSoundProvider', () {
+      test('returns true by default', () async {
+        final result = await container.read(bellSoundProvider.future);
+        expect(result, isTrue);
+      });
+    });
+
+    // Note: NotifierProvider tests (themeModeNotifierProvider, fontSizeNotifierProvider,
+    // terminalThemeSettingsProvider, etc.) are skipped because they have async _init()
+    // methods that can race with test teardown and cause "database closed" errors.
+    // The FutureProvider tests above provide coverage for the provider initialization.
+  });
 }
