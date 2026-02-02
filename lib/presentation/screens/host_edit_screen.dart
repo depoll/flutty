@@ -7,6 +7,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'hosts_screen.dart';
@@ -43,6 +44,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _showPassword = false;
 
   Host? _existingHost;
+  List<PortForward> _portForwards = [];
 
   @override
   void initState() {
@@ -62,6 +64,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     setState(() => _isLoading = true);
     final host = await ref.read(hostRepositoryProvider).getById(widget.hostId!);
     if (host != null && mounted) {
+      final portForwards =
+          await ref.read(portForwardRepositoryProvider).getByHostId(host.id);
       setState(() {
         _existingHost = host;
         _labelController.text = host.label;
@@ -76,6 +80,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _selectedDarkThemeId = host.terminalThemeDarkId;
         _selectedFontFamily = host.terminalFontFamily;
         _isFavorite = host.isFavorite;
+        _portForwards = portForwards;
         _isLoading = false;
       });
     }
@@ -354,6 +359,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   ),
                   const SizedBox(height: 32),
 
+                  // Port Forwards section
+                  _buildPortForwardsSection(context, isEditing),
+                  const SizedBox(height: 32),
+
                   // Save button
                   FilledButton.icon(
                     onPressed: _saveHost,
@@ -490,6 +499,347 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       setState(() {
         _selectedFontFamily = selected;
       });
+    }
+  }
+
+  Widget _buildPortForwardsSection(BuildContext context, bool isEditing) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(
+              Icons.swap_horiz_rounded,
+              size: 20,
+              color: colorScheme.primary,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              'Port Forwards',
+              style: theme.textTheme.titleMedium?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const Spacer(),
+            if (isEditing)
+              TextButton.icon(
+                onPressed: () => _showAddEditPortForwardDialog(null),
+                icon: const Icon(Icons.add, size: 18),
+                label: const Text('Add'),
+              ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        if (!isEditing)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.info_outline,
+                  size: 18,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'Save the host first to add port forwards.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else if (_portForwards.isEmpty)
+          Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.swap_horiz,
+                  size: 18,
+                  color: colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    'No port forwards configured.',
+                    style: theme.textTheme.bodyMedium?.copyWith(
+                      color: colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          )
+        else
+          DecoratedBox(
+            decoration: BoxDecoration(
+              border: Border.all(color: colorScheme.outline.withAlpha(80)),
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Column(
+              children: _portForwards.asMap().entries.map((entry) {
+                final index = entry.key;
+                final pf = entry.value;
+                final isLast = index == _portForwards.length - 1;
+
+                return Column(
+                  children: [
+                    _PortForwardTile(
+                      portForward: pf,
+                      onEdit: () => _showAddEditPortForwardDialog(pf),
+                      onDelete: () => _deletePortForward(pf),
+                    ),
+                    if (!isLast)
+                      Divider(
+                        height: 1,
+                        color: colorScheme.outline.withAlpha(40),
+                      ),
+                  ],
+                );
+              }).toList(),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Future<void> _showAddEditPortForwardDialog(PortForward? existing) async {
+    final isEdit = existing != null;
+    final nameController = TextEditingController(text: existing?.name ?? '');
+    final localPortController = TextEditingController(
+      text: existing?.localPort.toString() ?? '',
+    );
+    final remoteHostController = TextEditingController(
+      text: existing?.remoteHost ?? 'localhost',
+    );
+    final remotePortController = TextEditingController(
+      text: existing?.remotePort.toString() ?? '',
+    );
+    var autoStart = existing?.autoStart ?? true;
+
+    final formKey = GlobalKey<FormState>();
+
+    final result = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) => Padding(
+          padding: EdgeInsets.only(
+            left: 20,
+            right: 20,
+            top: 20,
+            bottom: MediaQuery.of(context).viewInsets.bottom + 20,
+          ),
+          child: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  isEdit ? 'Edit Port Forward' : 'Add Port Forward',
+                  style: Theme.of(context).textTheme.titleLarge,
+                ),
+                const SizedBox(height: 20),
+                TextFormField(
+                  controller: nameController,
+                  decoration: const InputDecoration(
+                    labelText: 'Name',
+                    hintText: 'e.g., Database Tunnel',
+                    border: OutlineInputBorder(),
+                  ),
+                  validator: (v) =>
+                      v == null || v.isEmpty ? 'Name is required' : null,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: localPortController,
+                  decoration: const InputDecoration(
+                    labelText: 'Local Port',
+                    hintText: 'e.g., 3306',
+                    border: OutlineInputBorder(),
+                  ),
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v == null || v.isEmpty) return 'Required';
+                    final port = int.tryParse(v);
+                    if (port == null || port < 1 || port > 65535) {
+                      return 'Invalid port (1-65535)';
+                    }
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                Row(
+                  children: [
+                    Expanded(
+                      flex: 2,
+                      child: TextFormField(
+                        controller: remoteHostController,
+                        decoration: const InputDecoration(
+                          labelText: 'Remote Host',
+                          hintText: 'localhost',
+                          border: OutlineInputBorder(),
+                        ),
+                        validator: (v) => v == null || v.isEmpty
+                            ? 'Remote host is required'
+                            : null,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: TextFormField(
+                        controller: remotePortController,
+                        decoration: const InputDecoration(
+                          labelText: 'Remote Port',
+                          hintText: '3306',
+                          border: OutlineInputBorder(),
+                        ),
+                        keyboardType: TextInputType.number,
+                        validator: (v) {
+                          if (v == null || v.isEmpty) return 'Required';
+                          final port = int.tryParse(v);
+                          if (port == null || port < 1 || port > 65535) {
+                            return 'Invalid';
+                          }
+                          return null;
+                        },
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 16),
+                SwitchListTile(
+                  title: const Text('Auto-start on connect'),
+                  subtitle: const Text(
+                    'Automatically start this forward when connecting',
+                  ),
+                  value: autoStart,
+                  onChanged: (v) => setModalState(() => autoStart = v),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                const SizedBox(height: 20),
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
+                    TextButton(
+                      onPressed: () => Navigator.pop(context, false),
+                      child: const Text('Cancel'),
+                    ),
+                    const SizedBox(width: 12),
+                    FilledButton(
+                      onPressed: () {
+                        if (formKey.currentState!.validate()) {
+                          Navigator.pop(context, true);
+                        }
+                      },
+                      child: Text(isEdit ? 'Save' : 'Add'),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    if ((result ?? false) && mounted) {
+      final repo = ref.read(portForwardRepositoryProvider);
+
+      if (isEdit) {
+        await repo.update(
+          existing.copyWith(
+            name: nameController.text,
+            localPort: int.parse(localPortController.text),
+            remoteHost: remoteHostController.text,
+            remotePort: int.parse(remotePortController.text),
+            autoStart: autoStart,
+          ),
+        );
+      } else {
+        await repo.insert(
+          PortForwardsCompanion.insert(
+            hostId: widget.hostId!,
+            name: nameController.text,
+            forwardType: 'local',
+            localPort: int.parse(localPortController.text),
+            remoteHost: remoteHostController.text,
+            remotePort: int.parse(remotePortController.text),
+            autoStart: drift.Value(autoStart),
+          ),
+        );
+      }
+
+      // Reload port forwards
+      final updated = await repo.getByHostId(widget.hostId!);
+      setState(() => _portForwards = updated);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(isEdit ? 'Port forward updated' : 'Port forward added'),
+          ),
+        );
+      }
+    }
+
+    nameController.dispose();
+    localPortController.dispose();
+    remoteHostController.dispose();
+    remotePortController.dispose();
+  }
+
+  Future<void> _deletePortForward(PortForward pf) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Delete Port Forward'),
+        content: Text('Are you sure you want to delete "${pf.name}"?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+            ),
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+
+    if ((confirmed ?? false) && mounted) {
+      final repo = ref.read(portForwardRepositoryProvider);
+      await repo.delete(pf.id);
+
+      // Reload port forwards
+      final updated = await repo.getByHostId(widget.hostId!);
+      setState(() => _portForwards = updated);
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Deleted "${pf.name}"')),
+        );
+      }
     }
   }
 }
@@ -766,6 +1116,94 @@ TextStyle _getFontStyle(String family) {
       return GoogleFonts.oxygenMono(fontSize: 14);
     default:
       return const TextStyle(fontFamily: 'monospace', fontSize: 14);
+  }
+}
+
+/// A tile displaying a single port forward with edit/delete actions.
+class _PortForwardTile extends StatelessWidget {
+  const _PortForwardTile({
+    required this.portForward,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  /// The port forward to display.
+  final PortForward portForward;
+
+  /// Called when the edit button is tapped.
+  final VoidCallback onEdit;
+
+  /// Called when the delete button is tapped.
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return ListTile(
+      leading: Container(
+        width: 40,
+        height: 40,
+        decoration: BoxDecoration(
+          color: colorScheme.primaryContainer,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Icon(
+          Icons.swap_horiz,
+          color: colorScheme.onPrimaryContainer,
+          size: 20,
+        ),
+      ),
+      title: Text(
+        portForward.name,
+        style: theme.textTheme.bodyLarge?.copyWith(
+          fontWeight: FontWeight.w500,
+        ),
+      ),
+      subtitle: Text(
+        '${portForward.localPort} → '
+        '${portForward.remoteHost}:${portForward.remotePort}',
+        style: theme.textTheme.bodySmall?.copyWith(
+          color: colorScheme.onSurfaceVariant,
+          fontFamily: 'monospace',
+        ),
+      ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (portForward.autoStart)
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                color: colorScheme.tertiaryContainer,
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: Text(
+                'Auto',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colorScheme.onTertiaryContainer,
+                ),
+              ),
+            ),
+          const SizedBox(width: 8),
+          IconButton(
+            icon: const Icon(Icons.edit_outlined, size: 20),
+            onPressed: onEdit,
+            tooltip: 'Edit',
+          ),
+          IconButton(
+            icon: Icon(
+              Icons.delete_outline,
+              size: 20,
+              color: colorScheme.error,
+            ),
+            onPressed: onDelete,
+            tooltip: 'Delete',
+          ),
+        ],
+      ),
+    );
   }
 }
 
