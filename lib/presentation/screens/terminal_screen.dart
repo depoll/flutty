@@ -13,6 +13,8 @@ import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
+import '../../data/repositories/port_forward_repository.dart';
+import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
@@ -148,12 +150,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       };
 
       setState(() => _isConnecting = false);
+
+      // Start auto-start port forwards
+      await _startAutoPortForwards(session);
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
         _error = 'Failed to start shell: $e';
       });
+    }
+  }
+
+  /// Starts port forwards configured with autoStart=true.
+  Future<void> _startAutoPortForwards(SshSession session) async {
+    final portForwardRepo = ref.read(portForwardRepositoryProvider);
+    final forwards = await portForwardRepo.getByHostId(widget.hostId);
+    final autoStartForwards = forwards.where((f) => f.autoStart).toList();
+
+    if (autoStartForwards.isEmpty) return;
+
+    var startedCount = 0;
+    for (final forward in autoStartForwards) {
+      if (forward.forwardType == 'local') {
+        final success = await session.startLocalForward(
+          portForwardId: forward.id,
+          localHost: forward.localHost,
+          localPort: forward.localPort,
+          remoteHost: forward.remoteHost,
+          remotePort: forward.remotePort,
+        );
+        if (success) startedCount++;
+      }
+      // TODO: Add remote forwarding support when needed
+    }
+
+    if (startedCount > 0 && mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Started $startedCount port forward(s)'),
+          duration: const Duration(seconds: 2),
+        ),
+      );
     }
   }
 
@@ -240,6 +278,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
+              const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
+              const PopupMenuDivider(),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
@@ -428,6 +468,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
+      case 'snippets':
+        await _showSnippetPicker();
       case 'copy':
         // xterm doesn't expose selectedText directly
         // Copy functionality requires integration with TerminalView's selection
@@ -446,6 +488,195 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       case 'disconnect':
         await _disconnect();
     }
+  }
+
+  /// Shows snippet picker and inserts selected snippet into terminal.
+  Future<void> _showSnippetPicker() async {
+    final snippetRepo = ref.read(snippetRepositoryProvider);
+    final snippets = await snippetRepo.getAll();
+
+    if (!mounted) return;
+
+    if (snippets.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No snippets available. Add some first!')),
+      );
+      return;
+    }
+
+    final result = await showModalBottomSheet<String>(
+      context: context,
+      isScrollControlled: true,
+      builder: (context) => DraggableScrollableSheet(
+        maxChildSize: 0.8,
+        minChildSize: 0.3,
+        expand: false,
+        builder: (context, scrollController) => Column(
+          children: [
+            // Handle bar
+            Padding(
+              padding: const EdgeInsets.symmetric(vertical: 12),
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.outline,
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  Text(
+                    'Snippets',
+                    style: Theme.of(context).textTheme.titleLarge,
+                  ),
+                  const Spacer(),
+                  TextButton(
+                    onPressed: () => Navigator.pop(context),
+                    child: const Text('Cancel'),
+                  ),
+                ],
+              ),
+            ),
+            const Divider(),
+            Expanded(
+              child: ListView.builder(
+                controller: scrollController,
+                itemCount: snippets.length,
+                itemBuilder: (context, index) {
+                  final snippet = snippets[index];
+                  final hasVariables = RegExp(
+                    r'\{\{(\w+)\}\}',
+                  ).hasMatch(snippet.command);
+                  return ListTile(
+                    leading: Icon(
+                      hasVariables ? Icons.tune : Icons.code,
+                      color: Theme.of(context).colorScheme.primary,
+                    ),
+                    title: Text(snippet.name),
+                    subtitle: Text(
+                      snippet.command.replaceAll('\n', ' '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(fontFamily: 'monospace'),
+                    ),
+                    trailing: hasVariables
+                        ? const Chip(label: Text('Has variables'))
+                        : null,
+                    onTap: () async {
+                      // Handle variable substitution
+                      final command = await _substituteVariables(
+                        context,
+                        snippet,
+                      );
+                      if (command != null && context.mounted) {
+                        Navigator.pop(context, command);
+                      }
+                    },
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (result != null && result.isNotEmpty) {
+      // Insert the command into terminal
+      _terminal.paste(result);
+      // Track usage
+      unawaited(
+        snippetRepo.incrementUsage(
+          snippets
+              .firstWhere((s) => s.command.contains(result.split('\n').first))
+              .id,
+        ),
+      );
+    }
+  }
+
+  /// Shows dialog for variable substitution if snippet has variables.
+  Future<String?> _substituteVariables(
+    BuildContext context,
+    Snippet snippet,
+  ) async {
+    final regex = RegExp(r'\{\{(\w+)\}\}');
+    final matches = regex.allMatches(snippet.command);
+    final variables = matches.map((m) => m.group(1)!).toSet().toList();
+
+    if (variables.isEmpty) {
+      return snippet.command;
+    }
+
+    final controllers = {for (final v in variables) v: TextEditingController()};
+    final formKey = GlobalKey<FormState>();
+
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('Variables for "${snippet.name}"'),
+        content: Form(
+          key: formKey,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                for (final variable in variables) ...[
+                  TextFormField(
+                    controller: controllers[variable],
+                    decoration: InputDecoration(
+                      labelText: variable,
+                      hintText: 'Enter value for $variable',
+                    ),
+                    validator: (value) {
+                      if (value == null || value.isEmpty) {
+                        return 'Please enter a value';
+                      }
+                      return null;
+                    },
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                Navigator.pop(context, true);
+              }
+            },
+            child: const Text('Insert'),
+          ),
+        ],
+      ),
+    );
+
+    if (result != true) {
+      for (final c in controllers.values) {
+        c.dispose();
+      }
+      return null;
+    }
+
+    // Substitute variables
+    var command = snippet.command;
+    for (final entry in controllers.entries) {
+      command = command.replaceAll('{{${entry.key}}}', entry.value.text);
+      entry.value.dispose();
+    }
+
+    return command;
   }
 }
 
