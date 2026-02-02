@@ -1,4 +1,7 @@
+import 'dart:io' show Platform;
+
 import 'package:drift/drift.dart' as drift;
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -1368,6 +1371,9 @@ class _PortForwardsPanel extends ConsumerWidget {
           ),
         ),
 
+        // Mobile platform warning
+        if (_isMobilePlatform()) _buildMobileWarningBanner(context),
+
         // Port forwards list
         Expanded(
           child: portForwardsAsync.when(
@@ -1446,6 +1452,40 @@ class _PortForwardsPanel extends ConsumerWidget {
           hostLabel: host?.label ?? 'Unknown Host',
         );
       },
+    );
+  }
+
+  /// Returns true if running on iOS or Android (mobile platforms).
+  static bool _isMobilePlatform() {
+    if (kIsWeb) return false;
+    return Platform.isIOS || Platform.isAndroid;
+  }
+
+  /// Builds a warning banner for mobile platforms.
+  Widget _buildMobileWarningBanner(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      color: colorScheme.tertiaryContainer,
+      child: Row(
+        children: [
+          Icon(
+            Icons.info_outline,
+            size: 18,
+            color: colorScheme.onTertiaryContainer,
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Port forwarding only works while the app is in the foreground '
+              'on iOS/Android.',
+              style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colorScheme.onTertiaryContainer,
+                  ),
+            ),
+          ),
+        ],
+      ),
     );
   }
 
