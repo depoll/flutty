@@ -151,8 +151,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
       setState(() => _isConnecting = false);
 
-      // Start auto-start port forwards
-      await _startAutoPortForwards(session);
+      // Start port forwards
+      await _startPortForwards(session);
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() {
@@ -162,16 +162,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
-  /// Starts port forwards configured with autoStart=true.
-  Future<void> _startAutoPortForwards(SshSession session) async {
+  /// Starts all configured port forwards for this host.
+  Future<void> _startPortForwards(SshSession session) async {
     final portForwardRepo = ref.read(portForwardRepositoryProvider);
     final forwards = await portForwardRepo.getByHostId(widget.hostId);
-    final autoStartForwards = forwards.where((f) => f.autoStart).toList();
 
-    if (autoStartForwards.isEmpty) return;
+    if (forwards.isEmpty) return;
 
     var startedCount = 0;
-    for (final forward in autoStartForwards) {
+    for (final forward in forwards) {
       if (forward.forwardType == 'local') {
         final success = await session.startLocalForward(
           portForwardId: forward.id,

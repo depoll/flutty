@@ -630,7 +630,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final remotePortController = TextEditingController(
       text: existing?.remotePort.toString() ?? '',
     );
-    var autoStart = existing?.autoStart ?? true;
 
     final formKey = GlobalKey<FormState>();
 
@@ -723,16 +722,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     ),
                   ],
                 ),
-                const SizedBox(height: 16),
-                SwitchListTile(
-                  title: const Text('Auto-start on connect'),
-                  subtitle: const Text(
-                    'Automatically start this forward when connecting',
-                  ),
-                  value: autoStart,
-                  onChanged: (v) => setModalState(() => autoStart = v),
-                  contentPadding: EdgeInsets.zero,
-                ),
                 const SizedBox(height: 20),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
@@ -769,7 +758,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             localPort: int.parse(localPortController.text),
             remoteHost: remoteHostController.text,
             remotePort: int.parse(remotePortController.text),
-            autoStart: autoStart,
+            autoStart: true,
           ),
         );
       } else {
@@ -781,7 +770,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             localPort: int.parse(localPortController.text),
             remoteHost: remoteHostController.text,
             remotePort: int.parse(remotePortController.text),
-            autoStart: drift.Value(autoStart),
+            autoStart: const drift.Value(true),
           ),
         );
       }
@@ -1172,21 +1161,6 @@ class _PortForwardTile extends StatelessWidget {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (portForward.autoStart)
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                color: colorScheme.tertiaryContainer,
-                borderRadius: BorderRadius.circular(12),
-              ),
-              child: Text(
-                'Auto',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: colorScheme.onTertiaryContainer,
-                ),
-              ),
-            ),
-          const SizedBox(width: 8),
           IconButton(
             icon: const Icon(Icons.edit_outlined, size: 20),
             onPressed: onEdit,
