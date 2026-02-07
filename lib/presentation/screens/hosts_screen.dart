@@ -136,6 +136,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
           onTap: () => _connectToHost(host),
           onEdit: () => context.push('/hosts/edit/${host.id}'),
           onDelete: () => _deleteHost(host),
+          onDuplicate: () => _duplicateHost(host),
         );
       },
     );
@@ -174,6 +175,36 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(SnackBar(content: Text('Deleted "${host.label}"')));
+      }
+    }
+  }
+
+  Future<void> _duplicateHost(Host host) async {
+    try {
+      final repo = ref.read(hostRepositoryProvider);
+      await repo.insert(
+        HostsCompanion.insert(
+          label: '${host.label} (copy)',
+          hostname: host.hostname,
+          port: drift.Value(host.port),
+          username: host.username,
+          password: drift.Value(host.password),
+          keyId: drift.Value(host.keyId),
+          groupId: drift.Value(host.groupId),
+          jumpHostId: drift.Value(host.jumpHostId),
+          color: drift.Value(host.color),
+        ),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
+      }
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to duplicate: $e')));
       }
     }
   }
@@ -226,12 +257,14 @@ class _HostListTile extends ConsumerWidget {
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
+    required this.onDuplicate,
   });
 
   final Host host;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final VoidCallback onDuplicate;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -276,7 +309,7 @@ class _HostListTile extends ConsumerWidget {
                 case 'delete':
                   onDelete();
                 case 'duplicate':
-                  _duplicateHost(context, ref);
+                  onDuplicate();
               }
             },
             itemBuilder: (context) => [
@@ -297,28 +330,6 @@ class _HostListTile extends ConsumerWidget {
     );
   }
 
-  Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
-    final repo = ref.read(hostRepositoryProvider);
-    await repo.insert(
-      HostsCompanion.insert(
-        label: '${host.label} (copy)',
-        hostname: host.hostname,
-        port: drift.Value(host.port),
-        username: host.username,
-        password: drift.Value(host.password),
-        keyId: drift.Value(host.keyId),
-        groupId: drift.Value(host.groupId),
-        jumpHostId: drift.Value(host.jumpHostId),
-        color: drift.Value(host.color),
-      ),
-    );
-    ref.invalidate(allHostsProvider);
-    if (context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
-    }
-  }
 }
 
 /// Provider for all hosts - uses stream for auto-refresh on changes.
