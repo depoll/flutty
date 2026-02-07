@@ -519,7 +519,7 @@ class _HostRow extends ConsumerWidget {
 
     showModalBottomSheet<void>(
       context: context,
-      builder: (context) => SafeArea(
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -527,7 +527,7 @@ class _HostRow extends ConsumerWidget {
               leading: const Icon(Icons.copy),
               title: const Text('Duplicate'),
               onTap: () {
-                Navigator.pop(context);
+                Navigator.pop(sheetContext);
                 _duplicateHost(context, ref);
               },
             ),
@@ -535,7 +535,7 @@ class _HostRow extends ConsumerWidget {
               leading: Icon(Icons.delete_outline, color: colorScheme.error),
               title: Text('Delete', style: TextStyle(color: colorScheme.error)),
               onTap: () {
-                Navigator.pop(context);
+                Navigator.pop(sheetContext);
                 _confirmDelete(context, ref);
               },
             ),
