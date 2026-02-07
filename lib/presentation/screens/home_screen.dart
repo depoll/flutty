@@ -1,3 +1,4 @@
+import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -527,7 +528,7 @@ class _HostRow extends ConsumerWidget {
               title: const Text('Duplicate'),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: duplicate
+                _duplicateHost(context, ref);
               },
             ),
             ListTile(
@@ -568,6 +569,37 @@ class _HostRow extends ConsumerWidget {
 
     if ((confirmed ?? false) && context.mounted) {
       await ref.read(hostRepositoryProvider).delete(host.id);
+    }
+  }
+
+  /// Duplicates this host with a "(copy)" suffix.
+  Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
+    try {
+      final repo = ref.read(hostRepositoryProvider);
+      await repo.insert(
+        HostsCompanion.insert(
+          label: '${host.label} (copy)',
+          hostname: host.hostname,
+          port: drift.Value(host.port),
+          username: host.username,
+          password: drift.Value(host.password),
+          keyId: drift.Value(host.keyId),
+          groupId: drift.Value(host.groupId),
+          jumpHostId: drift.Value(host.jumpHostId),
+          color: drift.Value(host.color),
+        ),
+      );
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
+      }
+    } on Exception catch (e) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Failed to duplicate: $e')));
+      }
     }
   }
 }

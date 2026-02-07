@@ -314,7 +314,10 @@ class _HostListTile extends ConsumerWidget {
             },
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'edit', child: Text('Edit')),
-              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
+              const PopupMenuItem(
+                value: 'duplicate',
+                child: Text('Duplicate'),
+              ),
               PopupMenuItem(
                 value: 'delete',
                 child: Text(
