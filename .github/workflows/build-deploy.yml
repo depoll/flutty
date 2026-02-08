@@ -138,13 +138,11 @@ jobs:
 
       - name: Build iOS (no codesign)
         run: |
-          # iOS CFBundleShortVersionString must be X.Y.Z only (no pre-release suffix)
-          IOS_BUILD_NAME=$(echo "${{ inputs.build-name }}" | sed 's/-.*//')
           flutter build ios \
             --flavor ${{ inputs.flavor }} \
             --release \
             --no-codesign \
-            --build-name=$IOS_BUILD_NAME \
+            --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }}
 
       - name: Archive, sign & deploy via Fastlane

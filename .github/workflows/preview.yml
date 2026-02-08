@@ -32,8 +32,10 @@ jobs:
           # Read base version from pubspec.yaml
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           PR_NUMBER=${{ github.event.pull_request.number }}
-          BUILD_NAME="${BASE_VERSION}-pr.${PR_NUMBER}"
-          BUILD_NUMBER=$(( $(date +%s) / 60 ))
+          BUILD_NAME="${BASE_VERSION}"
+          # Encode PR number as prefix: PR * 10^8 + epoch_minutes
+          EPOCH_MINUTES=$(( $(date +%s) / 60 ))
+          BUILD_NUMBER=$(( PR_NUMBER * 100000000 + EPOCH_MINUTES % 100000000 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
