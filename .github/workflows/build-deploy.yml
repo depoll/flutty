@@ -136,40 +136,29 @@ jobs:
             bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
-      - name: Build IPA
+      - name: Build iOS (no codesign)
         run: |
-          if [ "${{ inputs.deploy-ios-to }}" = "none" ]; then
-            flutter build ios \
-              --flavor ${{ inputs.flavor }} \
-              --release \
-              --no-codesign \
-              --build-name=${{ inputs.build-name }} \
-              --build-number=${{ inputs.build-number }}
-          else
-            flutter build ipa \
-              --flavor ${{ inputs.flavor }} \
-              --release \
-              --build-name=${{ inputs.build-name }} \
-              --build-number=${{ inputs.build-number }} \
-              --export-options-plist=ios/exportOptions.plist
+          flutter build ios \
+            --flavor ${{ inputs.flavor }} \
+            --release \
+            --no-codesign \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
+      - name: Archive, sign & deploy via Fastlane
+        if: inputs.deploy-ios-to != 'none'
+        run: |
+          cd ios
+          SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
+            bundle exec fastlane beta scheme:"$SCHEME"
+          elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
+            bundle exec fastlane release scheme:"$SCHEME"
           fi
 
       - name: Upload IPA artifact
+        if: inputs.deploy-ios-to != 'none'
         uses: actions/upload-artifact@v6
         with:
           name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: |
-            build/ios/ipa/*.ipa
-            build/ios/iphoneos/*.app
-
-      - name: Deploy to TestFlight
-        if: inputs.deploy-ios-to == 'testflight'
-        run: |
-          cd ios
-          bundle exec fastlane beta
-
-      - name: Deploy to App Store
-        if: inputs.deploy-ios-to == 'appstore'
-        run: |
-          cd ios
-          bundle exec fastlane release
+          path: build/ios/ipa/*.ipa

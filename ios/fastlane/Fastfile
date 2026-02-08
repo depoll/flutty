@@ -32,8 +32,9 @@ platform :ios do
   end
 
   desc 'Upload private flavor to TestFlight'
-  lane :beta do
+  lane :beta do |options|
     app_id = 'xyz.depollsoft.monkeyssh.private'
+    scheme = options[:scheme] || 'Private'
     sync_certs(app_identifier: app_id, type: 'appstore')
 
     api_key = app_store_connect_api_key(
@@ -43,18 +44,28 @@ platform :ios do
       is_key_content_base64: false,
     )
 
+    build_app(
+      workspace: 'Runner.xcworkspace',
+      scheme: scheme,
+      configuration: "Release-#{scheme}",
+      export_method: 'app-store',
+      output_directory: '../build/ios/ipa',
+      archive_path: '../build/ios/archive/Runner.xcarchive',
+    )
+
     pilot(
       api_key: api_key,
       app_identifier: app_id,
-      ipa: ENV['IPA_PATH'] || '../build/ios/ipa/MonkeySSH Private.ipa',
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
       skip_waiting_for_build_processing: true,
       skip_submission: true,
     )
   end
 
   desc 'Upload production flavor to App Store'
-  lane :release do
+  lane :release do |options|
     app_id = 'xyz.depollsoft.monkeyssh'
+    scheme = options[:scheme] || 'Production'
     sync_certs(app_identifier: app_id, type: 'appstore')
 
     api_key = app_store_connect_api_key(
@@ -64,10 +75,19 @@ platform :ios do
       is_key_content_base64: false,
     )
 
+    build_app(
+      workspace: 'Runner.xcworkspace',
+      scheme: scheme,
+      configuration: "Release-#{scheme}",
+      export_method: 'app-store',
+      output_directory: '../build/ios/ipa',
+      archive_path: '../build/ios/archive/Runner.xcarchive',
+    )
+
     deliver(
       api_key: api_key,
       app_identifier: app_id,
-      ipa: ENV['IPA_PATH'] || '../build/ios/ipa/MonkeySSH.ipa',
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
       skip_metadata: true,
       skip_screenshots: true,
       submit_for_review: false,
