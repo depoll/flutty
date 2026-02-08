@@ -130,11 +130,10 @@ jobs:
         if: inputs.deploy-ios-to != 'none'
         run: |
           cd ios
-          bundle exec fastlane run setup_ci
           if [ "${{ inputs.flavor }}" = "private" ]; then
-            bundle exec fastlane run match type:appstore app_identifier:xyz.depollsoft.monkeyssh.private readonly:true
+            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh.private
           else
-            bundle exec fastlane run match type:appstore app_identifier:xyz.depollsoft.monkeyssh readonly:true
+            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
       - name: Build IPA

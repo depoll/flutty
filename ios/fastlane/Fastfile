@@ -25,6 +25,12 @@ platform :ios do
     )
   end
 
+  desc 'Setup code signing for CI builds'
+  lane :setup_signing do |options|
+    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
+    sync_certs(app_identifier: app_id, type: 'appstore')
+  end
+
   desc 'Upload private flavor to TestFlight'
   lane :beta do
     app_id = 'xyz.depollsoft.monkeyssh.private'
