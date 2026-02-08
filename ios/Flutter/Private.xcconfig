@@ -1,0 +1,3 @@
+BUNDLE_ID_SUFFIX=.private
+APP_DISPLAY_NAME=MonkeySSH Private
+ASSET_PREFIX=private

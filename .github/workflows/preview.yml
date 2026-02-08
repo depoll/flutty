@@ -1,0 +1,83 @@
+name: PR Preview
+
+on:
+  pull_request:
+    branches: [main, develop]
+    paths:
+      - '**.dart'
+      - 'pubspec.yaml'
+      - 'pubspec.lock'
+      - 'analysis_options.yaml'
+      - '.github/workflows/**'
+      - 'android/**'
+      - 'ios/**'
+
+concurrency:
+  group: preview-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  compute-version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      build-name: ${{ steps.version.outputs.build-name }}
+      build-number: ${{ steps.version.outputs.build-number }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Compute version
+        id: version
+        run: |
+          # Read base version from pubspec.yaml
+          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          PR_NUMBER=${{ github.event.pull_request.number }}
+          BUILD_NAME="${BASE_VERSION}-pr.${PR_NUMBER}"
+          BUILD_NUMBER=$(( $(date +%s) / 60 ))
+
+          echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
+          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "## Version Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Build Name:** ${BUILD_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Build Number:** ${BUILD_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Flavor:** private" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Build & Deploy Preview
+    needs: compute-version
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.compute-version.outputs.build-name }}
+      build-number: ${{ needs.compute-version.outputs.build-number }}
+      flavor: private
+      deploy-ios-to: testflight
+      deploy-android-to: internal
+    secrets: inherit
+
+  comment:
+    name: PR Comment
+    runs-on: ubuntu-latest
+    needs: [compute-version, deploy]
+    if: always()
+    permissions:
+      pull-requests: write
+    steps:
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preview-build
+          message: |
+            ## 📱 Preview Build
+
+            | | Details |
+            |---|---|
+            | **Version** | `${{ needs.compute-version.outputs.build-name }}` |
+            | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
+            | **Flavor** | `private` |
+            | **Status** | ${{ needs.deploy.result == 'success' && '✅ Deployed' || '❌ Failed' }} |
+
+            ### Install Instructions
+            - **iOS**: Open TestFlight → MonkeySSH Private → Install
+            - **Android**: Open Play Store → Internal Testing → MonkeySSH Private → Install
+
+            > Build triggered by commit ${{ github.event.pull_request.head.sha }}

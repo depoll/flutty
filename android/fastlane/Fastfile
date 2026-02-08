@@ -1,0 +1,31 @@
+default_platform(:android)
+
+platform :android do
+  desc 'Upload private flavor AAB to Play Store internal testing'
+  lane :internal do
+    upload_to_play_store(
+      package_name: 'xyz.depollsoft.monkeyssh.private',
+      track: 'internal',
+      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/privateRelease/app-private-release.aab',
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+    )
+  end
+
+  desc 'Upload production flavor AAB to Play Store production'
+  lane :release do
+    upload_to_play_store(
+      package_name: 'xyz.depollsoft.monkeyssh',
+      track: 'production',
+      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/productionRelease/app-production-release.aab',
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      skip_upload_metadata: true,
+      skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+    )
+  end
+end

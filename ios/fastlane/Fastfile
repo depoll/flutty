@@ -1,0 +1,71 @@
+default_platform(:ios)
+
+platform :ios do
+  before_all do
+    setup_ci if ENV['CI']
+  end
+
+  desc 'Sync certificates and profiles for a given type and app identifier'
+  private_lane :sync_certs do |options|
+    app_id = options[:app_identifier]
+    match_type = options[:type] || 'appstore'
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
+      key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
+      is_key_content_base64: true,
+    )
+
+    match(
+      type: match_type,
+      app_identifier: app_id,
+      api_key: api_key,
+      readonly: true,
+    )
+  end
+
+  desc 'Upload private flavor to TestFlight'
+  lane :beta do
+    app_id = 'xyz.depollsoft.monkeyssh.private'
+    sync_certs(app_identifier: app_id, type: 'appstore')
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
+      key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
+      is_key_content_base64: true,
+    )
+
+    pilot(
+      api_key: api_key,
+      app_identifier: app_id,
+      ipa: ENV['IPA_PATH'] || '../build/ios/ipa/MonkeySSH Private.ipa',
+      skip_waiting_for_build_processing: true,
+      skip_submission: true,
+    )
+  end
+
+  desc 'Upload production flavor to App Store'
+  lane :release do
+    app_id = 'xyz.depollsoft.monkeyssh'
+    sync_certs(app_identifier: app_id, type: 'appstore')
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
+      key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
+      is_key_content_base64: true,
+    )
+
+    deliver(
+      api_key: api_key,
+      app_identifier: app_id,
+      ipa: ENV['IPA_PATH'] || '../build/ios/ipa/MonkeySSH.ipa',
+      skip_metadata: true,
+      skip_screenshots: true,
+      submit_for_review: false,
+      automatic_release: false,
+    )
+  end
+end

@@ -1,0 +1,81 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release (e.g., 1.2.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  compute-version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      build-name: ${{ steps.version.outputs.build-name }}
+      build-number: ${{ steps.version.outputs.build-number }}
+    steps:
+      - name: Compute version
+        id: version
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            # Strip 'v' prefix from tag
+            BUILD_NAME="${{ github.event.release.tag_name }}"
+            BUILD_NAME="${BUILD_NAME#v}"
+          else
+            BUILD_NAME="${{ inputs.version }}"
+          fi
+
+          BUILD_NUMBER=$(( $(date +%s) / 60 ))
+
+          echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
+          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "## Release Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${BUILD_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Build Number:** ${BUILD_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Build & Deploy Release
+    needs: compute-version
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.compute-version.outputs.build-name }}
+      build-number: ${{ needs.compute-version.outputs.build-number }}
+      flavor: production
+      deploy-ios-to: appstore
+      deploy-android-to: production
+    secrets: inherit
+
+  upload-release-artifacts:
+    name: Upload to GitHub Release
+    runs-on: ubuntu-latest
+    needs: [compute-version, deploy]
+    if: github.event_name == 'release'
+    permissions:
+      contents: write
+    steps:
+      - name: Download Android artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: android-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
+          path: artifacts/android
+
+      - name: Download iOS artifact
+        uses: actions/download-artifact@v6
+        with:
+          name: ios-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
+          path: artifacts/ios
+
+      - name: Upload to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/android/*.aab
+            artifacts/ios/*.ipa
