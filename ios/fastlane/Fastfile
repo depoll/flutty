@@ -5,17 +5,28 @@ platform :ios do
     setup_ci if ENV['CI']
   end
 
-  desc 'Sync certificates and profiles for a given type and app identifier'
-  private_lane :sync_certs do |options|
-    app_id = options[:app_identifier]
-    match_type = options[:type] || 'appstore'
+  APP_IDS = {
+    'Private' => 'xyz.depollsoft.monkeyssh.private',
+    'Production' => 'xyz.depollsoft.monkeyssh',
+  }.freeze
 
-    api_key = app_store_connect_api_key(
+  TEAM_ID = '43AWMS3YJX'.freeze
+
+  private_lane :get_api_key do
+    app_store_connect_api_key(
       key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
       issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
       key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
       is_key_content_base64: false,
     )
+  end
+
+  desc 'Sync certificates and profiles for a given type and app identifier'
+  private_lane :sync_certs do |options|
+    app_id = options[:app_identifier]
+    match_type = options[:type] || 'appstore'
+
+    api_key = get_api_key
 
     match(
       type: match_type,
@@ -25,32 +36,18 @@ platform :ios do
     )
   end
 
-  desc 'Setup code signing for CI builds'
-  lane :setup_signing do |options|
-    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
-    sync_certs(app_identifier: app_id, type: 'appstore')
-  end
+  private_lane :build_and_sign do |options|
+    scheme = options[:scheme]
+    app_id = APP_IDS[scheme]
 
-  desc 'Upload private flavor to TestFlight'
-  lane :beta do |options|
-    app_id = 'xyz.depollsoft.monkeyssh.private'
-    scheme = options[:scheme] || 'Private'
-    team_id = '43AWMS3YJX'
     sync_certs(app_identifier: app_id, type: 'appstore')
 
-    api_key = app_store_connect_api_key(
-      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
-      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
-      key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
-      is_key_content_base64: false,
-    )
-
-    profile_name = ENV['sigh_xyz.depollsoft.monkeyssh.private_appstore_profile-name'] ||
+    profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
                    "match AppStore #{app_id}"
 
     update_code_signing_settings(
       use_automatic_signing: false,
-      team_id: team_id,
+      team_id: TEAM_ID,
       code_sign_identity: 'iPhone Distribution',
       profile_name: profile_name,
       bundle_identifier: app_id,
@@ -65,11 +62,25 @@ platform :ios do
       export_method: 'app-store',
       output_directory: '../build/ios/ipa',
       archive_path: '../build/ios/archive/Runner.xcarchive',
-      xcargs: "DEVELOPMENT_TEAM=#{team_id}",
+      xcargs: "DEVELOPMENT_TEAM=#{TEAM_ID}",
     )
+  end
+
+  desc 'Setup code signing for CI builds'
+  lane :setup_signing do |options|
+    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
+    sync_certs(app_identifier: app_id, type: 'appstore')
+  end
+
+  desc 'Build, sign, and upload to TestFlight'
+  lane :beta do |options|
+    scheme = options[:scheme] || 'Private'
+    app_id = APP_IDS[scheme]
+
+    build_and_sign(scheme: scheme)
 
     pilot(
-      api_key: api_key,
+      api_key: get_api_key,
       app_identifier: app_id,
       ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
       skip_waiting_for_build_processing: true,
@@ -77,45 +88,15 @@ platform :ios do
     )
   end
 
-  desc 'Upload production flavor to App Store'
+  desc 'Build, sign, and upload to App Store'
   lane :release do |options|
-    app_id = 'xyz.depollsoft.monkeyssh'
     scheme = options[:scheme] || 'Production'
-    team_id = '43AWMS3YJX'
-    sync_certs(app_identifier: app_id, type: 'appstore')
+    app_id = APP_IDS[scheme]
 
-    api_key = app_store_connect_api_key(
-      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
-      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
-      key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
-      is_key_content_base64: false,
-    )
-
-    profile_name = ENV['sigh_xyz.depollsoft.monkeyssh_appstore_profile-name'] ||
-                   "match AppStore #{app_id}"
-
-    update_code_signing_settings(
-      use_automatic_signing: false,
-      team_id: team_id,
-      code_sign_identity: 'iPhone Distribution',
-      profile_name: profile_name,
-      bundle_identifier: app_id,
-      path: 'Runner.xcodeproj',
-      build_configurations: ["Release-#{scheme}"],
-    )
-
-    build_app(
-      workspace: 'Runner.xcworkspace',
-      scheme: scheme,
-      configuration: "Release-#{scheme}",
-      export_method: 'app-store',
-      output_directory: '../build/ios/ipa',
-      archive_path: '../build/ios/archive/Runner.xcarchive',
-      xcargs: "DEVELOPMENT_TEAM=#{team_id}",
-    )
+    build_and_sign(scheme: scheme)
 
     deliver(
-      api_key: api_key,
+      api_key: get_api_key,
       app_identifier: app_id,
       ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
       skip_metadata: true,

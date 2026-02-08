@@ -91,6 +91,7 @@ jobs:
         if: inputs.deploy-android-to != 'none'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
         run: |
           cd android
           if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then

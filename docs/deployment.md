@@ -79,7 +79,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 | `MATCH_GIT_BASIC_AUTHORIZATION` | Base64-encoded `username:PAT` | `echo -n "username:ghp_token" \| base64` |
 | `APP_STORE_CONNECT_API_KEY_ID` | API Key ID | From App Store Connect → Integrations |
 | `APP_STORE_CONNECT_API_ISSUER_ID` | API Issuer ID | From App Store Connect → Integrations |
-| `APP_STORE_CONNECT_API_KEY_CONTENT` | API Key content (base64) | `base64 -i AuthKey_XXXXXX.p8` |
+| `APP_STORE_CONNECT_API_KEY_CONTENT` | API Key content (raw .p8 PEM) | Contents of `AuthKey_XXXXXX.p8` file |
 
 ### Android / Google Play
 

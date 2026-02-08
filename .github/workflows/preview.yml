@@ -47,6 +47,7 @@ jobs:
   deploy:
     name: Build & Deploy Preview
     needs: compute-version
+    if: github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
@@ -76,7 +77,7 @@ jobs:
             | **Version** | `${{ needs.compute-version.outputs.build-name }}` |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
             | **Flavor** | `private` |
-            | **Status** | ${{ needs.deploy.result == 'success' && '✅ Deployed' || '❌ Failed' }} |
+            | **Status** | ${{ needs.deploy.result == 'success' && '✅ Deployed' || needs.deploy.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
 
             ### Install Instructions
             - **iOS**: Open TestFlight → MonkeySSH Private → Install
