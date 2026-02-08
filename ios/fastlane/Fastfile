@@ -76,6 +76,7 @@ platform :ios do
   lane :beta do |options|
     scheme = options[:scheme] || 'Private'
     app_id = APP_IDS[scheme]
+    skip_meta = options[:skip_metadata] == true
 
     build_and_sign(scheme: scheme)
 
@@ -86,12 +87,15 @@ platform :ios do
       skip_waiting_for_build_processing: true,
       skip_submission: true,
     )
+
+    sync_metadata(app_identifier: app_id) unless skip_meta
   end
 
   desc 'Build, sign, and upload to App Store'
   lane :release do |options|
     scheme = options[:scheme] || 'Production'
     app_id = APP_IDS[scheme]
+    skip_meta = options[:skip_metadata] == true
 
     build_and_sign(scheme: scheme)
 
@@ -99,10 +103,26 @@ platform :ios do
       api_key: get_api_key,
       app_identifier: app_id,
       ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
-      skip_metadata: true,
       skip_screenshots: true,
       submit_for_review: false,
       automatic_release: false,
+    )
+
+    sync_metadata(app_identifier: app_id) unless skip_meta
+  end
+
+  desc 'Sync metadata and app icon to App Store Connect (no build required)'
+  lane :sync_metadata do |options|
+    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
+
+    deliver(
+      api_key: get_api_key,
+      app_identifier: app_id,
+      skip_binary_upload: true,
+      skip_screenshots: true,
+      submit_for_review: false,
+      automatic_release: false,
+      force: true,
     )
   end
 end

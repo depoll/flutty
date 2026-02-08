@@ -99,7 +99,7 @@ Triggered automatically on PRs to `main` or `develop`. Builds the **private** fl
 - **iOS**: TestFlight (MonkeySSH Private)
 - **Android**: Play Store internal testing track
 
-Version format: `X.Y.Z-pr.N` (e.g., `0.1.0-pr.42`)
+Version format: `X.Y.Z` with build number encoding PR number (`PR * 100000 + run_number`)
 
 ### Release (`release.yml`)
 
@@ -111,9 +111,51 @@ Builds the **production** flavor and deploys to:
 - **iOS**: App Store (submitted, not auto-released)
 - **Android**: Play Store production track
 
+Metadata (description, icons, etc.) is synced automatically on release deploys.
+
+### Sync Metadata (`sync-metadata.yml`)
+
+Manually triggered workflow to sync store metadata without a new build. Useful for updating app descriptions, icons, or other listing details.
+
+Supports selecting:
+- **Platform**: iOS, Android, or both
+- **App**: private, production, or both
+
 ### Build Numbers
 
-Build numbers use epoch-based minutes (`$(date +%s) / 60`), ensuring they are always monotonically increasing across all workflows.
+PR builds use `PR * 100000 + run_number` (e.g., PR 25, run 12 → `2500012`).
+Release builds use epoch-based minutes (`$(date +%s) / 60`).
+
+## Store Metadata
+
+Store metadata (descriptions, icons, etc.) is managed in the repository:
+
+```
+ios/fastlane/metadata/       # iOS App Store metadata
+├── en-US/
+│   ├── name.txt
+│   ├── subtitle.txt
+│   ├── description.txt
+│   ├── keywords.txt
+│   ├── release_notes.txt
+│   ├── privacy_url.txt
+│   └── support_url.txt
+├── copyright.txt
+├── primary_category.txt
+└── app_icon.png             # 1024x1024 App Store icon
+
+android/fastlane/metadata/   # Google Play metadata
+└── android/en-US/
+    ├── title.txt
+    ├── short_description.txt
+    ├── full_description.txt
+    ├── changelogs/
+    │   └── default.txt
+    └── images/
+        └── icon.png          # 512x512 Play Store icon
+```
+
+Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
 
 ## Building Flavors Locally
 

@@ -51,6 +51,7 @@ jobs:
       flavor: production
       deploy-ios-to: appstore
       deploy-android-to: production
+      sync-metadata: true
     secrets: inherit
 
   upload-release-artifacts:

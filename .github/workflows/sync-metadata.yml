@@ -1,0 +1,78 @@
+name: Sync Store Metadata
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: 'Platform to sync'
+        required: true
+        type: choice
+        options:
+          - both
+          - ios
+          - android
+      app:
+        description: 'Which app listing to sync'
+        required: true
+        type: choice
+        options:
+          - both
+          - private
+          - production
+
+jobs:
+  sync-ios:
+    name: Sync iOS Metadata
+    if: inputs.platform == 'both' || inputs.platform == 'ios'
+    runs-on: macos-latest
+    env:
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Sync private app metadata
+        if: inputs.app == 'both' || inputs.app == 'private'
+        run: |
+          cd ios
+          bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh.private
+
+      - name: Sync production app metadata
+        if: inputs.app == 'both' || inputs.app == 'production'
+        run: |
+          cd ios
+          bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh
+
+  sync-android:
+    name: Sync Android Metadata
+    if: inputs.platform == 'both' || inputs.platform == 'android'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Sync private app metadata
+        if: inputs.app == 'both' || inputs.app == 'private'
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          cd android
+          bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh.private
+
+      - name: Sync production app metadata
+        if: inputs.app == 'both' || inputs.app == 'production'
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          cd android
+          bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh

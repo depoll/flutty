@@ -25,6 +25,11 @@ on:
         type: string
         default: 'none'
         description: 'Android deploy target: internal, production, or none'
+      sync-metadata:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to sync store metadata alongside the deploy'
 
 jobs:
   build-android:
@@ -94,10 +99,11 @@ jobs:
           AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
         run: |
           cd android
+          SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then
-            bundle exec fastlane internal
+            bundle exec fastlane internal skip_metadata:"$SKIP_META"
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
-            bundle exec fastlane release
+            bundle exec fastlane release skip_metadata:"$SKIP_META"
           fi
 
   build-ios:
@@ -151,10 +157,11 @@ jobs:
         run: |
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
-            bundle exec fastlane beta scheme:"$SCHEME"
+            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META"
           elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
-            bundle exec fastlane release scheme:"$SCHEME"
+            bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META"
           fi
 
       - name: Upload IPA artifact

@@ -2,7 +2,9 @@ default_platform(:android)
 
 platform :android do
   desc 'Upload private flavor AAB to Play Store internal testing'
-  lane :internal do
+  lane :internal do |options|
+    skip_meta = options[:skip_metadata] == true
+
     upload_to_play_store(
       package_name: 'xyz.depollsoft.monkeyssh.private',
       track: 'internal',
@@ -13,10 +15,14 @@ platform :android do
       skip_upload_screenshots: true,
       skip_upload_changelogs: true,
     )
+
+    sync_metadata(package_name: 'xyz.depollsoft.monkeyssh.private') unless skip_meta
   end
 
   desc 'Upload production flavor AAB to Play Store production'
-  lane :release do
+  lane :release do |options|
+    skip_meta = options[:skip_metadata] == true
+
     upload_to_play_store(
       package_name: 'xyz.depollsoft.monkeyssh',
       track: 'production',
@@ -24,6 +30,22 @@ platform :android do
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
       skip_upload_metadata: true,
       skip_upload_images: true,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: true,
+    )
+
+    sync_metadata(package_name: 'xyz.depollsoft.monkeyssh') unless skip_meta
+  end
+
+  desc 'Sync metadata and images to Play Store (no build required)'
+  lane :sync_metadata do |options|
+    package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
+
+    upload_to_play_store(
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      skip_upload_aab: true,
+      skip_upload_apk: true,
       skip_upload_screenshots: true,
       skip_upload_changelogs: true,
     )
