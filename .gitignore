@@ -53,3 +53,4 @@ app.*.map.json
 **/fastlane/screenshots
 **/fastlane/test_output
 **/fastlane/README.md
+**/android/app/upload-keystore.jks

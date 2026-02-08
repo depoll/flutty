@@ -6,6 +6,7 @@ platform :android do
     upload_to_play_store(
       package_name: 'xyz.depollsoft.monkeyssh.private',
       track: 'internal',
+      release_status: 'draft',
       aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/privateRelease/app-private-release.aab',
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
       skip_upload_metadata: true,
@@ -20,6 +21,7 @@ platform :android do
     upload_to_play_store(
       package_name: 'xyz.depollsoft.monkeyssh',
       track: 'production',
+      release_status: 'draft',
       aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/productionRelease/app-production-release.aab',
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
       skip_upload_metadata: true,
