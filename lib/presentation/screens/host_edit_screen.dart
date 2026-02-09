@@ -63,27 +63,32 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   Future<void> _loadHost() async {
     setState(() => _isLoading = true);
     final host = await ref.read(hostRepositoryProvider).getById(widget.hostId!);
-    if (host != null && mounted) {
-      final portForwards =
-          await ref.read(portForwardRepositoryProvider).getByHostId(host.id);
-      setState(() {
-        _existingHost = host;
-        _labelController.text = host.label;
-        _hostnameController.text = host.hostname;
-        _portController.text = host.port.toString();
-        _usernameController.text = host.username;
-        _passwordController.text = host.password ?? '';
-        _selectedKeyId = host.keyId;
-        _selectedGroupId = host.groupId;
-        _selectedJumpHostId = host.jumpHostId;
-        _selectedLightThemeId = host.terminalThemeLightId;
-        _selectedDarkThemeId = host.terminalThemeDarkId;
-        _selectedFontFamily = host.terminalFontFamily;
-        _isFavorite = host.isFavorite;
-        _portForwards = portForwards;
-        _isLoading = false;
-      });
+    if (!mounted) return;
+    if (host == null) {
+      setState(() => _isLoading = false);
+      return;
     }
+    final portForwards = await ref
+        .read(portForwardRepositoryProvider)
+        .getByHostId(host.id);
+    if (!mounted) return;
+    setState(() {
+      _existingHost = host;
+      _labelController.text = host.label;
+      _hostnameController.text = host.hostname;
+      _portController.text = host.port.toString();
+      _usernameController.text = host.username;
+      _passwordController.text = host.password ?? '';
+      _selectedKeyId = host.keyId;
+      _selectedGroupId = host.groupId;
+      _selectedJumpHostId = host.jumpHostId;
+      _selectedLightThemeId = host.terminalThemeLightId;
+      _selectedDarkThemeId = host.terminalThemeDarkId;
+      _selectedFontFamily = host.terminalFontFamily;
+      _isFavorite = host.isFavorite;
+      _portForwards = portForwards;
+      _isLoading = false;
+    });
   }
 
   @override
@@ -631,6 +636,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       text: existing?.remotePort.toString() ?? '',
     );
 
+    var autoStart = existing?.autoStart ?? true;
+
     final formKey = GlobalKey<FormState>();
 
     final result = await showModalBottomSheet<bool>(
@@ -723,6 +730,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   ],
                 ),
                 const SizedBox(height: 20),
+                SwitchListTile(
+                  title: const Text('Auto-start'),
+                  subtitle: const Text('Start this forward when connecting'),
+                  value: autoStart,
+                  onChanged: (value) => setModalState(() => autoStart = value),
+                  contentPadding: EdgeInsets.zero,
+                ),
+                const SizedBox(height: 12),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.end,
                   children: [
@@ -758,7 +773,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             localPort: int.parse(localPortController.text),
             remoteHost: remoteHostController.text,
             remotePort: int.parse(remotePortController.text),
-            autoStart: true,
+            autoStart: autoStart,
           ),
         );
       } else {
@@ -770,7 +785,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             localPort: int.parse(localPortController.text),
             remoteHost: remoteHostController.text,
             remotePort: int.parse(remotePortController.text),
-            autoStart: const drift.Value(true),
+            autoStart: drift.Value(autoStart),
           ),
         );
       }
@@ -782,7 +797,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
-            content: Text(isEdit ? 'Port forward updated' : 'Port forward added'),
+            content: Text(
+              isEdit ? 'Port forward updated' : 'Port forward added',
+            ),
           ),
         );
       }
@@ -825,9 +842,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       setState(() => _portForwards = updated);
 
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Deleted "${pf.name}"')),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Deleted "${pf.name}"')));
       }
     }
   }
@@ -1146,9 +1163,7 @@ class _PortForwardTile extends StatelessWidget {
       ),
       title: Text(
         portForward.name,
-        style: theme.textTheme.bodyLarge?.copyWith(
-          fontWeight: FontWeight.w500,
-        ),
+        style: theme.textTheme.bodyLarge?.copyWith(fontWeight: FontWeight.w500),
       ),
       subtitle: Text(
         '${portForward.localPort} → '

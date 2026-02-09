@@ -162,15 +162,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
-  /// Starts all configured port forwards for this host.
+  /// Starts auto-start port forwards for this host.
   Future<void> _startPortForwards(SshSession session) async {
     final portForwardRepo = ref.read(portForwardRepositoryProvider);
     final forwards = await portForwardRepo.getByHostId(widget.hostId);
 
-    if (forwards.isEmpty) return;
+    final autoStartForwards = forwards.where((f) => f.autoStart).toList();
+    if (autoStartForwards.isEmpty) return;
 
     var startedCount = 0;
-    for (final forward in forwards) {
+    final failedNames = <String>[];
+    for (final forward in autoStartForwards) {
       if (forward.forwardType == 'local') {
         final success = await session.startLocalForward(
           portForwardId: forward.id,
@@ -179,18 +181,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
           remoteHost: forward.remoteHost,
           remotePort: forward.remotePort,
         );
-        if (success) startedCount++;
+        if (success) {
+          startedCount++;
+        } else {
+          failedNames.add(forward.name);
+        }
       }
       // TODO: Add remote forwarding support when needed
     }
 
-    if (startedCount > 0 && mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Started $startedCount port forward(s)'),
-          duration: const Duration(seconds: 2),
-        ),
-      );
+    if (mounted) {
+      if (failedNames.isNotEmpty) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              'Started $startedCount forward(s), '
+              'failed: ${failedNames.join(', ')}',
+            ),
+            duration: const Duration(seconds: 5),
+          ),
+        );
+      } else if (startedCount > 0) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Started $startedCount port forward(s)'),
+            duration: const Duration(seconds: 2),
+          ),
+        );
+      }
     }
   }
 
@@ -503,98 +521,98 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       return;
     }
 
-    final result = await showModalBottomSheet<String>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => DraggableScrollableSheet(
-        maxChildSize: 0.8,
-        minChildSize: 0.3,
-        expand: false,
-        builder: (context, scrollController) => Column(
-          children: [
-            // Handle bar
-            Padding(
-              padding: const EdgeInsets.symmetric(vertical: 12),
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: Theme.of(context).colorScheme.outline,
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              child: Row(
-                children: [
-                  Text(
-                    'Snippets',
-                    style: Theme.of(context).textTheme.titleLarge,
-                  ),
-                  const Spacer(),
-                  TextButton(
-                    onPressed: () => Navigator.pop(context),
-                    child: const Text('Cancel'),
-                  ),
-                ],
-              ),
-            ),
-            const Divider(),
-            Expanded(
-              child: ListView.builder(
-                controller: scrollController,
-                itemCount: snippets.length,
-                itemBuilder: (context, index) {
-                  final snippet = snippets[index];
-                  final hasVariables = RegExp(
-                    r'\{\{(\w+)\}\}',
-                  ).hasMatch(snippet.command);
-                  return ListTile(
-                    leading: Icon(
-                      hasVariables ? Icons.tune : Icons.code,
-                      color: Theme.of(context).colorScheme.primary,
-                    ),
-                    title: Text(snippet.name),
-                    subtitle: Text(
-                      snippet.command.replaceAll('\n', ' '),
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: const TextStyle(fontFamily: 'monospace'),
-                    ),
-                    trailing: hasVariables
-                        ? const Chip(label: Text('Has variables'))
-                        : null,
-                    onTap: () async {
-                      // Handle variable substitution
-                      final command = await _substituteVariables(
-                        context,
-                        snippet,
-                      );
-                      if (command != null && context.mounted) {
-                        Navigator.pop(context, command);
-                      }
-                    },
-                  );
-                },
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    final variablePattern = RegExp(r'\{\{(\w+)\}\}');
 
-    if (result != null && result.isNotEmpty) {
+    final result =
+        await showModalBottomSheet<({String command, int snippetId})>(
+          context: context,
+          isScrollControlled: true,
+          builder: (context) => DraggableScrollableSheet(
+            maxChildSize: 0.8,
+            minChildSize: 0.3,
+            expand: false,
+            builder: (context, scrollController) => Column(
+              children: [
+                // Handle bar
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 12),
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.outline,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  child: Row(
+                    children: [
+                      Text(
+                        'Snippets',
+                        style: Theme.of(context).textTheme.titleLarge,
+                      ),
+                      const Spacer(),
+                      TextButton(
+                        onPressed: () => Navigator.pop(context),
+                        child: const Text('Cancel'),
+                      ),
+                    ],
+                  ),
+                ),
+                const Divider(),
+                Expanded(
+                  child: ListView.builder(
+                    controller: scrollController,
+                    itemCount: snippets.length,
+                    itemBuilder: (context, index) {
+                      final snippet = snippets[index];
+                      final hasVariables = variablePattern.hasMatch(
+                        snippet.command,
+                      );
+                      return ListTile(
+                        leading: Icon(
+                          hasVariables ? Icons.tune : Icons.code,
+                          color: Theme.of(context).colorScheme.primary,
+                        ),
+                        title: Text(snippet.name),
+                        subtitle: Text(
+                          snippet.command.replaceAll('\n', ' '),
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: const TextStyle(fontFamily: 'monospace'),
+                        ),
+                        trailing: hasVariables
+                            ? const Chip(label: Text('Has variables'))
+                            : null,
+                        onTap: () async {
+                          // Handle variable substitution
+                          final command = await _substituteVariables(
+                            context,
+                            snippet,
+                          );
+                          if (command != null && context.mounted) {
+                            Navigator.pop(context, (
+                              command: command,
+                              snippetId: snippet.id,
+                            ));
+                          }
+                        },
+                      );
+                    },
+                  ),
+                ),
+              ],
+            ),
+          ),
+        );
+
+    if (result != null && result.command.isNotEmpty) {
       // Insert the command into terminal
-      _terminal.paste(result);
+      _terminal.paste(result.command);
       // Track usage
-      unawaited(
-        snippetRepo.incrementUsage(
-          snippets
-              .firstWhere((s) => s.command.contains(result.split('\n').first))
-              .id,
-        ),
-      );
+      unawaited(snippetRepo.incrementUsage(result.snippetId));
     }
   }
 

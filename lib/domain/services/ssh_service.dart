@@ -132,7 +132,7 @@ class SshService {
     final existingSession = _sessions.remove(hostId);
     if (existingSession != null) {
       try {
-        existingSession.close();
+        await existingSession.close();
       } on Exception {
         // Ignore errors when closing stale session
       }
@@ -252,13 +252,13 @@ class SshService {
   /// Disconnect a session by host ID.
   Future<void> disconnect(int hostId) async {
     final session = _sessions.remove(hostId);
-    session?.close();
+    await session?.close();
   }
 
   /// Disconnect all sessions.
   Future<void> disconnectAll() async {
     for (final session in _sessions.values) {
-      session.close();
+      await session.close();
     }
     _sessions.clear();
   }
@@ -358,14 +358,27 @@ class SshSession {
 
       // Handle incoming connections
       tunnel.subscription = serverSocket.listen((socket) async {
+        SSHForwardChannel? forward;
         try {
-          final forward = await client.forwardLocal(remoteHost, remotePort);
-          // Pipe data bidirectionally
-          unawaited(forward.stream.cast<List<int>>().pipe(socket));
-          unawaited(socket.cast<List<int>>().pipe(forward.sink));
+          forward = await client.forwardLocal(remoteHost, remotePort);
+          // Pipe data bidirectionally and wait until either side finishes.
+          final forwardToSocket = forward.stream.cast<List<int>>().pipe(socket);
+          final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
+
+          await Future.any<void>([forwardToSocket, socketToForward]);
         } on Exception catch (e) {
-          socket.destroy();
           debugPrint('Port forward connection error: $e');
+        } finally {
+          try {
+            await forward?.sink.close();
+          } on Exception catch (_) {
+            // Ignore errors during cleanup.
+          }
+          try {
+            socket.destroy();
+          } on Exception catch (_) {
+            // Ignore errors during cleanup.
+          }
         }
       });
 
@@ -401,8 +414,8 @@ class SshSession {
   }) => client.forwardLocal(remoteHost, remotePort);
 
   /// Close the session.
-  void close() {
-    stopAllForwards();
+  Future<void> close() async {
+    await stopAllForwards();
     _shell?.close();
     client.close();
   }
@@ -449,6 +462,8 @@ class _ActiveTunnel {
   final String remoteHost;
   final int remotePort;
   final bool isLocal;
+  // Cancelled in SshSession.stopForward().
+  // ignore: cancel_subscriptions
   StreamSubscription<Socket>? subscription;
 }
 

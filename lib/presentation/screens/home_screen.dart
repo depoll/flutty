@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -61,8 +63,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
     body: _buildContent(),
     bottomNavigationBar: NavigationBar(
       selectedIndex: _selectedIndex,
-      onDestinationSelected: (index) =>
-          setState(() => _selectedIndex = index),
+      onDestinationSelected: (index) => setState(() => _selectedIndex = index),
       labelBehavior: NavigationDestinationLabelBehavior.alwaysShow,
       height: 65,
       destinations: const [
@@ -909,8 +910,6 @@ final _allSnippetsStreamProvider = StreamProvider<List<Snippet>>((ref) {
   return repo.watchAll();
 });
 
-/// Provider for all port forwards as stream.
-
 /// Panel for displaying and managing snippets inline.
 class _SnippetsPanel extends ConsumerWidget {
   const _SnippetsPanel();
@@ -1271,7 +1270,7 @@ class _SnippetRow extends ConsumerWidget {
 
   void _copySnippet(BuildContext context, WidgetRef ref) {
     Clipboard.setData(ClipboardData(text: snippet.command));
-    ref.read(snippetRepositoryProvider).incrementUsage(snippet.id);
+    unawaited(ref.read(snippetRepositoryProvider).incrementUsage(snippet.id));
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text('Copied "${snippet.name}" to clipboard')),
     );
