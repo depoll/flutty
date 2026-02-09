@@ -38,7 +38,7 @@ jobs:
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
   build:
-    name: Build Preview APK
+    name: Build & Deploy Preview
     needs: compute-version
     if: github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/build-deploy.yml
@@ -46,7 +46,7 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       flavor: private
-      deploy-ios-to: none
+      deploy-ios-to: testflight
       deploy-android-to: none
     secrets: inherit
 
@@ -69,12 +69,12 @@ jobs:
             |---|---|
             | **Version** | `${{ needs.compute-version.outputs.build-name }}` |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
-            | **Status** | ${{ needs.build.result == 'success' && '✅ Built' || needs.build.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
+            | **Status** | ${{ needs.build.result == 'success' && '✅ Deployed' || needs.build.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
 
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | TestFlight · latest `main` build of _MonkeySSH β_ |
+            | 🍎 **iOS** | Open **TestFlight** → _MonkeySSH β_ → select `${{ needs.compute-version.outputs.build-name }}` |
             | 🤖 **Android (APK)** | [Download from workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
             | 🤖 **Android (Play Store)** | [Internal Testing](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · updates on merge to `main` |
 
