@@ -1,0 +1,11 @@
+MonkeySSH is a cross-platform SSH client and terminal emulator.
+
+Features:
+• SSH2 Protocol — Password and key-based authentication, jump hosts
+• Terminal Emulator — xterm-256color with customizable themes
+• Rich Keyboard — Modifier keys, function keys, macros, gestures
+• SFTP — Browse, upload, download, edit remote files
+• Key Management — Generate, import, export Ed25519/RSA keys
+• Snippets — Save and run frequently used commands
+• Multi-Session — Multiple concurrent SSH sessions with tabs
+• Host Organization — Groups, tags, and search

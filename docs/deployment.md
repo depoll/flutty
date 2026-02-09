@@ -18,7 +18,7 @@ Both variants install side-by-side on the same device.
 1. Log in to [App Store Connect](https://appstoreconnect.apple.com/)
 2. Create **two** apps:
    - Bundle ID: `xyz.depollsoft.monkeyssh` — name: "MonkeySSH"
-   - Bundle ID: `xyz.depollsoft.monkeyssh.private` — name: "MonkeySSH Private"
+   - Bundle ID: `xyz.depollsoft.monkeyssh.private` — name: "MonkeySSH β"
 3. Create an **App Store Connect API Key**:
    - Go to Users and Access → Integrations → App Store Connect API
    - Generate a new key with "App Manager" role
@@ -30,7 +30,7 @@ Both variants install side-by-side on the same device.
 1. Log in to [Google Play Console](https://play.google.com/console)
 2. Create **two** apps:
    - Package: `xyz.depollsoft.monkeyssh` — name: "MonkeySSH"
-   - Package: `xyz.depollsoft.monkeyssh.private` — name: "MonkeySSH Private"
+   - Package: `xyz.depollsoft.monkeyssh.private` — name: "MonkeySSH β"
 3. Create a **Service Account**:
    - Go to Setup → API access
    - Create a new service account in Google Cloud Console
@@ -128,34 +128,52 @@ Release builds use epoch-based minutes (`$(date +%s) / 60`).
 
 ## Store Metadata
 
-Store metadata (descriptions, icons, etc.) is managed in the repository:
+Store metadata (descriptions, icons, etc.) is managed per-app in the repository. Each app variant (private and production) has its own metadata directory with distinct names and icons.
+
+### iOS (App Store Connect)
 
 ```
-ios/fastlane/metadata/       # iOS App Store metadata
-├── en-US/
-│   ├── name.txt
-│   ├── subtitle.txt
-│   ├── description.txt
-│   ├── keywords.txt
-│   ├── release_notes.txt
-│   ├── privacy_url.txt
-│   └── support_url.txt
-├── copyright.txt
-├── primary_category.txt
-└── app_icon.png             # 1024x1024 App Store icon
+ios/fastlane/
+├── metadata-private/        # MonkeySSH β (preview app)
+│   ├── en-US/
+│   │   ├── name.txt         # "MonkeySSH β"
+│   │   ├── subtitle.txt
+│   │   ├── description.txt
+│   │   ├── keywords.txt
+│   │   ├── release_notes.txt
+│   │   ├── privacy_url.txt
+│   │   └── support_url.txt
+│   ├── copyright.txt
+│   ├── primary_category.txt
+│   └── app_icon.png         # 1024x1024 (private banner icon)
+└── metadata-production/     # MonkeySSH (production app)
+    ├── en-US/
+    │   └── (same structure)
+    ├── copyright.txt
+    ├── primary_category.txt
+    └── app_icon.png         # 1024x1024 (production icon)
+```
 
-android/fastlane/metadata/   # Google Play metadata
-└── android/en-US/
-    ├── title.txt
-    ├── short_description.txt
-    ├── full_description.txt
-    ├── changelogs/
-    │   └── default.txt
-    └── images/
-        └── icon.png          # 512x512 Play Store icon
+### Android (Google Play)
+
+```
+android/fastlane/
+├── metadata-private/        # MonkeySSH β (preview app)
+│   └── android/en-US/
+│       ├── title.txt        # "MonkeySSH β"
+│       ├── short_description.txt
+│       ├── full_description.txt
+│       ├── icon.png         # 512x512 (private banner icon)
+│       └── changelogs/
+│           └── default.txt
+└── metadata-production/     # MonkeySSH (production app)
+    └── android/en-US/
+        └── (same structure)
 ```
 
 Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
+
+> **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.
 
 ## Building Flavors Locally
 

@@ -1,53 +1,54 @@
 default_platform(:android)
 
 platform :android do
+  METADATA_DIRS = {
+    'xyz.depollsoft.monkeyssh.private' => 'fastlane/metadata-private',
+    'xyz.depollsoft.monkeyssh' => 'fastlane/metadata-production',
+  }.freeze
+
   desc 'Upload private flavor AAB to Play Store internal testing'
   lane :internal do |options|
-    skip_meta = options[:skip_metadata] == true
+    skip_meta = options[:skip_metadata].to_s == 'true'
+    package = 'xyz.depollsoft.monkeyssh.private'
+    meta_path = METADATA_DIRS[package]
 
     upload_to_play_store(
-      package_name: 'xyz.depollsoft.monkeyssh.private',
+      package_name: package,
       track: 'internal',
       aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/privateRelease/app-private-release.aab',
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      skip_upload_metadata: true,
-      skip_upload_images: true,
+      metadata_path: skip_meta ? nil : meta_path,
+      skip_upload_metadata: skip_meta,
+      skip_upload_images: skip_meta,
       skip_upload_screenshots: true,
-      skip_upload_changelogs: true,
+      skip_upload_changelogs: skip_meta,
     )
-
-    sync_metadata(package_name: 'xyz.depollsoft.monkeyssh.private') unless skip_meta
   end
 
   desc 'Upload production flavor AAB to Play Store production'
   lane :release do |options|
-    skip_meta = options[:skip_metadata] == true
-
-    upload_to_play_store(
-      package_name: 'xyz.depollsoft.monkeyssh',
-      track: 'production',
-      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/productionRelease/app-production-release.aab',
-      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      skip_upload_metadata: true,
-      skip_upload_images: true,
-      skip_upload_screenshots: true,
-      skip_upload_changelogs: true,
-    )
-
-    sync_metadata(package_name: 'xyz.depollsoft.monkeyssh') unless skip_meta
-  end
-
-  desc 'Sync metadata and images to Play Store (no build required)'
-  lane :sync_metadata do |options|
-    package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
+    skip_meta = options[:skip_metadata].to_s == 'true'
+    package = 'xyz.depollsoft.monkeyssh'
+    meta_path = METADATA_DIRS[package]
 
     upload_to_play_store(
       package_name: package,
+      track: 'production',
+      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/productionRelease/app-production-release.aab',
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      skip_upload_aab: true,
-      skip_upload_apk: true,
+      metadata_path: skip_meta ? nil : meta_path,
+      skip_upload_metadata: skip_meta,
+      skip_upload_images: skip_meta,
       skip_upload_screenshots: true,
-      skip_upload_changelogs: true,
+      skip_upload_changelogs: skip_meta,
+    )
+  end
+
+  desc 'Sync metadata to Play Store (no build required)'
+  lane :sync_metadata do |options|
+    UI.important(
+      'Play Store metadata is synced automatically during deploys (internal/release lanes). ' \
+      'Standalone metadata-only sync is not supported by supply without an active release.',
     )
   end
 end
