@@ -91,6 +91,7 @@ platform :ios do
       ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
       skip_waiting_for_build_processing: true,
       skip_submission: true,
+      uses_non_exempt_encryption: false,
     )
 
     sync_metadata(app_identifier: app_id) unless skip_meta
