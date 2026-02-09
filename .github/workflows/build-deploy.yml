@@ -30,11 +30,17 @@ on:
         type: boolean
         default: false
         description: 'Whether to sync store metadata alongside the deploy'
+    outputs:
+      apk-artifact-id:
+        description: 'Artifact ID of the uploaded APK'
+        value: ${{ jobs.build-android.outputs.apk-artifact-id }}
 
 jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
     runs-on: ubuntu-latest
+    outputs:
+      apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v6
 
@@ -96,6 +102,7 @@ jobs:
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload APK artifact
+        id: upload-apk
         uses: actions/upload-artifact@v6
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}

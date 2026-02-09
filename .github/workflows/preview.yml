@@ -73,7 +73,7 @@ jobs:
             | Platform | Link |
             |----------|------|
             | 🍎 **iOS** | Open **TestFlight** → _MonkeySSH β_ → build `${{ needs.compute-version.outputs.build-number }}` |
-            | 🤖 **Android (APK)** | [Download from workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+            | 🤖 **Android (APK)** | [Download APK](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}/artifacts/${{ needs.build.outputs.apk-artifact-id }}) |
             | 🤖 **Android (Play Store)** | [Internal Testing](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · updates on merge to `main` |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
