@@ -30,11 +30,9 @@ jobs:
         id: version
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          PR_NUMBER=${{ github.event.pull_request.number }}
-          BUILD_NAME="${BASE_VERSION}-pr.${PR_NUMBER}"
           BUILD_NUMBER=$(( $(date +%s) / 60 ))
 
-          echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
+          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
   build:
@@ -67,14 +65,14 @@ jobs:
 
             | | Details |
             |---|---|
-            | **Version** | `${{ needs.compute-version.outputs.build-name }}` |
+            | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
             | **Status** | ${{ needs.build.result == 'success' && '✅ Deployed' || needs.build.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
 
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Open **TestFlight** → _MonkeySSH β_ → select `${{ needs.compute-version.outputs.build-name }}` |
+            | 🍎 **iOS** | Open **TestFlight** → _MonkeySSH β_ → build `${{ needs.compute-version.outputs.build-number }}` |
             | 🤖 **Android (APK)** | [Download from workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
             | 🤖 **Android (Play Store)** | [Internal Testing](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · updates on merge to `main` |
 
