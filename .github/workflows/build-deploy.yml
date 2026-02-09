@@ -81,11 +81,25 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }}
 
+      - name: Build APK
+        run: |
+          flutter build apk \
+            --flavor ${{ inputs.flavor }} \
+            --release \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
       - name: Upload AAB artifact
         uses: actions/upload-artifact@v6
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk
 
       - name: Deploy to Play Store
         if: inputs.deploy-android-to != 'none'

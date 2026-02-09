@@ -82,6 +82,6 @@ jobs:
             | Platform | Link |
             |----------|------|
             | 🍎 **iOS** | Open **TestFlight** app → _MonkeySSH β_ → Update |
-            | 🤖 **Android** | [Open Play Store](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · _Internal Testing_ |
+            | 🤖 **Android** | [Play Store Internal](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · [Download APK](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
