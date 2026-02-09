@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+// ignore: implementation_imports
+import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
 /// Wraps a [TerminalView] to fix soft keyboard input on iOS/Android.
@@ -10,6 +12,10 @@ import 'package:xterm/xterm.dart';
 /// does nothing. This widget provides its own [TextInputClient] that
 /// correctly handles both [TextInputAction.newline] and
 /// [TextInputAction.done] as Enter.
+///
+/// It also intercepts hardware key events (including modifier combinations
+/// like Ctrl+C and Shift+Tab) so they are not swallowed by the text input
+/// system.
 ///
 /// Use this instead of [TerminalView] directly when soft keyboard
 /// support is needed.
@@ -80,7 +86,40 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   @override
-  Widget build(BuildContext context) => widget.child;
+  Widget build(BuildContext context) => Focus(
+    focusNode: widget.focusNode,
+    autofocus: true,
+    onKeyEvent: _onKeyEvent,
+    child: widget.child,
+  );
+
+  // -- Hardware key event handling --
+
+  KeyEventResult _onKeyEvent(FocusNode focusNode, KeyEvent event) {
+    // Ignore composing state (IME is active).
+    if (!_currentEditingState.composing.isCollapsed) {
+      return KeyEventResult.skipRemainingHandlers;
+    }
+
+    // Only handle key-down and repeat events.
+    if (event is KeyUpEvent) {
+      return KeyEventResult.ignored;
+    }
+
+    final key = keyToTerminalKey(event.logicalKey);
+    if (key == null) {
+      return KeyEventResult.ignored;
+    }
+
+    final handled = widget.terminal.keyInput(
+      key,
+      ctrl: HardwareKeyboard.instance.isControlPressed,
+      alt: HardwareKeyboard.instance.isAltPressed,
+      shift: HardwareKeyboard.instance.isShiftPressed,
+    );
+
+    return handled ? KeyEventResult.handled : KeyEventResult.ignored;
+  }
 
   // -- Public API --
 
