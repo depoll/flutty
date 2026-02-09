@@ -33,10 +33,8 @@ jobs:
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           PR_NUMBER=${{ github.event.pull_request.number }}
           BUILD_NAME="${BASE_VERSION}-pr.${PR_NUMBER}"
-          # 100M offset clears previous epoch-based codes (~29.5M)
-          # PR * 10000 + run_number: supports PRs up to 200,000 and 9,999 runs each
-          # Max Android versionCode is 2,100,000,000
-          BUILD_NUMBER=$(( 100000000 + PR_NUMBER * 10000 + ${{ github.run_number }} ))
+          # Epoch minutes — monotonically increasing regardless of PR count
+          BUILD_NUMBER=$(( $(date +%s) / 60 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"

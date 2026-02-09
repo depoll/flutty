@@ -99,7 +99,7 @@ Triggered automatically on PRs to `main` or `develop`. Builds the **private** fl
 - **iOS**: TestFlight (MonkeySSH Private)
 - **Android**: Play Store internal testing track
 
-Version format: `X.Y.Z-pr.N` with build number `100000000 + PR * 10000 + run_number`
+Version format: `X.Y.Z-pr.N` with epoch-minute build numbers
 
 ### Release (`release.yml`)
 
@@ -123,8 +123,7 @@ Supports selecting:
 
 ### Build Numbers
 
-PR builds use `100000000 + PR * 10000 + run_number` (e.g., PR 25, run 12 → `100250012`).
-Release builds use epoch-based minutes (`$(date +%s) / 60`, currently ~29.5M).
+All builds use epoch-minute build numbers (`$(date +%s) / 60`) — monotonically increasing regardless of how many PRs are active. PR info is encoded in the version name (`X.Y.Z-pr.N`), not the build number.
 
 ## Store Metadata
 
