@@ -95,11 +95,17 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 
 ### PR Preview (`preview.yml`)
 
-Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and deploys to:
-- **iOS**: TestFlight (MonkeySSH Private)
+Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor APK for direct download — does **not** deploy to stores. The PR comment includes a link to download the APK.
+
+Version format: `X.Y.Z-pr.N`
+
+### Deploy Private (`develop.yml`)
+
+Triggered on push to `main`. Builds the **private** flavor and deploys to:
+- **iOS**: TestFlight (MonkeySSH β)
 - **Android**: Play Store internal testing track
 
-Version format: `X.Y.Z-pr.N` with epoch-minute build numbers
+This ensures TestFlight and Play Store internal testing always reflect the latest `main`.
 
 ### Release (`release.yml`)
 

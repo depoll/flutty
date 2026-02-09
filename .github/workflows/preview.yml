@@ -29,22 +29,16 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          # Read base version from pubspec.yaml
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           PR_NUMBER=${{ github.event.pull_request.number }}
           BUILD_NAME="${BASE_VERSION}-pr.${PR_NUMBER}"
-          # Epoch minutes — monotonically increasing regardless of PR count
           BUILD_NUMBER=$(( $(date +%s) / 60 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
-          echo "## Version Info" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Build Name:** ${BUILD_NAME}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Build Number:** ${BUILD_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Flavor:** private" >> "$GITHUB_STEP_SUMMARY"
 
-  deploy:
-    name: Build & Deploy Preview
+  build:
+    name: Build Preview APK
     needs: compute-version
     if: github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/build-deploy.yml
@@ -52,14 +46,14 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       flavor: private
-      deploy-ios-to: testflight
-      deploy-android-to: internal
+      deploy-ios-to: none
+      deploy-android-to: none
     secrets: inherit
 
   comment:
     name: PR Comment
     runs-on: ubuntu-latest
-    needs: [compute-version, deploy]
+    needs: [compute-version, build]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
@@ -75,13 +69,13 @@ jobs:
             |---|---|
             | **Version** | `${{ needs.compute-version.outputs.build-name }}` |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
-            | **Flavor** | `private` |
-            | **Status** | ${{ needs.deploy.result == 'success' && '✅ Deployed' || needs.deploy.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
+            | **Status** | ${{ needs.build.result == 'success' && '✅ Built' || needs.build.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
 
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Open **TestFlight** app → _MonkeySSH β_ → Update |
-            | 🤖 **Android** | [Play Store Internal](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · [Download APK](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+            | 🍎 **iOS** | TestFlight · latest `main` build of _MonkeySSH β_ |
+            | 🤖 **Android (APK)** | [Download from workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+            | 🤖 **Android (Play Store)** | [Internal Testing](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · updates on merge to `main` |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
