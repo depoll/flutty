@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
@@ -131,7 +132,7 @@ class SshService {
     final existingSession = _sessions.remove(hostId);
     if (existingSession != null) {
       try {
-        existingSession.close();
+        await existingSession.close();
       } on Exception {
         // Ignore errors when closing stale session
       }
@@ -251,13 +252,13 @@ class SshService {
   /// Disconnect a session by host ID.
   Future<void> disconnect(int hostId) async {
     final session = _sessions.remove(hostId);
-    session?.close();
+    await session?.close();
   }
 
   /// Disconnect all sessions.
   Future<void> disconnectAll() async {
     for (final session in _sessions.values) {
-      session.close();
+      await session.close();
     }
     _sessions.clear();
   }
@@ -300,6 +301,22 @@ class SshSession {
 
   SSHSession? _shell;
 
+  /// Active port forward tunnels.
+  final Map<int, _ActiveTunnel> _activeTunnels = {};
+
+  /// Get active tunnel info for display.
+  List<ActiveTunnelInfo> get activeTunnels => _activeTunnels.entries
+      .map(
+        (e) => ActiveTunnelInfo(
+          portForwardId: e.key,
+          localPort: e.value.localPort,
+          remoteHost: e.value.remoteHost,
+          remotePort: e.value.remotePort,
+          isLocal: e.value.isLocal,
+        ),
+      )
+      .toList();
+
   /// Get or create a shell session.
   Future<SSHSession> getShell({SSHPtyConfig? pty}) async {
     _shell ??= await client.shell(pty: pty ?? const SSHPtyConfig());
@@ -312,7 +329,83 @@ class SshSession {
   /// Start an SFTP session.
   Future<SftpClient> sftp() => client.sftp();
 
-  /// Forward a local port.
+  /// Start a local port forward tunnel.
+  ///
+  /// Binds to [localHost]:[localPort] and forwards connections to
+  /// [remoteHost]:[remotePort] via the SSH connection.
+  Future<bool> startLocalForward({
+    required int portForwardId,
+    required String localHost,
+    required int localPort,
+    required String remoteHost,
+    required int remotePort,
+  }) async {
+    if (_activeTunnels.containsKey(portForwardId)) {
+      return true; // Already running
+    }
+
+    try {
+      final serverSocket = await ServerSocket.bind(localHost, localPort);
+      final tunnel = _ActiveTunnel(
+        serverSocket: serverSocket,
+        localPort: serverSocket.port,
+        remoteHost: remoteHost,
+        remotePort: remotePort,
+        isLocal: true,
+      );
+
+      _activeTunnels[portForwardId] = tunnel;
+
+      // Handle incoming connections
+      tunnel.subscription = serverSocket.listen((socket) async {
+        SSHForwardChannel? forward;
+        try {
+          forward = await client.forwardLocal(remoteHost, remotePort);
+          // Pipe data bidirectionally and wait until either side finishes.
+          final forwardToSocket = forward.stream.cast<List<int>>().pipe(socket);
+          final socketToForward = socket.cast<List<int>>().pipe(forward.sink);
+
+          await Future.any<void>([forwardToSocket, socketToForward]);
+        } on Exception catch (e) {
+          debugPrint('Port forward connection error: $e');
+        } finally {
+          try {
+            await forward?.sink.close();
+          } on Exception catch (_) {
+            // Ignore errors during cleanup.
+          }
+          try {
+            socket.destroy();
+          } on Exception catch (_) {
+            // Ignore errors during cleanup.
+          }
+        }
+      });
+
+      return true;
+    } on Exception catch (e) {
+      debugPrint('Failed to start local forward: $e');
+      return false;
+    }
+  }
+
+  /// Stop a specific port forward tunnel.
+  Future<void> stopForward(int portForwardId) async {
+    final tunnel = _activeTunnels.remove(portForwardId);
+    if (tunnel != null) {
+      await tunnel.subscription?.cancel();
+      await tunnel.serverSocket.close();
+    }
+  }
+
+  /// Stop all port forward tunnels.
+  Future<void> stopAllForwards() async {
+    for (final id in _activeTunnels.keys.toList()) {
+      await stopForward(id);
+    }
+  }
+
+  /// Forward a local port (legacy method for jump hosts).
   Future<SSHForwardChannel> forwardLocal(
     String remoteHost,
     int remotePort, {
@@ -321,10 +414,57 @@ class SshSession {
   }) => client.forwardLocal(remoteHost, remotePort);
 
   /// Close the session.
-  void close() {
+  Future<void> close() async {
+    await stopAllForwards();
     _shell?.close();
     client.close();
   }
+}
+
+/// Info about an active tunnel for UI display.
+class ActiveTunnelInfo {
+  /// Creates tunnel info.
+  const ActiveTunnelInfo({
+    required this.portForwardId,
+    required this.localPort,
+    required this.remoteHost,
+    required this.remotePort,
+    required this.isLocal,
+  });
+
+  /// The port forward database ID.
+  final int portForwardId;
+
+  /// The local port being listened on.
+  final int localPort;
+
+  /// The remote host being forwarded to.
+  final String remoteHost;
+
+  /// The remote port being forwarded to.
+  final int remotePort;
+
+  /// Whether this is a local (true) or remote (false) forward.
+  final bool isLocal;
+}
+
+class _ActiveTunnel {
+  _ActiveTunnel({
+    required this.serverSocket,
+    required this.localPort,
+    required this.remoteHost,
+    required this.remotePort,
+    required this.isLocal,
+  });
+
+  final ServerSocket serverSocket;
+  final int localPort;
+  final String remoteHost;
+  final int remotePort;
+  final bool isLocal;
+  // Cancelled in SshSession.stopForward().
+  // ignore: cancel_subscriptions
+  StreamSubscription<Socket>? subscription;
 }
 
 /// Provider for [SshService].
