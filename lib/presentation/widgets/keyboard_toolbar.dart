@@ -92,7 +92,13 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
       ),
       _ToolbarButton(label: '|', onTap: () => _sendText('|')),
       _ToolbarButton(label: r'\', onTap: () => _sendText(r'\')),
-      _ToolbarButton(label: '/', onTap: () => _sendText('/')),
+      // Enter key for soft keyboards that don't reliably send Enter
+      _ToolbarButton(
+        icon: Icons.keyboard_return,
+        label: '',
+        onTap: _sendEnter,
+        tooltip: 'Enter',
+      ),
     ],
   );
 
@@ -174,6 +180,7 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
       _ToolbarButton(label: '=', onTap: () => _sendText('=')),
       _ToolbarButton(label: '[', onTap: () => _sendText('[')),
       _ToolbarButton(label: ']', onTap: () => _sendText(']')),
+      _ToolbarButton(label: '/', onTap: () => _sendText('/')),
       _ToolbarButton(
         icon: Icons.content_paste,
         label: '',
@@ -229,6 +236,13 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
   void _sendTab() {
     HapticFeedback.lightImpact();
     widget.terminal.textInput('\t');
+    widget.onKeyPressed?.call();
+    _consumeOneShot();
+  }
+
+  void _sendEnter() {
+    HapticFeedback.lightImpact();
+    widget.terminal.keyInput(TerminalKey.enter);
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }
