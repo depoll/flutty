@@ -6,11 +6,43 @@ platform :android do
     'xyz.depollsoft.monkeyssh' => 'metadata-production',
   }.freeze
 
+  # Clear any stuck draft releases that would block a new upload
+  private_lane :clear_draft_releases do |options|
+    package = options[:package_name]
+    track_name = options[:track]
+
+    require 'supply'
+    Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, {
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      changes_not_sent_for_review: true,
+      rescue_changes_not_sent_for_review: true,
+    })
+    client = Supply::Client.make_from_config
+    client.begin_edit(package_name: package)
+
+    tracks = client.tracks(track_name)
+    unless tracks.empty?
+      track = tracks.first
+      drafts = track.releases.select { |r| r.status == 'draft' }
+      unless drafts.empty?
+        UI.important("Clearing #{drafts.size} draft release(s) from '#{track_name}' track")
+        track.releases = track.releases.reject { |r| r.status == 'draft' }
+        client.update_track(track_name, track)
+        client.commit_current_edit!
+        return
+      end
+    end
+    client.abort_current_edit
+  end
+
   desc 'Upload private flavor AAB to Play Store internal testing'
   lane :internal do |options|
     skip_meta = options[:skip_metadata].to_s == 'true'
     package = 'xyz.depollsoft.monkeyssh.private'
     meta_path = METADATA_DIRS[package]
+
+    clear_draft_releases(package_name: package, track: 'internal')
 
     upload_to_play_store(
       package_name: package,
