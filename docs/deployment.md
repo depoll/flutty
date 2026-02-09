@@ -95,9 +95,9 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 
 ### PR Preview (`preview.yml`)
 
-Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor APK for direct download — does **not** deploy to stores. The PR comment includes a link to download the APK.
-
-Version format: `X.Y.Z-pr.N`
+Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
+- **iOS**: Deploys to TestFlight (select build by number in TestFlight app)
+- **Android**: Builds APK for direct download (linked in PR comment)
 
 ### Deploy Private (`develop.yml`)
 

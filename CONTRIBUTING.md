@@ -168,7 +168,7 @@ Include:
 
 ## Releases & Deployment
 
-- **PR Preview Builds**: Every PR automatically builds and deploys to TestFlight (iOS) and Play Store internal testing (Android) using the `private` flavor.
+- **PR Preview Builds**: Every PR automatically deploys to TestFlight (iOS) and builds a downloadable APK (Android) using the `private` flavor. Android Play Store internal testing updates on merge to `main`.
 - **Production Releases**: Create a GitHub Release with a `vX.Y.Z` tag, or use the manual workflow dispatch. This deploys the `production` flavor to the App Store and Play Store.
 - **Flavors**: The app has two build flavors — `private` (for testing) and `production` (for store releases). See [docs/deployment.md](docs/deployment.md).
 

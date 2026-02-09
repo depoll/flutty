@@ -39,12 +39,16 @@ jobs:
 
       - name: Sync private app metadata
         if: inputs.app == 'both' || inputs.app == 'private'
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh.private
 
       - name: Sync production app metadata
         if: inputs.app == 'both' || inputs.app == 'production'
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh
@@ -65,6 +69,7 @@ jobs:
         if: inputs.app == 'both' || inputs.app == 'private'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd android
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh.private
@@ -73,6 +78,7 @@ jobs:
         if: inputs.app == 'both' || inputs.app == 'production'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd android
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh

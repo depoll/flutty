@@ -113,6 +113,7 @@ jobs:
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
@@ -151,6 +152,8 @@ jobs:
 
       - name: Setup code signing
         if: inputs.deploy-ios-to != 'none'
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
           if [ "${{ inputs.flavor }}" = "private" ]; then
@@ -170,6 +173,8 @@ jobs:
 
       - name: Archive, sign & deploy via Fastlane
         if: inputs.deploy-ios-to != 'none'
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
