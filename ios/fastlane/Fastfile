@@ -53,7 +53,7 @@ platform :ios do
     update_code_signing_settings(
       use_automatic_signing: false,
       team_id: TEAM_ID,
-      code_sign_identity: 'iPhone Distribution',
+      code_sign_identity: 'Apple Distribution',
       profile_name: profile_name,
       bundle_identifier: app_id,
       path: 'Runner.xcodeproj',

@@ -45,7 +45,5 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<key>NSPhotoLibraryUsageDescription</key>
-	<string>MonkeySSH needs access to your photo library to select files for transfer.</string>
 </dict>
 </plist>

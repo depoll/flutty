@@ -32,7 +32,7 @@ jobs:
           # Read base version from pubspec.yaml
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           PR_NUMBER=${{ github.event.pull_request.number }}
-          BUILD_NAME="${BASE_VERSION}"
+          BUILD_NAME="${BASE_VERSION}-pr.${PR_NUMBER}"
           # Encode PR number as prefix: PR * 100000 + run_number
           # Max Android versionCode is 2100000000, so PRs up to ~21000 are safe
           BUILD_NUMBER=$(( PR_NUMBER * 100000 + ${{ github.run_number }} ))
@@ -61,7 +61,7 @@ jobs:
     name: PR Comment
     runs-on: ubuntu-latest
     needs: [compute-version, deploy]
-    if: always()
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
     steps:

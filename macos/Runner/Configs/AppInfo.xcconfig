@@ -11,4 +11,4 @@ PRODUCT_NAME = MonkeySSH
 PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.monkeyssh. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 depollsoft. All rights reserved.

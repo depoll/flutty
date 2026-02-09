@@ -63,6 +63,8 @@ platform :android do
     package = 'xyz.depollsoft.monkeyssh'
     meta_path = METADATA_DIRS[package]
 
+    clear_draft_releases(package_name: package, track: 'production')
+
     upload_to_play_store(
       package_name: package,
       track: 'production',
