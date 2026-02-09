@@ -1,0 +1,144 @@
+default_platform(:ios)
+
+platform :ios do
+  before_all do
+    setup_ci if ENV['CI']
+  end
+
+  APP_IDS = {
+    'Private' => 'xyz.depollsoft.monkeyssh.private',
+    'Production' => 'xyz.depollsoft.monkeyssh',
+  }.freeze
+
+  METADATA_DIRS = {
+    'xyz.depollsoft.monkeyssh.private' => './fastlane/metadata-private',
+    'xyz.depollsoft.monkeyssh' => './fastlane/metadata-production',
+  }.freeze
+
+  TEAM_ID = '43AWMS3YJX'.freeze
+
+  private_lane :get_api_key do
+    app_store_connect_api_key(
+      key_id: ENV['APP_STORE_CONNECT_API_KEY_ID'],
+      issuer_id: ENV['APP_STORE_CONNECT_API_ISSUER_ID'],
+      key_content: ENV['APP_STORE_CONNECT_API_KEY_CONTENT'],
+      is_key_content_base64: false,
+    )
+  end
+
+  desc 'Sync certificates and profiles for a given type and app identifier'
+  private_lane :sync_certs do |options|
+    app_id = options[:app_identifier]
+    match_type = options[:type] || 'appstore'
+
+    api_key = get_api_key
+
+    match(
+      type: match_type,
+      app_identifier: app_id,
+      api_key: api_key,
+      readonly: true,
+    )
+  end
+
+  private_lane :build_and_sign do |options|
+    scheme = options[:scheme]
+    app_id = APP_IDS[scheme]
+
+    sync_certs(app_identifier: app_id, type: 'appstore')
+
+    profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
+                   "match AppStore #{app_id}"
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      team_id: TEAM_ID,
+      code_sign_identity: 'Apple Distribution',
+      profile_name: profile_name,
+      bundle_identifier: app_id,
+      path: 'Runner.xcodeproj',
+      build_configurations: ["Release-#{scheme}"],
+    )
+
+    build_app(
+      workspace: 'Runner.xcworkspace',
+      scheme: scheme,
+      configuration: "Release-#{scheme}",
+      export_method: 'app-store',
+      output_directory: '../build/ios/ipa',
+      archive_path: '../build/ios/archive/Runner.xcarchive',
+      xcargs: "DEVELOPMENT_TEAM=#{TEAM_ID}",
+    )
+  end
+
+  desc 'Setup code signing for CI builds'
+  lane :setup_signing do |options|
+    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
+    sync_certs(app_identifier: app_id, type: 'appstore')
+  end
+
+  desc 'Build, sign, and upload to TestFlight'
+  lane :beta do |options|
+    scheme = options[:scheme] || 'Private'
+    app_id = APP_IDS[scheme]
+    skip_meta = options[:skip_metadata].to_s == 'true'
+
+    build_and_sign(scheme: scheme)
+
+    pilot(
+      api_key: get_api_key,
+      app_identifier: app_id,
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      skip_waiting_for_build_processing: true,
+      skip_submission: true,
+    )
+
+    sync_metadata(app_identifier: app_id) unless skip_meta
+  end
+
+  desc 'Build, sign, and upload to App Store'
+  lane :release do |options|
+    scheme = options[:scheme] || 'Production'
+    app_id = APP_IDS[scheme]
+    skip_meta = options[:skip_metadata].to_s == 'true'
+
+    build_and_sign(scheme: scheme)
+
+    deliver(
+      api_key: get_api_key,
+      app_identifier: app_id,
+      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      skip_metadata: true,
+      skip_screenshots: true,
+      submit_for_review: false,
+      automatic_release: false,
+    )
+
+    sync_metadata(app_identifier: app_id) unless skip_meta
+  end
+
+  desc 'Sync metadata and app icon to App Store Connect (no build required)'
+  lane :sync_metadata do |options|
+    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
+    meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
+
+    begin
+      deliver(
+        api_key: get_api_key,
+        app_identifier: app_id,
+        metadata_path: meta_path,
+        skip_binary_upload: true,
+        skip_screenshots: true,
+        submit_for_review: false,
+        automatic_release: false,
+        force: true,
+      )
+    rescue StandardError => e
+      if e.message.include?('No data')
+        UI.important('Review detail not found (expected for first version). Metadata was still uploaded.')
+      else
+        raise e
+      end
+    end
+  end
+end

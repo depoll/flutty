@@ -110,26 +110,26 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --release
+        run: flutter build apk --flavor production --release
 
       - name: Build App Bundle
-        run: flutter build appbundle --release
+        run: flutter build appbundle --flavor production --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v6
         with:
           name: android-apk
-          path: build/app/outputs/flutter-apk/app-release.apk
+          path: build/app/outputs/flutter-apk/app-production-release.apk
 
       - name: Upload AAB
         uses: actions/upload-artifact@v6
         with:
           name: android-aab
-          path: build/app/outputs/bundle/release/app-release.aab
+          path: build/app/outputs/bundle/productionRelease/app-production-release.aab
 
   build-ios:
     name: Build iOS
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: [analyze, test]
     steps:
       - uses: actions/checkout@v6
@@ -144,17 +144,17 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS (no codesign)
-        run: flutter build ios --release --no-codesign
+        run: flutter build ios --flavor production --release --no-codesign
 
       - name: Upload iOS build
         uses: actions/upload-artifact@v6
         with:
           name: ios-build
-          path: build/ios/iphoneos/Runner.app
+          path: build/ios/iphoneos/MonkeySSH.app
 
   build-macos:
     name: Build macOS
-    runs-on: macos-latest
+    runs-on: macos-26
     needs: [analyze, test]
     steps:
       - uses: actions/checkout@v6
@@ -175,7 +175,7 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: macos-build
-          path: build/macos/Build/Products/Release/flutty.app
+          path: build/macos/Build/Products/Release/MonkeySSH.app
 
   build-windows:
     name: Build Windows

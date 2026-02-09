@@ -8,7 +8,7 @@
 PRODUCT_NAME = MonkeySSH
 
 // The application's bundle identifier
-PRODUCT_BUNDLE_IDENTIFIER = com.monkeyssh.monkeyssh
+PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh
 
 // The copyright displayed in application information
-PRODUCT_COPYRIGHT = Copyright © 2026 com.monkeyssh. All rights reserved.
+PRODUCT_COPYRIGHT = Copyright © 2026 depollsoft. All rights reserved.
