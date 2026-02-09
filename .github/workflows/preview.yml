@@ -79,8 +79,10 @@ jobs:
             | **Flavor** | `private` |
             | **Status** | ${{ needs.deploy.result == 'success' && '✅ Deployed' || needs.deploy.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
 
-            ### Install Instructions
-            - **iOS**: Open TestFlight → MonkeySSH Private → Install
-            - **Android**: Open Play Store → Internal Testing → MonkeySSH Private → Install
+            ### Install
+            | Platform | Link |
+            |----------|------|
+            | 🍎 **iOS** | Open **TestFlight** app → _MonkeySSH β_ → Update |
+            | 🤖 **Android** | [Open Play Store](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · _Internal Testing_ |
 
-            > Build triggered by commit ${{ github.event.pull_request.head.sha }}
+            > Build triggered by ${{ github.event.pull_request.head.sha }}
