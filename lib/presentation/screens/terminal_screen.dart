@@ -458,10 +458,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       textStyle: textStyle,
       padding: const EdgeInsets.all(8),
       deleteDetection: !isMobile,
-      autofocus: true,
+      autofocus: !isMobile,
       simulateScroll: !isMobile,
-      // On mobile, we handle soft keyboard input ourselves to fix Enter.
+      // On mobile, our TerminalTextInputHandler handles all input (soft
+      // keyboard + hardware keys). Set both flags so xterm doesn't create its
+      // own Focus widget, which would conflict with ours.
       hardwareKeyboardOnly: isMobile,
+      readOnly: isMobile,
     );
 
     if (!isMobile) return terminalView;
