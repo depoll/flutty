@@ -145,8 +145,7 @@ jobs:
             bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
           fi
 
-      - name: Build iOS (no codesign)
-        if: inputs.deploy-ios-to == 'none'
+      - name: Build iOS
         run: |
           flutter build ios \
             --flavor ${{ inputs.flavor }} \
