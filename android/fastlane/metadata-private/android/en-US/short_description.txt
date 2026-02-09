@@ -1,0 +1,1 @@
+SSH client and terminal emulator with SFTP, key management, and multi-session support.

@@ -8,6 +8,12 @@ project 'Runner', {
   'Debug' => :debug,
   'Profile' => :release,
   'Release' => :release,
+  'Debug-Private' => :debug,
+  'Release-Private' => :release,
+  'Profile-Private' => :release,
+  'Debug-Production' => :debug,
+  'Release-Production' => :release,
+  'Profile-Production' => :release,
 }
 
 def flutter_root

@@ -1,0 +1,193 @@
+name: Build & Deploy
+
+on:
+  workflow_call:
+    inputs:
+      build-name:
+        required: true
+        type: string
+        description: 'Version name (e.g., 0.1.0-pr.42 or 1.2.0)'
+      build-number:
+        required: true
+        type: string
+        description: 'Build number (integer, monotonically increasing)'
+      flavor:
+        required: true
+        type: string
+        description: 'Flutter flavor (private or production)'
+      deploy-ios-to:
+        required: false
+        type: string
+        default: 'none'
+        description: 'iOS deploy target: testflight, appstore, or none'
+      deploy-android-to:
+        required: false
+        type: string
+        default: 'none'
+        description: 'Android deploy target: internal, production, or none'
+      sync-metadata:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to sync store metadata alongside the deploy'
+
+jobs:
+  build-android:
+    name: Build & Deploy Android (${{ inputs.flavor }})
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Decode keystore
+        if: inputs.deploy-android-to != 'none'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
+
+      - name: Create key.properties
+        if: inputs.deploy-android-to != 'none'
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          cat > android/app/key.properties << EOF
+          storePassword=$ANDROID_STORE_PASSWORD
+          keyPassword=$ANDROID_KEY_PASSWORD
+          keyAlias=$ANDROID_KEY_ALIAS
+          storeFile=upload-keystore.jks
+          EOF
+
+      - name: Build AAB
+        run: |
+          flutter build appbundle \
+            --flavor ${{ inputs.flavor }} \
+            --release \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
+      - name: Build APK
+        run: |
+          flutter build apk \
+            --flavor ${{ inputs.flavor }} \
+            --release \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
+      - name: Upload AAB artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v6
+        with:
+          name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk
+
+      - name: Deploy to Play Store
+        if: inputs.deploy-android-to != 'none'
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Run Fastlane
+        if: inputs.deploy-android-to != 'none'
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          cd android
+          SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
+          if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then
+            bundle exec fastlane internal skip_metadata:"$SKIP_META"
+          elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
+            bundle exec fastlane release skip_metadata:"$SKIP_META"
+          fi
+
+  build-ios:
+    name: Build & Deploy iOS (${{ inputs.flavor }})
+    runs-on: macos-26
+    env:
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Setup code signing
+        if: inputs.deploy-ios-to != 'none'
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          cd ios
+          if [ "${{ inputs.flavor }}" = "private" ]; then
+            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh.private
+          else
+            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
+          fi
+
+      - name: Build iOS
+        run: |
+          flutter build ios \
+            --flavor ${{ inputs.flavor }} \
+            --release \
+            --no-codesign \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
+      - name: Archive, sign & deploy via Fastlane
+        if: inputs.deploy-ios-to != 'none'
+        env:
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          cd ios
+          SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
+          if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
+            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META"
+          elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
+            bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META"
+          fi
+
+      - name: Upload IPA artifact
+        if: inputs.deploy-ios-to != 'none'
+        uses: actions/upload-artifact@v6
+        with:
+          name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/ios/ipa/*.ipa

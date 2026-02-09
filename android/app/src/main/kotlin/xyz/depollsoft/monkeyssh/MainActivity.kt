@@ -1,4 +1,4 @@
-package com.flutty.flutty
+package xyz.depollsoft.monkeyssh
 
 import io.flutter.embedding.android.FlutterActivity
 

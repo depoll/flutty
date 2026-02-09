@@ -1,0 +1,127 @@
+default_platform(:android)
+
+platform :android do
+  METADATA_DIRS = {
+    'xyz.depollsoft.monkeyssh.private' => 'metadata-private',
+    'xyz.depollsoft.monkeyssh' => 'metadata-production',
+  }.freeze
+
+  # Clear any stuck draft releases that would block a new upload
+  private_lane :clear_draft_releases do |options|
+    package = options[:package_name]
+    track_name = options[:track]
+
+    require 'supply'
+    Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, {
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      changes_not_sent_for_review: true,
+      rescue_changes_not_sent_for_review: true,
+    })
+    client = Supply::Client.make_from_config
+    client.begin_edit(package_name: package)
+
+    tracks = client.tracks(track_name)
+    unless tracks.empty?
+      track = tracks.first
+      drafts = track.releases.select { |r| r.status == 'draft' }
+      unless drafts.empty?
+        UI.important("Clearing #{drafts.size} draft release(s) from '#{track_name}' track")
+        track.releases = track.releases.reject { |r| r.status == 'draft' }
+        client.update_track(track_name, track)
+        client.commit_current_edit!
+        return
+      end
+    end
+    client.abort_current_edit
+  end
+
+  desc 'Upload private flavor AAB to Play Store internal testing'
+  lane :internal do |options|
+    skip_meta = options[:skip_metadata].to_s == 'true'
+    package = 'xyz.depollsoft.monkeyssh.private'
+    meta_path = METADATA_DIRS[package]
+
+    clear_draft_releases(package_name: package, track: 'internal')
+
+    upload_to_play_store(
+      package_name: package,
+      track: 'internal',
+      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/privateRelease/app-private-release.aab',
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      metadata_path: skip_meta ? nil : meta_path,
+      skip_upload_metadata: skip_meta,
+      skip_upload_images: skip_meta,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: skip_meta,
+    )
+  end
+
+  desc 'Upload production flavor AAB to Play Store production'
+  lane :release do |options|
+    skip_meta = options[:skip_metadata].to_s == 'true'
+    package = 'xyz.depollsoft.monkeyssh'
+    meta_path = METADATA_DIRS[package]
+
+    clear_draft_releases(package_name: package, track: 'production')
+
+    upload_to_play_store(
+      package_name: package,
+      track: 'production',
+      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/productionRelease/app-production-release.aab',
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      metadata_path: skip_meta ? nil : meta_path,
+      skip_upload_metadata: skip_meta,
+      skip_upload_images: skip_meta,
+      skip_upload_screenshots: true,
+      skip_upload_changelogs: skip_meta,
+    )
+  end
+
+  desc 'Sync metadata to Play Store (no build required)'
+  lane :sync_metadata do |options|
+    package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
+    meta_path = METADATA_DIRS[package] || 'fastlane/metadata-production'
+    lang_dir = File.join(meta_path, 'android', 'en-US')
+
+    require 'supply'
+    Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, {
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      changes_not_sent_for_review: true,
+      rescue_changes_not_sent_for_review: true,
+    })
+    client = Supply::Client.make_from_config
+    client.begin_edit(package_name: package)
+
+    title = File.read(File.join(lang_dir, 'title.txt')).strip
+    short_desc = File.read(File.join(lang_dir, 'short_description.txt')).strip
+    full_desc = File.read(File.join(lang_dir, 'full_description.txt')).strip
+
+    client.update_listing_for_language(
+      language: 'en-US',
+      title: title,
+      full_description: full_desc,
+      short_description: short_desc,
+    )
+    UI.message('Listing updated')
+
+    icon = File.join(lang_dir, 'icon.png')
+    client.upload_image(image_path: icon, image_type: 'icon', language: 'en-US') if File.exist?(icon)
+
+    fg = File.join(lang_dir, 'images', 'featureGraphic.png')
+    client.upload_image(image_path: fg, image_type: 'featureGraphic', language: 'en-US') if File.exist?(fg)
+
+    begin
+      client.commit_current_edit!
+    rescue StandardError => e
+      if e.message.include?('draft app')
+        UI.important('Could not commit edit (app is still in draft). Complete the Play Console setup checklist first.')
+        UI.important('Listing data was still sent — check Play Console to verify.')
+      else
+        raise e
+      end
+    end
+    UI.success("Successfully synced metadata for #{package}")
+  end
+end

@@ -1,0 +1,1 @@
+ssh,terminal,sftp,remote,server,shell,linux,key,emulator

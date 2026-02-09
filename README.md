@@ -138,6 +138,10 @@ lib/
 | Terminal | xterm |
 | Secure Storage | flutter_secure_storage |
 
+## Deployment
+
+See [docs/deployment.md](docs/deployment.md) for setting up automated deployment to TestFlight and Google Play.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
