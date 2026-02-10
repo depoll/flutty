@@ -38,6 +38,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late Terminal _terminal;
   late FocusNode _terminalFocusNode;
+  final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
   StreamSubscription<dynamic>? _outputSubscription;
   StreamSubscription<dynamic>? _stderrSubscription;
@@ -146,8 +147,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         // On iOS/Android soft keyboards, Return sends '\n' via textInput()
         // but SSH expects '\r'. The proper keyInput(TerminalKey.enter) path
         // produces '\r', so we normalize here.
-        final normalized = data.replaceAll('\n', '\r');
-        _shell?.write(utf8.encode(normalized));
+        var output = data.replaceAll('\n', '\r');
+
+        // Apply toolbar modifier state to system keyboard input.
+        // When the user toggles Ctrl on the toolbar then types on the system
+        // keyboard, we convert the character to the corresponding control code.
+        final toolbar = _toolbarKey.currentState;
+        if (toolbar != null && output.length == 1) {
+          if (toolbar.isCtrlActive) {
+            final code = output.toUpperCase().codeUnitAt(0);
+            // '@'(0x40) through '_'(0x5F) map to control codes 0x00–0x1F
+            if (code >= 0x40 && code <= 0x5F) {
+              output = String.fromCharCode(code - 0x40);
+            }
+            toolbar.consumeOneShot();
+          } else if (toolbar.isAltActive) {
+            // Alt sends ESC prefix
+            output = '\x1b$output';
+            toolbar.consumeOneShot();
+          }
+        }
+
+        _shell?.write(utf8.encode(output));
       };
 
       _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
@@ -317,7 +338,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme)),
-          if (_showKeyboard) KeyboardToolbar(terminal: _terminal),
+          if (_showKeyboard)
+            KeyboardToolbar(key: _toolbarKey, terminal: _terminal),
         ],
       ),
     );

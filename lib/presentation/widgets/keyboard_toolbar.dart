@@ -21,14 +21,28 @@ class KeyboardToolbar extends StatefulWidget {
   final VoidCallback? onKeyPressed;
 
   @override
-  State<KeyboardToolbar> createState() => _KeyboardToolbarState();
+  State<KeyboardToolbar> createState() => KeyboardToolbarState();
 }
 
-class _KeyboardToolbarState extends State<KeyboardToolbar> {
+/// State for [KeyboardToolbar], exposed so the terminal screen can query
+/// active modifier state for system keyboard input.
+class KeyboardToolbarState extends State<KeyboardToolbar> {
   // Modifier states: null = off, false = one-shot, true = locked
   bool? _ctrlState;
   bool? _altState;
   bool? _shiftState;
+
+  /// Whether Ctrl is currently active (one-shot or locked).
+  bool get isCtrlActive => _ctrlState != null;
+
+  /// Whether Alt is currently active (one-shot or locked).
+  bool get isAltActive => _altState != null;
+
+  /// Whether Shift is currently active (one-shot or locked).
+  bool get isShiftActive => _shiftState != null;
+
+  /// Consumes one-shot modifiers (call after applying them).
+  void consumeOneShot() => _consumeOneShot();
 
   @override
   Widget build(BuildContext context) {
