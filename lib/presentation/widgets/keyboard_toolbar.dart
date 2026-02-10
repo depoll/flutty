@@ -11,13 +11,22 @@ import 'package:xterm/xterm.dart';
 /// - Haptic feedback
 class KeyboardToolbar extends StatefulWidget {
   /// Creates a new [KeyboardToolbar].
-  const KeyboardToolbar({required this.terminal, this.onKeyPressed, super.key});
+  const KeyboardToolbar({
+    required this.terminal,
+    this.onKeyPressed,
+    this.terminalFocusNode,
+    super.key,
+  });
 
   /// The terminal to send input to.
   final Terminal terminal;
 
   /// Optional callback when any key is pressed.
   final VoidCallback? onKeyPressed;
+
+  /// Optional focus node for the terminal. When provided, the toolbar
+  /// re-requests focus after interactions so the soft keyboard stays visible.
+  final FocusNode? terminalFocusNode;
 
   @override
   State<KeyboardToolbar> createState() => KeyboardToolbarState();
@@ -42,6 +51,11 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   /// Consumes one-shot modifiers (call after applying them).
   void consumeOneShot() => _consumeOneShot();
+
+  /// Re-requests focus on the terminal so the soft keyboard stays visible.
+  void _refocusTerminal() {
+    widget.terminalFocusNode?.requestFocus();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +155,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
           _shiftState = _shiftState == null ? false : null;
       }
     });
+    _refocusTerminal();
   }
 
   void _lockModifier(_Modifier mod) {
@@ -155,6 +170,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
           _shiftState = _shiftState ?? false ? null : true;
       }
     });
+    _refocusTerminal();
   }
 
   void _consumeOneShot() {
@@ -163,6 +179,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       if (_altState case false) _altState = null;
       if (_shiftState case false) _shiftState = null;
     });
+    _refocusTerminal();
   }
 
   void _sendEscape() {

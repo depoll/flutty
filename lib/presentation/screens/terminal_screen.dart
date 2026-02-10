@@ -352,7 +352,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
           if (_showKeyboard)
-            KeyboardToolbar(key: _toolbarKey, terminal: _terminal),
+            KeyboardToolbar(
+              key: _toolbarKey,
+              terminal: _terminal,
+              terminalFocusNode: _terminalFocusNode,
+            ),
         ],
       ),
     );
