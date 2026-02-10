@@ -197,10 +197,25 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
     if (_ctrlState != null && text.length == 1) {
       // Convert to control character
-      final code = text.toUpperCase().codeUnitAt(0);
-      if (code >= 0x40 && code <= 0x5F) {
-        output = String.fromCharCode(code - 0x40);
+      final codeUnit = text.codeUnitAt(0);
+      int? ctrlCode;
+      if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
+        ctrlCode = codeUnit - 0x60;
+      } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
+        ctrlCode = codeUnit - 0x40;
+      } else if (codeUnit == 0x20) {
+        ctrlCode = 0x00;
+      } else if (codeUnit == 0x3F) {
+        ctrlCode = 0x7F;
       }
+      if (ctrlCode != null) {
+        output = String.fromCharCode(ctrlCode);
+      }
+    }
+
+    if (_altState != null) {
+      // Alt/Meta sends ESC prefix
+      output = '\x1b$output';
     }
 
     if (_shiftState != null) {

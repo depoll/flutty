@@ -157,10 +157,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         final toolbar = _toolbarKey.currentState;
         if (toolbar != null && output.length == 1) {
           if (toolbar.isCtrlActive) {
-            final code = output.toUpperCase().codeUnitAt(0);
-            // '@'(0x40) through '_'(0x5F) map to control codes 0x00–0x1F
-            if (code >= 0x40 && code <= 0x5F) {
-              output = String.fromCharCode(code - 0x40);
+            final codeUnit = output.codeUnitAt(0);
+            int? ctrlCode;
+            if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
+              // 'a'–'z' → 0x01–0x1A
+              ctrlCode = codeUnit - 0x60;
+            } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
+              // '@'–'_' (includes A–Z) → 0x00–0x1F
+              ctrlCode = codeUnit - 0x40;
+            } else if (codeUnit == 0x20) {
+              ctrlCode = 0x00; // Ctrl+Space → NUL
+            } else if (codeUnit == 0x3F) {
+              ctrlCode = 0x7F; // Ctrl+? → DEL
+            }
+            if (ctrlCode != null) {
+              output = String.fromCharCode(ctrlCode);
             }
             toolbar.consumeOneShot();
           } else if (toolbar.isAltActive) {
@@ -339,7 +350,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme)),
+          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
           if (_showKeyboard)
             KeyboardToolbar(key: _toolbarKey, terminal: _terminal),
         ],
@@ -420,7 +431,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
-  Widget _buildTerminalView(TerminalThemeData terminalTheme) {
+  Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -473,10 +484,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
     final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
-
-    // Disable simulated scroll (arrow keys) on mobile since the toolbar
-    // provides arrow keys and swiping should scroll the terminal buffer.
-    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
     return TerminalView(
       _terminal,
