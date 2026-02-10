@@ -9,7 +9,6 @@ import 'package:xterm/xterm.dart';
 /// - Navigation keys (arrows, Home, End, PgUp, PgDn)
 /// - Special keys (Esc, Tab, Enter, pipe, etc.)
 /// - Haptic feedback
-/// - Key repeat on long press
 class KeyboardToolbar extends StatefulWidget {
   /// Creates a new [KeyboardToolbar].
   const KeyboardToolbar({required this.terminal, this.onKeyPressed, super.key});

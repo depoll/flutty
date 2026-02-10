@@ -144,10 +144,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       });
 
       _terminal.onOutput = (data) {
-        // On iOS/Android soft keyboards, Return sends '\n' via textInput()
-        // but SSH expects '\r'. The proper keyInput(TerminalKey.enter) path
-        // produces '\r', so we normalize here.
-        var output = data.replaceAll('\n', '\r');
+        // On iOS/Android soft keyboards, Return sends a lone '\n' via
+        // textInput(), but SSH expects '\r'. The proper
+        // keyInput(TerminalKey.enter) path already produces '\r', so we
+        // only normalize single-'\n' to avoid rewriting legitimate LF
+        // characters in pasted or multi-char input.
+        var output = data == '\n' ? '\r' : data;
 
         // Apply toolbar modifier state to system keyboard input.
         // When the user toggles Ctrl on the toolbar then types on the system

@@ -87,6 +87,34 @@ void main() {
       expect(find.text('|'), findsOneWidget);
       expect(find.text('/'), findsOneWidget);
     });
+
+    testWidgets('Enter button renders and triggers callback', (tester) async {
+      var callCount = 0;
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onKeyPressed: () => callCount++,
+            ),
+          ),
+        ),
+      );
+
+      // Enter button uses an icon, find by tooltip
+      final enterButton = find.byTooltip('Enter');
+      expect(enterButton, findsOneWidget);
+
+      await tester.tap(enterButton);
+      await tester.pump();
+
+      expect(callCount, 1);
+      // keyInput(TerminalKey.enter) produces '\r'
+      expect(output, contains('\r'));
+    });
   });
 
   group('Terminal key sequences', () {
