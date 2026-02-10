@@ -1,21 +1,22 @@
-import 'dart:async';
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
-/// Comprehensive keyboard toolbar for terminal input.
+/// Compact keyboard toolbar for terminal input.
 ///
 /// Features:
 /// - Modifier keys (Ctrl, Alt, Shift) with toggle/lock functionality
 /// - Navigation keys (arrows, Home, End, PgUp, PgDn)
-/// - Function keys (F1-F12) in swipeable row
-/// - Special keys (Esc, Tab, pipe, etc.)
+/// - Special keys (Esc, Tab, Enter, pipe, etc.)
 /// - Haptic feedback
-/// - Key repeat on long press
 class KeyboardToolbar extends StatefulWidget {
   /// Creates a new [KeyboardToolbar].
-  const KeyboardToolbar({required this.terminal, this.onKeyPressed, super.key});
+  const KeyboardToolbar({
+    required this.terminal,
+    this.onKeyPressed,
+    this.terminalFocusNode,
+    super.key,
+  });
 
   /// The terminal to send input to.
   final Terminal terminal;
@@ -23,17 +24,38 @@ class KeyboardToolbar extends StatefulWidget {
   /// Optional callback when any key is pressed.
   final VoidCallback? onKeyPressed;
 
+  /// Optional focus node for the terminal. When provided, the toolbar
+  /// re-requests focus after interactions so the soft keyboard stays visible.
+  final FocusNode? terminalFocusNode;
+
   @override
-  State<KeyboardToolbar> createState() => _KeyboardToolbarState();
+  State<KeyboardToolbar> createState() => KeyboardToolbarState();
 }
 
-class _KeyboardToolbarState extends State<KeyboardToolbar> {
+/// State for [KeyboardToolbar], exposed so the terminal screen can query
+/// active modifier state for system keyboard input.
+class KeyboardToolbarState extends State<KeyboardToolbar> {
   // Modifier states: null = off, false = one-shot, true = locked
   bool? _ctrlState;
   bool? _altState;
   bool? _shiftState;
 
-  int _functionKeyPage = 0;
+  /// Whether Ctrl is currently active (one-shot or locked).
+  bool get isCtrlActive => _ctrlState != null;
+
+  /// Whether Alt is currently active (one-shot or locked).
+  bool get isAltActive => _altState != null;
+
+  /// Whether Shift is currently active (one-shot or locked).
+  bool get isShiftActive => _shiftState != null;
+
+  /// Consumes one-shot modifiers (call after applying them).
+  void consumeOneShot() => _consumeOneShot();
+
+  /// Re-requests focus on the terminal so the soft keyboard stays visible.
+  void _refocusTerminal() {
+    widget.terminalFocusNode?.requestFocus();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -49,16 +71,7 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
         top: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: [
-            // Modifier and essential keys row
-            _buildModifierRow(),
-            // Navigation keys row
-            _buildNavigationRow(),
-            // Function keys row (swipeable)
-            _buildFunctionKeysRow(),
-            // Quick actions row
-            _buildQuickActionsRow(),
-          ],
+          children: [_buildModifierRow(), _buildNavigationRow()],
         ),
       ),
     );
@@ -91,8 +104,13 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
         onDoubleTap: () => _lockModifier(_Modifier.shift),
       ),
       _ToolbarButton(label: '|', onTap: () => _sendText('|')),
-      _ToolbarButton(label: r'\', onTap: () => _sendText(r'\')),
       _ToolbarButton(label: '/', onTap: () => _sendText('/')),
+      _ToolbarButton(
+        icon: Icons.keyboard_return,
+        label: '',
+        onTap: _sendEnter,
+        tooltip: 'Enter',
+      ),
     ],
   );
 
@@ -125,64 +143,6 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
     ],
   );
 
-  Widget _buildFunctionKeysRow() {
-    const keysPerPage = 6;
-    final startIndex = _functionKeyPage * keysPerPage;
-
-    return _KeyRow(
-      children: [
-        _ToolbarButton(
-          label: '<',
-          onTap: () {
-            if (_functionKeyPage > 0) {
-              setState(() => _functionKeyPage--);
-            }
-          },
-          enabled: _functionKeyPage > 0,
-        ),
-        ...List.generate(keysPerPage, (i) {
-          final fKey = startIndex + i + 1;
-          if (fKey > 12) {
-            return const Expanded(child: SizedBox());
-          }
-          return Expanded(
-            child: _ToolbarButton(
-              label: 'F$fKey',
-              onTap: () => _sendFunctionKey(fKey),
-            ),
-          );
-        }),
-        _ToolbarButton(
-          label: '>',
-          onTap: () {
-            if (_functionKeyPage < 1) {
-              setState(() => _functionKeyPage++);
-            }
-          },
-          enabled: _functionKeyPage < 1,
-        ),
-      ],
-    );
-  }
-
-  Widget _buildQuickActionsRow() => _KeyRow(
-    children: [
-      _ToolbarButton(label: 'Ins', onTap: () => _sendSequence('\x1b[2~')),
-      _ToolbarButton(label: 'Del', onTap: () => _sendSequence('\x1b[3~')),
-      _ToolbarButton(label: '`', onTap: () => _sendText('`')),
-      _ToolbarButton(label: '-', onTap: () => _sendText('-')),
-      _ToolbarButton(label: '=', onTap: () => _sendText('=')),
-      _ToolbarButton(label: '[', onTap: () => _sendText('[')),
-      _ToolbarButton(label: ']', onTap: () => _sendText(']')),
-      _ToolbarButton(
-        icon: Icons.content_paste,
-        label: '',
-        onTap: _paste,
-        tooltip: 'Paste',
-      ),
-    ],
-  );
-
   void _toggleModifier(_Modifier mod) {
     HapticFeedback.selectionClick();
     setState(() {
@@ -195,6 +155,7 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
           _shiftState = _shiftState == null ? false : null;
       }
     });
+    _refocusTerminal();
   }
 
   void _lockModifier(_Modifier mod) {
@@ -209,6 +170,7 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
           _shiftState = _shiftState ?? false ? null : true;
       }
     });
+    _refocusTerminal();
   }
 
   void _consumeOneShot() {
@@ -217,18 +179,41 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
       if (_altState case false) _altState = null;
       if (_shiftState case false) _shiftState = null;
     });
+    _refocusTerminal();
   }
 
   void _sendEscape() {
     HapticFeedback.lightImpact();
     widget.terminal.textInput('\x1b');
     widget.onKeyPressed?.call();
-    _consumeOneShot();
+    // Clear one-shot modifiers without the immediate refocus that
+    // _consumeOneShot() would do. Refocus after a short delay so the
+    // remote terminal's escape-sequence parser times out the bare ESC
+    // before the next keystroke can arrive and be misinterpreted as
+    // Alt+<key>.
+    setState(() {
+      if (_ctrlState case false) _ctrlState = null;
+      if (_altState case false) _altState = null;
+      if (_shiftState case false) _shiftState = null;
+    });
+    Future<void>.delayed(const Duration(milliseconds: 100), _refocusTerminal);
   }
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    widget.terminal.textInput('\t');
+    if (_shiftState != null) {
+      // Shift+Tab sends reverse-tab escape sequence
+      widget.terminal.textInput('\x1b[Z');
+    } else {
+      widget.terminal.textInput('\t');
+    }
+    widget.onKeyPressed?.call();
+    _consumeOneShot();
+  }
+
+  void _sendEnter() {
+    HapticFeedback.lightImpact();
+    widget.terminal.keyInput(TerminalKey.enter);
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }
@@ -239,10 +224,25 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
 
     if (_ctrlState != null && text.length == 1) {
       // Convert to control character
-      final code = text.toUpperCase().codeUnitAt(0);
-      if (code >= 0x40 && code <= 0x5F) {
-        output = String.fromCharCode(code - 0x40);
+      final codeUnit = text.codeUnitAt(0);
+      int? ctrlCode;
+      if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
+        ctrlCode = codeUnit - 0x60;
+      } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
+        ctrlCode = codeUnit - 0x40;
+      } else if (codeUnit == 0x20) {
+        ctrlCode = 0x00;
+      } else if (codeUnit == 0x3F) {
+        ctrlCode = 0x7F;
       }
+      if (ctrlCode != null) {
+        output = String.fromCharCode(ctrlCode);
+      }
+    }
+
+    if (_altState != null) {
+      // Alt/Meta sends ESC prefix
+      output = '\x1b$output';
     }
 
     if (_shiftState != null) {
@@ -281,49 +281,12 @@ class _KeyboardToolbarState extends State<KeyboardToolbar> {
     _consumeOneShot();
   }
 
-  void _sendFunctionKey(int n) {
-    HapticFeedback.lightImpact();
-    final modifier = _getModifierPrefix();
-
-    // F1-F4 use different sequences
-    final sequence = switch (n) {
-      1 => modifier.isEmpty ? '\x1bOP' : '\x1b[1;${modifier}P',
-      2 => modifier.isEmpty ? '\x1bOQ' : '\x1b[1;${modifier}Q',
-      3 => modifier.isEmpty ? '\x1bOR' : '\x1b[1;${modifier}R',
-      4 => modifier.isEmpty ? '\x1bOS' : '\x1b[1;${modifier}S',
-      5 => modifier.isEmpty ? '\x1b[15~' : '\x1b[15;$modifier~',
-      6 => modifier.isEmpty ? '\x1b[17~' : '\x1b[17;$modifier~',
-      7 => modifier.isEmpty ? '\x1b[18~' : '\x1b[18;$modifier~',
-      8 => modifier.isEmpty ? '\x1b[19~' : '\x1b[19;$modifier~',
-      9 => modifier.isEmpty ? '\x1b[20~' : '\x1b[20;$modifier~',
-      10 => modifier.isEmpty ? '\x1b[21~' : '\x1b[21;$modifier~',
-      11 => modifier.isEmpty ? '\x1b[23~' : '\x1b[23;$modifier~',
-      12 => modifier.isEmpty ? '\x1b[24~' : '\x1b[24;$modifier~',
-      _ => '',
-    };
-
-    if (sequence.isNotEmpty) {
-      widget.terminal.textInput(sequence);
-      widget.onKeyPressed?.call();
-    }
-    _consumeOneShot();
-  }
-
   String _getModifierPrefix() {
     var mod = 1;
     if (_shiftState != null) mod += 1;
     if (_altState != null) mod += 2;
     if (_ctrlState != null) mod += 4;
     return mod > 1 ? '$mod' : '';
-  }
-
-  Future<void> _paste() async {
-    unawaited(HapticFeedback.lightImpact());
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    if (data?.text case final text?) {
-      widget.terminal.paste(text);
-      widget.onKeyPressed?.call();
-    }
   }
 }
 
@@ -354,7 +317,6 @@ class _ToolbarButton extends StatefulWidget {
     required this.onTap,
     this.icon,
     this.onLongPressStart,
-    this.enabled = true,
     this.tooltip,
   });
 
@@ -362,7 +324,6 @@ class _ToolbarButton extends StatefulWidget {
   final IconData? icon;
   final VoidCallback onTap;
   final VoidCallback? onLongPressStart;
-  final bool enabled;
   final String? tooltip;
 
   @override
@@ -375,16 +336,13 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
-    final effectiveColor = widget.enabled
-        ? colorScheme.surfaceContainerHighest
-        : colorScheme.surfaceContainerHighest.withAlpha(128);
 
     Widget button = GestureDetector(
       onTapDown: (_) => setState(() => _isPressed = true),
       onTapUp: (_) => setState(() => _isPressed = false),
       onTapCancel: () => setState(() => _isPressed = false),
-      onTap: widget.enabled ? widget.onTap : null,
-      onLongPressStart: widget.onLongPressStart != null && widget.enabled
+      onTap: widget.onTap,
+      onLongPressStart: widget.onLongPressStart != null
           ? (_) => widget.onLongPressStart?.call()
           : null,
       child: Container(
@@ -392,27 +350,19 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
         decoration: BoxDecoration(
           color: _isPressed
               ? colorScheme.primary.withAlpha(50)
-              : effectiveColor,
+              : colorScheme.surfaceContainerHighest,
           borderRadius: BorderRadius.circular(6),
           border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
         child: Center(
           child: widget.icon != null
-              ? Icon(
-                  widget.icon,
-                  size: 18,
-                  color: widget.enabled
-                      ? colorScheme.onSurfaceVariant
-                      : colorScheme.onSurfaceVariant.withAlpha(128),
-                )
+              ? Icon(widget.icon, size: 18, color: colorScheme.onSurfaceVariant)
               : Text(
                   widget.label,
                   style: TextStyle(
                     fontSize: 11,
                     fontWeight: FontWeight.w500,
-                    color: widget.enabled
-                        ? colorScheme.onSurfaceVariant
-                        : colorScheme.onSurfaceVariant.withAlpha(128),
+                    color: colorScheme.onSurfaceVariant,
                   ),
                 ),
         ),

@@ -20,6 +20,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/keyboard_toolbar.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 /// Terminal screen for SSH sessions.
@@ -37,6 +38,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   late Terminal _terminal;
   late FocusNode _terminalFocusNode;
+  final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
   StreamSubscription<dynamic>? _outputSubscription;
   StreamSubscription<dynamic>? _stderrSubscription;
@@ -142,7 +144,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       });
 
       _terminal.onOutput = (data) {
-        _shell?.write(utf8.encode(data));
+        // On iOS/Android soft keyboards, Return sends a lone '\n' via
+        // textInput(), but SSH expects '\r'. The proper
+        // keyInput(TerminalKey.enter) path already produces '\r', so we
+        // only normalize single-'\n' to avoid rewriting legitimate LF
+        // characters in pasted or multi-char input.
+        var output = data == '\n' ? '\r' : data;
+
+        // Apply toolbar modifier state to system keyboard input.
+        // When the user toggles Ctrl on the toolbar then types on the system
+        // keyboard, we convert the character to the corresponding control code.
+        final toolbar = _toolbarKey.currentState;
+        if (toolbar != null && output.length == 1) {
+          if (toolbar.isCtrlActive) {
+            final codeUnit = output.codeUnitAt(0);
+            int? ctrlCode;
+            if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
+              // 'a'–'z' → 0x01–0x1A
+              ctrlCode = codeUnit - 0x60;
+            } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
+              // '@'–'_' (includes A–Z) → 0x00–0x1F
+              ctrlCode = codeUnit - 0x40;
+            } else if (codeUnit == 0x20) {
+              ctrlCode = 0x00; // Ctrl+Space → NUL
+            } else if (codeUnit == 0x3F) {
+              ctrlCode = 0x7F; // Ctrl+? → DEL
+            }
+            if (ctrlCode != null) {
+              output = String.fromCharCode(ctrlCode);
+            }
+            toolbar.consumeOneShot();
+          } else if (toolbar.isAltActive) {
+            // Alt sends ESC prefix
+            output = '\x1b$output';
+            toolbar.consumeOneShot();
+          }
+        }
+
+        _shell?.write(utf8.encode(output));
       };
 
       _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
@@ -311,8 +350,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme)),
-          if (_showKeyboard) _KeyboardToolbar(terminal: _terminal),
+          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
+          if (_showKeyboard)
+            KeyboardToolbar(
+              key: _toolbarKey,
+              terminal: _terminal,
+              terminalFocusNode: _terminalFocusNode,
+            ),
         ],
       ),
     );
@@ -391,7 +435,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
-  Widget _buildTerminalView(TerminalThemeData terminalTheme) {
+  Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -453,6 +497,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       padding: const EdgeInsets.all(8),
       deleteDetection: true,
       autofocus: true,
+      simulateScroll: !isMobile,
     );
   }
 
@@ -694,230 +739,5 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
 
     return command;
-  }
-}
-
-/// Keyboard toolbar with special keys for terminal input.
-class _KeyboardToolbar extends StatelessWidget {
-  const _KeyboardToolbar({required this.terminal});
-
-  final Terminal terminal;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final screenWidth = MediaQuery.of(context).size.width;
-    final isCompact = screenWidth < 380;
-    final keyHeight = isCompact ? 36.0 : 44.0;
-    final keyFontSize = isCompact ? 10.0 : 12.0;
-
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        color: colorScheme.surface,
-        border: Border(top: BorderSide(color: colorScheme.outlineVariant)),
-      ),
-      child: SafeArea(
-        top: false,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            // Modifier keys row
-            _buildKeyRow([
-              _ToolbarKey(
-                label: 'Esc',
-                onTap: () => _sendTerminalKey(TerminalKey.escape),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: 'Tab',
-                onTap: () => _sendTerminalKey(TerminalKey.tab),
-                fontSize: keyFontSize,
-              ),
-              _ModifierKey(
-                label: 'Ctrl',
-                modifier: _Modifier.ctrl,
-                fontSize: keyFontSize,
-              ),
-              _ModifierKey(
-                label: 'Alt',
-                modifier: _Modifier.alt,
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: '↑',
-                onTap: () => _sendTerminalKey(TerminalKey.arrowUp),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: '↓',
-                onTap: () => _sendTerminalKey(TerminalKey.arrowDown),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: '←',
-                onTap: () => _sendTerminalKey(TerminalKey.arrowLeft),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: '→',
-                onTap: () => _sendTerminalKey(TerminalKey.arrowRight),
-                fontSize: keyFontSize,
-              ),
-            ], keyHeight),
-            // Function and navigation keys
-            _buildKeyRow([
-              _ToolbarKey(
-                label: isCompact ? 'Hm' : 'Home',
-                onTap: () => _sendTerminalKey(TerminalKey.home),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: 'End',
-                onTap: () => _sendTerminalKey(TerminalKey.end),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: isCompact ? 'PU' : 'PgUp',
-                onTap: () => _sendTerminalKey(TerminalKey.pageUp),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: isCompact ? 'PD' : 'PgDn',
-                onTap: () => _sendTerminalKey(TerminalKey.pageDown),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: 'Ins',
-                onTap: () => _sendTerminalKey(TerminalKey.insert),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: 'Del',
-                onTap: () => _sendTerminalKey(TerminalKey.delete),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: '|',
-                onTap: () => _sendText('|'),
-                fontSize: keyFontSize,
-              ),
-              _ToolbarKey(
-                label: '/',
-                onTap: () => _sendText('/'),
-                fontSize: keyFontSize,
-              ),
-            ], keyHeight),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildKeyRow(List<Widget> keys, double height) => SizedBox(
-    height: height,
-    child: Row(children: keys.map((key) => Expanded(child: key)).toList()),
-  );
-
-  void _sendTerminalKey(TerminalKey key) {
-    HapticFeedback.lightImpact();
-    terminal.keyInput(key);
-  }
-
-  void _sendText(String text) {
-    HapticFeedback.lightImpact();
-    terminal.textInput(text);
-  }
-}
-
-enum _Modifier { ctrl, alt }
-
-class _ModifierKey extends StatefulWidget {
-  const _ModifierKey({
-    required this.label,
-    required this.modifier,
-    this.fontSize = 12,
-  });
-
-  final String label;
-  final _Modifier modifier;
-  final double fontSize;
-
-  @override
-  State<_ModifierKey> createState() => _ModifierKeyState();
-}
-
-class _ModifierKeyState extends State<_ModifierKey> {
-  bool _isActive = false;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return GestureDetector(
-      onTap: () {
-        HapticFeedback.lightImpact();
-        setState(() => _isActive = !_isActive);
-      },
-      child: Container(
-        margin: const EdgeInsets.all(2),
-        decoration: BoxDecoration(
-          color: _isActive
-              ? colorScheme.primary
-              : colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Center(
-          child: Text(
-            widget.label,
-            style: TextStyle(
-              fontSize: widget.fontSize,
-              fontWeight: FontWeight.w500,
-              color: _isActive
-                  ? colorScheme.onPrimary
-                  : colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _ToolbarKey extends StatelessWidget {
-  const _ToolbarKey({
-    required this.label,
-    required this.onTap,
-    this.fontSize = 12,
-  });
-
-  final String label;
-  final VoidCallback onTap;
-  final double fontSize;
-
-  @override
-  Widget build(BuildContext context) {
-    final colorScheme = Theme.of(context).colorScheme;
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Container(
-        margin: const EdgeInsets.all(2),
-        decoration: BoxDecoration(
-          color: colorScheme.surfaceContainerHighest,
-          borderRadius: BorderRadius.circular(6),
-        ),
-        child: Center(
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: fontSize,
-              fontWeight: FontWeight.w500,
-              color: colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
-      ),
-    );
   }
 }

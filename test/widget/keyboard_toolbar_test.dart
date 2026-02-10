@@ -34,14 +34,6 @@ void main() {
       expect(find.text('End'), findsOneWidget);
       expect(find.text('PgUp'), findsOneWidget);
       expect(find.text('PgDn'), findsOneWidget);
-
-      // Check function keys (first page)
-      expect(find.text('F1'), findsOneWidget);
-      expect(find.text('F6'), findsOneWidget);
-
-      // Check quick actions
-      expect(find.text('Ins'), findsOneWidget);
-      expect(find.text('Del'), findsOneWidget);
     });
 
     testWidgets('modifier key toggles state on tap', (tester) async {
@@ -62,37 +54,6 @@ void main() {
       // Tap again to deactivate
       await tester.tap(ctrlFinder);
       await tester.pumpAndSettle();
-    });
-
-    testWidgets('function key pagination works', (tester) async {
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
-        ),
-      );
-
-      // Initially shows F1-F6
-      expect(find.text('F1'), findsOneWidget);
-      expect(find.text('F6'), findsOneWidget);
-      expect(find.text('F7'), findsNothing);
-
-      // Tap next button to go to page 2
-      final nextButton = find.text('>');
-      await tester.tap(nextButton);
-      await tester.pump();
-
-      // Now shows F7-F12
-      expect(find.text('F7'), findsOneWidget);
-      expect(find.text('F12'), findsOneWidget);
-      expect(find.text('F1'), findsNothing);
-
-      // Tap previous button to go back
-      final prevButton = find.text('<');
-      await tester.tap(prevButton);
-      await tester.pump();
-
-      // Back to F1-F6
-      expect(find.text('F1'), findsOneWidget);
     });
 
     testWidgets('calls onKeyPressed callback', (tester) async {
@@ -124,13 +85,35 @@ void main() {
       );
 
       expect(find.text('|'), findsOneWidget);
-      expect(find.text(r'\'), findsOneWidget);
       expect(find.text('/'), findsOneWidget);
-      expect(find.text('`'), findsOneWidget);
-      expect(find.text('-'), findsOneWidget);
-      expect(find.text('='), findsOneWidget);
-      expect(find.text('['), findsOneWidget);
-      expect(find.text(']'), findsOneWidget);
+    });
+
+    testWidgets('Enter button renders and triggers callback', (tester) async {
+      var callCount = 0;
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onKeyPressed: () => callCount++,
+            ),
+          ),
+        ),
+      );
+
+      // Enter button uses an icon, find by tooltip
+      final enterButton = find.byTooltip('Enter');
+      expect(enterButton, findsOneWidget);
+
+      await tester.tap(enterButton);
+      await tester.pump();
+
+      expect(callCount, 1);
+      // keyInput(TerminalKey.enter) produces '\r'
+      expect(output, contains('\r'));
     });
   });
 
@@ -148,20 +131,6 @@ void main() {
       expect('\x1b[F', equals('\x1b[F')); // End
       expect('\x1b[5~', equals('\x1b[5~')); // Page Up
       expect('\x1b[6~', equals('\x1b[6~')); // Page Down
-      expect('\x1b[2~', equals('\x1b[2~')); // Insert
-      expect('\x1b[3~', equals('\x1b[3~')); // Delete
-    });
-
-    test('function key escape sequences', () {
-      // F1-F4 use different format
-      expect('\x1bOP', equals('\x1bOP')); // F1
-      expect('\x1bOQ', equals('\x1bOQ')); // F2
-      expect('\x1bOR', equals('\x1bOR')); // F3
-      expect('\x1bOS', equals('\x1bOS')); // F4
-      // F5-F12 use numbered format
-      expect('\x1b[15~', equals('\x1b[15~')); // F5
-      expect('\x1b[17~', equals('\x1b[17~')); // F6
-      expect('\x1b[24~', equals('\x1b[24~')); // F12
     });
 
     test('modifier key combinations', () {
