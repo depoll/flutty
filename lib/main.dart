@@ -3,7 +3,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'app/app.dart';
 
-/// Entry point for the Flutty SSH client.
+/// Entry point for the MonkeySSH client.
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
   runApp(const ProviderScope(child: FluttyApp()));
