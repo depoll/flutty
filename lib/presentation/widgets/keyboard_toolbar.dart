@@ -186,7 +186,17 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     HapticFeedback.lightImpact();
     widget.terminal.textInput('\x1b');
     widget.onKeyPressed?.call();
-    _consumeOneShot();
+    // Clear one-shot modifiers without the immediate refocus that
+    // _consumeOneShot() would do. Refocus after a short delay so the
+    // remote terminal's escape-sequence parser times out the bare ESC
+    // before the next keystroke can arrive and be misinterpreted as
+    // Alt+<key>.
+    setState(() {
+      if (_ctrlState case false) _ctrlState = null;
+      if (_altState case false) _altState = null;
+      if (_shiftState case false) _shiftState = null;
+    });
+    Future<void>.delayed(const Duration(milliseconds: 100), _refocusTerminal);
   }
 
   void _sendTab() {
