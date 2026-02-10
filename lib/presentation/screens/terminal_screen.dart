@@ -21,7 +21,6 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
-import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 /// Terminal screen for SSH sessions.
@@ -144,7 +143,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       });
 
       _terminal.onOutput = (data) {
-        _shell?.write(utf8.encode(data));
+        // On iOS/Android soft keyboards, Return sends '\n' via textInput()
+        // but SSH expects '\r'. The proper keyInput(TerminalKey.enter) path
+        // produces '\r', so we normalize here.
+        final normalized = data.replaceAll('\n', '\r');
+        _shell?.write(utf8.encode(normalized));
       };
 
       _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
@@ -451,31 +454,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     // provides arrow keys and swiping should scroll the terminal buffer.
     final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
-    final terminalView = TerminalView(
+    return TerminalView(
       _terminal,
       focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: textStyle,
       padding: const EdgeInsets.all(8),
-      deleteDetection: !isMobile,
-      autofocus: !isMobile,
-      simulateScroll: !isMobile,
-      // On mobile, our TerminalTextInputHandler handles all input (soft
-      // keyboard + hardware keys). Set both flags so xterm doesn't create its
-      // own Focus widget, which would conflict with ours.
-      hardwareKeyboardOnly: isMobile,
-      readOnly: isMobile,
-    );
-
-    if (!isMobile) return terminalView;
-
-    // Wrap with our own TextInputClient that properly handles
-    // TextInputAction.newline (which xterm ignores, breaking Enter on iOS).
-    return TerminalTextInputHandler(
-      terminal: _terminal,
-      focusNode: _terminalFocusNode,
       deleteDetection: true,
-      child: terminalView,
+      autofocus: true,
+      simulateScroll: !isMobile,
     );
   }
 
