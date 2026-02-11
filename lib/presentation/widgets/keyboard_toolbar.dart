@@ -403,6 +403,9 @@ class _ModifierButtonState extends State<_ModifierButton> {
     if (_lastTapTime != null &&
         now.difference(_lastTapTime!) < _doubleTapTimeout) {
       _lastTapTime = null;
+      // Undo the single-tap toggle before applying double-tap lock,
+      // so the lock/unlock sees the original state.
+      widget.onTap();
       widget.onDoubleTap();
     } else {
       _lastTapTime = now;

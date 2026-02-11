@@ -335,12 +335,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _wasBackgrounded = false;
       // Allow pending stream events (e.g. socket close) to be processed
       // before checking whether reconnection is needed.
-      Future<void>.delayed(const Duration(milliseconds: 500), () {
-        if (_error != null && mounted) {
-          _terminal.write('\r\n[reconnecting...]\r\n');
-          _connect();
-        }
-      });
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 500), () {
+          if (_error != null && mounted) {
+            _terminal.write('\r\n[reconnecting...]\r\n');
+            _connect();
+          }
+        }),
+      );
     }
   }
 
