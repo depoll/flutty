@@ -49,7 +49,6 @@ platform :android do
       track: 'internal',
       aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/privateRelease/app-private-release.aab',
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      changes_not_sent_for_review: true,
       metadata_path: skip_meta ? nil : meta_path,
       skip_upload_metadata: skip_meta,
       skip_upload_images: skip_meta,
