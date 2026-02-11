@@ -33,7 +33,7 @@ jobs:
             BUILD_NAME="${{ inputs.version }}"
           fi
 
-          BUILD_NUMBER=$(( $(date +%s) / 60 ))
+          BUILD_NUMBER=$(( $(date +%s) / 10 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
