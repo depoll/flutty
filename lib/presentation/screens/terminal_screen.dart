@@ -17,6 +17,7 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
@@ -61,6 +62,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
   bool _wasBackgrounded = false;
+  bool _connectionLostWhileBackgrounded = false;
 
   @override
   void initState() {
@@ -206,6 +208,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       setState(() => _isConnecting = false);
 
+      // Start the background service to keep the connection alive
+      // when the app is backgrounded.
+      unawaited(
+        BackgroundSshService.start(
+          hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
+        ),
+      );
+
       // Start port forwards
       await _startPortForwards(session);
     } on Exception catch (e) {
@@ -269,11 +279,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleShellClosed() {
     if (!mounted) return;
+    // If the app is in the background, don't show the error screen
+    // immediately — defer it so we can auto-reconnect on resume.
+    if (_wasBackgrounded) {
+      _connectionLostWhileBackgrounded = true;
+      return;
+    }
     setState(() {
       _error = 'Connection closed';
     });
     // Clean up the session state
     _sessionsNotifier?.disconnect(widget.hostId);
+    unawaited(BackgroundSshService.stop());
   }
 
   Future<void> _disconnect() async {
@@ -284,6 +301,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stderrSubscription = null;
     _doneSubscription = null;
     await _sessionsNotifier?.disconnect(widget.hostId);
+    unawaited(BackgroundSshService.stop());
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -298,6 +316,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalFocusNode.dispose();
     // Disconnect session when leaving the screen (use cached notifier)
     _sessionsNotifier?.disconnect(widget.hostId);
+    unawaited(BackgroundSshService.stop());
     super.dispose();
   }
 
@@ -308,16 +327,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _wasBackgrounded = true;
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
-      // Allow pending stream events (e.g. socket close) to be processed
-      // before checking whether reconnection is needed.
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 500), () {
-          if (_error != null && mounted) {
-            _terminal.write('\r\n[reconnecting...]\r\n');
-            _connect();
-          }
-        }),
-      );
+      if (_connectionLostWhileBackgrounded && mounted) {
+        _connectionLostWhileBackgrounded = false;
+        _terminal.write('\r\n[reconnecting...]\r\n');
+        _connect();
+      }
     }
   }
 

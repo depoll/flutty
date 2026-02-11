@@ -290,18 +290,46 @@ class SshService {
     // ignore: close_sinks — socket is closed via _KeepAliveSSHSocket.close()
     final socket = await Socket.connect(host, port, timeout: timeout);
     socket.setOption(SocketOption.tcpNoDelay, true);
-    // Enable TCP keepalive probes so the OS doesn't consider the connection
-    // idle and close it while the app is in the background.
     try {
-      final solSocket = Platform.isIOS || Platform.isMacOS ? 0xFFFF : 1;
-      final soKeepAlive = Platform.isIOS || Platform.isMacOS ? 0x0008 : 9;
-      socket.setRawOption(
-        RawSocketOption.fromBool(solSocket, soKeepAlive, true),
-      );
+      _enableTcpKeepAlive(socket);
     } on Exception {
       // Fallback: not all platforms support raw socket options.
     }
     return _KeepAliveSSHSocket(socket);
+  }
+
+  /// Enables aggressive TCP keepalive so the OS sends probes every 15s
+  /// instead of the default ~2 hours, keeping the socket alive while
+  /// the app is briefly backgrounded.
+  static void _enableTcpKeepAlive(Socket socket) {
+    const ipprotoTcp = 6;
+    const keepAliveSeconds = 15;
+
+    if (Platform.isIOS || Platform.isMacOS) {
+      socket
+        // SO_KEEPALIVE
+        ..setRawOption(RawSocketOption.fromBool(0xFFFF, 0x0008, true))
+        // TCP_KEEPALIVE (idle time before first probe)
+        ..setRawOption(
+          RawSocketOption.fromInt(ipprotoTcp, 0x10, keepAliveSeconds),
+        )
+        // TCP_KEEPINTVL (interval between probes)
+        ..setRawOption(
+          RawSocketOption.fromInt(ipprotoTcp, 0x101, keepAliveSeconds),
+        )
+        // TCP_KEEPCNT (number of failed probes before giving up)
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 0x102, 3));
+    } else if (Platform.isAndroid || Platform.isLinux) {
+      socket
+        // SO_KEEPALIVE
+        ..setRawOption(RawSocketOption.fromBool(1, 9, true))
+        // TCP_KEEPIDLE
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 4, keepAliveSeconds))
+        // TCP_KEEPINTVL
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 5, keepAliveSeconds))
+        // TCP_KEEPCNT
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 6, 3));
+    }
   }
 }
 
