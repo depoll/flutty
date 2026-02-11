@@ -50,6 +50,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _error;
   bool _showKeyboard = true;
   bool _systemKeyboardVisible = true;
+  bool _isUsingAltBuffer = false;
 
   // Theme state
   Host? _host;
@@ -69,9 +70,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _terminal = Terminal(maxLines: 10000);
+    _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    _terminal.addListener(_onTerminalStateChanged);
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
+  }
+
+  void _onTerminalStateChanged() {
+    final isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    if (!mounted || _isUsingAltBuffer == isUsingAltBuffer) {
+      return;
+    }
+
+    setState(() {
+      _isUsingAltBuffer = isUsingAltBuffer;
+    });
   }
 
   Future<void> _loadHostAndConnect() async {
@@ -314,6 +328,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _terminal.removeListener(_onTerminalStateChanged);
     _outputSubscription?.cancel();
     _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
@@ -553,7 +568,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      simulateScroll: !isMobile,
+      simulateScroll: _isUsingAltBuffer,
     );
 
     if (!isMobile) return terminalView;

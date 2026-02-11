@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -54,7 +56,11 @@ class TerminalTextInputHandler extends StatefulWidget {
 
 class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     with TextInputClient {
+  static const _editingResetDelay = Duration(milliseconds: 250);
+
   TextInputConnection? _connection;
+  Timer? _editingResetTimer;
+  String _lastSentText = '';
 
   @override
   void initState() {
@@ -79,6 +85,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void dispose() {
     widget.focusNode.removeListener(_onFocusChange);
+    _cancelPendingEditingStateReset();
     _closeInputConnectionIfNeeded();
     super.dispose();
   }
@@ -173,15 +180,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
       _connection = TextInput.attach(this, config);
       _connection!.show();
+      _lastSentText = '';
+      _currentEditingState = _initEditingState.copyWith();
       _connection!.setEditingState(_initEditingState);
     }
   }
 
   void _closeInputConnectionIfNeeded() {
+    _cancelPendingEditingStateReset();
     if (_connection != null && _connection!.attached) {
       _connection!.close();
       _connection = null;
     }
+    _lastSentText = '';
+    _currentEditingState = _initEditingState.copyWith();
   }
 
   // -- Editing state --
@@ -194,6 +206,62 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       : TextEditingValue.empty;
 
   late TextEditingValue _currentEditingState = _initEditingState.copyWith();
+
+  int _commonPrefixLength(String a, String b) {
+    final maxLength = a.length < b.length ? a.length : b.length;
+    var index = 0;
+    while (index < maxLength && a.codeUnitAt(index) == b.codeUnitAt(index)) {
+      index++;
+    }
+    return index;
+  }
+
+  String _extractInputText(String text) {
+    final initText = _initEditingState.text;
+    if (text.startsWith(initText)) {
+      return text.substring(initText.length);
+    }
+    return text;
+  }
+
+  void _sendInputDelta(String currentText) {
+    final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
+    final deletedCount = _lastSentText.length - commonPrefix;
+
+    for (var i = 0; i < deletedCount; i++) {
+      widget.terminal.keyInput(TerminalKey.backspace);
+    }
+
+    final appendedText = currentText.substring(commonPrefix);
+    if (appendedText.isNotEmpty) {
+      widget.terminal.textInput(appendedText);
+    }
+
+    _lastSentText = currentText;
+  }
+
+  void _cancelPendingEditingStateReset() {
+    _editingResetTimer?.cancel();
+    _editingResetTimer = null;
+  }
+
+  void _scheduleEditingStateReset() {
+    _cancelPendingEditingStateReset();
+
+    if (_currentEditingState.text == _initEditingState.text) {
+      _lastSentText = '';
+      return;
+    }
+
+    _editingResetTimer = Timer(_editingResetDelay, () {
+      if (!mounted || !hasInputConnection) return;
+      if (!_currentEditingState.composing.isCollapsed) return;
+
+      _lastSentText = '';
+      _currentEditingState = _initEditingState.copyWith();
+      _connection?.setEditingState(_initEditingState);
+    });
+  }
 
   // -- TextInputClient implementation --
 
@@ -211,25 +279,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     // Handle composing (IME input in progress).
     if (!_currentEditingState.composing.isCollapsed) {
+      _cancelPendingEditingStateReset();
       return;
     }
 
     if (_currentEditingState.text.length < _initEditingState.text.length) {
       widget.terminal.keyInput(TerminalKey.backspace);
+      _lastSentText = '';
     } else {
-      final textDelta = _currentEditingState.text.substring(
-        _initEditingState.text.length,
-      );
-      if (textDelta.isNotEmpty) {
-        widget.terminal.textInput(textDelta);
-      }
+      _sendInputDelta(_extractInputText(_currentEditingState.text));
     }
 
-    // Reset editing state after processing.
-    if (_currentEditingState.composing.isCollapsed &&
-        _currentEditingState.text != _initEditingState.text) {
-      _connection?.setEditingState(_initEditingState);
-    }
+    // Delay resetting while the IME is still delivering incremental updates
+    // (for example swipe typing updates like `hello` -> `hello ` -> `hello world`).
+    _scheduleEditingStateReset();
   }
 
   @override
