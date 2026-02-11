@@ -206,7 +206,7 @@ class SshService {
           config.port,
         );
       } else {
-        socket = await SSHSocket.connect(
+        socket = await _connectWithKeepAlive(
           config.hostname,
           config.port,
           timeout: config.connectionTimeout,
@@ -279,6 +279,52 @@ class SshService {
       return null;
     }
   }
+
+  /// Connects a TCP socket with OS-level keepalive enabled so the connection
+  /// survives brief periods in the background without the OS tearing it down.
+  static Future<SSHSocket> _connectWithKeepAlive(
+    String host,
+    int port, {
+    Duration? timeout,
+  }) async {
+    // ignore: close_sinks — socket is closed via _KeepAliveSSHSocket.close()
+    final socket = await Socket.connect(host, port, timeout: timeout);
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    // Enable TCP keepalive probes so the OS doesn't consider the connection
+    // idle and close it while the app is in the background.
+    try {
+      final solSocket = Platform.isIOS || Platform.isMacOS ? 0xFFFF : 1;
+      final soKeepAlive = Platform.isIOS || Platform.isMacOS ? 0x0008 : 9;
+      socket.setRawOption(
+        RawSocketOption.fromBool(solSocket, soKeepAlive, true),
+      );
+    } on Exception {
+      // Fallback: not all platforms support raw socket options.
+    }
+    return _KeepAliveSSHSocket(socket);
+  }
+}
+
+/// SSHSocket wrapper that enables TCP keepalive on the underlying socket.
+class _KeepAliveSSHSocket implements SSHSocket {
+  _KeepAliveSSHSocket(this._socket);
+
+  final Socket _socket;
+
+  @override
+  Stream<Uint8List> get stream => _socket;
+
+  @override
+  StreamSink<List<int>> get sink => _socket;
+
+  @override
+  Future<void> close() async => _socket.close();
+
+  @override
+  Future<void> get done => _socket.done;
+
+  @override
+  void destroy() => _socket.destroy();
 }
 
 /// An active SSH session.

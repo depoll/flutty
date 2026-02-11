@@ -35,7 +35,8 @@ class TerminalScreen extends ConsumerStatefulWidget {
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
 }
 
-class _TerminalScreenState extends ConsumerState<TerminalScreen> {
+class _TerminalScreenState extends ConsumerState<TerminalScreen>
+    with WidgetsBindingObserver {
   late Terminal _terminal;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
@@ -56,9 +57,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
 
+  // Swipe-typing space insertion: xterm resets its editing state between
+  // composed words, so spaces between swiped words are lost. We track the
+  // last multi-character output to detect consecutive swipe commits and
+  // prepend a space when needed.
+  DateTime? _lastMultiCharOutputTime;
+  static const _swipeWordGap = Duration(milliseconds: 1500);
+  // Suppress swipe-typing spaces during paste/snippet insertion.
+  bool _isPasting = false;
+
+  // Track whether the app is in the background so we can auto-reconnect
+  // when it resumes if the OS killed the socket.
+  bool _wasBackgrounded = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _terminal = Terminal(maxLines: 10000);
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
@@ -87,6 +102,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   Future<void> _connect() async {
     if (!mounted) return;
+
+    // Clean up any previous connection state before reconnecting.
+    await _outputSubscription?.cancel();
+    await _stderrSubscription?.cancel();
+    await _doneSubscription?.cancel();
+    _outputSubscription = null;
+    _stderrSubscription = null;
+    _doneSubscription = null;
+    _shell = null;
 
     setState(() {
       _isConnecting = true;
@@ -150,6 +174,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
         // only normalize single-'\n' to avoid rewriting legitimate LF
         // characters in pasted or multi-char input.
         var output = data == '\n' ? '\r' : data;
+
+        // Swipe-typing space insertion: xterm's CustomTextEdit resets its
+        // editing state between composed words, causing spaces to be lost.
+        // Detect consecutive multi-char inputs and prepend a space.
+        // Skip during paste/snippet insertion to avoid corrupting input.
+        if (!_isPasting && output.length > 1 && !output.contains('\x1b')) {
+          final now = DateTime.now();
+          if (_lastMultiCharOutputTime != null &&
+              now.difference(_lastMultiCharOutputTime!) < _swipeWordGap) {
+            output = ' $output';
+          }
+          _lastMultiCharOutputTime = now;
+        } else {
+          // Reset on single-char input or escape sequences so normal
+          // typing after swipe doesn't get a spurious space.
+          _lastMultiCharOutputTime = null;
+        }
 
         // Apply toolbar modifier state to system keyboard input.
         // When the user toggles Ctrl on the toolbar then types on the system
@@ -275,6 +316,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _outputSubscription?.cancel();
     _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
@@ -282,6 +324,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     // Disconnect session when leaving the screen (use cached notifier)
     _sessionsNotifier?.disconnect(widget.hostId);
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _wasBackgrounded = true;
+    } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
+      _wasBackgrounded = false;
+      // Allow pending stream events (e.g. socket close) to be processed
+      // before checking whether reconnection is needed.
+      Future<void>.delayed(const Duration(milliseconds: 500), () {
+        if (_error != null && mounted) {
+          _terminal.write('\r\n[reconnecting...]\r\n');
+          _connect();
+        }
+      });
+    }
   }
 
   @override
@@ -350,7 +410,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
+          Expanded(child: _buildTerminalView(terminalTheme)),
           if (_showKeyboard)
             KeyboardToolbar(
               key: _toolbarKey,
@@ -435,7 +495,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     }
   }
 
-  Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
+  Widget _buildTerminalView(TerminalThemeData terminalTheme) {
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -497,7 +557,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       padding: const EdgeInsets.all(8),
       deleteDetection: true,
       autofocus: true,
-      simulateScroll: !isMobile,
     );
   }
 
@@ -543,7 +602,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
       case 'paste':
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         if (data?.text != null) {
+          _isPasting = true;
           _terminal.paste(data!.text!);
+          _isPasting = false;
+          _lastMultiCharOutputTime = null;
         }
       case 'clear':
         _terminal.buffer.clear();
@@ -655,7 +717,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
     if (result != null && result.command.isNotEmpty) {
       // Insert the command into terminal
+      _isPasting = true;
       _terminal.paste(result.command);
+      _isPasting = false;
+      _lastMultiCharOutputTime = null;
       // Track usage
       unawaited(snippetRepo.incrementUsage(result.snippetId));
     }
