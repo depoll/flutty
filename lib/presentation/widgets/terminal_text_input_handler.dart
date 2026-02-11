@@ -1,6 +1,8 @@
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
+// xterm 4.0.0 does not expose keyToTerminalKey via a public API.
+// Pinned to xterm 4.0.0.
 // ignore: implementation_imports
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
@@ -92,6 +94,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   // -- Hardware key event handling --
 
   KeyEventResult _onKeyEvent(FocusNode focusNode, KeyEvent event) {
+    if (widget.readOnly) {
+      return KeyEventResult.ignored;
+    }
+
     if (!_currentEditingState.composing.isCollapsed) {
       return KeyEventResult.skipRemainingHandlers;
     }
@@ -199,6 +205,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void updateEditingValue(TextEditingValue value) {
+    if (widget.readOnly) return;
+
     _currentEditingState = value;
 
     // Handle composing (IME input in progress).
@@ -226,6 +234,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void performAction(TextInputAction action) {
+    if (widget.readOnly) return;
+
     if (action == TextInputAction.newline || action == TextInputAction.done) {
       widget.terminal.keyInput(TerminalKey.enter);
     }

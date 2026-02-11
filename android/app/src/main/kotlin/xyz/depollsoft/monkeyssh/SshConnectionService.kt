@@ -64,11 +64,13 @@ class SshConnectionService : Service() {
         startForeground(NOTIFICATION_ID, notification)
 
         // Acquire a partial wake lock to keep the CPU running for SSH keepalives.
-        val pm = getSystemService(POWER_SERVICE) as PowerManager
-        wakeLock = pm.newWakeLock(
-            PowerManager.PARTIAL_WAKE_LOCK,
-            "monkeyssh:ssh_foreground"
-        ).apply { acquire() }
+        if (wakeLock?.isHeld != true) {
+            val pm = getSystemService(POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "monkeyssh:ssh_foreground"
+            ).apply { acquire() }
+        }
 
         return START_STICKY
     }

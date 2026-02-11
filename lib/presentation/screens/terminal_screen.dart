@@ -278,17 +278,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleShellClosed() {
-    if (!mounted) return;
+    if (!mounted) {
+      _sessionsNotifier?.disconnect(widget.hostId);
+      unawaited(BackgroundSshService.stop());
+      return;
+    }
     // If the app is in the background, don't show the error screen
     // immediately — defer it so we can auto-reconnect on resume.
     if (_wasBackgrounded) {
       _connectionLostWhileBackgrounded = true;
-      return;
+    } else {
+      setState(() {
+        _error = 'Connection closed';
+      });
     }
-    setState(() {
-      _error = 'Connection closed';
-    });
-    // Clean up the session state
+    // Clean up the session state regardless of background/foreground.
     _sessionsNotifier?.disconnect(widget.hostId);
     unawaited(BackgroundSshService.stop());
   }
