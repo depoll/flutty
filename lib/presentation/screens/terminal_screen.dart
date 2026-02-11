@@ -21,6 +21,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
+import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 /// Terminal screen for SSH sessions.
@@ -56,15 +57,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
-
-  // Swipe-typing space insertion: xterm resets its editing state between
-  // composed words, so spaces between swiped words are lost. We track the
-  // last multi-character output to detect consecutive swipe commits and
-  // prepend a space when needed.
-  DateTime? _lastMultiCharOutputTime;
-  static const _swipeWordGap = Duration(milliseconds: 1500);
-  // Suppress swipe-typing spaces during paste/snippet insertion.
-  bool _isPasting = false;
 
   // Track whether the app is in the background so we can auto-reconnect
   // when it resumes if the OS killed the socket.
@@ -174,23 +166,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         // only normalize single-'\n' to avoid rewriting legitimate LF
         // characters in pasted or multi-char input.
         var output = data == '\n' ? '\r' : data;
-
-        // Swipe-typing space insertion: xterm's CustomTextEdit resets its
-        // editing state between composed words, causing spaces to be lost.
-        // Detect consecutive multi-char inputs and prepend a space.
-        // Skip during paste/snippet insertion to avoid corrupting input.
-        if (!_isPasting && output.length > 1 && !output.contains('\x1b')) {
-          final now = DateTime.now();
-          if (_lastMultiCharOutputTime != null &&
-              now.difference(_lastMultiCharOutputTime!) < _swipeWordGap) {
-            output = ' $output';
-          }
-          _lastMultiCharOutputTime = now;
-        } else {
-          // Reset on single-char input or escape sequences so normal
-          // typing after swipe doesn't get a spurious space.
-          _lastMultiCharOutputTime = null;
-        }
 
         // Apply toolbar modifier state to system keyboard input.
         // When the user toggles Ctrl on the toolbar then types on the system
@@ -412,7 +387,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme)),
+          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
           if (_showKeyboard)
             KeyboardToolbar(
               key: _toolbarKey,
@@ -497,7 +472,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Widget _buildTerminalView(TerminalThemeData terminalTheme) {
+  Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -551,14 +526,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final fontFamily = hostFont ?? globalFont;
     final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
 
-    return TerminalView(
+    final terminalView = TerminalView(
       _terminal,
-      focusNode: _terminalFocusNode,
+      focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: textStyle,
       padding: const EdgeInsets.all(8),
+      deleteDetection: !isMobile,
+      autofocus: !isMobile,
+      hardwareKeyboardOnly: isMobile,
+      simulateScroll: !isMobile,
+    );
+
+    if (!isMobile) return terminalView;
+
+    // On mobile, wrap with our own text input handler that enables
+    // IME suggestions so swipe typing correctly inserts spaces.
+    return TerminalTextInputHandler(
+      terminal: _terminal,
+      focusNode: _terminalFocusNode,
       deleteDetection: true,
-      autofocus: true,
+      child: terminalView,
     );
   }
 
@@ -604,10 +592,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'paste':
         final data = await Clipboard.getData(Clipboard.kTextPlain);
         if (data?.text != null) {
-          _isPasting = true;
           _terminal.paste(data!.text!);
-          _isPasting = false;
-          _lastMultiCharOutputTime = null;
         }
       case 'clear':
         _terminal.buffer.clear();
@@ -719,10 +704,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (result != null && result.command.isNotEmpty) {
       // Insert the command into terminal
-      _isPasting = true;
       _terminal.paste(result.command);
-      _isPasting = false;
-      _lastMultiCharOutputTime = null;
       // Track usage
       unawaited(snippetRepo.incrementUsage(result.snippetId));
     }
