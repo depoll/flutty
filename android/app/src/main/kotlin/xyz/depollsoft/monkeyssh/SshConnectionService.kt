@@ -1,6 +1,5 @@
 package xyz.depollsoft.monkeyssh
 
-import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -8,6 +7,7 @@ import android.app.Service
 import android.content.Intent
 import android.os.IBinder
 import android.os.PowerManager
+import androidx.core.app.NotificationCompat
 
 /// Foreground service that keeps the app process alive while an SSH
 /// session is active, preventing Android from killing the TCP connection.
@@ -51,18 +51,15 @@ class SshConnectionService : Service() {
             )
         } else null
 
-        val builder = Notification.Builder(this, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Connected to $hostName")
             .setContentText("SSH session is active")
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
+            .setSilent(true)
             .setContentIntent(tapPendingIntent)
-            .addAction(
-                Notification.Action.Builder(
-                    null, "Disconnect", stopPendingIntent
-                ).build()
-            )
-        val notification = builder.build()
+            .addAction(android.R.drawable.ic_delete, "Disconnect", stopPendingIntent)
+            .build()
 
         startForeground(NOTIFICATION_ID, notification)
 
