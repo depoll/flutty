@@ -568,7 +568,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      simulateScroll: _isUsingAltBuffer,
+      // On touch devices, simulating wheel scroll with Up/Down keys in alt
+      // buffer makes swipe scroll behave like rapid history navigation.
+      simulateScroll: !isMobile && _isUsingAltBuffer,
     );
 
     if (!isMobile) return terminalView;

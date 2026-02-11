@@ -1,5 +1,3 @@
-import 'dart:async';
-
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -56,10 +54,7 @@ class TerminalTextInputHandler extends StatefulWidget {
 
 class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     with TextInputClient {
-  static const _editingResetDelay = Duration(milliseconds: 250);
-
   TextInputConnection? _connection;
-  Timer? _editingResetTimer;
   String _lastSentText = '';
 
   @override
@@ -85,7 +80,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void dispose() {
     widget.focusNode.removeListener(_onFocusChange);
-    _cancelPendingEditingStateReset();
     _closeInputConnectionIfNeeded();
     super.dispose();
   }
@@ -187,7 +181,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   void _closeInputConnectionIfNeeded() {
-    _cancelPendingEditingStateReset();
     if (_connection != null && _connection!.attached) {
       _connection!.close();
       _connection = null;
@@ -240,29 +233,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = currentText;
   }
 
-  void _cancelPendingEditingStateReset() {
-    _editingResetTimer?.cancel();
-    _editingResetTimer = null;
-  }
-
-  void _scheduleEditingStateReset() {
-    _cancelPendingEditingStateReset();
-
-    if (_currentEditingState.text == _initEditingState.text) {
-      _lastSentText = '';
-      return;
-    }
-
-    _editingResetTimer = Timer(_editingResetDelay, () {
-      if (!mounted || !hasInputConnection) return;
-      if (!_currentEditingState.composing.isCollapsed) return;
-
-      _lastSentText = '';
-      _currentEditingState = _initEditingState.copyWith();
-      _connection?.setEditingState(_initEditingState);
-    });
-  }
-
   // -- TextInputClient implementation --
 
   @override
@@ -279,7 +249,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     // Handle composing (IME input in progress).
     if (!_currentEditingState.composing.isCollapsed) {
-      _cancelPendingEditingStateReset();
       return;
     }
 
@@ -289,10 +258,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     } else {
       _sendInputDelta(_extractInputText(_currentEditingState.text));
     }
-
-    // Delay resetting while the IME is still delivering incremental updates
-    // (for example swipe typing updates like `hello` -> `hello ` -> `hello world`).
-    _scheduleEditingStateReset();
   }
 
   @override
