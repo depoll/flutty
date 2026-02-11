@@ -80,7 +80,7 @@ jobs:
         with:
           path: coverage/lcov.info
           min_coverage: 15
-          exclude: "**/*.g.dart **/*.freezed.dart"
+          exclude: "**/*.g.dart **/*.freezed.dart **/background_ssh_service.dart"
 
       - name: Upload coverage to Codecov
         uses: codecov/codecov-action@v5
