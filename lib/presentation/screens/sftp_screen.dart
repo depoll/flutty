@@ -40,7 +40,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     try {
       final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-      var session = sessionsNotifier.getSession(widget.hostId);
+      var connectionId = sessionsNotifier.getPreferredConnectionForHost(
+        widget.hostId,
+      );
+      var session = connectionId == null
+          ? null
+          : sessionsNotifier.getSession(connectionId);
 
       // Connect if not already connected
       if (session == null) {
@@ -52,7 +57,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           });
           return;
         }
-        session = sessionsNotifier.getSession(widget.hostId);
+        connectionId = result.connectionId;
+        if (connectionId != null) {
+          session = sessionsNotifier.getSession(connectionId);
+        }
       }
 
       if (session == null) {

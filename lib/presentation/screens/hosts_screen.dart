@@ -134,6 +134,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         return _HostListTile(
           host: host,
           onTap: () => _connectToHost(host),
+          onNewConnection: () => unawaited(_openNewConnection(host)),
           onEdit: () => context.push('/hosts/edit/${host.id}'),
           onDelete: () => _deleteHost(host),
         );
@@ -141,8 +142,107 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     );
   }
 
+  Future<void> _openNewConnection(Host host) async {
+    final result = await ref
+        .read(activeSessionsProvider.notifier)
+        .connect(host.id, forceNew: true);
+    if (!mounted) return;
+    if (!result.success || result.connectionId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.error ?? 'Connection failed')),
+      );
+      return;
+    }
+    unawaited(
+      context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
+    );
+  }
+
   Future<void> _connectToHost(Host host) async {
-    unawaited(context.push('/terminal/${host.id}'));
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+
+    if (connectionIds.isEmpty) {
+      final result = await sessionsNotifier.connect(host.id, forceNew: true);
+      if (!mounted) return;
+      if (!result.success || result.connectionId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.error ?? 'Connection failed')),
+        );
+        return;
+      }
+      unawaited(
+        context.push(
+          '/terminal/${host.id}?connectionId=${result.connectionId}',
+        ),
+      );
+      return;
+    }
+
+    if (connectionIds.length == 1) {
+      unawaited(
+        context.push(
+          '/terminal/${host.id}?connectionId=${connectionIds.first}',
+        ),
+      );
+      return;
+    }
+
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              title: Text(host.label),
+              subtitle: Text('${connectionIds.length} active connections'),
+            ),
+            for (final connectionId in connectionIds.reversed)
+              ListTile(
+                leading: const Icon(Icons.terminal),
+                title: Text('Connection #$connectionId'),
+                subtitle: Text(
+                  '${host.username}@${host.hostname}:${host.port}',
+                ),
+                onTap: () => Navigator.pop(context, '$connectionId'),
+              ),
+            ListTile(
+              leading: const Icon(Icons.add),
+              title: const Text('New connection'),
+              onTap: () => Navigator.pop(context, 'new'),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    if (!mounted || selected == null) {
+      return;
+    }
+    if (selected == 'new') {
+      final result = await sessionsNotifier.connect(host.id, forceNew: true);
+      if (!mounted) return;
+      if (!result.success || result.connectionId == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text(result.error ?? 'Connection failed')),
+        );
+        return;
+      }
+      unawaited(
+        context.push(
+          '/terminal/${host.id}?connectionId=${result.connectionId}',
+        ),
+      );
+      return;
+    }
+
+    final connectionId = int.tryParse(selected);
+    if (connectionId != null) {
+      unawaited(
+        context.push('/terminal/${host.id}?connectionId=$connectionId'),
+      );
+    }
   }
 
   Future<void> _deleteHost(Host host) async {
@@ -224,12 +324,14 @@ class _HostListTile extends ConsumerWidget {
   const _HostListTile({
     required this.host,
     required this.onTap,
+    required this.onNewConnection,
     required this.onEdit,
     required this.onDelete,
   });
 
   final Host host;
   final VoidCallback onTap;
+  final VoidCallback onNewConnection;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
 
@@ -237,10 +339,20 @@ class _HostListTile extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final connectionStates = ref.watch(activeSessionsProvider);
-    final isConnected =
-        connectionStates[host.id] == SshConnectionState.connected;
-    final isConnecting =
-        connectionStates[host.id] == SshConnectionState.connecting;
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+    final states = connectionIds
+        .map((connectionId) => connectionStates[connectionId])
+        .whereType<SshConnectionState>()
+        .toList(growable: false);
+    final isConnected = states.any(
+      (state) => state == SshConnectionState.connected,
+    );
+    final isConnecting = states.any(
+      (state) =>
+          state == SshConnectionState.connecting ||
+          state == SshConnectionState.authenticating,
+    );
 
     return ListTile(
       leading: CircleAvatar(
@@ -254,7 +366,10 @@ class _HostListTile extends ConsumerWidget {
       ),
       title: Text(host.label),
       subtitle: Text(
-        '${host.username}@${host.hostname}:${host.port}',
+        connectionIds.isEmpty
+            ? '${host.username}@${host.hostname}:${host.port}'
+            : '${host.username}@${host.hostname}:${host.port}  •  '
+                  '${connectionIds.length} connection(s)',
         style: theme.textTheme.bodySmall,
       ),
       trailing: Row(
@@ -268,6 +383,11 @@ class _HostListTile extends ConsumerWidget {
               height: 20,
               child: CircularProgressIndicator(strokeWidth: 2),
             ),
+          IconButton(
+            icon: const Icon(Icons.add),
+            tooltip: 'New connection',
+            onPressed: onNewConnection,
+          ),
           PopupMenuButton<String>(
             onSelected: (action) {
               switch (action) {

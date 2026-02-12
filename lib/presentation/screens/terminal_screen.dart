@@ -27,10 +27,13 @@ import '../widgets/terminal_theme_picker.dart';
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
-  const TerminalScreen({required this.hostId, super.key});
+  const TerminalScreen({required this.hostId, this.connectionId, super.key});
 
   /// The host ID to connect to.
   final int hostId;
+
+  /// Optional existing connection ID to reuse.
+  final int? connectionId;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -50,6 +53,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showKeyboard = true;
   bool _systemKeyboardVisible = true;
   bool _isUsingAltBuffer = false;
+  int? _connectionId;
 
   // Theme state
   Host? _host;
@@ -92,7 +96,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hostRepo = ref.read(hostRepositoryProvider);
     _host = await hostRepo.getById(widget.hostId);
     await _loadTheme();
-    await _connect();
+    await _connect(preferredConnectionId: widget.connectionId);
   }
 
   Future<void> _loadTheme() async {
@@ -107,13 +111,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _connect() async {
+  Future<void> _connect({
+    int? preferredConnectionId,
+    bool forceNew = false,
+  }) async {
     if (!mounted) return;
 
     // Clean up any previous connection state before reconnecting.
     await _outputSubscription?.cancel();
     await _stderrSubscription?.cancel();
     await _doneSubscription?.cancel();
+    _shell?.close();
     _outputSubscription = null;
     _stderrSubscription = null;
     _doneSubscription = null;
@@ -125,11 +133,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
 
     _sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-    final result = await _sessionsNotifier!.connect(widget.hostId);
+    var shouldForceNew = forceNew;
+    if (preferredConnectionId != null) {
+      _connectionId = preferredConnectionId;
+      final existingSession = _sessionsNotifier!.getSession(
+        preferredConnectionId,
+      );
+      if (existingSession != null) {
+        await _openShell(existingSession);
+        return;
+      }
+      shouldForceNew = true;
+    }
+
+    final result = await _sessionsNotifier!.connect(
+      widget.hostId,
+      forceNew: shouldForceNew,
+    );
 
     if (!mounted) return;
 
-    if (!result.success) {
+    if (!result.success || result.connectionId == null) {
       setState(() {
         _isConnecting = false;
         _error = result.error ?? 'Connection failed';
@@ -137,12 +161,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final session = _sessionsNotifier!.getSession(widget.hostId);
+    _connectionId = result.connectionId;
+    final session = _sessionsNotifier!.getSession(_connectionId!);
     if (session == null) {
       setState(() {
         _isConnecting = false;
         _error = 'Session not found';
       });
+      return;
+    }
+
+    await _openShell(session);
+  }
+
+  Future<void> _openShell(SshSession session) async {
+    if (!mounted) {
       return;
     }
 
@@ -152,6 +185,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           width: _terminal.viewWidth,
           height: _terminal.viewHeight,
         ),
+        forceNew: true,
       );
 
       if (!mounted) return;
@@ -291,9 +325,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleShellClosed() {
+    final connectionId = _connectionId;
     if (!mounted) {
-      _sessionsNotifier?.disconnect(widget.hostId);
-      unawaited(BackgroundSshService.stop());
+      if (connectionId != null) {
+        unawaited(_sessionsNotifier?.disconnect(connectionId));
+      }
+      _stopBackgroundServiceIfNoConnections();
       return;
     }
     // If the app is in the background, don't show the error screen
@@ -306,19 +343,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       });
     }
     // Clean up the session state regardless of background/foreground.
-    _sessionsNotifier?.disconnect(widget.hostId);
-    unawaited(BackgroundSshService.stop());
+    if (connectionId != null) {
+      unawaited(_sessionsNotifier?.disconnect(connectionId));
+    }
+    _stopBackgroundServiceIfNoConnections();
   }
 
   Future<void> _disconnect() async {
     await _outputSubscription?.cancel();
     await _stderrSubscription?.cancel();
     await _doneSubscription?.cancel();
+    _shell?.close();
     _outputSubscription = null;
     _stderrSubscription = null;
     _doneSubscription = null;
-    await _sessionsNotifier?.disconnect(widget.hostId);
-    unawaited(BackgroundSshService.stop());
+    if (_connectionId != null) {
+      await _sessionsNotifier?.disconnect(_connectionId!);
+    }
+    _stopBackgroundServiceIfNoConnections();
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -331,10 +373,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _outputSubscription?.cancel();
     _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
+    _shell?.close();
     _terminalFocusNode.dispose();
-    // Disconnect session when leaving the screen (use cached notifier)
-    _sessionsNotifier?.disconnect(widget.hostId);
-    unawaited(BackgroundSshService.stop());
     super.dispose();
   }
 
@@ -431,6 +471,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
+  }
+
+  void _stopBackgroundServiceIfNoConnections() {
+    final connectionStates = ref.read(activeSessionsProvider);
+    final hasActiveConnection = connectionStates.values.any(
+      (state) =>
+          state == SshConnectionState.connected ||
+          state == SshConnectionState.connecting ||
+          state == SshConnectionState.authenticating ||
+          state == SshConnectionState.reconnecting,
+    );
+    if (!hasActiveConnection) {
+      unawaited(BackgroundSshService.stop());
+    }
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.
@@ -544,7 +598,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 24),
-              ElevatedButton(onPressed: _connect, child: const Text('Retry')),
+              ElevatedButton(
+                onPressed: () => _connect(preferredConnectionId: _connectionId),
+                child: const Text('Retry'),
+              ),
             ],
           ),
         ),
