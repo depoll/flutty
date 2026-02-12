@@ -201,7 +201,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    if (_shiftState != null) {
+    if (_shiftState != null || HardwareKeyboard.instance.isShiftPressed) {
       // Shift+Tab sends reverse-tab escape sequence
       widget.terminal.textInput('\x1b[Z');
     } else {
