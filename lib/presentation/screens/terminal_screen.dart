@@ -576,13 +576,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (!isMobile) return terminalView;
 
+    Widget mobileTerminalView = terminalView;
+    if (_isUsingAltBuffer) {
+      // xterm's alt-buffer scroll handler can convert touch scroll into input
+      // events for some TUIs. On mobile, consume vertical drags at this layer
+      // so swipe scrolling never becomes terminal key/mouse input.
+      mobileTerminalView = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragDown: (_) {},
+        onVerticalDragStart: (_) {},
+        onVerticalDragUpdate: (_) {},
+        onVerticalDragEnd: (_) {},
+        onVerticalDragCancel: () {},
+        child: mobileTerminalView,
+      );
+    }
+
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       deleteDetection: true,
-      child: terminalView,
+      child: mobileTerminalView,
     );
   }
 

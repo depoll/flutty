@@ -164,6 +164,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.show();
     } else {
       final config = TextInputConfiguration(
+        // Keep these explicit because IME behavior is central to this widget.
+        // ignore: avoid_redundant_argument_values
+        autocorrect: true,
         inputAction: TextInputAction.newline,
         keyboardAppearance: widget.keyboardAppearance,
         // Enable suggestions so the IME adds spaces between swiped words.
