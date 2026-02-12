@@ -23,7 +23,6 @@ linter:
     - avoid_dynamic_calls
     - avoid_empty_else
     - avoid_print
-    - avoid_returning_null_for_future
     - avoid_slow_async_io
     - avoid_type_to_string
     - cancel_subscriptions
@@ -106,5 +105,4 @@ linter:
     - use_to_and_as_if_applicable
     
     # Documentation
-    - package_api_docs
     - public_member_api_docs
