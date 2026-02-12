@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -367,7 +366,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    final isMobile =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
