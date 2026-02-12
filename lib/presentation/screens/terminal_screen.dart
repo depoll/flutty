@@ -121,7 +121,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     await _outputSubscription?.cancel();
     await _stderrSubscription?.cancel();
     await _doneSubscription?.cancel();
-    _shell?.close();
     _outputSubscription = null;
     _stderrSubscription = null;
     _doneSubscription = null;
@@ -185,7 +184,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           width: _terminal.viewWidth,
           height: _terminal.viewHeight,
         ),
-        forceNew: true,
       );
 
       if (!mounted) return;
@@ -353,7 +351,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     await _outputSubscription?.cancel();
     await _stderrSubscription?.cancel();
     await _doneSubscription?.cancel();
-    _shell?.close();
     _outputSubscription = null;
     _stderrSubscription = null;
     _doneSubscription = null;
@@ -373,7 +370,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _outputSubscription?.cancel();
     _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
-    _shell?.close();
     _terminalFocusNode.dispose();
     super.dispose();
   }
