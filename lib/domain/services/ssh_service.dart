@@ -206,7 +206,7 @@ class SshService {
           config.port,
         );
       } else {
-        socket = await SSHSocket.connect(
+        socket = await _connectWithKeepAlive(
           config.hostname,
           config.port,
           timeout: config.connectionTimeout,
@@ -279,6 +279,80 @@ class SshService {
       return null;
     }
   }
+
+  /// Connects a TCP socket with OS-level keepalive enabled so the connection
+  /// survives brief periods in the background without the OS tearing it down.
+  static Future<SSHSocket> _connectWithKeepAlive(
+    String host,
+    int port, {
+    Duration? timeout,
+  }) async {
+    // ignore: close_sinks — socket is closed via _KeepAliveSSHSocket.close()
+    final socket = await Socket.connect(host, port, timeout: timeout);
+    socket.setOption(SocketOption.tcpNoDelay, true);
+    try {
+      _enableTcpKeepAlive(socket);
+    } on Exception {
+      // Fallback: not all platforms support raw socket options.
+    }
+    return _KeepAliveSSHSocket(socket);
+  }
+
+  /// Enables aggressive TCP keepalive so the OS sends probes every 15s
+  /// instead of the default ~2 hours, keeping the socket alive while
+  /// the app is briefly backgrounded.
+  static void _enableTcpKeepAlive(Socket socket) {
+    const ipprotoTcp = 6;
+    const keepAliveSeconds = 15;
+
+    if (Platform.isIOS || Platform.isMacOS) {
+      socket
+        // SO_KEEPALIVE
+        ..setRawOption(RawSocketOption.fromBool(0xFFFF, 0x0008, true))
+        // TCP_KEEPALIVE (idle time before first probe)
+        ..setRawOption(
+          RawSocketOption.fromInt(ipprotoTcp, 0x10, keepAliveSeconds),
+        )
+        // TCP_KEEPINTVL (interval between probes)
+        ..setRawOption(
+          RawSocketOption.fromInt(ipprotoTcp, 0x101, keepAliveSeconds),
+        )
+        // TCP_KEEPCNT (number of failed probes before giving up)
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 0x102, 3));
+    } else if (Platform.isAndroid || Platform.isLinux) {
+      socket
+        // SO_KEEPALIVE
+        ..setRawOption(RawSocketOption.fromBool(1, 9, true))
+        // TCP_KEEPIDLE
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 4, keepAliveSeconds))
+        // TCP_KEEPINTVL
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 5, keepAliveSeconds))
+        // TCP_KEEPCNT
+        ..setRawOption(RawSocketOption.fromInt(ipprotoTcp, 6, 3));
+    }
+  }
+}
+
+/// SSHSocket wrapper that enables TCP keepalive on the underlying socket.
+class _KeepAliveSSHSocket implements SSHSocket {
+  _KeepAliveSSHSocket(this._socket);
+
+  final Socket _socket;
+
+  @override
+  Stream<Uint8List> get stream => _socket;
+
+  @override
+  StreamSink<List<int>> get sink => _socket;
+
+  @override
+  Future<void> close() async => _socket.close();
+
+  @override
+  Future<void> get done => _socket.done;
+
+  @override
+  void destroy() => _socket.destroy();
 }
 
 /// An active SSH session.

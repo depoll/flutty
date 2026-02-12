@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -17,10 +16,12 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
+import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 /// Terminal screen for SSH sessions.
@@ -35,7 +36,8 @@ class TerminalScreen extends ConsumerStatefulWidget {
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
 }
 
-class _TerminalScreenState extends ConsumerState<TerminalScreen> {
+class _TerminalScreenState extends ConsumerState<TerminalScreen>
+    with WidgetsBindingObserver {
   late Terminal _terminal;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
@@ -47,6 +49,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   String? _error;
   bool _showKeyboard = true;
   bool _systemKeyboardVisible = true;
+  bool _isUsingAltBuffer = false;
 
   // Theme state
   Host? _host;
@@ -56,13 +59,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
 
+  // Track whether the app is in the background so we can auto-reconnect
+  // when it resumes if the OS killed the socket.
+  bool _wasBackgrounded = false;
+  bool _connectionLostWhileBackgrounded = false;
+
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _terminal = Terminal(maxLines: 10000);
+    _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    _terminal.addListener(_onTerminalStateChanged);
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
+  }
+
+  void _onTerminalStateChanged() {
+    final isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    if (!mounted || _isUsingAltBuffer == isUsingAltBuffer) {
+      return;
+    }
+
+    setState(() {
+      _isUsingAltBuffer = isUsingAltBuffer;
+    });
   }
 
   Future<void> _loadHostAndConnect() async {
@@ -87,6 +109,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   Future<void> _connect() async {
     if (!mounted) return;
+
+    // Clean up any previous connection state before reconnecting.
+    await _outputSubscription?.cancel();
+    await _stderrSubscription?.cancel();
+    await _doneSubscription?.cancel();
+    _outputSubscription = null;
+    _stderrSubscription = null;
+    _doneSubscription = null;
+    _shell = null;
 
     setState(() {
       _isConnecting = true;
@@ -190,6 +221,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
       setState(() => _isConnecting = false);
 
+      // Start the background service to keep the connection alive
+      // when the app is backgrounded.
+      unawaited(
+        BackgroundSshService.start(
+          hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
+        ),
+      );
+
       // Start port forwards
       await _startPortForwards(session);
     } on Exception catch (e) {
@@ -252,12 +291,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   }
 
   void _handleShellClosed() {
-    if (!mounted) return;
-    setState(() {
-      _error = 'Connection closed';
-    });
-    // Clean up the session state
+    if (!mounted) {
+      _sessionsNotifier?.disconnect(widget.hostId);
+      unawaited(BackgroundSshService.stop());
+      return;
+    }
+    // If the app is in the background, don't show the error screen
+    // immediately — defer it so we can auto-reconnect on resume.
+    if (_wasBackgrounded) {
+      _connectionLostWhileBackgrounded = true;
+    } else {
+      setState(() {
+        _error = 'Connection closed';
+      });
+    }
+    // Clean up the session state regardless of background/foreground.
     _sessionsNotifier?.disconnect(widget.hostId);
+    unawaited(BackgroundSshService.stop());
   }
 
   Future<void> _disconnect() async {
@@ -268,6 +318,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     _stderrSubscription = null;
     _doneSubscription = null;
     await _sessionsNotifier?.disconnect(widget.hostId);
+    unawaited(BackgroundSshService.stop());
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -275,13 +326,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _terminal.removeListener(_onTerminalStateChanged);
     _outputSubscription?.cancel();
     _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     // Disconnect session when leaving the screen (use cached notifier)
     _sessionsNotifier?.disconnect(widget.hostId);
+    unawaited(BackgroundSshService.stop());
     super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.inactive) {
+      _wasBackgrounded = true;
+    } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
+      _wasBackgrounded = false;
+      if (_connectionLostWhileBackgrounded && mounted) {
+        _connectionLostWhileBackgrounded = false;
+        _terminal.write('\r\n[reconnecting...]\r\n');
+        _connect();
+      }
+    }
   }
 
   @override
@@ -297,7 +366,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDark = theme.brightness == Brightness.dark;
-    final isMobile = !kIsWeb && (Platform.isAndroid || Platform.isIOS);
+    final isMobile =
+        defaultTargetPlatform == TargetPlatform.android ||
+        defaultTargetPlatform == TargetPlatform.iOS;
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
@@ -489,15 +560,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen> {
     final fontFamily = hostFont ?? globalFont;
     final textStyle = _getTerminalTextStyle(fontFamily, fontSize);
 
-    return TerminalView(
+    final terminalView = TerminalView(
       _terminal,
-      focusNode: _terminalFocusNode,
+      focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: textStyle,
       padding: const EdgeInsets.all(8),
+      deleteDetection: !isMobile,
+      autofocus: !isMobile,
+      hardwareKeyboardOnly: isMobile,
+      // On touch devices, simulating wheel scroll with Up/Down keys in alt
+      // buffer makes swipe scroll behave like rapid history navigation.
+      simulateScroll: !isMobile && _isUsingAltBuffer,
+    );
+
+    if (!isMobile) return terminalView;
+
+    Widget mobileTerminalView = terminalView;
+    if (_isUsingAltBuffer) {
+      // xterm's alt-buffer scroll handler can convert touch scroll into input
+      // events for some TUIs. On mobile, consume vertical drags at this layer
+      // so swipe scrolling never becomes terminal key/mouse input.
+      mobileTerminalView = GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onVerticalDragDown: (_) {},
+        onVerticalDragStart: (_) {},
+        onVerticalDragUpdate: (_) {},
+        onVerticalDragEnd: (_) {},
+        onVerticalDragCancel: () {},
+        child: mobileTerminalView,
+      );
+    }
+
+    // On mobile, wrap with our own text input handler that enables
+    // IME suggestions so swipe typing correctly inserts spaces.
+    return TerminalTextInputHandler(
+      terminal: _terminal,
+      focusNode: _terminalFocusNode,
       deleteDetection: true,
-      autofocus: true,
-      simulateScroll: !isMobile,
+      child: mobileTerminalView,
     );
   }
 

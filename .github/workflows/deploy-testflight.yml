@@ -1,0 +1,55 @@
+name: Deploy PR to TestFlight
+
+on:
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: 'PR number to deploy'
+        required: true
+        type: number
+
+concurrency:
+  group: deploy-testflight-pr-${{ inputs.pr-number }}
+  cancel-in-progress: true
+
+jobs:
+  compute-version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      build-name: ${{ steps.version.outputs.build-name }}
+      build-number: ${{ steps.version.outputs.build-number }}
+      ref: ${{ steps.pr.outputs.ref }}
+    steps:
+      - name: Get PR ref
+        id: pr
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          REF=$(gh api repos/${{ github.repository }}/pulls/${{ inputs.pr-number }} --jq '.head.ref')
+          echo "ref=${REF}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ steps.pr.outputs.ref }}
+
+      - name: Compute version
+        id: version
+        run: |
+          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          BUILD_NUMBER=$(( $(date +%s) / 60 ))
+
+          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+
+  deploy:
+    name: Deploy to TestFlight
+    needs: compute-version
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.compute-version.outputs.build-name }}
+      build-number: ${{ needs.compute-version.outputs.build-number }}
+      flavor: private
+      deploy-ios-to: testflight
+      deploy-android-to: none
+    secrets: inherit

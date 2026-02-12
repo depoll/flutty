@@ -201,7 +201,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    if (_shiftState != null) {
+    if (_shiftState != null || HardwareKeyboard.instance.isShiftPressed) {
       // Shift+Tab sends reverse-tab escape sequence
       widget.terminal.textInput('\x1b[Z');
     } else {
@@ -377,7 +377,7 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
   }
 }
 
-class _ModifierButton extends StatelessWidget {
+class _ModifierButton extends StatefulWidget {
   const _ModifierButton({
     required this.label,
     required this.state,
@@ -391,6 +391,29 @@ class _ModifierButton extends StatelessWidget {
   final VoidCallback onDoubleTap;
 
   @override
+  State<_ModifierButton> createState() => _ModifierButtonState();
+}
+
+class _ModifierButtonState extends State<_ModifierButton> {
+  static const _doubleTapTimeout = Duration(milliseconds: 300);
+  DateTime? _lastTapTime;
+
+  void _handleTap() {
+    final now = DateTime.now();
+    if (_lastTapTime != null &&
+        now.difference(_lastTapTime!) < _doubleTapTimeout) {
+      _lastTapTime = null;
+      // Undo the single-tap toggle before applying double-tap lock,
+      // so the lock/unlock sees the original state.
+      widget.onTap();
+      widget.onDoubleTap();
+    } else {
+      _lastTapTime = now;
+      widget.onTap();
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
@@ -398,11 +421,11 @@ class _ModifierButton extends StatelessWidget {
     final Color textColor;
     final IconData? icon;
 
-    if (state == null) {
+    if (widget.state == null) {
       bgColor = colorScheme.surfaceContainerHighest;
       textColor = colorScheme.onSurfaceVariant;
       icon = null;
-    } else if (state == false) {
+    } else if (widget.state == false) {
       bgColor = colorScheme.primaryContainer;
       textColor = colorScheme.onPrimaryContainer;
       icon = null;
@@ -413,8 +436,7 @@ class _ModifierButton extends StatelessWidget {
     }
 
     return GestureDetector(
-      onTap: onTap,
-      onDoubleTap: onDoubleTap,
+      onTap: _handleTap,
       child: Container(
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(
@@ -426,7 +448,7 @@ class _ModifierButton extends StatelessWidget {
             mainAxisSize: MainAxisSize.min,
             children: [
               Text(
-                label,
+                widget.label,
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w500,

@@ -44,7 +44,7 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       flavor: private
-      deploy-ios-to: testflight
+      deploy-ios-to: none
       deploy-android-to: none
     secrets: inherit
 
@@ -72,8 +72,7 @@ jobs:
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Open **TestFlight** → _MonkeySSH β_ → build `${{ needs.compute-version.outputs.build-number }}` |
+            | 🍎 **iOS** | Run the **Deploy PR to TestFlight** workflow manually from the Actions tab |
             | 🤖 **Android (APK)** | ${{ needs.build.result == 'success' && needs.build.outputs.apk-artifact-id != '' && format('[Download APK](https://github.com/{0}/actions/runs/{1}/artifacts/{2})', github.repository, github.run_id, needs.build.outputs.apk-artifact-id) || needs.build.result == 'skipped' && 'N/A (build skipped for fork PR)' || format('[View workflow run](https://github.com/{0}/actions/runs/{1})', github.repository, github.run_id) }} |
-            | 🤖 **Android (Play Store)** | [Internal Testing](https://play.google.com/store/apps/details?id=xyz.depollsoft.monkeyssh.private) · updates on merge to `main` |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
