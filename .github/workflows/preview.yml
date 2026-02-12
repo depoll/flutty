@@ -30,7 +30,7 @@ jobs:
         id: version
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          BUILD_NUMBER=$(( $(date +%s) / 60 ))
+          BUILD_NUMBER=$(( $(date +%s) / 10 ))
 
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
