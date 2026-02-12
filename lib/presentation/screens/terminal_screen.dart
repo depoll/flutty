@@ -178,16 +178,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    try {
-      _shell = await session.getShell(
-        pty: SSHPtyConfig(
-          width: _terminal.viewWidth,
-          height: _terminal.viewHeight,
-        ),
-      );
-
-      if (!mounted) return;
-
+    void bindShellStreams() {
       // Use streaming UTF-8 decoder that properly handles chunked data
       _outputSubscription = _shell!.stdout
           .cast<List<int>>()
@@ -205,6 +196,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _handleShellClosed();
         }
       });
+    }
+
+    try {
+      final pty = SSHPtyConfig(
+        width: _terminal.viewWidth,
+        height: _terminal.viewHeight,
+      );
+      try {
+        _shell = await session.getShell(pty: pty);
+        bindShellStreams();
+      } on Object catch (error) {
+        if (error is! StateError ||
+            !error.message.contains('already been listened to')) {
+          rethrow;
+        }
+        await _outputSubscription?.cancel();
+        await _stderrSubscription?.cancel();
+        await _doneSubscription?.cancel();
+        _outputSubscription = null;
+        _stderrSubscription = null;
+        _doneSubscription = null;
+
+        // Existing shell streams are single-subscription; open a fresh shell
+        // channel on the same SSH client so the screen can reattach.
+        _shell = await session.getShell(pty: pty, forceNew: true);
+        bindShellStreams();
+      }
+
+      if (!mounted) return;
 
       _terminal.onOutput = (data) {
         // On iOS/Android soft keyboards, Return sends a lone '\n' via
@@ -263,7 +283,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
-    } on Exception catch (e) {
+    } on Object catch (e) {
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
