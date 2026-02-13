@@ -178,51 +178,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    void bindShellStreams() {
-      // Use streaming UTF-8 decoder that properly handles chunked data
-      _outputSubscription = _shell!.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .listen((data) => _terminal.write(data));
+    try {
+      _shell = await session.getShell(
+        pty: SSHPtyConfig(
+          width: _terminal.viewWidth,
+          height: _terminal.viewHeight,
+        ),
+      );
 
-      _stderrSubscription = _shell!.stderr
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .listen((data) => _terminal.write(data));
-
-      // Listen for shell completion (logout, exit, connection drop)
-      _doneSubscription = _shell!.done.asStream().listen((_) {
+      // Session-level stream piping keeps shell state alive across screens.
+      _outputSubscription = session.shellStdoutStream.listen(
+        (data) => _terminal.write(data),
+      );
+      _stderrSubscription = session.shellStderrStream.listen(
+        (data) => _terminal.write(data),
+      );
+      _doneSubscription = session.shellDoneStream.listen((_) {
         if (mounted) {
           _handleShellClosed();
         }
       });
-    }
-
-    try {
-      final pty = SSHPtyConfig(
-        width: _terminal.viewWidth,
-        height: _terminal.viewHeight,
-      );
-      try {
-        _shell = await session.getShell(pty: pty);
-        bindShellStreams();
-      } on Object catch (error) {
-        if (error is! StateError ||
-            !error.message.contains('already been listened to')) {
-          rethrow;
-        }
-        await _outputSubscription?.cancel();
-        await _stderrSubscription?.cancel();
-        await _doneSubscription?.cancel();
-        _outputSubscription = null;
-        _stderrSubscription = null;
-        _doneSubscription = null;
-
-        // Existing shell streams are single-subscription; open a fresh shell
-        // channel on the same SSH client so the screen can reattach.
-        _shell = await session.getShell(pty: pty, forceNew: true);
-        bindShellStreams();
-      }
 
       if (!mounted) return;
 

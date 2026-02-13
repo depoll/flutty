@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
@@ -396,6 +397,12 @@ class SshSession {
   final DateTime createdAt;
 
   SSHSession? _shell;
+  StreamController<String>? _shellStdoutController;
+  StreamController<String>? _shellStderrController;
+  StreamController<void>? _shellDoneController;
+  StreamSubscription<String>? _shellStdoutSubscription;
+  StreamSubscription<String>? _shellStderrSubscription;
+  StreamSubscription<void>? _shellDoneSubscription;
 
   /// Active port forward tunnels.
   final Map<int, _ActiveTunnel> _activeTunnels = {};
@@ -419,17 +426,71 @@ class SshSession {
     bool forceNew = false,
   }) async {
     if (forceNew) {
-      _shell?.close();
-      _shell = null;
+      await closeShell();
     }
     _shell ??= await client.shell(pty: pty ?? const SSHPtyConfig());
+    _ensureShellStreamPipes();
     return _shell!;
   }
 
+  /// Shell stdout as a broadcast stream for screen re-attachment.
+  Stream<String> get shellStdoutStream =>
+      _shellStdoutController?.stream ?? const Stream.empty();
+
+  /// Shell stderr as a broadcast stream for screen re-attachment.
+  Stream<String> get shellStderrStream =>
+      _shellStderrController?.stream ?? const Stream.empty();
+
+  /// Shell done event stream for screen re-attachment.
+  Stream<void> get shellDoneStream =>
+      _shellDoneController?.stream ?? const Stream.empty();
+
   /// Close only the interactive shell channel while keeping the SSH client.
-  void closeShell() {
+  Future<void> closeShell() async {
+    await _shellStdoutSubscription?.cancel();
+    await _shellStderrSubscription?.cancel();
+    await _shellDoneSubscription?.cancel();
+    _shellStdoutSubscription = null;
+    _shellStderrSubscription = null;
+    _shellDoneSubscription = null;
+    await _shellStdoutController?.close();
+    await _shellStderrController?.close();
+    await _shellDoneController?.close();
+    _shellStdoutController = null;
+    _shellStderrController = null;
+    _shellDoneController = null;
     _shell?.close();
     _shell = null;
+  }
+
+  void _ensureShellStreamPipes() {
+    if (_shell == null || _shellStdoutController != null) {
+      return;
+    }
+
+    final shell = _shell!;
+    _shellStdoutController = StreamController<String>.broadcast();
+    _shellStderrController = StreamController<String>.broadcast();
+    _shellDoneController = StreamController<void>.broadcast();
+
+    _shellStdoutSubscription = shell.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .listen(
+          _shellStdoutController!.add,
+          onError: _shellStdoutController!.addError,
+        );
+    _shellStderrSubscription = shell.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .listen(
+          _shellStderrController!.add,
+          onError: _shellStderrController!.addError,
+        );
+    _shellDoneSubscription = shell.done.asStream().listen(
+      (_) => _shellDoneController!.add(null),
+      onError: _shellDoneController!.addError,
+    );
   }
 
   /// Execute a command.
@@ -525,7 +586,7 @@ class SshSession {
   /// Close the session.
   Future<void> close() async {
     await stopAllForwards();
-    closeShell();
+    await closeShell();
     client.close();
   }
 }
