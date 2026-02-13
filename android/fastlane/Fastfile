@@ -54,6 +54,7 @@ platform :android do
       skip_upload_images: skip_meta,
       skip_upload_screenshots: true,
       skip_upload_changelogs: skip_meta,
+      changes_not_sent_for_review: true,
     )
   end
 
@@ -75,6 +76,7 @@ platform :android do
       skip_upload_images: skip_meta,
       skip_upload_screenshots: true,
       skip_upload_changelogs: skip_meta,
+      changes_not_sent_for_review: true,
     )
   end
 
