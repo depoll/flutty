@@ -8,30 +8,38 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
+    private var sshService: SshConnectionService? = null
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
+        sshService = SshConnectionService(this)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
                     "startService" -> {
                         val hostName = call.argument<String>("hostName") ?: "SSH server"
-                        val intent = Intent(this, SshConnectionService::class.java).apply {
-                            putExtra("hostName", hostName)
-                        }
-                        startForegroundService(intent)
+                        sshService?.start(hostName)
                         result.success(null)
                     }
                     "stopService" -> {
-                        val intent = Intent(this, SshConnectionService::class.java).apply {
-                            action = SshConnectionService.ACTION_STOP
-                        }
-                        startService(intent)
+                        sshService?.stop()
                         result.success(null)
                     }
                     else -> result.notImplemented()
                 }
             }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        if (intent.action == SshConnectionService.ACTION_STOP) {
+            sshService?.stop()
+        }
+    }
+
+    override fun onDestroy() {
+        sshService?.stop()
+        super.onDestroy()
     }
 }
