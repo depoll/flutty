@@ -63,7 +63,7 @@ class SshConnectionService(private val context: Context) {
             wakeLock = pm.newWakeLock(
                 PowerManager.PARTIAL_WAKE_LOCK,
                 "monkeyssh:ssh_background"
-            ).apply { acquire() }
+            ).apply { acquire(24 * 60 * 60 * 1000L) }
         }
     }
 
