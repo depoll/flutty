@@ -45,8 +45,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
-  StreamSubscription<dynamic>? _outputSubscription;
-  StreamSubscription<dynamic>? _stderrSubscription;
   StreamSubscription<void>? _doneSubscription;
   bool _isConnecting = true;
   String? _error;
@@ -118,11 +116,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) return;
 
     // Clean up any previous connection state before reconnecting.
-    await _outputSubscription?.cancel();
-    await _stderrSubscription?.cancel();
     await _doneSubscription?.cancel();
-    _outputSubscription = null;
-    _stderrSubscription = null;
     _doneSubscription = null;
     _shell = null;
 
@@ -179,6 +173,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     try {
+      // Reuse the session's persistent terminal if it exists (preserves
+      // scrollback and screen buffer across screen navigations).
+      final existingTerminal = session.terminal;
+      if (existingTerminal != null) {
+        _terminal.removeListener(_onTerminalStateChanged);
+        _terminal = existingTerminal;
+        _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminal.addListener(_onTerminalStateChanged);
+        _shell = await session.getShell();
+        _wireTerminalCallbacks(session);
+        setState(() => _isConnecting = false);
+        unawaited(
+          BackgroundSshService.start(
+            hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
+          ),
+        );
+        return;
+      }
+
+      // First time opening shell for this session — create terminal in session.
+      final sessionTerminal = session.getOrCreateTerminal();
+      _terminal.removeListener(_onTerminalStateChanged);
+      _terminal = sessionTerminal;
+      _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+      _terminal.addListener(_onTerminalStateChanged);
+
       _shell = await session.getShell(
         pty: SSHPtyConfig(
           width: _terminal.viewWidth,
@@ -186,65 +206,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
       );
 
-      // Session-level stream piping keeps shell state alive across screens.
-      _outputSubscription = session.shellStdoutStream.listen(
-        (data) => _terminal.write(data),
-      );
-      _stderrSubscription = session.shellStderrStream.listen(
-        (data) => _terminal.write(data),
-      );
-      _doneSubscription = session.shellDoneStream.listen((_) {
-        if (mounted) {
-          _handleShellClosed();
-        }
-      });
+      _wireTerminalCallbacks(session);
 
       if (!mounted) return;
-
-      _terminal.onOutput = (data) {
-        // On iOS/Android soft keyboards, Return sends a lone '\n' via
-        // textInput(), but SSH expects '\r'. The proper
-        // keyInput(TerminalKey.enter) path already produces '\r', so we
-        // only normalize single-'\n' to avoid rewriting legitimate LF
-        // characters in pasted or multi-char input.
-        var output = data == '\n' ? '\r' : data;
-
-        // Apply toolbar modifier state to system keyboard input.
-        // When the user toggles Ctrl on the toolbar then types on the system
-        // keyboard, we convert the character to the corresponding control code.
-        final toolbar = _toolbarKey.currentState;
-        if (toolbar != null && output.length == 1) {
-          if (toolbar.isCtrlActive) {
-            final codeUnit = output.codeUnitAt(0);
-            int? ctrlCode;
-            if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
-              // 'a'–'z' → 0x01–0x1A
-              ctrlCode = codeUnit - 0x60;
-            } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
-              // '@'–'_' (includes A–Z) → 0x00–0x1F
-              ctrlCode = codeUnit - 0x40;
-            } else if (codeUnit == 0x20) {
-              ctrlCode = 0x00; // Ctrl+Space → NUL
-            } else if (codeUnit == 0x3F) {
-              ctrlCode = 0x7F; // Ctrl+? → DEL
-            }
-            if (ctrlCode != null) {
-              output = String.fromCharCode(ctrlCode);
-            }
-            toolbar.consumeOneShot();
-          } else if (toolbar.isAltActive) {
-            // Alt sends ESC prefix
-            output = '\x1b$output';
-            toolbar.consumeOneShot();
-          }
-        }
-
-        _shell?.write(utf8.encode(output));
-      };
-
-      _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-        _shell?.resizeTerminal(width, height);
-      };
 
       setState(() => _isConnecting = false);
 
@@ -265,6 +229,61 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _error = 'Failed to start shell: $e';
       });
     }
+  }
+
+  /// Wire terminal onOutput/onResize callbacks for this screen instance.
+  void _wireTerminalCallbacks(SshSession session) {
+    // Listen for shell close events.
+    _doneSubscription = session.shellDoneStream.listen((_) {
+      if (mounted) {
+        _handleShellClosed();
+      }
+    });
+
+    _terminal.onOutput = (data) {
+      // On iOS/Android soft keyboards, Return sends a lone '\n' via
+      // textInput(), but SSH expects '\r'. The proper
+      // keyInput(TerminalKey.enter) path already produces '\r', so we
+      // only normalize single-'\n' to avoid rewriting legitimate LF
+      // characters in pasted or multi-char input.
+      var output = data == '\n' ? '\r' : data;
+
+      // Apply toolbar modifier state to system keyboard input.
+      // When the user toggles Ctrl on the toolbar then types on the system
+      // keyboard, we convert the character to the corresponding control code.
+      final toolbar = _toolbarKey.currentState;
+      if (toolbar != null && output.length == 1) {
+        if (toolbar.isCtrlActive) {
+          final codeUnit = output.codeUnitAt(0);
+          int? ctrlCode;
+          if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
+            // 'a'–'z' → 0x01–0x1A
+            ctrlCode = codeUnit - 0x60;
+          } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
+            // '@'–'_' (includes A–Z) → 0x00–0x1F
+            ctrlCode = codeUnit - 0x40;
+          } else if (codeUnit == 0x20) {
+            ctrlCode = 0x00; // Ctrl+Space → NUL
+          } else if (codeUnit == 0x3F) {
+            ctrlCode = 0x7F; // Ctrl+? → DEL
+          }
+          if (ctrlCode != null) {
+            output = String.fromCharCode(ctrlCode);
+          }
+          toolbar.consumeOneShot();
+        } else if (toolbar.isAltActive) {
+          // Alt sends ESC prefix
+          output = '\x1b$output';
+          toolbar.consumeOneShot();
+        }
+      }
+
+      _shell?.write(utf8.encode(output));
+    };
+
+    _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      _shell?.resizeTerminal(width, height);
+    };
   }
 
   /// Starts auto-start port forwards for this host.
@@ -343,11 +362,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _disconnect() async {
-    await _outputSubscription?.cancel();
-    await _stderrSubscription?.cancel();
     await _doneSubscription?.cancel();
-    _outputSubscription = null;
-    _stderrSubscription = null;
     _doneSubscription = null;
     if (_connectionId != null) {
       await _sessionsNotifier?.disconnect(_connectionId!);
@@ -362,8 +377,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _terminal.removeListener(_onTerminalStateChanged);
-    _outputSubscription?.cancel();
-    _stderrSubscription?.cancel();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     super.dispose();

@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:xterm/xterm.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -404,6 +405,18 @@ class SshSession {
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
 
+  /// Persistent terminal that survives screen rebuilds.
+  Terminal? _terminal;
+
+  /// The persistent terminal for this session. Created on first shell open.
+  Terminal? get terminal => _terminal;
+
+  /// Ensure a [Terminal] exists and is wired to the shell streams.
+  Terminal getOrCreateTerminal({int maxLines = 10000}) {
+    _terminal ??= Terminal(maxLines: maxLines);
+    return _terminal!;
+  }
+
   /// Active port forward tunnels.
   final Map<int, _ActiveTunnel> _activeTunnels = {};
 
@@ -461,6 +474,7 @@ class SshSession {
     _shellDoneController = null;
     _shell?.close();
     _shell = null;
+    _terminal = null;
   }
 
   void _ensureShellStreamPipes() {
@@ -469,6 +483,7 @@ class SshSession {
     }
 
     final shell = _shell!;
+    final terminal = getOrCreateTerminal();
     _shellStdoutController = StreamController<String>.broadcast();
     _shellStderrController = StreamController<String>.broadcast();
     _shellDoneController = StreamController<void>.broadcast();
@@ -476,21 +491,26 @@ class SshSession {
     _shellStdoutSubscription = shell.stdout
         .cast<List<int>>()
         .transform(utf8.decoder)
-        .listen(
-          _shellStdoutController!.add,
-          onError: _shellStdoutController!.addError,
-        );
+        .listen((data) {
+          terminal.write(data);
+          _shellStdoutController!.add(data);
+        }, onError: _shellStdoutController!.addError);
     _shellStderrSubscription = shell.stderr
         .cast<List<int>>()
         .transform(utf8.decoder)
-        .listen(
-          _shellStderrController!.add,
-          onError: _shellStderrController!.addError,
-        );
+        .listen((data) {
+          terminal.write(data);
+          _shellStderrController!.add(data);
+        }, onError: _shellStderrController!.addError);
     _shellDoneSubscription = shell.done.asStream().listen(
       (_) => _shellDoneController!.add(null),
       onError: _shellDoneController!.addError,
     );
+
+    // Wire terminal keyboard output → shell stdin (persistent).
+    terminal.onOutput = (data) {
+      shell.write(utf8.encode(data));
+    };
   }
 
   /// Execute a command.
