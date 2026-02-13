@@ -92,7 +92,6 @@ platform :ios do
       skip_waiting_for_build_processing: false,
       skip_submission: false,
       distribute_external: false,
-      groups: ['Me'],
       uses_non_exempt_encryption: false,
     )
 
