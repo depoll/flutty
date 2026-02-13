@@ -11,6 +11,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -71,6 +72,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           icon: Icon(Icons.dns_outlined),
           selectedIcon: Icon(Icons.dns_rounded),
           label: 'Hosts',
+        ),
+        NavigationDestination(
+          icon: Icon(Icons.link_outlined),
+          selectedIcon: Icon(Icons.link),
+          label: 'Connections',
         ),
         NavigationDestination(
           icon: Icon(Icons.key_outlined),
@@ -138,16 +144,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                   onTap: () => setState(() => _selectedIndex = 0),
                 ),
                 _NavItem(
-                  icon: Icons.key_rounded,
-                  label: 'Keys',
+                  icon: Icons.link,
+                  label: 'Connections',
                   selected: _selectedIndex == 1,
                   onTap: () => setState(() => _selectedIndex = 1),
                 ),
                 _NavItem(
-                  icon: Icons.code_rounded,
-                  label: 'Snippets',
+                  icon: Icons.key_rounded,
+                  label: 'Keys',
                   selected: _selectedIndex == 2,
                   onTap: () => setState(() => _selectedIndex = 2),
+                ),
+                _NavItem(
+                  icon: Icons.code_rounded,
+                  label: 'Snippets',
+                  selected: _selectedIndex == 3,
+                  onTap: () => setState(() => _selectedIndex = 3),
                 ),
 
                 const Spacer(),
@@ -176,8 +188,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       case 0:
         return const _HostsPanel();
       case 1:
-        return const _KeysPanel();
+        return const _ConnectionsPanel();
       case 2:
+        return const _KeysPanel();
+      case 3:
         return const _SnippetsPanel();
       default:
         return const _HostsPanel();
@@ -361,16 +375,27 @@ class _HostRow extends ConsumerWidget {
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
 
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionStates = ref.watch(activeSessionsProvider);
-    final isConnected =
-        connectionStates[host.id] == SshConnectionState.connected;
-    final isConnecting =
-        connectionStates[host.id] == SshConnectionState.connecting;
+    final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+    final hostConnectionStates = connectionIds
+        .map((connectionId) => connectionStates[connectionId])
+        .whereType<SshConnectionState>()
+        .toList(growable: false);
+    final isConnected = hostConnectionStates.any(
+      (state) => state == SshConnectionState.connected,
+    );
+    final isConnecting = hostConnectionStates.any(
+      (state) =>
+          state == SshConnectionState.connecting ||
+          state == SshConnectionState.authenticating,
+    );
+    final connectionCount = connectionIds.length;
 
     return Material(
       color: Colors.transparent,
       child: InkWell(
-        onTap: () => context.push('/terminal/${host.id}'),
+        onTap: () => unawaited(_openHostConnection(context, ref)),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
@@ -416,6 +441,26 @@ class _HostRow extends ConsumerWidget {
                             fontWeight: FontWeight.w500,
                           ),
                         ),
+                        if (connectionCount > 0) ...[
+                          const SizedBox(width: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 6,
+                              vertical: 1,
+                            ),
+                            decoration: BoxDecoration(
+                              color: colorScheme.primary.withAlpha(20),
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Text(
+                              '$connectionCount',
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: colorScheme.primary,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                          ),
+                        ],
                         if (host.isFavorite) ...[
                           const SizedBox(width: 6),
                           Icon(
@@ -457,6 +502,10 @@ class _HostRow extends ConsumerWidget {
 
               // Actions
               _SmallIconButton(
+                icon: Icons.add,
+                onTap: () => unawaited(_openNewConnection(context, ref)),
+              ),
+              _SmallIconButton(
                 icon: Icons.edit_outlined,
                 onTap: () => context.push('/hosts/edit/${host.id}'),
               ),
@@ -468,6 +517,98 @@ class _HostRow extends ConsumerWidget {
           ),
         ),
       ),
+    );
+  }
+
+  Future<void> _openHostConnection(BuildContext context, WidgetRef ref) async {
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+
+    if (connectionIds.isEmpty) {
+      await _openNewConnection(context, ref);
+      return;
+    }
+
+    if (connectionIds.length == 1) {
+      if (context.mounted) {
+        unawaited(
+          context.push(
+            '/terminal/${host.id}?connectionId=${connectionIds.first}',
+          ),
+        );
+      }
+      return;
+    }
+
+    final selection = await showModalBottomSheet<String>(
+      context: context,
+      builder: (context) {
+        final connectionStates = ref.read(activeSessionsProvider);
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              ListTile(
+                title: Text(host.label),
+                subtitle: Text('${connectionIds.length} active connections'),
+              ),
+              for (final connectionId in connectionIds.reversed)
+                _ConnectionSelectionTile(
+                  connectionId: connectionId,
+                  state:
+                      connectionStates[connectionId] ??
+                      SshConnectionState.disconnected,
+                  endpoint: '${host.username}@${host.hostname}:${host.port}',
+                  createdAt: sessionsNotifier
+                      .getSession(connectionId)
+                      ?.createdAt,
+                  onTap: () =>
+                      Navigator.pop(context, 'connection:$connectionId'),
+                ),
+              ListTile(
+                leading: const Icon(Icons.add),
+                title: const Text('New connection'),
+                onTap: () => Navigator.pop(context, 'new'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+
+    if (!context.mounted || selection == null) {
+      return;
+    }
+
+    if (selection == 'new') {
+      await _openNewConnection(context, ref);
+      return;
+    }
+
+    final selectedId = int.tryParse(selection.replaceFirst('connection:', ''));
+    if (selectedId != null) {
+      unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
+    }
+  }
+
+  Future<void> _openNewConnection(BuildContext context, WidgetRef ref) async {
+    final result = await ref
+        .read(activeSessionsProvider.notifier)
+        .connect(host.id, forceNew: true);
+
+    if (!context.mounted) {
+      return;
+    }
+
+    if (!result.success || result.connectionId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(result.error ?? 'Connection failed')),
+      );
+      return;
+    }
+
+    unawaited(
+      context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
     );
   }
 
@@ -527,6 +668,171 @@ class _HostRow extends ConsumerWidget {
     if ((confirmed ?? false) && context.mounted) {
       await ref.read(hostRepositoryProvider).delete(host.id);
     }
+  }
+}
+
+class _ConnectionSelectionTile extends StatelessWidget {
+  const _ConnectionSelectionTile({
+    required this.connectionId,
+    required this.state,
+    required this.endpoint,
+    required this.onTap,
+    this.createdAt,
+  });
+
+  final int connectionId;
+  final SshConnectionState state;
+  final String endpoint;
+  final DateTime? createdAt;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final subtitle = createdAt == null
+        ? endpoint
+        : '$endpoint\nOpened ${_formatTime(createdAt!)}';
+    return ListTile(
+      leading: const Icon(Icons.terminal),
+      title: Text('Connection #$connectionId'),
+      subtitle: Text(subtitle),
+      trailing: Text(
+        _stateLabel(state),
+        style: Theme.of(context).textTheme.labelMedium,
+      ),
+      onTap: onTap,
+    );
+  }
+
+  String _stateLabel(SshConnectionState state) => switch (state) {
+    SshConnectionState.connected => 'Connected',
+    SshConnectionState.connecting => 'Connecting',
+    SshConnectionState.authenticating => 'Auth',
+    SshConnectionState.reconnecting => 'Reconnecting',
+    SshConnectionState.error => 'Error',
+    SshConnectionState.disconnected => 'Disconnected',
+  };
+
+  String _formatTime(DateTime time) {
+    final hour = time.hour.toString().padLeft(2, '0');
+    final minute = time.minute.toString().padLeft(2, '0');
+    return '$hour:$minute';
+  }
+}
+
+class _ConnectionsPanel extends ConsumerWidget {
+  const _ConnectionsPanel();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final connectionStates = ref.watch(activeSessionsProvider);
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final connections = sessionsNotifier.getActiveConnections();
+    final hosts = hostsAsync.asData?.value ?? <Host>[];
+    final hostLookup = {for (final host in hosts) host.id: host};
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(20, 12, 12, 12),
+          decoration: BoxDecoration(
+            border: Border(
+              bottom: BorderSide(color: colorScheme.outline.withAlpha(60)),
+            ),
+          ),
+          child: Text(
+            'Connections',
+            style: theme.textTheme.titleMedium?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+        Expanded(
+          child: connections.isEmpty
+              ? _buildEmptyState(context)
+              : ListView.builder(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  itemCount: connections.length,
+                  itemBuilder: (context, index) {
+                    final connection = connections[index];
+                    final host = hostLookup[connection.hostId];
+                    final state =
+                        connectionStates[connection.connectionId] ??
+                        connection.state;
+                    final endpoint =
+                        '${connection.config.username}@'
+                        '${connection.config.hostname}:${connection.config.port}';
+
+                    return ListTile(
+                      leading: Icon(
+                        Icons.terminal,
+                        color: state == SshConnectionState.connected
+                            ? colorScheme.primary
+                            : colorScheme.onSurfaceVariant,
+                      ),
+                      title: Text(host?.label ?? 'Host ${connection.hostId}'),
+                      subtitle: Text(
+                        '$endpoint\nConnection #${connection.connectionId}',
+                      ),
+                      isThreeLine: true,
+                      trailing: IconButton(
+                        icon: const Icon(Icons.close),
+                        tooltip: 'Disconnect',
+                        onPressed: () async {
+                          await ref
+                              .read(activeSessionsProvider.notifier)
+                              .disconnect(connection.connectionId);
+                          if (ref.read(activeSessionsProvider).isEmpty) {
+                            unawaited(BackgroundSshService.stop());
+                          }
+                        },
+                      ),
+                      onTap: () => unawaited(
+                        context.push(
+                          '/terminal/${connection.hostId}'
+                          '?connectionId=${connection.connectionId}',
+                        ),
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildEmptyState(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Center(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.link_off,
+            size: 40,
+            color: colorScheme.onSurface.withAlpha(60),
+          ),
+          const SizedBox(height: 12),
+          Text(
+            'No active connections',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurface.withAlpha(150),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'Open a host to create one',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.onSurface.withAlpha(100),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

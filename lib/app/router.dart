@@ -69,10 +69,13 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: 'terminal',
         builder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
+          final connectionId = int.tryParse(
+            state.uri.queryParameters['connectionId'] ?? '',
+          );
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
-          return TerminalScreen(hostId: hostId);
+          return TerminalScreen(hostId: hostId, connectionId: connectionId);
         },
       ),
       GoRoute(

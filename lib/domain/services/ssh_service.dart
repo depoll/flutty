@@ -1,9 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:xterm/xterm.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -91,7 +93,13 @@ class SshConnectionConfig {
 /// Result of an SSH connection attempt.
 class SshConnectionResult {
   /// Creates a new [SshConnectionResult].
-  const SshConnectionResult({required this.success, this.error, this.client});
+  const SshConnectionResult({
+    required this.success,
+    this.error,
+    this.client,
+    this.connectionId,
+    this.reusedConnection = false,
+  });
 
   /// Whether connection was successful.
   final bool success;
@@ -101,6 +109,12 @@ class SshConnectionResult {
 
   /// The SSH client if connected.
   final SSHClient? client;
+
+  /// The active connection ID when a session is available.
+  final int? connectionId;
+
+  /// Whether an existing connection was reused.
+  final bool reusedConnection;
 }
 
 /// Service for managing SSH connections.
@@ -115,6 +129,7 @@ class SshService {
   final KeyRepository? keyRepository;
 
   final Map<int, SshSession> _sessions = {};
+  int _nextConnectionId = 1;
 
   /// Get all active sessions.
   Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
@@ -126,16 +141,6 @@ class SshService {
         success: false,
         error: 'Host repository not available',
       );
-    }
-
-    // Clean up any existing stale session for this host
-    final existingSession = _sessions.remove(hostId);
-    if (existingSession != null) {
-      try {
-        await existingSession.close();
-      } on Exception {
-        // Ignore errors when closing stale session
-      }
     }
 
     final host = await hostRepository!.getById(hostId);
@@ -171,7 +176,9 @@ class SshService {
     final result = await connect(config);
 
     if (result.success && result.client != null) {
-      _sessions[hostId] = SshSession(
+      final connectionId = _nextConnectionId++;
+      _sessions[connectionId] = SshSession(
+        connectionId: connectionId,
         hostId: hostId,
         client: result.client!,
         config: config,
@@ -179,6 +186,11 @@ class SshService {
 
       // Update last connected timestamp
       await hostRepository!.updateLastConnected(hostId);
+      return SshConnectionResult(
+        success: true,
+        client: result.client,
+        connectionId: connectionId,
+      );
     }
 
     return result;
@@ -249,9 +261,9 @@ class SshService {
     }
   }
 
-  /// Disconnect a session by host ID.
-  Future<void> disconnect(int hostId) async {
-    final session = _sessions.remove(hostId);
+  /// Disconnect a session by connection ID.
+  Future<void> disconnect(int connectionId) async {
+    final session = _sessions.remove(connectionId);
     await session?.close();
   }
 
@@ -263,11 +275,16 @@ class SshService {
     _sessions.clear();
   }
 
-  /// Get a session by host ID.
-  SshSession? getSession(int hostId) => _sessions[hostId];
+  /// Get a session by connection ID.
+  SshSession? getSession(int connectionId) => _sessions[connectionId];
 
-  /// Check if a host is connected.
-  bool isConnected(int hostId) => _sessions.containsKey(hostId);
+  /// Get all sessions for a host.
+  List<SshSession> getSessionsForHost(int hostId) => _sessions.values
+      .where((session) => session.hostId == hostId)
+      .toList(growable: false);
+
+  /// Check if a connection ID is active.
+  bool isConnected(int connectionId) => _sessions.containsKey(connectionId);
 
   List<SSHKeyPair>? _parsePrivateKey(String privateKey, String? passphrase) {
     try {
@@ -358,8 +375,15 @@ class _KeepAliveSSHSocket implements SSHSocket {
 /// An active SSH session.
 class SshSession {
   /// Creates a new [SshSession].
-  SshSession({required this.hostId, required this.client, required this.config})
-    : createdAt = DateTime.now();
+  SshSession({
+    required this.connectionId,
+    required this.hostId,
+    required this.client,
+    required this.config,
+  }) : createdAt = DateTime.now();
+
+  /// The connection ID for this active session.
+  final int connectionId;
 
   /// The host ID this session is connected to.
   final int hostId;
@@ -374,6 +398,24 @@ class SshSession {
   final DateTime createdAt;
 
   SSHSession? _shell;
+  StreamController<String>? _shellStdoutController;
+  StreamController<String>? _shellStderrController;
+  StreamController<void>? _shellDoneController;
+  StreamSubscription<String>? _shellStdoutSubscription;
+  StreamSubscription<String>? _shellStderrSubscription;
+  StreamSubscription<void>? _shellDoneSubscription;
+
+  /// Persistent terminal that survives screen rebuilds.
+  Terminal? _terminal;
+
+  /// The persistent terminal for this session. Created on first shell open.
+  Terminal? get terminal => _terminal;
+
+  /// Ensure a [Terminal] exists and is wired to the shell streams.
+  Terminal getOrCreateTerminal({int maxLines = 10000}) {
+    _terminal ??= Terminal(maxLines: maxLines);
+    return _terminal!;
+  }
 
   /// Active port forward tunnels.
   final Map<int, _ActiveTunnel> _activeTunnels = {};
@@ -392,9 +434,83 @@ class SshSession {
       .toList();
 
   /// Get or create a shell session.
-  Future<SSHSession> getShell({SSHPtyConfig? pty}) async {
+  Future<SSHSession> getShell({
+    SSHPtyConfig? pty,
+    bool forceNew = false,
+  }) async {
+    if (forceNew) {
+      await closeShell();
+    }
     _shell ??= await client.shell(pty: pty ?? const SSHPtyConfig());
+    _ensureShellStreamPipes();
     return _shell!;
+  }
+
+  /// Shell stdout as a broadcast stream for screen re-attachment.
+  Stream<String> get shellStdoutStream =>
+      _shellStdoutController?.stream ?? const Stream.empty();
+
+  /// Shell stderr as a broadcast stream for screen re-attachment.
+  Stream<String> get shellStderrStream =>
+      _shellStderrController?.stream ?? const Stream.empty();
+
+  /// Shell done event stream for screen re-attachment.
+  Stream<void> get shellDoneStream =>
+      _shellDoneController?.stream ?? const Stream.empty();
+
+  /// Close only the interactive shell channel while keeping the SSH client.
+  Future<void> closeShell() async {
+    await _shellStdoutSubscription?.cancel();
+    await _shellStderrSubscription?.cancel();
+    await _shellDoneSubscription?.cancel();
+    _shellStdoutSubscription = null;
+    _shellStderrSubscription = null;
+    _shellDoneSubscription = null;
+    await _shellStdoutController?.close();
+    await _shellStderrController?.close();
+    await _shellDoneController?.close();
+    _shellStdoutController = null;
+    _shellStderrController = null;
+    _shellDoneController = null;
+    _shell?.close();
+    _shell = null;
+    _terminal = null;
+  }
+
+  void _ensureShellStreamPipes() {
+    if (_shell == null || _shellStdoutController != null) {
+      return;
+    }
+
+    final shell = _shell!;
+    final terminal = getOrCreateTerminal();
+    _shellStdoutController = StreamController<String>.broadcast();
+    _shellStderrController = StreamController<String>.broadcast();
+    _shellDoneController = StreamController<void>.broadcast();
+
+    _shellStdoutSubscription = shell.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .listen((data) {
+          terminal.write(data);
+          _shellStdoutController!.add(data);
+        }, onError: _shellStdoutController!.addError);
+    _shellStderrSubscription = shell.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .listen((data) {
+          terminal.write(data);
+          _shellStderrController!.add(data);
+        }, onError: _shellStderrController!.addError);
+    _shellDoneSubscription = shell.done.asStream().listen(
+      (_) => _shellDoneController!.add(null),
+      onError: _shellDoneController!.addError,
+    );
+
+    // Wire terminal keyboard output → shell stdin (persistent).
+    terminal.onOutput = (data) {
+      shell.write(utf8.encode(data));
+    };
   }
 
   /// Execute a command.
@@ -490,9 +606,36 @@ class SshSession {
   /// Close the session.
   Future<void> close() async {
     await stopAllForwards();
-    _shell?.close();
+    await closeShell();
     client.close();
   }
+}
+
+/// Lightweight active connection metadata for UI.
+class ActiveConnection {
+  /// Creates a new [ActiveConnection].
+  const ActiveConnection({
+    required this.connectionId,
+    required this.hostId,
+    required this.state,
+    required this.createdAt,
+    required this.config,
+  });
+
+  /// Connection identifier.
+  final int connectionId;
+
+  /// Host identifier.
+  final int hostId;
+
+  /// Current connection state.
+  final SshConnectionState state;
+
+  /// When this connection was opened.
+  final DateTime createdAt;
+
+  /// SSH endpoint details.
+  final SshConnectionConfig config;
 }
 
 /// Info about an active tunnel for UI display.
@@ -558,38 +701,121 @@ final activeSessionsProvider =
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   late final SshService _sshService;
+  final Map<int, int> _connectionHostIds = {};
 
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
+    _connectionHostIds.clear();
     return {};
   }
 
   /// Connect to a host.
-  Future<SshConnectionResult> connect(int hostId) async {
-    state = {...state, hostId: SshConnectionState.connecting};
+  Future<SshConnectionResult> connect(
+    int hostId, {
+    bool forceNew = false,
+  }) async {
+    if (!forceNew) {
+      final existingConnectionId = getPreferredConnectionForHost(hostId);
+      if (existingConnectionId != null) {
+        return SshConnectionResult(
+          success: true,
+          connectionId: existingConnectionId,
+          reusedConnection: true,
+        );
+      }
+    }
 
     final result = await _sshService.connectToHost(hostId);
 
-    if (result.success) {
-      state = {...state, hostId: SshConnectionState.connected};
-    } else {
-      state = {...state, hostId: SshConnectionState.error};
+    if (result.success && result.connectionId != null) {
+      final connectionId = result.connectionId!;
+      _connectionHostIds[connectionId] = hostId;
+      state = {...state, connectionId: SshConnectionState.connected};
     }
 
     return result;
   }
 
-  /// Disconnect from a host.
-  Future<void> disconnect(int hostId) async {
-    await _sshService.disconnect(hostId);
-    state = {...state, hostId: SshConnectionState.disconnected};
+  /// Disconnect from a connection.
+  Future<void> disconnect(int connectionId) async {
+    await _sshService.disconnect(connectionId);
+    _connectionHostIds.remove(connectionId);
+    final next = {...state}..remove(connectionId);
+    state = next;
+  }
+
+  /// Disconnect all active sessions.
+  Future<void> disconnectAll() async {
+    await _sshService.disconnectAll();
+    _connectionHostIds.clear();
+    state = {};
   }
 
   /// Get the state of a connection.
-  SshConnectionState getState(int hostId) =>
-      state[hostId] ?? SshConnectionState.disconnected;
+  SshConnectionState getState(int connectionId) =>
+      state[connectionId] ?? SshConnectionState.disconnected;
 
   /// Get a session.
-  SshSession? getSession(int hostId) => _sshService.getSession(hostId);
+  SshSession? getSession(int connectionId) =>
+      _sshService.getSession(connectionId);
+
+  /// Get all active connection IDs for a host.
+  List<int> getConnectionsForHost(int hostId) {
+    final matches = <SshSession>[];
+    for (final session in _sshService.sessions.values) {
+      if (session.hostId == hostId) {
+        matches.add(session);
+      }
+    }
+    matches.sort((a, b) => a.createdAt.compareTo(b.createdAt));
+    return matches
+        .map((session) => session.connectionId)
+        .toList(growable: false);
+  }
+
+  /// Get a preferred existing connection ID for a host.
+  int? getPreferredConnectionForHost(int hostId) {
+    final activeConnections = <SshSession>[];
+    for (final session in _sshService.sessions.values) {
+      final connectionId = session.connectionId;
+      final sessionHostId = _connectionHostIds[connectionId];
+      final connectionState = state[connectionId];
+      if (sessionHostId == hostId &&
+          connectionState != null &&
+          connectionState != SshConnectionState.error &&
+          connectionState != SshConnectionState.disconnected) {
+        activeConnections.add(session);
+      }
+    }
+    if (activeConnections.isEmpty) {
+      return null;
+    }
+    activeConnections.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return activeConnections.first.connectionId;
+  }
+
+  /// Get all active connection metadata for UI rendering.
+  List<ActiveConnection> getActiveConnections() {
+    final connections = <ActiveConnection>[];
+    for (final entry in state.entries) {
+      final connectionId = entry.key;
+      final session = _sshService.getSession(connectionId);
+      final hostId = _connectionHostIds[connectionId];
+      if (session == null || hostId == null) {
+        continue;
+      }
+      connections.add(
+        ActiveConnection(
+          connectionId: connectionId,
+          hostId: hostId,
+          state: entry.value,
+          createdAt: session.createdAt,
+          config: session.config,
+        ),
+      );
+    }
+    connections.sort((a, b) => b.createdAt.compareTo(a.createdAt));
+    return connections;
+  }
 }
