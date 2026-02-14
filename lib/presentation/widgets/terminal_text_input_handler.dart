@@ -86,11 +86,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   @override
-  Widget build(BuildContext context) => Focus(
-    focusNode: widget.focusNode,
-    autofocus: true,
-    onKeyEvent: _onKeyEvent,
-    child: widget.child,
+  Widget build(BuildContext context) => Listener(
+    behavior: HitTestBehavior.translucent,
+    onPointerDown: (_) {
+      if (!widget.readOnly) {
+        requestKeyboard();
+      }
+    },
+    child: Focus(
+      focusNode: widget.focusNode,
+      autofocus: true,
+      onKeyEvent: _onKeyEvent,
+      child: widget.child,
+    ),
   );
 
   // -- Hardware key event handling --
