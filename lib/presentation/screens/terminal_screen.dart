@@ -49,7 +49,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboard = true;
-  bool _systemKeyboardVisible = true;
   bool _isUsingAltBuffer = false;
   int? _connectionId;
 
@@ -413,6 +412,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
+    final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
@@ -432,17 +432,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (isMobile)
             IconButton(
               icon: Icon(
-                _systemKeyboardVisible
+                systemKeyboardVisible
                     ? Icons.keyboard_hide
                     : Icons.keyboard_alt_outlined,
               ),
-              onPressed: _toggleSystemKeyboard,
-              tooltip: _systemKeyboardVisible
+              onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
+              tooltip: systemKeyboardVisible
                   ? 'Hide system keyboard'
                   : 'Show system keyboard',
             ),
           IconButton(
-            icon: Icon(_showKeyboard ? Icons.space_bar : Icons.more_horiz),
+            icon: Icon(
+              _showKeyboard ? Icons.space_bar : Icons.keyboard_outlined,
+            ),
             onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
             tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
           ),
@@ -492,14 +494,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.
-  void _toggleSystemKeyboard() {
-    setState(() {
-      _systemKeyboardVisible = !_systemKeyboardVisible;
-    });
-    if (_systemKeyboardVisible) {
-      _terminalFocusNode.requestFocus();
-    } else {
+  void _toggleSystemKeyboard(bool isVisible) {
+    if (isVisible) {
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
       _terminalFocusNode.unfocus();
+    } else {
+      _terminalFocusNode.requestFocus();
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
     }
   }
 
