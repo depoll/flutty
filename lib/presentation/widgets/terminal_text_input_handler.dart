@@ -164,14 +164,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.show();
     } else {
       final config = TextInputConfiguration(
-        // Keep these explicit because IME behavior is central to this widget.
+        // Keep these explicit because terminal IME behavior is central here.
         // ignore: avoid_redundant_argument_values
-        autocorrect: true,
+        autocorrect: false,
         inputAction: TextInputAction.newline,
         keyboardAppearance: widget.keyboardAppearance,
         // Enable suggestions so the IME adds spaces between swiped words.
         // ignore: avoid_redundant_argument_values
         enableSuggestions: true,
+        smartDashesType: SmartDashesType.disabled,
+        smartQuotesType: SmartQuotesType.disabled,
         enableIMEPersonalizedLearning: false,
       );
 
