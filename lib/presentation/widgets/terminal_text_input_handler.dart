@@ -56,7 +56,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     with TextInputClient {
   TextInputConnection? _connection;
   String _lastSentText = '';
-  bool _newlineHandledByTextUpdate = false;
+  int _pendingEnterActionSuppressions = 0;
 
   @override
   void initState() {
@@ -181,6 +181,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection = TextInput.attach(this, config);
       _connection!.show();
       _lastSentText = '';
+      _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
       _connection!.setEditingState(_initEditingState);
     }
@@ -192,7 +193,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection = null;
     }
     _lastSentText = '';
-    _newlineHandledByTextUpdate = false;
+    _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }
 
@@ -224,7 +225,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return text;
   }
 
-  bool _sendInputDelta(String currentText) {
+  int _sendInputDelta(String currentText) {
     final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
     final deletedCount = _lastSentText.length - commonPrefix;
 
@@ -238,7 +239,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     _lastSentText = currentText;
-    return appendedText.contains('\n');
+    return '\n'.allMatches(appendedText).length;
   }
 
   // -- TextInputClient implementation --
@@ -263,9 +264,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_currentEditingState.text.length < _initEditingState.text.length) {
       widget.terminal.keyInput(TerminalKey.backspace);
       _lastSentText = '';
-      _newlineHandledByTextUpdate = false;
     } else {
-      _newlineHandledByTextUpdate = _sendInputDelta(
+      _pendingEnterActionSuppressions += _sendInputDelta(
         _extractInputText(_currentEditingState.text),
       );
     }
@@ -275,16 +275,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void performAction(TextInputAction action) {
     if (widget.readOnly) return;
 
-    if (action == TextInputAction.newline) {
-      if (_newlineHandledByTextUpdate) {
-        _newlineHandledByTextUpdate = false;
+    if (action == TextInputAction.newline || action == TextInputAction.done) {
+      if (_pendingEnterActionSuppressions > 0) {
+        _pendingEnterActionSuppressions--;
         return;
       }
-      widget.terminal.keyInput(TerminalKey.enter);
-      return;
-    }
-
-    if (action == TextInputAction.done) {
       widget.terminal.keyInput(TerminalKey.enter);
     }
   }
