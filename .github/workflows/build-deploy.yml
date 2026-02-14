@@ -15,6 +15,11 @@ on:
         required: true
         type: string
         description: 'Flutter flavor (private or production)'
+      source-ref:
+        required: false
+        type: string
+        default: ''
+        description: 'Git ref to build (branch, tag, or refs/pull/*/head)'
       deploy-ios-to:
         required: false
         type: string
@@ -43,6 +48,8 @@ jobs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref || github.ref }}
 
       - uses: actions/setup-java@v5
         with:
@@ -140,6 +147,8 @@ jobs:
       APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref || github.ref }}
 
       - uses: subosito/flutter-action@v2
         with:

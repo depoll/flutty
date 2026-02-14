@@ -1,0 +1,38 @@
+{
+  "fill": {
+    "solid": "srgb:0.07843,0.45882,0.42353,1.00000"
+  },
+  "groups": [
+    {
+      "layers": [
+        {
+          "image-name": "silhouette.svg",
+          "name": "silhouette"
+        }
+      ],
+      "shadow": {
+        "kind": "neutral",
+        "opacity": 0.4
+      }
+    },
+    {
+      "layers": [
+        {
+          "image-name": "eyes.svg",
+          "name": "eyes"
+        }
+      ]
+    },
+    {
+      "layers": [
+        {
+          "image-name": "beta-badge.svg",
+          "name": "beta-badge"
+        }
+      ]
+    }
+  ],
+  "supported-platforms": {
+    "squares": "shared"
+  }
+}

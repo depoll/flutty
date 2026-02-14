@@ -5,7 +5,8 @@ flutter_launcher_icons:
 
   # Android adaptive icon settings
   adaptive_icon_background: "#14756c"
-  adaptive_icon_foreground: "assets/icons/monkeyssh_icon.png"
+  adaptive_icon_foreground: "assets/icons/monkeyssh_icon_foreground.png"
+  adaptive_icon_monochrome: "assets/icons/monkeyssh_icon_monochrome.png"
 
   # iOS settings
   remove_alpha_ios: true

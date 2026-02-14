@@ -6,7 +6,7 @@ on:
       pr-number:
         description: 'PR number to deploy'
         required: true
-        type: number
+        type: string
 
 concurrency:
   group: deploy-testflight-pr-${{ inputs.pr-number }}
@@ -41,6 +41,7 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       flavor: private
+      source-ref: refs/pull/${{ inputs.pr-number }}/head
       deploy-ios-to: testflight
       deploy-android-to: none
     secrets: inherit
