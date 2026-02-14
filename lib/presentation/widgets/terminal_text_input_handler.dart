@@ -264,6 +264,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_currentEditingState.text.length < _initEditingState.text.length) {
       widget.terminal.keyInput(TerminalKey.backspace);
       _lastSentText = '';
+      _pendingEnterActionSuppressions = 0;
     } else {
       _pendingEnterActionSuppressions += _sendInputDelta(
         _extractInputText(_currentEditingState.text),
