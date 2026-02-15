@@ -1,78 +1,19 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
-  <defs>
-    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" style="stop-color:#1a9988"/>
-      <stop offset="100%" style="stop-color:#0d7377"/>
-    </linearGradient>
-    <linearGradient id="faceGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#8B5A2B"/>
-      <stop offset="100%" style="stop-color:#6B4423"/>
-    </linearGradient>
-    <linearGradient id="muzzleGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#D4A574"/>
-      <stop offset="100%" style="stop-color:#C4956A"/>
-    </linearGradient>
-    <linearGradient id="terminalGrad" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" style="stop-color:#2d2d2d"/>
-      <stop offset="100%" style="stop-color:#1a1a1a"/>
-    </linearGradient>
-  </defs>
-  
-  <!-- Background -->
-  <rect width="1024" height="1024" rx="180" fill="url(#bgGrad)"/>
-  
-  <!-- Terminal window behind monkey -->
-  <rect x="200" y="580" width="624" height="340" rx="20" fill="url(#terminalGrad)" opacity="0.9"/>
-  <rect x="200" y="580" width="624" height="40" rx="20" fill="#3d3d3d"/>
-  <circle cx="232" cy="600" r="8" fill="#ff5f56"/>
-  <circle cx="260" cy="600" r="8" fill="#ffbd2e"/>
-  <circle cx="288" cy="600" r="8" fill="#27ca40"/>
-  
-  <!-- Terminal text -->
-  <text x="230" y="670" font-family="Monaco, monospace" font-size="28" fill="#27ca40">$ ssh user@server</text>
-  <text x="230" y="710" font-family="Monaco, monospace" font-size="28" fill="#27ca40">Connected!</text>
-  <text x="230" y="750" font-family="Monaco, monospace" font-size="28" fill="#27ca40">$_</text>
-  
-  <!-- Monkey ears -->
-  <ellipse cx="280" cy="320" rx="80" ry="85" fill="url(#faceGrad)"/>
-  <ellipse cx="280" cy="320" rx="50" ry="55" fill="url(#muzzleGrad)"/>
-  <ellipse cx="744" cy="320" rx="80" ry="85" fill="url(#faceGrad)"/>
-  <ellipse cx="744" cy="320" rx="50" ry="55" fill="url(#muzzleGrad)"/>
-  
-  <!-- Monkey head -->
-  <ellipse cx="512" cy="380" rx="240" ry="220" fill="url(#faceGrad)"/>
-  
-  <!-- Monkey face (muzzle area) -->
-  <ellipse cx="512" cy="440" rx="150" ry="130" fill="url(#muzzleGrad)"/>
-  
-  <!-- Eyes background -->
-  <ellipse cx="420" cy="340" rx="55" ry="50" fill="#fff"/>
-  <ellipse cx="604" cy="340" rx="55" ry="50" fill="#fff"/>
-  
-  <!-- Pupils -->
-  <ellipse cx="430" cy="345" rx="28" ry="32" fill="#2a2a2a"/>
-  <ellipse cx="614" cy="345" rx="28" ry="32" fill="#2a2a2a"/>
-  
-  <!-- Eye highlights -->
-  <ellipse cx="440" cy="335" rx="10" ry="12" fill="#fff"/>
-  <ellipse cx="624" cy="335" rx="10" ry="12" fill="#fff"/>
-  
-  <!-- Eyebrows (tech/focused look) -->
-  <path d="M365 290 Q420 270 475 295" stroke="#5a3d1a" stroke-width="12" fill="none" stroke-linecap="round"/>
-  <path d="M549 295 Q604 270 659 290" stroke="#5a3d1a" stroke-width="12" fill="none" stroke-linecap="round"/>
-  
-  <!-- Nose -->
-  <ellipse cx="512" cy="420" rx="25" ry="18" fill="#5a3d1a"/>
-  <ellipse cx="498" cy="420" rx="10" ry="8" fill="#3d2814"/>
-  <ellipse cx="526" cy="420" rx="10" ry="8" fill="#3d2814"/>
-  
-  <!-- Mouth (slight smile) -->
-  <path d="M450 490 Q512 530 574 490" stroke="#5a3d1a" stroke-width="8" fill="none" stroke-linecap="round"/>
-  
-  <!-- Headphones/headset for tech look -->
-  <path d="M260 350 Q240 200 512 180 Q784 200 764 350" stroke="#444" stroke-width="24" fill="none" stroke-linecap="round"/>
-  <ellipse cx="272" cy="370" rx="35" ry="50" fill="#333"/>
-  <ellipse cx="272" cy="370" rx="25" ry="40" fill="#555"/>
-  <ellipse cx="752" cy="370" rx="35" ry="50" fill="#333"/>
-  <ellipse cx="752" cy="370" rx="25" ry="40" fill="#555"/>
+  <rect width="1024" height="1024" rx="180" fill="#14756c"/>
+  <!-- Monkey head silhouette -->
+  <g fill="#121417">
+    <!-- Ears: partially behind head, upper-sides -->
+    <circle cx="230" cy="406" r="115"/>
+    <circle cx="794" cy="406" r="115"/>
+    <!-- Head -->
+    <ellipse cx="512" cy="546" rx="300" ry="290"/>
+    <!-- Hair tufts swishing to the right -->
+    <ellipse cx="470" cy="244" rx="16" ry="48" transform="rotate(25 470 244)"/>
+    <ellipse cx="520" cy="234" rx="16" ry="52" transform="rotate(30 520 234)"/>
+    <ellipse cx="572" cy="231" rx="15" ry="48" transform="rotate(38 572 231)"/>
+  </g>
+  <!-- Left eye: > chevron -->
+  <polyline points="330,406 430,476 330,546" fill="none" stroke="#7CFF8A" stroke-width="34" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Right eye: _ underscore (sits low like a real underscore) -->
+  <line x1="560" y1="534" x2="720" y2="534" stroke="#7CFF8A" stroke-width="38" stroke-linecap="round"/>
 </svg>

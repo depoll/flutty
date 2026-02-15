@@ -3,5 +3,6 @@ flutter_launcher_icons:
   ios: true
   image_path: "assets/icons/monkeyssh_icon.png"
   adaptive_icon_background: "#14756c"
-  adaptive_icon_foreground: "assets/icons/monkeyssh_icon.png"
+  adaptive_icon_foreground: "assets/icons/monkeyssh_icon_foreground.png"
+  adaptive_icon_monochrome: "assets/icons/monkeyssh_icon_monochrome.png"
   remove_alpha_ios: true

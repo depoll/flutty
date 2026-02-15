@@ -15,6 +15,11 @@ on:
         required: true
         type: string
         description: 'Flutter flavor (private or production)'
+      source-ref:
+        required: false
+        type: string
+        default: ''
+        description: 'Git ref to build (branch, tag, or refs/pull/*/head)'
       deploy-ios-to:
         required: false
         type: string
@@ -34,6 +39,9 @@ on:
       apk-artifact-id:
         description: 'Artifact ID of the uploaded APK'
         value: ${{ jobs.build-android.outputs.apk-artifact-id }}
+      ios-source-sha:
+        description: 'Git SHA used for iOS build checkout'
+        value: ${{ jobs.build-ios.outputs.source-sha }}
 
 jobs:
   build-android:
@@ -43,6 +51,8 @@ jobs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref || github.ref }}
 
       - uses: actions/setup-java@v5
         with:
@@ -113,6 +123,12 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
+      - name: Refresh Play Store icon metadata
+        if: inputs.deploy-android-to != 'none' && inputs.sync-metadata
+        run: |
+          python -m pip install --quiet Pillow
+          python scripts/sync_play_store_icons.py
+
       - name: Run Fastlane
         if: inputs.deploy-android-to != 'none'
         env:
@@ -131,6 +147,8 @@ jobs:
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
     runs-on: macos-26
+    outputs:
+      source-sha: ${{ steps.source-sha.outputs.value }}
     env:
       MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
       MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -140,6 +158,12 @@ jobs:
       APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
     steps:
       - uses: actions/checkout@v6
+        with:
+          ref: ${{ inputs.source-ref || github.ref }}
+
+      - name: Capture source SHA
+        id: source-sha
+        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: subosito/flutter-action@v2
         with:
