@@ -177,6 +177,7 @@ android/fastlane/
 ```
 
 Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
+Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*.png` during deploy/metadata-sync workflows, so marketplace icons stay aligned with the app icon assets.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.
 
