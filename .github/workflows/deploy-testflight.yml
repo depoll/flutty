@@ -19,10 +19,15 @@ jobs:
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
+      pr-head-sha: ${{ steps.pr-head.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: refs/pull/${{ inputs.pr-number }}/head
+
+      - name: Resolve PR head SHA
+        id: pr-head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - name: Compute version
         id: version
@@ -45,3 +50,28 @@ jobs:
       deploy-ios-to: testflight
       deploy-android-to: none
     secrets: inherit
+
+  verify-pr-source:
+    name: Verify PR source ref
+    needs: [compute-version, deploy]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ensure deployed iOS build used PR head
+        env:
+          EXPECTED_SHA: ${{ needs.compute-version.outputs.pr-head-sha }}
+          ACTUAL_SHA: ${{ needs.deploy.outputs.ios-source-sha }}
+        run: |
+          if [ -z "$ACTUAL_SHA" ]; then
+            echo "Missing iOS source SHA output from build-deploy workflow."
+            echo "Use the workflow definition from a ref that includes source-ref + ios-source-sha support."
+            exit 1
+          fi
+
+          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
+            echo "Expected PR head SHA: $EXPECTED_SHA"
+            echo "Actual deployed SHA:  $ACTUAL_SHA"
+            echo "TestFlight deploy did not build from refs/pull/${{ inputs.pr-number }}/head."
+            exit 1
+          fi
+
+          echo "Verified deploy source SHA matches PR head: $ACTUAL_SHA"
