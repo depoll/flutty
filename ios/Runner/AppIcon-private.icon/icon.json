@@ -1,38 +1,78 @@
 {
-  "fill": {
-    "solid": "srgb:0.07843,0.45882,0.42353,1.00000"
+  "fill" : {
+    "solid" : "srgb:0.07843,0.45882,0.42353,1.00000"
   },
-  "groups": [
+  "groups" : [
     {
-      "layers": [
+      "layers" : [
         {
-          "image-name": "silhouette.svg",
-          "name": "silhouette"
+          "image-name" : "silhouette.svg",
+          "name" : "silhouette"
         }
       ],
-      "shadow": {
-        "kind": "neutral",
-        "opacity": 0.4
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.4
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
       }
     },
     {
-      "layers": [
+      "layers" : [
         {
-          "image-name": "eyes.svg",
-          "name": "eyes"
+          "blend-mode-specializations" : [
+            {
+              "value" : "normal"
+            },
+            {
+              "appearance" : "light",
+              "value" : "hard-light"
+            }
+          ],
+          "fill" : "automatic",
+          "glass-specializations" : [
+            {
+              "value" : true
+            },
+            {
+              "appearance" : "light",
+              "value" : true
+            }
+          ],
+          "hidden" : false,
+          "image-name" : "eyes.svg",
+          "name" : "eyes"
         }
-      ]
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0
+      },
+      "translucency" : {
+        "enabled" : false,
+        "value" : 0
+      }
     },
     {
-      "layers": [
+      "layers" : [
         {
-          "image-name": "beta-badge.svg",
-          "name": "beta-badge"
+          "image-name" : "beta-badge.svg",
+          "name" : "beta-badge"
         }
-      ]
+      ],
+      "shadow" : {
+        "kind" : "neutral",
+        "opacity" : 0.5
+      },
+      "translucency" : {
+        "enabled" : true,
+        "value" : 0.5
+      }
     }
   ],
-  "supported-platforms": {
-    "squares": "shared"
+  "supported-platforms" : {
+    "squares" : "shared"
   }
 }

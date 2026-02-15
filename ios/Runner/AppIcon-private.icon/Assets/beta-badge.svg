@@ -1,4 +1,4 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
   <circle cx="833" cy="833" r="122" fill="#0f1114" stroke="#e8edf2" stroke-width="12"/>
-  <text x="833" y="833" text-anchor="middle" dominant-baseline="central" font-family="Menlo, Monaco, monospace" font-size="220" fill="#e8edf2">β</text>
+  <text x="833" y="872" text-anchor="middle" dominant-baseline="central" font-family="Menlo, Monaco, monospace" font-size="146" font-weight="700" fill="#e8edf2">β</text>
 </svg>
