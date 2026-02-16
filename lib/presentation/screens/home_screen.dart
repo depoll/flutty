@@ -28,9 +28,11 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
-  bool _checkedIncomingTransfer = false;
+  StreamSubscription<String>? _incomingTransferSubscription;
+  bool _isHandlingIncomingTransfer = false;
 
   // Breakpoint for switching between mobile and desktop layout
   static const double _mobileBreakpoint = 600;
@@ -38,14 +40,36 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   @override
   void initState() {
     super.initState();
-    Future<void>.microtask(_checkIncomingTransferPayload);
+    WidgetsBinding.instance.addObserver(this);
+    final transferIntentService = ref.read(transferIntentServiceProvider);
+    _incomingTransferSubscription = transferIntentService.incomingPayloads
+        .listen((payload) {
+          if (payload.isNotEmpty && mounted) {
+            unawaited(_handleIncomingTransferPayload(payload));
+          }
+        });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(_checkIncomingTransferPayload());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _incomingTransferSubscription?.cancel();
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_checkIncomingTransferPayload());
+    }
   }
 
   Future<void> _checkIncomingTransferPayload() async {
-    if (_checkedIncomingTransfer) {
-      return;
-    }
-    _checkedIncomingTransfer = true;
     final payload = await ref
         .read(transferIntentServiceProvider)
         .consumeIncomingTransferPayload();
@@ -56,11 +80,17 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
   }
 
   Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
+    if (_isHandlingIncomingTransfer) {
+      return;
+    }
+    _isHandlingIncomingTransfer = true;
+
     final transferPassphrase = await showTransferPassphraseDialog(
       context: context,
       title: 'Incoming transfer passphrase',
     );
     if (!mounted || transferPassphrase == null) {
+      _isHandlingIncomingTransfer = false;
       return;
     }
 
@@ -74,6 +104,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       switch (payload.type) {
         case TransferPayloadType.host:
           final host = await transferService.importHostPayload(payload);
+          ref.invalidate(_allHostsStreamProvider);
           if (!mounted) {
             return;
           }
@@ -83,6 +114,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           break;
         case TransferPayloadType.key:
           final key = await transferService.importKeyPayload(payload);
+          ref.invalidate(_allKeysStreamProvider);
           if (!mounted) {
             return;
           }
@@ -95,7 +127,12 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           if (!mounted) {
             return;
           }
-          final mode = await _showMigrationModeDialog(preview);
+          final mode = await showMigrationImportModeDialog(
+            context: context,
+            preview: preview,
+            title: 'Incoming migration package',
+            message: 'Choose how to apply the incoming data.',
+          );
           if (mode == null || !mounted) {
             return;
           }
@@ -103,12 +140,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
             payload: payload,
             mode: mode,
           );
-          ref.invalidate(themeModeNotifierProvider);
-          ref.invalidate(fontSizeNotifierProvider);
-          ref.invalidate(fontFamilyNotifierProvider);
-          ref.invalidate(cursorStyleNotifierProvider);
-          ref.invalidate(bellSoundNotifierProvider);
-          ref.invalidate(terminalThemeSettingsProvider);
+          ref
+            ..invalidate(themeModeNotifierProvider)
+            ..invalidate(fontSizeNotifierProvider)
+            ..invalidate(fontFamilyNotifierProvider)
+            ..invalidate(cursorStyleNotifierProvider)
+            ..invalidate(bellSoundNotifierProvider)
+            ..invalidate(terminalThemeSettingsProvider)
+            ..invalidate(_allHostsStreamProvider)
+            ..invalidate(_allKeysStreamProvider);
           if (!mounted) {
             return;
           }
@@ -131,47 +171,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    } finally {
+      _isHandlingIncomingTransfer = false;
     }
   }
-
-  Future<MigrationImportMode?> _showMigrationModeDialog(
-    MigrationPreview preview,
-  ) async => showDialog<MigrationImportMode>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Incoming migration package'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Settings: ${preview.settingsCount}'),
-          Text('Hosts: ${preview.hostCount}'),
-          Text('Keys: ${preview.keyCount}'),
-          Text('Groups: ${preview.groupCount}'),
-          Text('Snippets: ${preview.snippetCount}'),
-          Text('Snippet folders: ${preview.snippetFolderCount}'),
-          Text('Port forwards: ${preview.portForwardCount}'),
-          Text('Known hosts: ${preview.knownHostCount}'),
-          const SizedBox(height: 12),
-          const Text('Choose how to apply the incoming data'),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        OutlinedButton(
-          onPressed: () => Navigator.pop(context, MigrationImportMode.merge),
-          child: const Text('Merge'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, MigrationImportMode.replace),
-          child: const Text('Replace'),
-        ),
-      ],
-    ),
-  );
 
   @override
   Widget build(BuildContext context) {
@@ -804,6 +807,25 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
+    if (host.password?.isNotEmpty ?? false) {
+      final isAuthorized = await authorizeSensitiveTransferExport(
+        context: context,
+        authService: ref.read(authServiceProvider),
+        reason: 'Authenticate to export host credentials',
+      );
+      if (!context.mounted) {
+        return;
+      }
+      if (!isAuthorized) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Authentication required for host export'),
+          ),
+        );
+        return;
+      }
+    }
+
     final transferPassphrase = await showTransferPassphraseDialog(
       context: context,
       title: 'Host transfer passphrase',
@@ -833,6 +855,25 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    if (host.password?.isNotEmpty ?? false) {
+      final isAuthorized = await authorizeSensitiveTransferExport(
+        context: context,
+        authService: ref.read(authServiceProvider),
+        reason: 'Authenticate to export host credentials',
+      );
+      if (!context.mounted) {
+        return;
+      }
+      if (!isAuthorized) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Authentication required for host export'),
+          ),
+        );
+        return;
+      }
+    }
+
     final transferPassphrase = await showTransferPassphraseDialog(
       context: context,
       title: 'Host transfer passphrase',
@@ -1337,79 +1378,12 @@ class _KeyRow extends ConsumerWidget {
     ).showSnackBar(const SnackBar(content: Text('Public key copied')));
   }
 
-  Future<bool> _authorizeSensitiveExport(
-    BuildContext context,
-    WidgetRef ref,
-  ) async {
-    final authService = ref.read(authServiceProvider);
-    final isAuthEnabled = await authService.isAuthEnabled();
-    if (!isAuthEnabled) {
-      return true;
-    }
-
-    final method = await authService.getAuthMethod();
-    if (!context.mounted) {
-      return false;
-    }
-    switch (method) {
-      case AuthMethod.none:
-        return true;
-      case AuthMethod.biometric:
-        return authService.authenticateWithBiometrics(
-          reason: 'Authenticate to export private key',
-        );
-      case AuthMethod.pin:
-        final pin = await _promptForPin(context);
-        if (pin == null) {
-          return false;
-        }
-        return authService.verifyPin(pin);
-      case AuthMethod.both:
-        final biometricSuccess = await authService.authenticateWithBiometrics(
-          reason: 'Authenticate to export private key',
-        );
-        if (!context.mounted) {
-          return false;
-        }
-        if (biometricSuccess) {
-          return true;
-        }
-        final pin = await _promptForPin(context);
-        if (pin == null) {
-          return false;
-        }
-        return authService.verifyPin(pin);
-    }
-  }
-
-  Future<String?> _promptForPin(BuildContext context) async {
-    final controller = TextEditingController();
-    return showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Enter PIN'),
-        content: TextField(
-          controller: controller,
-          keyboardType: TextInputType.number,
-          obscureText: true,
-          decoration: const InputDecoration(labelText: 'PIN'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text.trim()),
-            child: const Text('Confirm'),
-          ),
-        ],
-      ),
-    );
-  }
-
   Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await _authorizeSensitiveExport(context, ref);
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to export private key',
+    );
     if (!context.mounted) {
       return;
     }
@@ -1449,7 +1423,11 @@ class _KeyRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await _authorizeSensitiveExport(context, ref);
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to export private key',
+    );
     if (!context.mounted) {
       return;
     }

@@ -272,6 +272,11 @@ class SecureTransferService {
     final macBytes = base64Url.decode(
       base64Url.normalize(envelopeMap['mac'] as String? ?? ''),
     );
+    if (salt.length != _saltBytes ||
+        nonce.length != _nonceBytes ||
+        macBytes.length < 16) {
+      throw const FormatException('Invalid transfer envelope');
+    }
 
     final secretKey = await _deriveKey(transferPassphrase, salt);
     final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes));
@@ -409,37 +414,50 @@ class SecureTransferService {
       throw const FormatException('Payload is not a full migration transfer');
     }
 
-    await _db.transaction(() async {
-      if (mode == MigrationImportMode.replace) {
-        await _clearMigrationTables();
-      }
+    final shouldDisableForeignKeys = mode == MigrationImportMode.replace;
+    if (shouldDisableForeignKeys) {
+      await _db.customStatement('PRAGMA foreign_keys = OFF');
+    }
 
-      final groupMapping = await _importGroups(
-        _listFromData(payload.data, 'groups'),
-      );
-      final keyMapping = await _importKeys(_listFromData(payload.data, 'keys'));
-      final hostMapping = await _importHosts(
-        _listFromData(payload.data, 'hosts'),
-        groupMapping: groupMapping,
-        keyMapping: keyMapping,
-      );
-      final snippetFolderMapping = await _importSnippetFolders(
-        _listFromData(payload.data, 'snippetFolders'),
-      );
-      await _importSnippets(
-        _listFromData(payload.data, 'snippets'),
-        snippetFolderMapping: snippetFolderMapping,
-      );
-      await _importPortForwards(
-        _listFromData(payload.data, 'portForwards'),
-        hostMapping: hostMapping,
-      );
-      await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
-      await _importSettings(
-        _settingsFromData(payload.data),
-        clearExisting: mode == MigrationImportMode.replace,
-      );
-    });
+    try {
+      await _db.transaction(() async {
+        if (mode == MigrationImportMode.replace) {
+          await _clearMigrationTables();
+        }
+
+        final groupMapping = await _importGroups(
+          _listFromData(payload.data, 'groups'),
+        );
+        final keyMapping = await _importKeys(
+          _listFromData(payload.data, 'keys'),
+        );
+        final hostMapping = await _importHosts(
+          _listFromData(payload.data, 'hosts'),
+          groupMapping: groupMapping,
+          keyMapping: keyMapping,
+        );
+        final snippetFolderMapping = await _importSnippetFolders(
+          _listFromData(payload.data, 'snippetFolders'),
+        );
+        await _importSnippets(
+          _listFromData(payload.data, 'snippets'),
+          snippetFolderMapping: snippetFolderMapping,
+        );
+        await _importPortForwards(
+          _listFromData(payload.data, 'portForwards'),
+          hostMapping: hostMapping,
+        );
+        await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
+        await _importSettings(
+          _settingsFromData(payload.data),
+          clearExisting: mode == MigrationImportMode.replace,
+        );
+      });
+    } finally {
+      if (shouldDisableForeignKeys) {
+        await _db.customStatement('PRAGMA foreign_keys = ON');
+      }
+    }
   }
 
   Future<String> _encryptPayload(
@@ -518,19 +536,14 @@ class SecureTransferService {
   }
 
   Future<void> _clearMigrationTables() async {
-    await _db.customStatement('PRAGMA foreign_keys = OFF');
-    try {
-      await _db.customStatement('DELETE FROM port_forwards');
-      await _db.customStatement('DELETE FROM snippets');
-      await _db.customStatement('DELETE FROM snippet_folders');
-      await _db.customStatement('DELETE FROM hosts');
-      await _db.customStatement('DELETE FROM ssh_keys');
-      await _db.customStatement('DELETE FROM groups');
-      await _db.customStatement('DELETE FROM known_hosts');
-      await _db.customStatement('DELETE FROM settings');
-    } finally {
-      await _db.customStatement('PRAGMA foreign_keys = ON');
-    }
+    await _db.customStatement('DELETE FROM port_forwards');
+    await _db.customStatement('DELETE FROM snippets');
+    await _db.customStatement('DELETE FROM snippet_folders');
+    await _db.customStatement('DELETE FROM hosts');
+    await _db.customStatement('DELETE FROM ssh_keys');
+    await _db.customStatement('DELETE FROM groups');
+    await _db.customStatement('DELETE FROM known_hosts');
+    await _db.customStatement('DELETE FROM settings');
   }
 
   Future<Map<int, int>> _importGroups(

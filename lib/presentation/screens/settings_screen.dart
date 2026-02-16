@@ -731,6 +731,23 @@ class _MigrationSection extends ConsumerWidget {
   );
 
   Future<void> _exportMigration(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to export migration package',
+    );
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Authentication required for migration export'),
+        ),
+      );
+      return;
+    }
+
     final transferPassphrase = await showTransferPassphraseDialog(
       context: context,
       title: 'Migration export passphrase',
@@ -801,7 +818,11 @@ class _MigrationSection extends ConsumerWidget {
       if (!context.mounted) {
         return;
       }
-      final mode = await _showMigrationModeDialog(context, preview);
+      final mode = await showMigrationImportModeDialog(
+        context: context,
+        preview: preview,
+        title: 'Import migration package',
+      );
       if (mode == null || !context.mounted) {
         return;
       }
@@ -840,44 +861,4 @@ class _MigrationSection extends ConsumerWidget {
       ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
     }
   }
-
-  Future<MigrationImportMode?> _showMigrationModeDialog(
-    BuildContext context,
-    MigrationPreview preview,
-  ) async => showDialog<MigrationImportMode>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Import migration package'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text('Settings: ${preview.settingsCount}'),
-          Text('Hosts: ${preview.hostCount}'),
-          Text('Keys: ${preview.keyCount}'),
-          Text('Groups: ${preview.groupCount}'),
-          Text('Snippets: ${preview.snippetCount}'),
-          Text('Snippet folders: ${preview.snippetFolderCount}'),
-          Text('Port forwards: ${preview.portForwardCount}'),
-          Text('Known hosts: ${preview.knownHostCount}'),
-          const SizedBox(height: 12),
-          const Text('Choose how to apply imported data:'),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        OutlinedButton(
-          onPressed: () => Navigator.pop(context, MigrationImportMode.merge),
-          child: const Text('Merge'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, MigrationImportMode.replace),
-          child: const Text('Replace'),
-        ),
-      ],
-    ),
-  );
 }

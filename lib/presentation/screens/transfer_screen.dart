@@ -6,6 +6,9 @@ import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:qr_flutter/qr_flutter.dart';
 
+import '../../domain/services/auth_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
+
 /// File extension used for encrypted MonkeySSH transfer packages.
 const monkeySshTransferFileExtension = 'monkeysshx';
 
@@ -211,7 +214,16 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
-  return utf8.decode(bytes);
+  try {
+    return utf8.decode(bytes);
+  } on FormatException {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Invalid transfer file format')),
+      );
+    }
+    return null;
+  }
 }
 
 /// Dialog that asks for transfer passphrase.
@@ -261,6 +273,120 @@ Future<String?> showTransferPassphraseDialog({
   }
   return trimmed;
 }
+
+/// Requests local authentication for sensitive transfer exports.
+Future<bool> authorizeSensitiveTransferExport({
+  required BuildContext context,
+  required AuthService authService,
+  required String reason,
+}) async {
+  final isAuthEnabled = await authService.isAuthEnabled();
+  if (!isAuthEnabled || !context.mounted) {
+    return true;
+  }
+
+  final method = await authService.getAuthMethod();
+  if (!context.mounted) {
+    return false;
+  }
+
+  switch (method) {
+    case AuthMethod.none:
+      return true;
+    case AuthMethod.biometric:
+      return authService.authenticateWithBiometrics(reason: reason);
+    case AuthMethod.pin:
+      final pin = await _showPinDialog(context);
+      if (pin == null) {
+        return false;
+      }
+      return authService.verifyPin(pin);
+    case AuthMethod.both:
+      final biometricSuccess = await authService.authenticateWithBiometrics(
+        reason: reason,
+      );
+      if (biometricSuccess) {
+        return true;
+      }
+      if (!context.mounted) {
+        return false;
+      }
+      final pin = await _showPinDialog(context);
+      if (pin == null) {
+        return false;
+      }
+      return authService.verifyPin(pin);
+  }
+}
+
+Future<String?> _showPinDialog(BuildContext context) async {
+  final controller = TextEditingController();
+  return showDialog<String>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Enter PIN'),
+      content: TextField(
+        controller: controller,
+        keyboardType: TextInputType.number,
+        obscureText: true,
+        decoration: const InputDecoration(labelText: 'PIN'),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, controller.text.trim()),
+          child: const Text('Confirm'),
+        ),
+      ],
+    ),
+  );
+}
+
+/// Shared merge/replace mode chooser for migration imports.
+Future<MigrationImportMode?> showMigrationImportModeDialog({
+  required BuildContext context,
+  required MigrationPreview preview,
+  required String title,
+  String message = 'Choose how to apply imported data.',
+}) async => showDialog<MigrationImportMode>(
+  context: context,
+  builder: (context) => AlertDialog(
+    title: Text(title),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text('Settings: ${preview.settingsCount}'),
+        Text('Hosts: ${preview.hostCount}'),
+        Text('Keys: ${preview.keyCount}'),
+        Text('Groups: ${preview.groupCount}'),
+        Text('Snippets: ${preview.snippetCount}'),
+        Text('Snippet folders: ${preview.snippetFolderCount}'),
+        Text('Port forwards: ${preview.portForwardCount}'),
+        Text('Known hosts: ${preview.knownHostCount}'),
+        const SizedBox(height: 12),
+        Text(message),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      OutlinedButton(
+        onPressed: () => Navigator.pop(context, MigrationImportMode.merge),
+        child: const Text('Merge'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, MigrationImportMode.replace),
+        child: const Text('Replace'),
+      ),
+    ],
+  ),
+);
 
 /// Camera-based scanner for MonkeySSH transfer QR payloads.
 class TransferScannerScreen extends StatefulWidget {

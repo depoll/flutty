@@ -10,6 +10,7 @@ class MainActivity : FlutterActivity() {
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
     private var sshService: SshConnectionService? = null
+    private var transferMethodChannel: MethodChannel? = null
     private var pendingTransferPayload: String? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -37,8 +38,8 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, transferChannel)
-            .setMethodCallHandler { call, result ->
+        transferMethodChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, transferChannel)
+        transferMethodChannel?.setMethodCallHandler { call, result ->
                 when (call.method) {
                     "consumeIncomingTransferPayload" -> {
                         result.success(pendingTransferPayload)
@@ -47,6 +48,7 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+        notifyIncomingTransferPayload()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -60,6 +62,8 @@ class MainActivity : FlutterActivity() {
 
     override fun onDestroy() {
         sshService?.stop()
+        transferMethodChannel?.setMethodCallHandler(null)
+        transferMethodChannel = null
         super.onDestroy()
     }
 
@@ -73,8 +77,14 @@ class MainActivity : FlutterActivity() {
             contentResolver.openInputStream(sourceUri)?.bufferedReader(Charsets.UTF_8).use { reader ->
                 pendingTransferPayload = reader?.readText()
             }
+            notifyIncomingTransferPayload()
         } catch (_: Exception) {
             pendingTransferPayload = null
         }
+    }
+
+    private fun notifyIncomingTransferPayload() {
+        val payload = pendingTransferPayload ?: return
+        transferMethodChannel?.invokeMethod("onIncomingTransferPayload", payload)
     }
 }

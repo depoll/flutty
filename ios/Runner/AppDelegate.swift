@@ -8,6 +8,7 @@ import UIKit
   private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
   private var pendingTransferPayload: String?
   private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
+  private var transferChannel: FlutterMethodChannel?
 
   override func application(
     _ application: UIApplication,
@@ -58,6 +59,7 @@ import UIKit
       name: transferChannelName,
       binaryMessenger: controller.binaryMessenger
     )
+    transferChannel = channel
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(nil)
@@ -71,6 +73,7 @@ import UIKit
         result(FlutterMethodNotImplemented)
       }
     }
+    notifyIncomingTransferPayload()
   }
 
   private func handleTransferFile(url: URL) -> Bool {
@@ -79,10 +82,18 @@ import UIKit
     }
     do {
       pendingTransferPayload = try String(contentsOf: url, encoding: .utf8)
+      notifyIncomingTransferPayload()
       return true
     } catch {
       pendingTransferPayload = nil
       return false
     }
+  }
+
+  private func notifyIncomingTransferPayload() {
+    guard let payload = pendingTransferPayload else {
+      return
+    }
+    transferChannel?.invokeMethod("onIncomingTransferPayload", arguments: payload)
   }
 }

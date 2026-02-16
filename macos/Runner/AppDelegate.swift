@@ -5,6 +5,7 @@ import FlutterMacOS
 class AppDelegate: FlutterAppDelegate {
   private var pendingTransferPayload: String?
   private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
+  private var transferChannel: FlutterMethodChannel?
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
@@ -19,6 +20,7 @@ class AppDelegate: FlutterAppDelegate {
     }
     do {
       pendingTransferPayload = try String(contentsOfFile: filename, encoding: .utf8)
+      notifyIncomingTransferPayload()
       return true
     } catch {
       pendingTransferPayload = nil
@@ -39,6 +41,7 @@ class AppDelegate: FlutterAppDelegate {
       name: transferChannelName,
       binaryMessenger: controller.engine.binaryMessenger
     )
+    transferChannel = channel
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self = self else {
         result(nil)
@@ -52,5 +55,13 @@ class AppDelegate: FlutterAppDelegate {
         result(FlutterMethodNotImplemented)
       }
     }
+    notifyIncomingTransferPayload()
+  }
+
+  private func notifyIncomingTransferPayload() {
+    guard let payload = pendingTransferPayload else {
+      return
+    }
+    transferChannel?.invokeMethod("onIncomingTransferPayload", arguments: payload)
   }
 }
