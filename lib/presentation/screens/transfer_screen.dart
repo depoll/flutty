@@ -439,7 +439,7 @@ class _TransferScannerScreenState extends State<TransferScannerScreen> {
           right: 16,
           bottom: 24,
           child: Card(
-            color: Colors.black.withAlpha(150),
+            color: Colors.black.withAlpha(200),
             child: const Padding(
               padding: EdgeInsets.all(12),
               child: Text(
