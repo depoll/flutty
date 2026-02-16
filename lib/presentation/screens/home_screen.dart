@@ -180,7 +180,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
           ),
 
           // Main content
-          Expanded(child: _buildContent()),
+          Expanded(
+            child: SafeArea(
+              left: false,
+              right: false,
+              bottom: false,
+              child: _buildContent(),
+            ),
+          ),
         ],
       ),
     );
