@@ -83,7 +83,7 @@ class SshConnectionConfig {
   /// Passphrase for private key (if encrypted).
   final String? passphrase;
 
-  /// Candidate keys to try automatically in order.
+  /// Candidate keys to try automatically, ordered by key ID.
   final List<SshKey>? identityKeys;
 
   /// Jump host configuration for proxy connections.
@@ -154,16 +154,33 @@ class SshService {
       return const SshConnectionResult(success: false, error: 'Host not found');
     }
 
+    List<SshKey>? cachedAutoKeys;
+    var didLoadAutoKeys = false;
+    Future<List<SshKey>?> loadAutoKeys() async {
+      if (didLoadAutoKeys) {
+        return cachedAutoKeys;
+      }
+      didLoadAutoKeys = true;
+      if (keyRepository == null) {
+        return null;
+      }
+      final keys = await keyRepository!.getAll();
+      if (keys.isEmpty) {
+        return null;
+      }
+      return cachedAutoKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
+    }
+
     // Get SSH key if explicitly selected, otherwise use auto keys.
     SshKey? key;
     List<SshKey>? identityKeys;
     if (host.keyId != null && keyRepository != null) {
       key = await keyRepository!.getById(host.keyId!);
-    } else if (host.password == null && keyRepository != null) {
-      final keys = await keyRepository!.getAll();
-      if (keys.isNotEmpty) {
-        identityKeys = keys;
+      if (key == null && host.password == null) {
+        identityKeys = await loadAutoKeys();
       }
+    } else if (host.password == null) {
+      identityKeys = await loadAutoKeys();
     }
 
     // Get jump host config if specified
@@ -175,11 +192,11 @@ class SshService {
         List<SshKey>? jumpIdentityKeys;
         if (jumpHost.keyId != null && keyRepository != null) {
           jumpKey = await keyRepository!.getById(jumpHost.keyId!);
-        } else if (jumpHost.password == null && keyRepository != null) {
-          final keys = await keyRepository!.getAll();
-          if (keys.isNotEmpty) {
-            jumpIdentityKeys = keys;
+          if (jumpKey == null && jumpHost.password == null) {
+            jumpIdentityKeys = await loadAutoKeys();
           }
+        } else if (jumpHost.password == null) {
+          jumpIdentityKeys = await loadAutoKeys();
         }
         jumpHostConfig = SshConnectionConfig.fromHost(
           jumpHost,

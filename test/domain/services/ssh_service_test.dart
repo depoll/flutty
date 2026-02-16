@@ -24,6 +24,27 @@ class _CapturingSshService extends SshService {
   }
 }
 
+class _CountingKeyRepository extends KeyRepository {
+  _CountingKeyRepository(super.db, {this.returnNullOnGetById = false});
+
+  final bool returnNullOnGetById;
+  int getAllCallCount = 0;
+
+  @override
+  Future<List<SshKey>> getAll() async {
+    getAllCallCount++;
+    return super.getAll();
+  }
+
+  @override
+  Future<SshKey?> getById(int id) async {
+    if (returnNullOnGetById) {
+      return null;
+    }
+    return super.getById(id);
+  }
+}
+
 void main() {
   group('SshConnectionState', () {
     test('has expected values', () {
@@ -352,6 +373,69 @@ void main() {
       expect(config.identityKeys, hasLength(2));
     });
 
+    test(
+      'connectToHost fetches Auto keys once for host and jump host',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final hostRepo = HostRepository(db);
+        final keyRepo = _CountingKeyRepository(db);
+        final service = _CapturingSshService(
+          hostRepository: hostRepo,
+          keyRepository: keyRepo,
+        );
+
+        final jumpHostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Jump Host',
+                hostname: '10.0.0.20',
+                username: 'jump',
+              ),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Target Host',
+                hostname: '10.0.0.21',
+                username: 'target',
+                jumpHostId: Value(jumpHostId),
+              ),
+            );
+        await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Auto Key 1',
+                keyType: 'ed25519',
+                publicKey: 'ssh-ed25519 AAAA...',
+                privateKey: 'private-key-1',
+              ),
+            );
+        await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Auto Key 2',
+                keyType: 'rsa',
+                publicKey: 'ssh-rsa BBBB...',
+                privateKey: 'private-key-2',
+              ),
+            );
+
+        await service.connectToHost(hostId);
+
+        final config = service.capturedConfig;
+        expect(config, isNotNull);
+        expect(config!.identityKeys, hasLength(2));
+        expect(config.jumpHost, isNotNull);
+        expect(config.jumpHost!.identityKeys, hasLength(2));
+        expect(keyRepo.getAllCallCount, 1);
+      },
+    );
+
     test('connectToHost keeps explicit key override', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -400,6 +484,121 @@ void main() {
       expect(config!.privateKey, 'selected-private-key');
       expect(config.identityKeys, isNull);
     });
+
+    test(
+      'connectToHost falls back to Auto keys when selected key is missing',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final hostRepo = HostRepository(db);
+        final keyRepo = _CountingKeyRepository(db, returnNullOnGetById: true);
+        final service = _CapturingSshService(
+          hostRepository: hostRepo,
+          keyRepository: keyRepo,
+        );
+
+        final selectedKeyId = await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Selected Key',
+                keyType: 'ed25519',
+                publicKey: 'ssh-ed25519 CCCC...',
+                privateKey: 'selected-private-key',
+              ),
+            );
+        await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Auto Key',
+                keyType: 'rsa',
+                publicKey: 'ssh-rsa DDDD...',
+                privateKey: 'auto-private-key',
+              ),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Pinned Key Host',
+                hostname: '10.0.0.30',
+                username: 'root',
+                keyId: Value(selectedKeyId),
+              ),
+            );
+
+        await service.connectToHost(hostId);
+
+        final config = service.capturedConfig;
+        expect(config, isNotNull);
+        expect(config!.privateKey, isNull);
+        expect(config.identityKeys, hasLength(2));
+      },
+    );
+
+    test(
+      'connectToHost falls back to Auto keys for jump host when selected key is missing',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final hostRepo = HostRepository(db);
+        final keyRepo = _CountingKeyRepository(db, returnNullOnGetById: true);
+        final service = _CapturingSshService(
+          hostRepository: hostRepo,
+          keyRepository: keyRepo,
+        );
+
+        final selectedJumpKeyId = await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Selected Jump Key',
+                keyType: 'ed25519',
+                publicKey: 'ssh-ed25519 EEEE...',
+                privateKey: 'selected-jump-private-key',
+              ),
+            );
+        await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Auto Key',
+                keyType: 'rsa',
+                publicKey: 'ssh-rsa FFFF...',
+                privateKey: 'auto-private-key',
+              ),
+            );
+        final jumpHostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Jump Host',
+                hostname: '10.0.0.31',
+                username: 'jump',
+                keyId: Value(selectedJumpKeyId),
+              ),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Target Host',
+                hostname: '10.0.0.32',
+                username: 'target',
+                jumpHostId: Value(jumpHostId),
+              ),
+            );
+
+        await service.connectToHost(hostId);
+
+        final config = service.capturedConfig;
+        expect(config, isNotNull);
+        expect(config!.jumpHost, isNotNull);
+        expect(config.jumpHost!.privateKey, isNull);
+        expect(config.jumpHost!.identityKeys, hasLength(2));
+      },
+    );
 
     test('connectToHost skips Auto keys when host has a password', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
