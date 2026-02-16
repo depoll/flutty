@@ -128,6 +128,12 @@ class SshService {
   /// Creates a new [SshService].
   SshService({this.hostRepository, this.keyRepository});
 
+  /// Number of key identities to try per SSH authentication attempt.
+  ///
+  /// Keeping this below common server `MaxAuthTries` defaults avoids
+  /// "too many authentication failures" disconnects in Auto mode.
+  static const _maxAutoKeysPerAttempt = 5;
+
   /// Host repository for looking up hosts.
   final HostRepository? hostRepository;
 
@@ -168,7 +174,11 @@ class SshService {
       if (keys.isEmpty) {
         return null;
       }
-      return cachedAutoKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
+      final sortedKeys = [...keys]..sort((a, b) => a.id.compareTo(b.id));
+      final autoKeys = sortedKeys.length > _maxAutoKeysPerAttempt
+          ? sortedKeys.take(_maxAutoKeysPerAttempt).toList(growable: false)
+          : sortedKeys;
+      return cachedAutoKeys = autoKeys;
     }
 
     // Get SSH key if explicitly selected, otherwise use auto keys.

@@ -373,6 +373,52 @@ void main() {
       expect(config.identityKeys, hasLength(2));
     });
 
+    test('connectToHost caps Auto keys to avoid auth lockout', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepo = HostRepository(db);
+      final keyRepo = KeyRepository(db);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      for (var i = 0; i < 7; i++) {
+        await db
+            .into(db.sshKeys)
+            .insert(
+              SshKeysCompanion.insert(
+                name: 'Auto Key $i',
+                keyType: 'ed25519',
+                publicKey: 'ssh-ed25519 KEY$i',
+                privateKey: 'private-key-$i',
+              ),
+            );
+      }
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Auto Host',
+              hostname: '10.0.0.13',
+              username: 'admin',
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.identityKeys, hasLength(5));
+      expect(config.identityKeys!.map((key) => key.name).toList(), [
+        'Auto Key 0',
+        'Auto Key 1',
+        'Auto Key 2',
+        'Auto Key 3',
+        'Auto Key 4',
+      ]);
+    });
+
     test(
       'connectToHost fetches Auto keys once for host and jump host',
       () async {
