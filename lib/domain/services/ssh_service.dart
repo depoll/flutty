@@ -42,6 +42,7 @@ class SshConnectionConfig {
     this.password,
     this.privateKey,
     this.passphrase,
+    this.identityKeys,
     this.jumpHost,
     this.keepAliveInterval = const Duration(seconds: 30),
     this.connectionTimeout = const Duration(seconds: 30),
@@ -51,6 +52,7 @@ class SshConnectionConfig {
   factory SshConnectionConfig.fromHost(
     Host host, {
     SshKey? key,
+    List<SshKey>? identityKeys,
     SshConnectionConfig? jumpHostConfig,
   }) => SshConnectionConfig(
     hostname: host.hostname,
@@ -59,6 +61,7 @@ class SshConnectionConfig {
     password: host.password,
     privateKey: key?.privateKey,
     passphrase: key?.passphrase,
+    identityKeys: identityKeys,
     jumpHost: jumpHostConfig,
   );
 
@@ -79,6 +82,9 @@ class SshConnectionConfig {
 
   /// Passphrase for private key (if encrypted).
   final String? passphrase;
+
+  /// Candidate keys to try automatically in order.
+  final List<SshKey>? identityKeys;
 
   /// Jump host configuration for proxy connections.
   final SshConnectionConfig? jumpHost;
@@ -148,10 +154,16 @@ class SshService {
       return const SshConnectionResult(success: false, error: 'Host not found');
     }
 
-    // Get SSH key if specified
+    // Get SSH key if explicitly selected, otherwise use auto keys.
     SshKey? key;
+    List<SshKey>? identityKeys;
     if (host.keyId != null && keyRepository != null) {
       key = await keyRepository!.getById(host.keyId!);
+    } else if (host.password == null && keyRepository != null) {
+      final keys = await keyRepository!.getAll();
+      if (keys.isNotEmpty) {
+        identityKeys = keys;
+      }
     }
 
     // Get jump host config if specified
@@ -160,16 +172,27 @@ class SshService {
       final jumpHost = await hostRepository!.getById(host.jumpHostId!);
       if (jumpHost != null) {
         SshKey? jumpKey;
+        List<SshKey>? jumpIdentityKeys;
         if (jumpHost.keyId != null && keyRepository != null) {
           jumpKey = await keyRepository!.getById(jumpHost.keyId!);
+        } else if (jumpHost.password == null && keyRepository != null) {
+          final keys = await keyRepository!.getAll();
+          if (keys.isNotEmpty) {
+            jumpIdentityKeys = keys;
+          }
         }
-        jumpHostConfig = SshConnectionConfig.fromHost(jumpHost, key: jumpKey);
+        jumpHostConfig = SshConnectionConfig.fromHost(
+          jumpHost,
+          key: jumpKey,
+          identityKeys: jumpIdentityKeys,
+        );
       }
     }
 
     final config = SshConnectionConfig.fromHost(
       host,
       key: key,
+      identityKeys: identityKeys,
       jumpHostConfig: jumpHostConfig,
     );
 
@@ -231,9 +254,7 @@ class SshService {
         onPasswordRequest: config.password != null
             ? () => config.password!
             : null,
-        identities: config.privateKey != null
-            ? _parsePrivateKey(config.privateKey!, config.passphrase)
-            : null,
+        identities: _parseIdentities(config),
         keepAliveInterval: config.keepAliveInterval,
       );
 
@@ -285,6 +306,25 @@ class SshService {
 
   /// Check if a connection ID is active.
   bool isConnected(int connectionId) => _sessions.containsKey(connectionId);
+
+  List<SSHKeyPair>? _parseIdentities(SshConnectionConfig config) {
+    final identityKeyPairs = <SSHKeyPair>[];
+    if (config.identityKeys != null) {
+      for (final key in config.identityKeys!) {
+        final parsed = _parsePrivateKey(key.privateKey, key.passphrase);
+        if (parsed != null) {
+          identityKeyPairs.addAll(parsed);
+        }
+      }
+    }
+    if (identityKeyPairs.isNotEmpty) {
+      return identityKeyPairs;
+    }
+    if (config.privateKey != null) {
+      return _parsePrivateKey(config.privateKey!, config.passphrase);
+    }
+    return null;
+  }
 
   List<SSHKeyPair>? _parsePrivateKey(String privateKey, String? passphrase) {
     try {

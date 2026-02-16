@@ -9,6 +9,21 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
+class _CapturingSshService extends SshService {
+  _CapturingSshService({
+    required super.hostRepository,
+    required super.keyRepository,
+  });
+
+  SshConnectionConfig? capturedConfig;
+
+  @override
+  Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+    capturedConfig = config;
+    return const SshConnectionResult(success: false, error: 'stubbed');
+  }
+}
+
 void main() {
   group('SshConnectionState', () {
     test('has expected values', () {
@@ -36,6 +51,7 @@ void main() {
       expect(config.password, isNull);
       expect(config.privateKey, isNull);
       expect(config.passphrase, isNull);
+      expect(config.identityKeys, isNull);
       expect(config.jumpHost, isNull);
       expect(config.keepAliveInterval, const Duration(seconds: 30));
       expect(config.connectionTimeout, const Duration(seconds: 30));
@@ -65,6 +81,7 @@ void main() {
       expect(config.password, 'pass123');
       expect(config.privateKey, '-----BEGIN KEY-----');
       expect(config.passphrase, 'secret');
+      expect(config.identityKeys, isNull);
       expect(config.jumpHost, isNotNull);
       expect(config.jumpHost!.hostname, 'jump.example.com');
       expect(config.jumpHost!.port, 2222);
@@ -107,6 +124,7 @@ void main() {
         expect(config.username, 'root');
         expect(config.password, 'pass');
         expect(config.privateKey, isNull);
+        expect(config.identityKeys, isNull);
         expect(config.jumpHost, isNull);
       });
 
@@ -146,6 +164,7 @@ void main() {
         expect(config.username, 'admin');
         expect(config.privateKey, contains('BEGIN OPENSSH PRIVATE KEY'));
         expect(config.passphrase, 'keypass');
+        expect(config.identityKeys, isNull);
       });
 
       test('creates config with jump host', () async {
@@ -174,6 +193,7 @@ void main() {
         );
 
         expect(config.hostname, '10.0.0.3');
+        expect(config.identityKeys, isNull);
         expect(config.jumpHost, isNotNull);
         expect(config.jumpHost!.hostname, 'bastion.example.com');
       });
@@ -282,6 +302,142 @@ void main() {
       expect(result.error, 'Host not found');
 
       await db.close();
+    });
+
+    test('connectToHost uses Auto keys when host has no password', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepo = HostRepository(db);
+      final keyRepo = KeyRepository(db);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Auto Key 1',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA...',
+              privateKey: 'private-key-1',
+            ),
+          );
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Auto Key 2',
+              keyType: 'rsa',
+              publicKey: 'ssh-rsa BBBB...',
+              privateKey: 'private-key-2',
+            ),
+          );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Auto Host',
+              hostname: '10.0.0.10',
+              username: 'admin',
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.privateKey, isNull);
+      expect(config.identityKeys, hasLength(2));
+    });
+
+    test('connectToHost keeps explicit key override', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepo = HostRepository(db);
+      final keyRepo = KeyRepository(db);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      final selectedKeyId = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Selected Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 CCCC...',
+              privateKey: 'selected-private-key',
+            ),
+          );
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Other Key',
+              keyType: 'rsa',
+              publicKey: 'ssh-rsa DDDD...',
+              privateKey: 'other-private-key',
+            ),
+          );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Pinned Key Host',
+              hostname: '10.0.0.11',
+              username: 'root',
+              keyId: Value(selectedKeyId),
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.privateKey, 'selected-private-key');
+      expect(config.identityKeys, isNull);
+    });
+
+    test('connectToHost skips Auto keys when host has a password', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepo = HostRepository(db);
+      final keyRepo = KeyRepository(db);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+      );
+
+      await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Unused Auto Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 EEEE...',
+              privateKey: 'unused-private-key',
+            ),
+          );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Password Host',
+              hostname: '10.0.0.12',
+              username: 'admin',
+              password: const Value('secret'),
+            ),
+          );
+
+      await service.connectToHost(hostId);
+
+      final config = service.capturedConfig;
+      expect(config, isNotNull);
+      expect(config!.password, 'secret');
+      expect(config.identityKeys, isNull);
     });
 
     test('connect fails with invalid hostname', () async {
