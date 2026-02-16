@@ -4,8 +4,10 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../widgets/terminal_theme_picker.dart';
+import 'transfer_screen.dart';
 
 /// Settings screen with appearance, security, terminal, and about sections.
 class SettingsScreen extends ConsumerWidget {
@@ -21,6 +23,7 @@ class SettingsScreen extends ConsumerWidget {
         _AppearanceSection(),
         _SecuritySection(),
         _TerminalSection(),
+        _MigrationSection(),
         _AboutSection(),
       ],
     ),
@@ -702,4 +705,179 @@ class _AboutSection extends StatelessWidget {
       ),
     );
   }
+}
+
+class _MigrationSection extends ConsumerWidget {
+  const _MigrationSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const _SectionHeader(title: 'Migration'),
+      ListTile(
+        leading: const Icon(Icons.save_alt),
+        title: const Text('Export full migration package'),
+        subtitle: const Text('Encrypted transfer file (.monkeysshx)'),
+        onTap: () => _exportMigration(context, ref),
+      ),
+      ListTile(
+        leading: const Icon(Icons.download_for_offline_outlined),
+        title: const Text('Import migration package'),
+        subtitle: const Text('Preview and choose merge or replace'),
+        onTap: () => _importMigration(context, ref),
+      ),
+    ],
+  );
+
+  Future<void> _exportMigration(BuildContext context, WidgetRef ref) async {
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Migration export passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    try {
+      final payload = await ref
+          .read(secureTransferServiceProvider)
+          .createFullMigrationPayload(transferPassphrase: transferPassphrase);
+      if (!context.mounted) {
+        return;
+      }
+      await saveTransferPayloadToFile(
+        context: context,
+        payload: payload,
+        defaultFileName: 'monkeyssh-migration',
+      );
+    } on Exception catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Export failed: $error')));
+    }
+  }
+
+  Future<void> _importMigration(BuildContext context, WidgetRef ref) async {
+    final source = await showTransferImportSourceSheet(context);
+    if (!context.mounted || source == null) {
+      return;
+    }
+
+    String? encodedPayload;
+    if (source == TransferImportSource.qr) {
+      encodedPayload = await scanTransferPayload(context);
+    } else {
+      encodedPayload = await pickTransferPayloadFromFile(context);
+    }
+    if (!context.mounted || encodedPayload == null) {
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Migration import passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    try {
+      final transferService = ref.read(secureTransferServiceProvider);
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
+      );
+      if (payload.type != TransferPayloadType.fullMigration) {
+        throw const FormatException(
+          'This transfer payload does not contain full migration data',
+        );
+      }
+
+      final preview = transferService.previewMigrationPayload(payload);
+      if (!context.mounted) {
+        return;
+      }
+      final mode = await _showMigrationModeDialog(context, preview);
+      if (mode == null || !context.mounted) {
+        return;
+      }
+
+      await transferService.importFullMigrationPayload(
+        payload: payload,
+        mode: mode,
+      );
+      ref
+        ..invalidate(themeModeNotifierProvider)
+        ..invalidate(fontSizeNotifierProvider)
+        ..invalidate(fontFamilyNotifierProvider)
+        ..invalidate(cursorStyleNotifierProvider)
+        ..invalidate(bellSoundNotifierProvider)
+        ..invalidate(terminalThemeSettingsProvider);
+
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Migration import completed')),
+      );
+    } on FormatException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    }
+  }
+
+  Future<MigrationImportMode?> _showMigrationModeDialog(
+    BuildContext context,
+    MigrationPreview preview,
+  ) async => showDialog<MigrationImportMode>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Import migration package'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Settings: ${preview.settingsCount}'),
+          Text('Hosts: ${preview.hostCount}'),
+          Text('Keys: ${preview.keyCount}'),
+          Text('Groups: ${preview.groupCount}'),
+          Text('Snippets: ${preview.snippetCount}'),
+          Text('Snippet folders: ${preview.snippetFolderCount}'),
+          Text('Port forwards: ${preview.portForwardCount}'),
+          Text('Known hosts: ${preview.knownHostCount}'),
+          const SizedBox(height: 12),
+          const Text('Choose how to apply imported data:'),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        OutlinedButton(
+          onPressed: () => Navigator.pop(context, MigrationImportMode.merge),
+          child: const Text('Merge'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, MigrationImportMode.replace),
+          child: const Text('Replace'),
+        ),
+      ],
+    ),
+  );
 }

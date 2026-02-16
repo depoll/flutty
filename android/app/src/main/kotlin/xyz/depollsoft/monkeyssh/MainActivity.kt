@@ -8,7 +8,14 @@ import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
+    private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
     private var sshService: SshConnectionService? = null
+    private var pendingTransferPayload: String? = null
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        handleTransferIntent(intent)
+    }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
@@ -29,10 +36,23 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
+
+        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, transferChannel)
+            .setMethodCallHandler { call, result ->
+                when (call.method) {
+                    "consumeIncomingTransferPayload" -> {
+                        result.success(pendingTransferPayload)
+                        pendingTransferPayload = null
+                    }
+                    else -> result.notImplemented()
+                }
+            }
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        setIntent(intent)
+        handleTransferIntent(intent)
         if (intent.action == SshConnectionService.ACTION_STOP) {
             sshService?.stop()
         }
@@ -41,5 +61,20 @@ class MainActivity : FlutterActivity() {
     override fun onDestroy() {
         sshService?.stop()
         super.onDestroy()
+    }
+
+    private fun handleTransferIntent(intent: Intent?) {
+        if (intent?.action != Intent.ACTION_VIEW) {
+            return
+        }
+
+        val sourceUri = intent.data ?: return
+        try {
+            contentResolver.openInputStream(sourceUri)?.bufferedReader(Charsets.UTF_8).use { reader ->
+                pendingTransferPayload = reader?.readText()
+            }
+        } catch (_: Exception) {
+            pendingTransferPayload = null
+        }
     }
 }

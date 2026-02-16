@@ -34,7 +34,11 @@ void main() {
       expect(find.text('Terminal'), findsOneWidget);
 
       // Scroll to find About section
-      await tester.drag(find.byType(ListView), const Offset(0, -500));
+      await tester.scrollUntilVisible(
+        find.text('About'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
       expect(find.text('About'), findsOneWidget);
     });
@@ -163,7 +167,11 @@ void main() {
       await tester.pumpAndSettle();
 
       // Scroll to find About section
-      await tester.drag(find.byType(ListView), const Offset(0, -500));
+      await tester.scrollUntilVisible(
+        find.text('App version'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('App version'), findsOneWidget);

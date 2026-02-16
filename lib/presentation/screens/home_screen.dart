@@ -11,8 +11,13 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/services/auth_service.dart';
 import '../../domain/services/background_ssh_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/transfer_intent_service.dart';
+import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
@@ -25,9 +30,148 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen> {
   int _selectedIndex = 0;
+  bool _checkedIncomingTransfer = false;
 
   // Breakpoint for switching between mobile and desktop layout
   static const double _mobileBreakpoint = 600;
+
+  @override
+  void initState() {
+    super.initState();
+    Future<void>.microtask(_checkIncomingTransferPayload);
+  }
+
+  Future<void> _checkIncomingTransferPayload() async {
+    if (_checkedIncomingTransfer) {
+      return;
+    }
+    _checkedIncomingTransfer = true;
+    final payload = await ref
+        .read(transferIntentServiceProvider)
+        .consumeIncomingTransferPayload();
+    if (!mounted || payload == null || payload.isEmpty) {
+      return;
+    }
+    await _handleIncomingTransferPayload(payload);
+  }
+
+  Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Incoming transfer passphrase',
+    );
+    if (!mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final transferService = ref.read(secureTransferServiceProvider);
+    try {
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
+      );
+
+      switch (payload.type) {
+        case TransferPayloadType.host:
+          final host = await transferService.importHostPayload(payload);
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Imported host: ${host.label}')),
+          );
+          break;
+        case TransferPayloadType.key:
+          final key = await transferService.importKeyPayload(payload);
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Imported key: ${key.name}')));
+          break;
+        case TransferPayloadType.fullMigration:
+          final preview = transferService.previewMigrationPayload(payload);
+          if (!mounted) {
+            return;
+          }
+          final mode = await _showMigrationModeDialog(preview);
+          if (mode == null || !mounted) {
+            return;
+          }
+          await transferService.importFullMigrationPayload(
+            payload: payload,
+            mode: mode,
+          );
+          ref.invalidate(themeModeNotifierProvider);
+          ref.invalidate(fontSizeNotifierProvider);
+          ref.invalidate(fontFamilyNotifierProvider);
+          ref.invalidate(cursorStyleNotifierProvider);
+          ref.invalidate(bellSoundNotifierProvider);
+          ref.invalidate(terminalThemeSettingsProvider);
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Imported full migration package')),
+          );
+          break;
+      }
+    } on FormatException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    }
+  }
+
+  Future<MigrationImportMode?> _showMigrationModeDialog(
+    MigrationPreview preview,
+  ) async => showDialog<MigrationImportMode>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: const Text('Incoming migration package'),
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text('Settings: ${preview.settingsCount}'),
+          Text('Hosts: ${preview.hostCount}'),
+          Text('Keys: ${preview.keyCount}'),
+          Text('Groups: ${preview.groupCount}'),
+          Text('Snippets: ${preview.snippetCount}'),
+          Text('Snippet folders: ${preview.snippetFolderCount}'),
+          Text('Port forwards: ${preview.portForwardCount}'),
+          Text('Known hosts: ${preview.knownHostCount}'),
+          const SizedBox(height: 12),
+          const Text('Choose how to apply the incoming data'),
+        ],
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        OutlinedButton(
+          onPressed: () => Navigator.pop(context, MigrationImportMode.merge),
+          child: const Text('Merge'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, MigrationImportMode.replace),
+          child: const Text('Replace'),
+        ),
+      ],
+    ),
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -630,6 +774,22 @@ class _HostRow extends ConsumerWidget {
               },
             ),
             ListTile(
+              leading: const Icon(Icons.qr_code_2),
+              title: const Text('Show Transfer QR'),
+              onTap: () {
+                Navigator.pop(context);
+                unawaited(_showTransferQr(context, ref));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt),
+              title: const Text('Export Encrypted File'),
+              onTap: () {
+                Navigator.pop(context);
+                unawaited(_exportEncryptedFile(context, ref));
+              },
+            ),
+            ListTile(
               leading: Icon(Icons.delete_outline, color: colorScheme.error),
               title: Text('Delete', style: TextStyle(color: colorScheme.error)),
               onTap: () {
@@ -640,6 +800,59 @@ class _HostRow extends ConsumerWidget {
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Host transfer passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final payload = await ref
+        .read(secureTransferServiceProvider)
+        .createHostPayload(host: host, transferPassphrase: transferPassphrase);
+
+    if (!context.mounted) {
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => TransferQrScreen(
+          title: 'Host Transfer QR',
+          payload: payload,
+          defaultFileName:
+              'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Host transfer passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final payload = await ref
+        .read(secureTransferServiceProvider)
+        .createHostPayload(host: host, transferPassphrase: transferPassphrase);
+
+    if (!context.mounted) {
+      return;
+    }
+
+    await saveTransferPayloadToFile(
+      context: context,
+      payload: payload,
+      defaultFileName: 'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
     );
   }
 
@@ -1084,7 +1297,15 @@ class _KeyRow extends ConsumerWidget {
                 ),
               ),
 
-              // Copy public key button
+              // Transfer and key actions
+              _SmallIconButton(
+                icon: Icons.qr_code_2,
+                onTap: () => unawaited(_showTransferQr(context, ref)),
+              ),
+              _SmallIconButton(
+                icon: Icons.save_alt,
+                onTap: () => unawaited(_exportEncryptedFile(context, ref)),
+              ),
               _SmallIconButton(
                 icon: Icons.copy,
                 onTap: () => _copyPublicKey(context),
@@ -1114,6 +1335,152 @@ class _KeyRow extends ConsumerWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Public key copied')));
+  }
+
+  Future<bool> _authorizeSensitiveExport(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final authService = ref.read(authServiceProvider);
+    final isAuthEnabled = await authService.isAuthEnabled();
+    if (!isAuthEnabled) {
+      return true;
+    }
+
+    final method = await authService.getAuthMethod();
+    if (!context.mounted) {
+      return false;
+    }
+    switch (method) {
+      case AuthMethod.none:
+        return true;
+      case AuthMethod.biometric:
+        return authService.authenticateWithBiometrics(
+          reason: 'Authenticate to export private key',
+        );
+      case AuthMethod.pin:
+        final pin = await _promptForPin(context);
+        if (pin == null) {
+          return false;
+        }
+        return authService.verifyPin(pin);
+      case AuthMethod.both:
+        final biometricSuccess = await authService.authenticateWithBiometrics(
+          reason: 'Authenticate to export private key',
+        );
+        if (!context.mounted) {
+          return false;
+        }
+        if (biometricSuccess) {
+          return true;
+        }
+        final pin = await _promptForPin(context);
+        if (pin == null) {
+          return false;
+        }
+        return authService.verifyPin(pin);
+    }
+  }
+
+  Future<String?> _promptForPin(BuildContext context) async {
+    final controller = TextEditingController();
+    return showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter PIN'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'PIN'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Confirm'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await _authorizeSensitiveExport(context, ref);
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Authentication required for key export')),
+      );
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Key transfer passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final payload = await ref
+        .read(secureTransferServiceProvider)
+        .createKeyPayload(key: sshKey, transferPassphrase: transferPassphrase);
+
+    if (!context.mounted) {
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        builder: (_) => TransferQrScreen(
+          title: 'Key Transfer QR',
+          payload: payload,
+          defaultFileName:
+              'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await _authorizeSensitiveExport(context, ref);
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Authentication required for key export')),
+      );
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Key transfer passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final payload = await ref
+        .read(secureTransferServiceProvider)
+        .createKeyPayload(key: sshKey, transferPassphrase: transferPassphrase);
+
+    if (!context.mounted) {
+      return;
+    }
+
+    await saveTransferPayloadToFile(
+      context: context,
+      payload: payload,
+      defaultFileName: 'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+    );
   }
 
   void _showKeyDetails(BuildContext context) {
