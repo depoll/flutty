@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../data/database/database.dart';
+import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/services/ssh_service.dart';
 
@@ -312,11 +313,147 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     );
   }
 
-  void _showGroupsDialog() {
-    // TODO: Implement groups dialog
+  Future<void> _showGroupsDialog() async {
+    final selection = await showModalBottomSheet<({int? groupId})>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) {
+        final theme = Theme.of(context);
+        final groupRepo = ref.read(groupRepositoryProvider);
+
+        return SafeArea(
+          child: StreamBuilder<List<Group>>(
+            stream: groupRepo.watchAll(),
+            builder: (context, snapshot) {
+              final groups = snapshot.data ?? const <Group>[];
+              return SizedBox(
+                height: 420,
+                child: Column(
+                  children: [
+                    ListTile(
+                      title: const Text('Groups'),
+                      subtitle: Text(
+                        _selectedGroupId == null
+                            ? 'Showing all hosts'
+                            : 'Filtered by selected group',
+                      ),
+                      trailing: IconButton(
+                        icon: const Icon(Icons.create_new_folder_outlined),
+                        tooltip: 'Create group',
+                        onPressed: () {
+                          Navigator.pop(context);
+                          unawaited(_showCreateGroupDialog());
+                        },
+                      ),
+                    ),
+                    Expanded(
+                      child: ListView(
+                        children: [
+                          ListTile(
+                            leading: const Icon(Icons.list),
+                            title: const Text('All hosts'),
+                            selected: _selectedGroupId == null,
+                            onTap: () =>
+                                Navigator.pop(context, (groupId: null)),
+                          ),
+                          for (final group in groups)
+                            ListTile(
+                              leading: const Icon(Icons.folder_outlined),
+                              title: Text(group.name),
+                              selected: _selectedGroupId == group.id,
+                              trailing: _selectedGroupId == group.id
+                                  ? Icon(
+                                      Icons.check,
+                                      color: theme.colorScheme.primary,
+                                    )
+                                  : null,
+                              onTap: () =>
+                                  Navigator.pop(context, (groupId: group.id)),
+                            ),
+                          if (groups.isEmpty)
+                            const Padding(
+                              padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                              child: Text(
+                                'No groups yet. Create one to organize hosts.',
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            },
+          ),
+        );
+      },
+    );
+
+    if (!mounted || selection == null) {
+      return;
+    }
+
+    setState(() => _selectedGroupId = selection.groupId);
+  }
+
+  Future<void> _showCreateGroupDialog() async {
+    final controller = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('New Group'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Group name',
+              hintText: 'Production',
+            ),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) {
+                return 'Please enter a group name';
+              }
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                Navigator.pop(context, true);
+              }
+            },
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+
+    final name = controller.text.trim();
+    controller.dispose();
+    if (created != true || name.isEmpty) {
+      return;
+    }
+
+    final id = await ref
+        .read(groupRepositoryProvider)
+        .insert(GroupsCompanion.insert(name: name));
+    if (!mounted) {
+      return;
+    }
+    setState(() => _selectedGroupId = id);
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Groups coming soon')));
+    ).showSnackBar(SnackBar(content: Text('Created group "$name"')));
   }
 }
 

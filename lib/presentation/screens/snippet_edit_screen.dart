@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -26,12 +28,22 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
 
   bool _isLoading = false;
   Snippet? _existingSnippet;
+  int? _selectedFolderId;
+  List<SnippetFolder> _folders = [];
 
   @override
   void initState() {
     super.initState();
+    unawaited(_loadFolders());
     if (widget.snippetId != null) {
-      _loadSnippet();
+      unawaited(_loadSnippet());
+    }
+  }
+
+  Future<void> _loadFolders() async {
+    final folders = await ref.read(snippetRepositoryProvider).getAllFolders();
+    if (mounted) {
+      setState(() => _folders = folders);
     }
   }
 
@@ -46,6 +58,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
         _nameController.text = snippet.name;
         _contentController.text = snippet.command;
         _descriptionController.text = snippet.description ?? '';
+        _selectedFolderId = snippet.folderId;
         _isLoading = false;
       });
     }
@@ -108,6 +121,29 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                       prefixIcon: Icon(Icons.description),
                     ),
                     textInputAction: TextInputAction.next,
+                  ),
+                  const SizedBox(height: 16),
+
+                  DropdownButtonFormField<int?>(
+                    initialValue:
+                        _folders.any((folder) => folder.id == _selectedFolderId)
+                        ? _selectedFolderId
+                        : null,
+                    decoration: const InputDecoration(
+                      labelText: 'Folder (optional)',
+                      prefixIcon: Icon(Icons.folder_outlined),
+                    ),
+                    items: [
+                      const DropdownMenuItem<int?>(child: Text('No folder')),
+                      ..._folders.map(
+                        (folder) => DropdownMenuItem<int?>(
+                          value: folder.id,
+                          child: Text(folder.name),
+                        ),
+                      ),
+                    ],
+                    onChanged: (value) =>
+                        setState(() => _selectedFolderId = value),
                   ),
                   const SizedBox(height: 16),
 
@@ -214,6 +250,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
             name: _nameController.text,
             command: _contentController.text,
             description: drift.Value(description),
+            folderId: drift.Value(_selectedFolderId),
           ),
         );
       } else {
@@ -223,6 +260,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
             name: _nameController.text,
             command: _contentController.text,
             description: drift.Value(description),
+            folderId: drift.Value(_selectedFolderId),
           ),
         );
       }

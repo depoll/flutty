@@ -629,7 +629,7 @@ class _HostRow extends ConsumerWidget {
               title: const Text('Duplicate'),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: duplicate
+                unawaited(_duplicateHost(context, ref));
               },
             ),
             ListTile(
@@ -670,6 +670,34 @@ class _HostRow extends ConsumerWidget {
 
     if ((confirmed ?? false) && context.mounted) {
       await ref.read(hostRepositoryProvider).delete(host.id);
+    }
+  }
+
+  Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
+    await ref
+        .read(hostRepositoryProvider)
+        .insert(
+          HostsCompanion.insert(
+            label: '${host.label} (copy)',
+            hostname: host.hostname,
+            port: drift.Value(host.port),
+            username: host.username,
+            password: drift.Value(host.password),
+            keyId: drift.Value(host.keyId),
+            groupId: drift.Value(host.groupId),
+            jumpHostId: drift.Value(host.jumpHostId),
+            color: drift.Value(host.color),
+            tags: drift.Value(host.tags),
+            terminalThemeLightId: drift.Value(host.terminalThemeLightId),
+            terminalThemeDarkId: drift.Value(host.terminalThemeDarkId),
+            terminalFontFamily: drift.Value(host.terminalFontFamily),
+            isFavorite: drift.Value(host.isFavorite),
+          ),
+        );
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
     }
   }
 }

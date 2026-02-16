@@ -99,6 +99,7 @@ class SshConnectionResult {
     this.client,
     this.connectionId,
     this.reusedConnection = false,
+    this.dependentClients = const <SSHClient>[],
   });
 
   /// Whether connection was successful.
@@ -115,6 +116,17 @@ class SshConnectionResult {
 
   /// Whether an existing connection was reused.
   final bool reusedConnection;
+
+  /// Additional SSH clients that must be closed with [client].
+  final List<SSHClient> dependentClients;
+
+  /// Closes [client] and any dependent jump-host clients.
+  Future<void> closeAll() async {
+    client?.close();
+    for (final dependentClient in dependentClients) {
+      dependentClient.close();
+    }
+  }
 }
 
 /// Service for managing SSH connections.
@@ -182,6 +194,7 @@ class SshService {
         hostId: hostId,
         client: result.client!,
         config: config,
+        dependentClients: result.dependentClients,
       );
 
       // Update last connected timestamp
@@ -190,6 +203,7 @@ class SshService {
         success: true,
         client: result.client,
         connectionId: connectionId,
+        dependentClients: result.dependentClients,
       );
     }
 
@@ -198,6 +212,8 @@ class SshService {
 
   /// Connect with a configuration.
   Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+    SSHClient? client;
+    final dependentClients = <SSHClient>[];
     try {
       SSHSocket socket;
 
@@ -210,6 +226,9 @@ class SshService {
             error: 'Failed to connect to jump host: ${jumpResult.error}',
           );
         }
+        dependentClients
+          ..add(jumpResult.client!)
+          ..addAll(jumpResult.dependentClients);
 
         // Create forwarded connection through jump host
         // SSHForwardChannel implements SSHSocket
@@ -225,7 +244,7 @@ class SshService {
         );
       }
 
-      final client = SSHClient(
+      client = SSHClient(
         socket,
         username: config.username,
         onPasswordRequest: config.password != null
@@ -240,23 +259,35 @@ class SshService {
       // Wait for authentication to complete
       await client.authenticated;
 
-      return SshConnectionResult(success: true, client: client);
+      return SshConnectionResult(
+        success: true,
+        client: client,
+        dependentClients: dependentClients,
+      );
     } on SSHAuthFailError catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Authentication failed: ${e.message}',
       );
     } on SocketException catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Connection failed: ${e.message}',
       );
     } on TimeoutException {
+      client?.close();
+      _closeClients(dependentClients);
       return const SshConnectionResult(
         success: false,
         error: 'Connection timed out',
       );
     } on Exception catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
       return SshConnectionResult(success: false, error: 'Connection error: $e');
     }
   }
@@ -294,6 +325,12 @@ class SshService {
       return SSHKeyPair.fromPem(privateKey);
     } on FormatException {
       return null;
+    }
+  }
+
+  static void _closeClients(List<SSHClient> clients) {
+    for (final client in clients) {
+      client.close();
     }
   }
 
@@ -380,6 +417,7 @@ class SshSession {
     required this.hostId,
     required this.client,
     required this.config,
+    this.dependentClients = const <SSHClient>[],
   }) : createdAt = DateTime.now();
 
   /// The connection ID for this active session.
@@ -393,6 +431,9 @@ class SshSession {
 
   /// The connection configuration.
   final SshConnectionConfig config;
+
+  /// Additional clients that should be closed with the session client.
+  final List<SSHClient> dependentClients;
 
   /// When the session was created.
   final DateTime createdAt;
@@ -536,12 +577,11 @@ class SshSession {
 
     try {
       final serverSocket = await ServerSocket.bind(localHost, localPort);
-      final tunnel = _ActiveTunnel(
+      final tunnel = _ActiveTunnel.local(
         serverSocket: serverSocket,
         localPort: serverSocket.port,
         remoteHost: remoteHost,
         remotePort: remotePort,
-        isLocal: true,
       );
 
       _activeTunnels[portForwardId] = tunnel;
@@ -579,12 +619,75 @@ class SshSession {
     }
   }
 
+  /// Start a remote port forward tunnel.
+  ///
+  /// Binds to [remoteHost]:[remotePort] on the SSH server and forwards
+  /// incoming connections to [localHost]:[localPort] on this device.
+  Future<bool> startRemoteForward({
+    required int portForwardId,
+    required String remoteHost,
+    required int remotePort,
+    required String localHost,
+    required int localPort,
+  }) async {
+    if (_activeTunnels.containsKey(portForwardId)) {
+      return true;
+    }
+
+    try {
+      final remoteForward = await client.forwardRemote(
+        host: remoteHost,
+        port: remotePort,
+      );
+      if (remoteForward == null) {
+        return false;
+      }
+
+      final tunnel = _ActiveTunnel.remote(
+        remoteForward: remoteForward,
+        localPort: localPort,
+        remoteHost: remoteForward.host,
+        remotePort: remoteForward.port,
+      );
+
+      _activeTunnels[portForwardId] = tunnel;
+      tunnel.subscription = remoteForward.connections.listen((channel) async {
+        Socket? socket;
+        try {
+          socket = await Socket.connect(localHost, localPort);
+          final remoteToLocal = channel.stream.cast<List<int>>().pipe(socket);
+          final localToRemote = socket.cast<List<int>>().pipe(channel.sink);
+          await Future.any<void>([remoteToLocal, localToRemote]);
+        } on Exception catch (e) {
+          debugPrint('Remote forward connection error: $e');
+        } finally {
+          try {
+            await channel.sink.close();
+          } on Exception catch (_) {
+            // Ignore cleanup errors.
+          }
+          try {
+            socket?.destroy();
+          } on Exception catch (_) {
+            // Ignore cleanup errors.
+          }
+        }
+      });
+
+      return true;
+    } on Exception catch (e) {
+      debugPrint('Failed to start remote forward: $e');
+      return false;
+    }
+  }
+
   /// Stop a specific port forward tunnel.
   Future<void> stopForward(int portForwardId) async {
     final tunnel = _activeTunnels.remove(portForwardId);
     if (tunnel != null) {
       await tunnel.subscription?.cancel();
-      await tunnel.serverSocket.close();
+      await tunnel.serverSocket?.close();
+      tunnel.remoteForward?.close();
     }
   }
 
@@ -608,6 +711,9 @@ class SshSession {
     await stopAllForwards();
     await closeShell();
     client.close();
+    for (final dependentClient in dependentClients) {
+      dependentClient.close();
+    }
   }
 }
 
@@ -666,22 +772,31 @@ class ActiveTunnelInfo {
 }
 
 class _ActiveTunnel {
-  _ActiveTunnel({
+  _ActiveTunnel.local({
     required this.serverSocket,
     required this.localPort,
     required this.remoteHost,
     required this.remotePort,
-    required this.isLocal,
-  });
+  }) : remoteForward = null,
+       isLocal = true;
 
-  final ServerSocket serverSocket;
+  _ActiveTunnel.remote({
+    required this.remoteForward,
+    required this.localPort,
+    required this.remoteHost,
+    required this.remotePort,
+  }) : serverSocket = null,
+       isLocal = false;
+
+  final ServerSocket? serverSocket;
+  final SSHRemoteForward? remoteForward;
   final int localPort;
   final String remoteHost;
   final int remotePort;
   final bool isLocal;
   // Cancelled in SshSession.stopForward().
   // ignore: cancel_subscriptions
-  StreamSubscription<Socket>? subscription;
+  StreamSubscription<dynamic>? subscription;
 }
 
 /// Provider for [SshService].
