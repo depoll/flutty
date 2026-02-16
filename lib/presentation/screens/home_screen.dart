@@ -109,70 +109,73 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 right: BorderSide(color: colorScheme.outline.withAlpha(60)),
               ),
             ),
-            child: Column(
-              children: [
-                // App header
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  child: Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: Image.asset(
-                          'assets/icons/monkeyssh_icon.png',
-                          width: 28,
-                          height: 28,
+            child: SafeArea(
+              bottom: false,
+              child: Column(
+                children: [
+                  // App header
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Row(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.asset(
+                            'assets/icons/monkeyssh_icon.png',
+                            width: 28,
+                            height: 28,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'MonkeySSH',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
+                        const SizedBox(width: 10),
+                        Text(
+                          'MonkeySSH',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-                // Navigation items
-                _NavItem(
-                  icon: Icons.dns_rounded,
-                  label: 'Hosts',
-                  selected: _selectedIndex == 0,
-                  onTap: () => setState(() => _selectedIndex = 0),
-                ),
-                _NavItem(
-                  icon: Icons.link,
-                  label: 'Connections',
-                  selected: _selectedIndex == 1,
-                  onTap: () => setState(() => _selectedIndex = 1),
-                ),
-                _NavItem(
-                  icon: Icons.key_rounded,
-                  label: 'Keys',
-                  selected: _selectedIndex == 2,
-                  onTap: () => setState(() => _selectedIndex = 2),
-                ),
-                _NavItem(
-                  icon: Icons.code_rounded,
-                  label: 'Snippets',
-                  selected: _selectedIndex == 3,
-                  onTap: () => setState(() => _selectedIndex = 3),
-                ),
+                  // Navigation items
+                  _NavItem(
+                    icon: Icons.dns_rounded,
+                    label: 'Hosts',
+                    selected: _selectedIndex == 0,
+                    onTap: () => setState(() => _selectedIndex = 0),
+                  ),
+                  _NavItem(
+                    icon: Icons.link,
+                    label: 'Connections',
+                    selected: _selectedIndex == 1,
+                    onTap: () => setState(() => _selectedIndex = 1),
+                  ),
+                  _NavItem(
+                    icon: Icons.key_rounded,
+                    label: 'Keys',
+                    selected: _selectedIndex == 2,
+                    onTap: () => setState(() => _selectedIndex = 2),
+                  ),
+                  _NavItem(
+                    icon: Icons.code_rounded,
+                    label: 'Snippets',
+                    selected: _selectedIndex == 3,
+                    onTap: () => setState(() => _selectedIndex = 3),
+                  ),
 
-                const Spacer(),
+                  const Spacer(),
 
-                // Settings at bottom
-                _NavItem(
-                  icon: Icons.settings_outlined,
-                  label: 'Settings',
-                  selected: false,
-                  onTap: () => context.push('/settings'),
-                ),
-                const SizedBox(height: 12),
-              ],
+                  // Settings at bottom
+                  _NavItem(
+                    icon: Icons.settings_outlined,
+                    label: 'Settings',
+                    selected: false,
+                    onTap: () => context.push('/settings'),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
             ),
           ),
 
