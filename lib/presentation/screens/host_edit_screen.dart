@@ -276,9 +276,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         decoration: const InputDecoration(
                           labelText: 'SSH Key (optional)',
                           prefixIcon: Icon(Icons.key),
+                          helperText:
+                              'Auto tries up to 5 installed keys when password is empty',
                         ),
                         items: [
-                          const DropdownMenuItem(child: Text('None')),
+                          const DropdownMenuItem<int?>(child: Text('Auto')),
                           ...keys.map(
                             (key) => DropdownMenuItem(
                               value: key.id,
