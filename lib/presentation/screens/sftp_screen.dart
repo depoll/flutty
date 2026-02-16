@@ -557,10 +557,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     try {
       final remotePath = _joinRemotePath(_currentPath, file.filename);
       final remoteFile = await _sftp!.open(remotePath);
+      final sink = File(savePath).openWrite();
       try {
-        final bytes = await remoteFile.readBytes();
-        await File(savePath).writeAsBytes(bytes);
+        await for (final chunk in remoteFile.read()) {
+          sink.add(chunk);
+        }
       } finally {
+        await sink.close();
         await remoteFile.close();
       }
 
@@ -583,14 +586,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final result = await FilePicker.platform.pickFiles(withData: true);
+    final result = await FilePicker.platform.pickFiles(withReadStream: true);
     if (result == null || result.files.isEmpty) {
       return;
     }
 
     final file = result.files.single;
-    final bytes = file.bytes;
-    if (bytes == null) {
+    final readStream =
+        file.readStream ??
+        (file.path == null ? null : File(file.path!).openRead());
+    if (readStream == null) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Unable to read selected file')),
@@ -609,7 +614,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             SftpFileOpenMode.truncate,
       );
       try {
-        await remoteFile.writeBytes(Uint8List.fromList(bytes));
+        await remoteFile
+            .write(
+              readStream.map(
+                (chunk) =>
+                    chunk is Uint8List ? chunk : Uint8List.fromList(chunk),
+              ),
+            )
+            .done;
       } finally {
         await remoteFile.close();
       }
@@ -633,14 +645,37 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
+    const maxEditableBytes = 1024 * 1024;
+    if ((file.attr.size ?? 0) > maxEditableBytes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('File is too large to edit here (max 1 MB)'),
+          ),
+        );
+      }
+      return;
+    }
+
     final remotePath = _joinRemotePath(_currentPath, file.filename);
     try {
       final remoteFile = await _sftp!.open(remotePath);
       late final Uint8List bytes;
       try {
-        bytes = await remoteFile.readBytes();
+        bytes = await remoteFile.readBytes(length: maxEditableBytes + 1);
       } finally {
         await remoteFile.close();
+      }
+
+      if (bytes.length > maxEditableBytes) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('File is too large to edit here (max 1 MB)'),
+            ),
+          );
+        }
+        return;
       }
 
       if (_looksBinary(bytes)) {

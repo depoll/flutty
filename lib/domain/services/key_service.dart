@@ -73,6 +73,12 @@ class KeyService {
     required SshKeyType keyType,
     String? passphrase,
   }) async {
+    if (!Platform.isMacOS && !Platform.isLinux && !Platform.isWindows) {
+      throw Exception(
+        'Key generation is only supported on desktop. Use Import on this platform.',
+      );
+    }
+
     final tempDir = await Directory.systemTemp.createTemp('monkeyssh-keygen-');
     final keyPath = p.join(tempDir.path, 'id_key');
     final normalizedPassphrase = passphrase?.isEmpty ?? true ? '' : passphrase!;
@@ -114,7 +120,7 @@ class KeyService {
         passphrase: normalizedPassphrase.isEmpty ? null : normalizedPassphrase,
       );
     } on ProcessException catch (e) {
-      throw StateError('ssh-keygen is not available: ${e.message}');
+      throw Exception('ssh-keygen is not available: ${e.message}');
     } finally {
       await tempDir.delete(recursive: true);
     }

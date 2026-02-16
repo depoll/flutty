@@ -99,6 +99,7 @@ class SshConnectionResult {
     this.client,
     this.connectionId,
     this.reusedConnection = false,
+    this.dependentClients = const <SSHClient>[],
   });
 
   /// Whether connection was successful.
@@ -115,6 +116,17 @@ class SshConnectionResult {
 
   /// Whether an existing connection was reused.
   final bool reusedConnection;
+
+  /// Additional SSH clients that must be closed with [client].
+  final List<SSHClient> dependentClients;
+
+  /// Closes [client] and any dependent jump-host clients.
+  Future<void> closeAll() async {
+    client?.close();
+    for (final dependentClient in dependentClients) {
+      dependentClient.close();
+    }
+  }
 }
 
 /// Service for managing SSH connections.
@@ -182,6 +194,7 @@ class SshService {
         hostId: hostId,
         client: result.client!,
         config: config,
+        dependentClients: result.dependentClients,
       );
 
       // Update last connected timestamp
@@ -198,6 +211,8 @@ class SshService {
 
   /// Connect with a configuration.
   Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+    SSHClient? client;
+    final dependentClients = <SSHClient>[];
     try {
       SSHSocket socket;
 
@@ -210,6 +225,9 @@ class SshService {
             error: 'Failed to connect to jump host: ${jumpResult.error}',
           );
         }
+        dependentClients
+          ..add(jumpResult.client!)
+          ..addAll(jumpResult.dependentClients);
 
         // Create forwarded connection through jump host
         // SSHForwardChannel implements SSHSocket
@@ -225,7 +243,7 @@ class SshService {
         );
       }
 
-      final client = SSHClient(
+      client = SSHClient(
         socket,
         username: config.username,
         onPasswordRequest: config.password != null
@@ -240,23 +258,35 @@ class SshService {
       // Wait for authentication to complete
       await client.authenticated;
 
-      return SshConnectionResult(success: true, client: client);
+      return SshConnectionResult(
+        success: true,
+        client: client,
+        dependentClients: dependentClients,
+      );
     } on SSHAuthFailError catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Authentication failed: ${e.message}',
       );
     } on SocketException catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
       return SshConnectionResult(
         success: false,
         error: 'Connection failed: ${e.message}',
       );
     } on TimeoutException {
+      client?.close();
+      _closeClients(dependentClients);
       return const SshConnectionResult(
         success: false,
         error: 'Connection timed out',
       );
     } on Exception catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
       return SshConnectionResult(success: false, error: 'Connection error: $e');
     }
   }
@@ -294,6 +324,12 @@ class SshService {
       return SSHKeyPair.fromPem(privateKey);
     } on FormatException {
       return null;
+    }
+  }
+
+  static void _closeClients(List<SSHClient> clients) {
+    for (final client in clients) {
+      client.close();
     }
   }
 
@@ -380,6 +416,7 @@ class SshSession {
     required this.hostId,
     required this.client,
     required this.config,
+    this.dependentClients = const <SSHClient>[],
   }) : createdAt = DateTime.now();
 
   /// The connection ID for this active session.
@@ -393,6 +430,9 @@ class SshSession {
 
   /// The connection configuration.
   final SshConnectionConfig config;
+
+  /// Additional clients that should be closed with the session client.
+  final List<SSHClient> dependentClients;
 
   /// When the session was created.
   final DateTime createdAt;
@@ -604,7 +644,7 @@ class SshSession {
 
       final tunnel = _ActiveTunnel.remote(
         remoteForward: remoteForward,
-        localPort: remoteForward.port,
+        localPort: localPort,
         remoteHost: remoteForward.host,
         remotePort: remoteForward.port,
       );
@@ -670,6 +710,9 @@ class SshSession {
     await stopAllForwards();
     await closeShell();
     client.close();
+    for (final dependentClient in dependentClients) {
+      dependentClient.close();
+    }
   }
 }
 

@@ -538,7 +538,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         return;
       }
 
-      result.client!.close();
+      await result.closeAll();
       messenger.showSnackBar(
         const SnackBar(content: Text('Connection successful')),
       );

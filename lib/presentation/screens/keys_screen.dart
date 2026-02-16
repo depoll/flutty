@@ -296,7 +296,7 @@ class _KeyDetailsSheet extends StatelessWidget {
             ),
             const SizedBox(height: 8),
             OutlinedButton.icon(
-              onPressed: () => _copyToClipboard(context, sshKey.privateKey),
+              onPressed: () => _confirmAndCopyPrivateKey(context),
               icon: const Icon(Icons.key),
               label: const Text('Copy Private Key'),
             ),
@@ -320,6 +320,35 @@ class _KeyDetailsSheet extends StatelessWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+  }
+
+  Future<void> _confirmAndCopyPrivateKey(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Copy private key?'),
+        content: const Text(
+          'Private keys are sensitive. Other apps may read clipboard contents.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Copy'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    if (!context.mounted) {
+      return;
+    }
+    _copyToClipboard(context, sshKey.privateKey);
   }
 
   String _getKeyTypeLabel() {

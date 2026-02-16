@@ -125,7 +125,10 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                   const SizedBox(height: 16),
 
                   DropdownButtonFormField<int?>(
-                    initialValue: _selectedFolderId,
+                    initialValue:
+                        _folders.any((folder) => folder.id == _selectedFolderId)
+                        ? _selectedFolderId
+                        : null,
                     decoration: const InputDecoration(
                       labelText: 'Folder (optional)',
                       prefixIcon: Icon(Icons.folder_outlined),

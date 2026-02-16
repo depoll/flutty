@@ -369,8 +369,11 @@ class _SnippetListTile extends StatelessWidget {
   }
 }
 
-/// Provider for snippets in the selected folder (null => root snippets).
+/// Provider for snippets in the selected folder (null => all snippets).
 final _snippetsProvider = FutureProvider.family<List<Snippet>, int?>((ref, id) {
   final repo = ref.watch(snippetRepositoryProvider);
+  if (id == null) {
+    return repo.getAll();
+  }
   return repo.getByFolder(id);
 });
