@@ -203,6 +203,7 @@ class SshService {
         success: true,
         client: result.client,
         connectionId: connectionId,
+        dependentClients: result.dependentClients,
       );
     }
 

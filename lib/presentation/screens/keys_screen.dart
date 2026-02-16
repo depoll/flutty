@@ -229,6 +229,7 @@ class _KeyDetailsSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    var isPrivateKeyVisible = false;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -283,22 +284,55 @@ class _KeyDetailsSheet extends StatelessWidget {
             const SizedBox(height: 24),
             Text('Private Key', style: theme.textTheme.titleMedium),
             const SizedBox(height: 8),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surfaceContainerHighest,
-                borderRadius: BorderRadius.circular(8),
+            StatefulBuilder(
+              builder: (context, setPrivateKeyState) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: isPrivateKeyVisible
+                        ? SelectableText(
+                            sshKey.privateKey,
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                            ),
+                          )
+                        : const Text(
+                            'Private key hidden. Tap "Reveal Private Key" to view.',
+                          ),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => setPrivateKeyState(
+                      () => isPrivateKeyVisible = !isPrivateKeyVisible,
+                    ),
+                    icon: Icon(
+                      isPrivateKeyVisible
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
+                    label: Text(
+                      isPrivateKeyVisible
+                          ? 'Hide Private Key'
+                          : 'Reveal Private Key',
+                    ),
+                  ),
+                  if (isPrivateKeyVisible) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => _confirmAndCopyPrivateKey(context),
+                      icon: const Icon(Icons.key),
+                      label: const Text('Copy Private Key'),
+                    ),
+                  ],
+                ],
               ),
-              child: SelectableText(
-                sshKey.privateKey,
-                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
-              ),
-            ),
-            const SizedBox(height: 8),
-            OutlinedButton.icon(
-              onPressed: () => _confirmAndCopyPrivateKey(context),
-              icon: const Icon(Icons.key),
-              label: const Text('Copy Private Key'),
             ),
           ],
           const SizedBox(height: 24),

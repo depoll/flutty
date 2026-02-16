@@ -334,7 +334,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 title: const Text('Edit'),
                 onTap: () {
                   Navigator.pop(context);
-                  _editTextFile(file);
+                  unawaited(_editTextFile(file));
                 },
               ),
             if (!file.attr.isDirectory)
@@ -343,7 +343,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 title: const Text('Download'),
                 onTap: () {
                   Navigator.pop(context);
-                  _downloadFile(file);
+                  unawaited(_downloadFile(file));
                 },
               ),
             ListTile(

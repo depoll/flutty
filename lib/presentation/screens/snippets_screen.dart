@@ -182,52 +182,60 @@ class _SnippetsScreenState extends ConsumerState<SnippetsScreen> {
                 stream: repo.watchAllFolders(),
                 builder: (context, snapshot) {
                   final folders = snapshot.data ?? const <SnippetFolder>[];
-                  return Column(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      ListTile(
-                        title: const Text('Folders'),
-                        subtitle: Text(
-                          _selectedFolderId == null
-                              ? 'Showing all snippets'
-                              : 'Filtered by selected folder',
-                        ),
-                        trailing: IconButton(
-                          icon: const Icon(Icons.create_new_folder_outlined),
-                          tooltip: 'Create folder',
-                          onPressed: () {
-                            Navigator.pop(context);
-                            unawaited(_showCreateFolderDialog());
-                          },
-                        ),
-                      ),
-                      ListTile(
-                        leading: const Icon(Icons.list),
-                        title: const Text('All snippets'),
-                        selected: _selectedFolderId == null,
-                        onTap: () => Navigator.pop(context, (
-                          folderId: null,
-                          folderName: null,
-                        )),
-                      ),
-                      for (final folder in folders)
+                  return SizedBox(
+                    height: 420,
+                    child: Column(
+                      children: [
                         ListTile(
-                          leading: const Icon(Icons.folder_outlined),
-                          title: Text(folder.name),
-                          selected: _selectedFolderId == folder.id,
-                          onTap: () => Navigator.pop(context, (
-                            folderId: folder.id,
-                            folderName: folder.name,
-                          )),
-                        ),
-                      if (folders.isEmpty)
-                        const Padding(
-                          padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
-                          child: Text(
-                            'No folders yet. Create one to organize snippets.',
+                          title: const Text('Folders'),
+                          subtitle: Text(
+                            _selectedFolderId == null
+                                ? 'Showing all snippets'
+                                : 'Filtered by selected folder',
+                          ),
+                          trailing: IconButton(
+                            icon: const Icon(Icons.create_new_folder_outlined),
+                            tooltip: 'Create folder',
+                            onPressed: () {
+                              Navigator.pop(context);
+                              unawaited(_showCreateFolderDialog());
+                            },
                           ),
                         ),
-                    ],
+                        Expanded(
+                          child: ListView(
+                            children: [
+                              ListTile(
+                                leading: const Icon(Icons.list),
+                                title: const Text('All snippets'),
+                                selected: _selectedFolderId == null,
+                                onTap: () => Navigator.pop(context, (
+                                  folderId: null,
+                                  folderName: null,
+                                )),
+                              ),
+                              for (final folder in folders)
+                                ListTile(
+                                  leading: const Icon(Icons.folder_outlined),
+                                  title: Text(folder.name),
+                                  selected: _selectedFolderId == folder.id,
+                                  onTap: () => Navigator.pop(context, (
+                                    folderId: folder.id,
+                                    folderName: folder.name,
+                                  )),
+                                ),
+                              if (folders.isEmpty)
+                                const Padding(
+                                  padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                                  child: Text(
+                                    'No folders yet. Create one to organize snippets.',
+                                  ),
+                                ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
                   );
                 },
               ),

@@ -229,13 +229,14 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
       );
 
       if (mounted) {
+        final messenger = ScaffoldMessenger.of(context);
         if (result == null) {
-          ScaffoldMessenger.of(context).showSnackBar(
+          messenger.showSnackBar(
             const SnackBar(content: Text('Failed to generate key')),
           );
         } else {
           context.pop();
-          ScaffoldMessenger.of(context).showSnackBar(
+          messenger.showSnackBar(
             const SnackBar(content: Text('Key generated successfully')),
           );
         }
