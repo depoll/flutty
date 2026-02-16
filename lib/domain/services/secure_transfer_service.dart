@@ -414,50 +414,38 @@ class SecureTransferService {
       throw const FormatException('Payload is not a full migration transfer');
     }
 
-    final shouldDisableForeignKeys = mode == MigrationImportMode.replace;
-    if (shouldDisableForeignKeys) {
-      await _db.customStatement('PRAGMA foreign_keys = OFF');
-    }
-
-    try {
-      await _db.transaction(() async {
-        if (mode == MigrationImportMode.replace) {
-          await _clearMigrationTables();
-        }
-
-        final groupMapping = await _importGroups(
-          _listFromData(payload.data, 'groups'),
-        );
-        final keyMapping = await _importKeys(
-          _listFromData(payload.data, 'keys'),
-        );
-        final hostMapping = await _importHosts(
-          _listFromData(payload.data, 'hosts'),
-          groupMapping: groupMapping,
-          keyMapping: keyMapping,
-        );
-        final snippetFolderMapping = await _importSnippetFolders(
-          _listFromData(payload.data, 'snippetFolders'),
-        );
-        await _importSnippets(
-          _listFromData(payload.data, 'snippets'),
-          snippetFolderMapping: snippetFolderMapping,
-        );
-        await _importPortForwards(
-          _listFromData(payload.data, 'portForwards'),
-          hostMapping: hostMapping,
-        );
-        await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
-        await _importSettings(
-          _settingsFromData(payload.data),
-          clearExisting: mode == MigrationImportMode.replace,
-        );
-      });
-    } finally {
-      if (shouldDisableForeignKeys) {
-        await _db.customStatement('PRAGMA foreign_keys = ON');
+    await _db.transaction(() async {
+      if (mode == MigrationImportMode.replace) {
+        await _db.customStatement('PRAGMA defer_foreign_keys = ON');
+        await _clearMigrationTables();
       }
-    }
+
+      final groupMapping = await _importGroups(
+        _listFromData(payload.data, 'groups'),
+      );
+      final keyMapping = await _importKeys(_listFromData(payload.data, 'keys'));
+      final hostMapping = await _importHosts(
+        _listFromData(payload.data, 'hosts'),
+        groupMapping: groupMapping,
+        keyMapping: keyMapping,
+      );
+      final snippetFolderMapping = await _importSnippetFolders(
+        _listFromData(payload.data, 'snippetFolders'),
+      );
+      await _importSnippets(
+        _listFromData(payload.data, 'snippets'),
+        snippetFolderMapping: snippetFolderMapping,
+      );
+      await _importPortForwards(
+        _listFromData(payload.data, 'portForwards'),
+        hostMapping: hostMapping,
+      );
+      await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
+      await _importSettings(
+        _settingsFromData(payload.data),
+        clearExisting: mode == MigrationImportMode.replace,
+      );
+    });
   }
 
   Future<String> _encryptPayload(

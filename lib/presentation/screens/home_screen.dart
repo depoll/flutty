@@ -807,7 +807,7 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
-    if (host.password?.isNotEmpty ?? false) {
+    if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
         authService: ref.read(authServiceProvider),
@@ -855,7 +855,7 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
-    if (host.password?.isNotEmpty ?? false) {
+    if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
         authService: ref.read(authServiceProvider),

@@ -8,6 +8,7 @@ import UIKit
   private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
   private var pendingTransferPayload: String?
   private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
+  private let maxTransferPayloadBytes = 10 * 1024 * 1024
   private var transferChannel: FlutterMethodChannel?
 
   override func application(
@@ -81,13 +82,28 @@ import UIKit
       return false
     }
     do {
-      pendingTransferPayload = try String(contentsOf: url, encoding: .utf8)
+      pendingTransferPayload = try readTransferPayload(from: url)
       notifyIncomingTransferPayload()
       return true
     } catch {
       pendingTransferPayload = nil
       return false
     }
+  }
+
+  private func readTransferPayload(from url: URL) throws -> String {
+    let fileSize = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize
+    if let fileSize, fileSize > maxTransferPayloadBytes {
+      throw NSError(domain: "MonkeySSHTransfer", code: 1)
+    }
+    let data = try Data(contentsOf: url, options: [.mappedIfSafe])
+    if data.count > maxTransferPayloadBytes {
+      throw NSError(domain: "MonkeySSHTransfer", code: 1)
+    }
+    guard let payload = String(data: data, encoding: .utf8) else {
+      throw NSError(domain: "MonkeySSHTransfer", code: 2)
+    }
+    return payload
   }
 
   private func notifyIncomingTransferPayload() {

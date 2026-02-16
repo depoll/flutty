@@ -5,10 +5,12 @@ import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
+import java.io.ByteArrayOutputStream
 
 class MainActivity : FlutterActivity() {
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
+    private val maxTransferPayloadBytes = 10 * 1024 * 1024
     private var sshService: SshConnectionService? = null
     private var transferMethodChannel: MethodChannel? = null
     private var pendingTransferPayload: String? = null
@@ -74,8 +76,19 @@ class MainActivity : FlutterActivity() {
 
         val sourceUri = intent.data ?: return
         try {
-            contentResolver.openInputStream(sourceUri)?.bufferedReader(Charsets.UTF_8).use { reader ->
-                pendingTransferPayload = reader?.readText()
+            pendingTransferPayload = contentResolver.openInputStream(sourceUri)?.use { stream ->
+                val buffer = ByteArray(8192)
+                val output = ByteArrayOutputStream()
+                var bytesRead: Int
+                var totalBytes = 0
+                while (stream.read(buffer).also { bytesRead = it } != -1) {
+                    totalBytes += bytesRead
+                    if (totalBytes > maxTransferPayloadBytes) {
+                        return@use null
+                    }
+                    output.write(buffer, 0, bytesRead)
+                }
+                output.toString(Charsets.UTF_8.name())
             }
             notifyIncomingTransferPayload()
         } catch (_: Exception) {
