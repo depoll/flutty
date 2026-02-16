@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -7,18 +9,38 @@ import '../../data/database/database.dart';
 import '../../data/repositories/snippet_repository.dart';
 
 /// Screen displaying list of saved snippets.
-class SnippetsScreen extends ConsumerWidget {
+class SnippetsScreen extends ConsumerStatefulWidget {
   /// Creates a new [SnippetsScreen].
   const SnippetsScreen({super.key});
 
   @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final snippetsAsync = ref.watch(_allSnippetsProvider);
+  ConsumerState<SnippetsScreen> createState() => _SnippetsScreenState();
+}
+
+class _SnippetsScreenState extends ConsumerState<SnippetsScreen> {
+  int? _selectedFolderId;
+  String? _selectedFolderName;
+
+  @override
+  Widget build(BuildContext context) {
+    final snippetsAsync = ref.watch(_snippetsProvider(_selectedFolderId));
     final theme = Theme.of(context);
 
     return Scaffold(
       appBar: AppBar(
         title: const Text('Snippets'),
+        bottom: _selectedFolderName == null
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(32),
+                child: Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Text(
+                    'Folder: $_selectedFolderName',
+                    style: theme.textTheme.bodySmall,
+                  ),
+                ),
+              ),
         actions: [
           IconButton(
             icon: const Icon(Icons.folder),
@@ -42,7 +64,8 @@ class SnippetsScreen extends ConsumerWidget {
               Text('Error: $error'),
               const SizedBox(height: 16),
               ElevatedButton(
-                onPressed: () => ref.invalidate(_allSnippetsProvider),
+                onPressed: () =>
+                    ref.invalidate(_snippetsProvider(_selectedFolderId)),
                 child: const Text('Retry'),
               ),
             ],
@@ -138,7 +161,7 @@ class SnippetsScreen extends ConsumerWidget {
 
     if (confirmed ?? false) {
       await ref.read(snippetRepositoryProvider).delete(snippet.id);
-      ref.invalidate(_allSnippetsProvider);
+      ref.invalidate(_snippetsProvider(_selectedFolderId));
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
@@ -147,10 +170,144 @@ class SnippetsScreen extends ConsumerWidget {
     }
   }
 
-  void _showFoldersDialog(BuildContext context) {
+  Future<void> _showFoldersDialog(BuildContext context) async {
+    final selection =
+        await showModalBottomSheet<({int? folderId, String? folderName})>(
+          context: context,
+          showDragHandle: true,
+          builder: (context) {
+            final repo = ref.read(snippetRepositoryProvider);
+            return SafeArea(
+              child: StreamBuilder<List<SnippetFolder>>(
+                stream: repo.watchAllFolders(),
+                builder: (context, snapshot) {
+                  final folders = snapshot.data ?? const <SnippetFolder>[];
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      ListTile(
+                        title: const Text('Folders'),
+                        subtitle: Text(
+                          _selectedFolderId == null
+                              ? 'Showing all snippets'
+                              : 'Filtered by selected folder',
+                        ),
+                        trailing: IconButton(
+                          icon: const Icon(Icons.create_new_folder_outlined),
+                          tooltip: 'Create folder',
+                          onPressed: () {
+                            Navigator.pop(context);
+                            unawaited(_showCreateFolderDialog());
+                          },
+                        ),
+                      ),
+                      ListTile(
+                        leading: const Icon(Icons.list),
+                        title: const Text('All snippets'),
+                        selected: _selectedFolderId == null,
+                        onTap: () => Navigator.pop(context, (
+                          folderId: null,
+                          folderName: null,
+                        )),
+                      ),
+                      for (final folder in folders)
+                        ListTile(
+                          leading: const Icon(Icons.folder_outlined),
+                          title: Text(folder.name),
+                          selected: _selectedFolderId == folder.id,
+                          onTap: () => Navigator.pop(context, (
+                            folderId: folder.id,
+                            folderName: folder.name,
+                          )),
+                        ),
+                      if (folders.isEmpty)
+                        const Padding(
+                          padding: EdgeInsets.fromLTRB(16, 0, 16, 16),
+                          child: Text(
+                            'No folders yet. Create one to organize snippets.',
+                          ),
+                        ),
+                    ],
+                  );
+                },
+              ),
+            );
+          },
+        );
+
+    if (selection == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedFolderId = selection.folderId;
+      _selectedFolderName = selection.folderName;
+    });
+  }
+
+  Future<void> _showCreateFolderDialog() async {
+    final controller = TextEditingController();
+    final formKey = GlobalKey<FormState>();
+
+    final created = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('New Folder'),
+        content: Form(
+          key: formKey,
+          child: TextFormField(
+            controller: controller,
+            autofocus: true,
+            decoration: const InputDecoration(
+              labelText: 'Folder name',
+              hintText: 'Deploy',
+            ),
+            validator: (value) {
+              if (value == null || value.trim().isEmpty) {
+                return 'Please enter a folder name';
+              }
+              return null;
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () {
+              if (formKey.currentState!.validate()) {
+                Navigator.pop(context, true);
+              }
+            },
+            child: const Text('Create'),
+          ),
+        ],
+      ),
+    );
+
+    final name = controller.text.trim();
+    controller.dispose();
+    if (created != true || name.isEmpty) {
+      return;
+    }
+
+    final id = await ref
+        .read(snippetRepositoryProvider)
+        .insertFolder(SnippetFoldersCompanion.insert(name: name));
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _selectedFolderId = id;
+      _selectedFolderName = name;
+    });
     ScaffoldMessenger.of(
       context,
-    ).showSnackBar(const SnackBar(content: Text('Folders coming soon')));
+    ).showSnackBar(SnackBar(content: Text('Created folder "$name"')));
   }
 }
 
@@ -212,8 +369,8 @@ class _SnippetListTile extends StatelessWidget {
   }
 }
 
-/// Provider for all snippets.
-final _allSnippetsProvider = FutureProvider<List<Snippet>>((ref) async {
+/// Provider for snippets in the selected folder (null => root snippets).
+final _snippetsProvider = FutureProvider.family<List<Snippet>, int?>((ref, id) {
   final repo = ref.watch(snippetRepositoryProvider);
-  return repo.getAll();
+  return repo.getByFolder(id);
 });

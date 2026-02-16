@@ -279,6 +279,28 @@ class _KeyDetailsSheet extends StatelessWidget {
             icon: const Icon(Icons.copy),
             label: const Text('Copy Public Key'),
           ),
+          if (sshKey.privateKey.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text('Private Key', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: SelectableText(
+                sshKey.privateKey,
+                style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              ),
+            ),
+            const SizedBox(height: 8),
+            OutlinedButton.icon(
+              onPressed: () => _copyToClipboard(context, sshKey.privateKey),
+              icon: const Icon(Icons.key),
+              label: const Text('Copy Private Key'),
+            ),
+          ],
           const SizedBox(height: 24),
 
           // Created date
