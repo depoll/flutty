@@ -4,8 +4,10 @@ import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../widgets/terminal_theme_picker.dart';
+import 'transfer_screen.dart';
 
 /// Settings screen with appearance, security, terminal, and about sections.
 class SettingsScreen extends ConsumerWidget {
@@ -21,6 +23,7 @@ class SettingsScreen extends ConsumerWidget {
         _AppearanceSection(),
         _SecuritySection(),
         _TerminalSection(),
+        _MigrationSection(),
         _AboutSection(),
       ],
     ),
@@ -701,5 +704,178 @@ class _AboutSection extends StatelessWidget {
         content: Text('GitHub: github.com/monkeyssh-app/monkeyssh'),
       ),
     );
+  }
+}
+
+class _MigrationSection extends ConsumerWidget {
+  const _MigrationSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      const _SectionHeader(title: 'Migration'),
+      ListTile(
+        leading: const Icon(Icons.save_alt),
+        title: const Text('Export full migration package'),
+        subtitle: const Text('Encrypted transfer file (.monkeysshx)'),
+        onTap: () => _exportMigration(context, ref),
+      ),
+      ListTile(
+        leading: const Icon(Icons.download_for_offline_outlined),
+        title: const Text('Import migration package'),
+        subtitle: const Text('Preview and choose merge or replace'),
+        onTap: () => _importMigration(context, ref),
+      ),
+    ],
+  );
+
+  Future<void> _exportMigration(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to export migration package',
+    );
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Authentication required for migration export'),
+        ),
+      );
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Migration export passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    try {
+      final payload = await ref
+          .read(secureTransferServiceProvider)
+          .createFullMigrationPayload(transferPassphrase: transferPassphrase);
+      if (!context.mounted) {
+        return;
+      }
+      await saveTransferPayloadToFile(
+        context: context,
+        payload: payload,
+        defaultFileName: 'monkeyssh-migration',
+      );
+    } on Exception catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Export failed: $error')));
+    }
+  }
+
+  Future<void> _importMigration(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to import migration package',
+    );
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Authentication required for migration import'),
+        ),
+      );
+      return;
+    }
+
+    final source = await showTransferImportSourceSheet(context);
+    if (!context.mounted || source == null) {
+      return;
+    }
+
+    String? encodedPayload;
+    if (source == TransferImportSource.qr) {
+      encodedPayload = await scanTransferPayload(context);
+    } else {
+      encodedPayload = await pickTransferPayloadFromFile(context);
+    }
+    if (!context.mounted || encodedPayload == null) {
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Migration import passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    try {
+      final transferService = ref.read(secureTransferServiceProvider);
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
+      );
+      if (payload.type != TransferPayloadType.fullMigration) {
+        throw const FormatException(
+          'This transfer payload does not contain full migration data',
+        );
+      }
+
+      final preview = transferService.previewMigrationPayload(payload);
+      if (!context.mounted) {
+        return;
+      }
+      final mode = await showMigrationImportModeDialog(
+        context: context,
+        preview: preview,
+        title: 'Import migration package',
+      );
+      if (mode == null || !context.mounted) {
+        return;
+      }
+
+      await transferService.importFullMigrationPayload(
+        payload: payload,
+        mode: mode,
+      );
+      ref
+        ..invalidate(themeModeNotifierProvider)
+        ..invalidate(fontSizeNotifierProvider)
+        ..invalidate(fontFamilyNotifierProvider)
+        ..invalidate(cursorStyleNotifierProvider)
+        ..invalidate(bellSoundNotifierProvider)
+        ..invalidate(terminalThemeSettingsProvider);
+
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Migration import completed')),
+      );
+    } on FormatException catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    }
   }
 }
