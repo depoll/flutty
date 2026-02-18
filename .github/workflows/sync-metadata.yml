@@ -24,7 +24,7 @@ jobs:
   sync-ios:
     name: Sync iOS Metadata
     if: inputs.platform == 'both' || inputs.platform == 'ios'
-    runs-on: macos-26
+    runs-on: ubuntu-latest
     env:
       APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
       APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
