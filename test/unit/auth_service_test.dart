@@ -132,34 +132,36 @@ void main() {
         expect(result, false);
       });
 
-      test('migrates legacy PIN hash on successful verification', () async {
-        final storage = <String, String>{
-          'flutty_pin_hash': _legacyHashPin('1234'),
-        };
+      test('returns false for legacy PIN hash format', () async {
         when(
-          () => mockStorage.write(
-            key: any(named: 'key'),
-            value: any(named: 'value'),
-          ),
-        ).thenAnswer((invocation) async {
-          storage[invocation.namedArguments[const Symbol('key')] as String] =
-              invocation.namedArguments[const Symbol('value')] as String;
-        });
-        when(() => mockStorage.read(key: any(named: 'key'))).thenAnswer(
-          (invocation) async =>
-              storage[invocation.namedArguments[const Symbol('key')]],
+          () => mockStorage.read(key: 'flutty_pin_hash'),
+        ).thenAnswer((_) async => 'legacy-hash-value');
+
+        final result = await authService.verifyPin('1234');
+
+        expect(result, false);
+      });
+
+      test('returns false for unsupported PIN KDF version', () async {
+        when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
+          (_) async =>
+              jsonEncode({'version': 99, 'iterations': 120000, 'hash': 'hash'}),
         );
 
         final result = await authService.verifyPin('1234');
 
-        expect(result, true);
-        expect(storage['flutty_pin_salt'], isNotNull);
-        expect(storage['flutty_pin_kdf_metadata'], isNotNull);
-        final pinPayload =
-            jsonDecode(storage['flutty_pin_hash']!) as Map<String, dynamic>;
-        expect(pinPayload['version'], 1);
-        expect(pinPayload['iterations'], greaterThan(0));
-        expect(pinPayload['hash'], isA<String>());
+        expect(result, false);
+      });
+
+      test('returns false for invalid PIN KDF iterations', () async {
+        when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
+          (_) async =>
+              jsonEncode({'version': 1, 'iterations': 0, 'hash': 'hash'}),
+        );
+
+        final result = await authService.verifyPin('1234');
+
+        expect(result, false);
       });
 
       test('returns false when no PIN is set', () async {
@@ -319,14 +321,4 @@ void main() {
       });
     });
   });
-}
-
-String _legacyHashPin(String pin) {
-  final bytes = utf8.encode('${pin}flutty_salt');
-  var hash = 0;
-  for (final byte in bytes) {
-    hash = ((hash << 5) - hash) + byte;
-    hash = hash & 0xFFFFFFFF;
-  }
-  return hash.toRadixString(16);
 }

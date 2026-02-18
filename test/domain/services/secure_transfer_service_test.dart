@@ -7,18 +7,24 @@ import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 
 void main() {
   late AppDatabase db;
+  late HostRepository hostRepository;
   late KeyRepository keyRepository;
+  late SecretEncryptionService encryptionService;
   late SecureTransferService transferService;
 
   setUp(() {
     db = AppDatabase.forTesting(NativeDatabase.memory());
-    keyRepository = KeyRepository(db);
-    transferService = SecureTransferService(db, keyRepository);
+    encryptionService = SecretEncryptionService.forTesting();
+    hostRepository = HostRepository(db, encryptionService);
+    keyRepository = KeyRepository(db, encryptionService);
+    transferService = SecureTransferService(db, keyRepository, hostRepository);
   });
 
   tearDown(() async {
@@ -54,6 +60,62 @@ void main() {
       final hostData = Map<String, dynamic>.from(decrypted.data['host'] as Map);
       expect(hostData['label'], 'Production');
       expect(hostData['hostname'], 'prod.example.com');
+    });
+
+    test(
+      'importKeyPayload encrypts imported private material at rest',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.key,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'key': {
+              'name': 'Imported Key',
+              'keyType': 'ed25519',
+              'publicKey': 'ssh-ed25519 AAAA',
+              'privateKey': '-----BEGIN OPENSSH PRIVATE KEY-----abc',
+              'passphrase': 'pass',
+            },
+          },
+        );
+
+        final imported = await transferService.importKeyPayload(payload);
+        expect(imported.privateKey, '-----BEGIN OPENSSH PRIVATE KEY-----abc');
+        expect(imported.passphrase, 'pass');
+
+        final stored = await (db.select(
+          db.sshKeys,
+        )..where((k) => k.id.equals(imported.id))).getSingle();
+        expect(stored.privateKey, startsWith('ENCv1:'));
+        expect(stored.passphrase, startsWith('ENCv1:'));
+      },
+    );
+
+    test('importHostPayload encrypts imported password at rest', () async {
+      final payload = TransferPayload(
+        type: TransferPayloadType.host,
+        schemaVersion: 1,
+        createdAt: DateTime.now().toUtc(),
+        data: {
+          'host': {
+            'label': 'Imported Host',
+            'hostname': 'imported.example.com',
+            'port': 22,
+            'username': 'root',
+            'password': 'host-pass',
+            'isFavorite': false,
+          },
+        },
+      );
+
+      final imported = await transferService.importHostPayload(payload);
+      expect(imported.password, 'host-pass');
+
+      final stored = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(imported.id))).getSingle();
+      expect(stored.password, startsWith('ENCv1:'));
     });
 
     test('rejects invalid passphrase', () async {
@@ -155,6 +217,103 @@ void main() {
       );
     });
 
+    test('rejects envelope with invalid iteration count', () async {
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Host',
+              hostname: 'example.com',
+              username: 'user',
+            ),
+          );
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(hostId))).getSingle();
+      final encodedPayload = await transferService.createHostPayload(
+        host: host,
+        transferPassphrase: '1234',
+      );
+
+      final compact = encodedPayload.substring('MSSH1:'.length);
+      final envelope = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(compact))))
+            as Map,
+      );
+      envelope['iter'] = 0;
+      final tampered =
+          'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
+
+      await expectLater(
+        transferService.decryptPayload(
+          encodedPayload: tampered,
+          transferPassphrase: '1234',
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test('fails migration when host references missing key mapping', () async {
+      final payload = TransferPayload(
+        type: TransferPayloadType.fullMigration,
+        schemaVersion: 1,
+        createdAt: DateTime.now().toUtc(),
+        data: {
+          'keys': <Map<String, dynamic>>[],
+          'groups': <Map<String, dynamic>>[],
+          'hosts': [
+            {
+              'id': 1,
+              'label': 'Host',
+              'hostname': 'example.com',
+              'username': 'root',
+              'keyId': 999,
+            },
+          ],
+        },
+      );
+
+      await expectLater(
+        transferService.importFullMigrationPayload(
+          payload: payload,
+          mode: MigrationImportMode.merge,
+        ),
+        throwsFormatException,
+      );
+    });
+
+    test(
+      'fails migration when port forward references missing host mapping',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.fullMigration,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'hosts': <Map<String, dynamic>>[],
+            'portForwards': [
+              {
+                'name': 'pf',
+                'hostId': 999,
+                'forwardType': 'local',
+                'localPort': 10022,
+                'remoteHost': '127.0.0.1',
+                'remotePort': 22,
+              },
+            ],
+          },
+        );
+
+        await expectLater(
+          transferService.importFullMigrationPayload(
+            payload: payload,
+            mode: MigrationImportMode.merge,
+          ),
+          throwsFormatException,
+        );
+      },
+    );
+
     test(
       'imports full migration in replace mode with self references',
       () async {
@@ -169,16 +328,14 @@ void main() {
                 parentId: Value(parentGroupId),
               ),
             );
-        final keyId = await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Main Key',
-                keyType: 'ed25519',
-                publicKey: 'ssh-ed25519 AAAA',
-                privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----abc',
-              ),
-            );
+        final keyId = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Main Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA',
+            privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----abc',
+          ),
+        );
 
         final hostAId = await db
             .into(db.hosts)

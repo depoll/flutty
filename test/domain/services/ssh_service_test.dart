@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 void main() {
@@ -269,8 +270,9 @@ void main() {
 
     test('connectToHost fails when host not found', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
-      final hostRepo = HostRepository(db);
-      final keyRepo = KeyRepository(db);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
       final service = SshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,

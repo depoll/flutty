@@ -125,11 +125,13 @@ class AuthService {
 
     final pinRecord = _parsePinRecord(storedPinData);
     if (pinRecord == null) {
-      final isLegacyMatch = _legacyHashPin(pin) == storedPinData;
-      if (!isLegacyMatch) return false;
-
-      await _storePin(pin, enableAuth: false);
-      return true;
+      return false;
+    }
+    if (pinRecord.version != _pinKdfVersion) {
+      return false;
+    }
+    if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
+      return false;
     }
 
     final salt = await _readSalt();
@@ -291,16 +293,6 @@ class AuthService {
     }
 
     return _PinHashRecord(version: version, iterations: iterations, hash: hash);
-  }
-
-  String _legacyHashPin(String pin) {
-    final bytes = utf8.encode('${pin}flutty_salt');
-    var hash = 0;
-    for (final byte in bytes) {
-      hash = ((hash << 5) - hash) + byte;
-      hash = hash & 0xFFFFFFFF;
-    }
-    return hash.toRadixString(16);
   }
 
   bool _constantTimeEquals(String a, String b) {

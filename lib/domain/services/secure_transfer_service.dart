@@ -6,6 +6,7 @@ import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
+import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 
 /// Supported transfer payload types.
@@ -134,10 +135,11 @@ class MigrationPreview {
 /// Service that encrypts and imports offline transfer payloads.
 class SecureTransferService {
   /// Creates a new [SecureTransferService].
-  SecureTransferService(this._db, this._keyRepository);
+  SecureTransferService(this._db, this._keyRepository, this._hostRepository);
 
   final AppDatabase _db;
   final KeyRepository _keyRepository;
+  final HostRepository _hostRepository;
   final _random = Random.secure();
   final _aesGcm = AesGcm.with256bits();
   final _sha256 = Sha256();
@@ -194,8 +196,8 @@ class SecureTransferService {
   }) async {
     final settings = await _db.select(_db.settings).get();
     final groups = await _db.select(_db.groups).get();
-    final keys = await _db.select(_db.sshKeys).get();
-    final hosts = await _db.select(_db.hosts).get();
+    final keys = await _keyRepository.getAll();
+    final hosts = await _hostRepository.getAll();
     final snippetFolders = await _db.select(_db.snippetFolders).get();
     final snippets = await _db.select(_db.snippets).get();
     final portForwards = await _db.select(_db.portForwards).get();
@@ -260,6 +262,11 @@ class SecureTransferService {
     if (versionValue is! num || versionValue.toInt() != _envelopeVersion) {
       throw const FormatException('Unsupported transfer envelope version');
     }
+    final envelopeIterations =
+        _optionalInt(envelopeMap['iter']) ?? _pbkdf2Iterations;
+    if (envelopeIterations <= 0) {
+      throw const FormatException('Invalid transfer envelope');
+    }
 
     final salt = _decodeEnvelopeField(envelopeMap, 'salt');
     final nonce = _decodeEnvelopeField(envelopeMap, 'nonce');
@@ -271,7 +278,11 @@ class SecureTransferService {
       throw const FormatException('Invalid transfer envelope');
     }
 
-    final secretKey = await _deriveKey(transferPassphrase, salt);
+    final secretKey = await _deriveKey(
+      transferPassphrase,
+      salt,
+      iterations: envelopeIterations,
+    );
     final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes));
 
     late List<int> plaintext;
@@ -322,46 +333,42 @@ class SecureTransferService {
         keyId = importedKey.id;
       }
 
-      final hostId = await _db
-          .into(_db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: _requiredString(hostData, 'label'),
-              hostname: _requiredString(hostData, 'hostname'),
-              port: Value(_optionalInt(hostData['port']) ?? 22),
-              username: _requiredString(hostData, 'username'),
-              password: Value(_optionalString(hostData['password'])),
-              keyId: Value(keyId),
-              groupId: const Value(null),
-              jumpHostId: const Value(null),
-              isFavorite: Value((hostData['isFavorite'] as bool?) ?? false),
-              color: Value(_optionalString(hostData['color'])),
-              notes: Value(_optionalString(hostData['notes'])),
-              tags: Value(_optionalString(hostData['tags'])),
-              createdAt: Value(
-                _optionalDateTime(hostData['createdAt']) ?? DateTime.now(),
-              ),
-              updatedAt: Value(
-                _optionalDateTime(hostData['updatedAt']) ?? DateTime.now(),
-              ),
-              lastConnectedAt: Value(
-                _optionalDateTime(hostData['lastConnectedAt']),
-              ),
-              terminalThemeLightId: Value(
-                _optionalString(hostData['terminalThemeLightId']),
-              ),
-              terminalThemeDarkId: Value(
-                _optionalString(hostData['terminalThemeDarkId']),
-              ),
-              terminalFontFamily: Value(
-                _optionalString(hostData['terminalFontFamily']),
-              ),
-            ),
-          );
+      final hostId = await _hostRepository.insert(
+        HostsCompanion.insert(
+          label: _requiredString(hostData, 'label'),
+          hostname: _requiredString(hostData, 'hostname'),
+          port: Value(_optionalInt(hostData['port']) ?? 22),
+          username: _requiredString(hostData, 'username'),
+          password: Value(_optionalString(hostData['password'])),
+          keyId: Value(keyId),
+          groupId: const Value(null),
+          jumpHostId: const Value(null),
+          isFavorite: Value((hostData['isFavorite'] as bool?) ?? false),
+          color: Value(_optionalString(hostData['color'])),
+          notes: Value(_optionalString(hostData['notes'])),
+          tags: Value(_optionalString(hostData['tags'])),
+          createdAt: Value(
+            _optionalDateTime(hostData['createdAt']) ?? DateTime.now(),
+          ),
+          updatedAt: Value(
+            _optionalDateTime(hostData['updatedAt']) ?? DateTime.now(),
+          ),
+          lastConnectedAt: Value(
+            _optionalDateTime(hostData['lastConnectedAt']),
+          ),
+          terminalThemeLightId: Value(
+            _optionalString(hostData['terminalThemeLightId']),
+          ),
+          terminalThemeDarkId: Value(
+            _optionalString(hostData['terminalThemeDarkId']),
+          ),
+          terminalFontFamily: Value(
+            _optionalString(hostData['terminalFontFamily']),
+          ),
+        ),
+      );
 
-      final createdHost = await (_db.select(
-        _db.hosts,
-      )..where((tbl) => tbl.id.equals(hostId))).getSingleOrNull();
+      final createdHost = await _hostRepository.getById(hostId);
       if (createdHost == null) {
         throw const FormatException('Failed to import host');
       }
@@ -456,7 +463,11 @@ class SecureTransferService {
     final payloadBytes = utf8.encode(jsonEncode(payload.toJson()));
     final salt = _randomBytes(_saltBytes);
     final nonce = _randomBytes(_nonceBytes);
-    final secretKey = await _deriveKey(transferPassphrase, salt);
+    final secretKey = await _deriveKey(
+      transferPassphrase,
+      salt,
+      iterations: _pbkdf2Iterations,
+    );
     final encryptedBox = await _aesGcm.encrypt(
       payloadBytes,
       secretKey: secretKey,
@@ -480,10 +491,14 @@ class SecureTransferService {
     return '$_payloadPrefix$encodedEnvelope';
   }
 
-  Future<SecretKey> _deriveKey(String passphrase, List<int> salt) {
+  Future<SecretKey> _deriveKey(
+    String passphrase,
+    List<int> salt, {
+    required int iterations,
+  }) {
     final pbkdf2 = Pbkdf2(
       macAlgorithm: Hmac.sha256(),
-      iterations: _pbkdf2Iterations,
+      iterations: iterations,
       bits: 256,
     );
     return pbkdf2.deriveKey(
@@ -497,46 +512,37 @@ class SecureTransferService {
 
   Future<SshKey> _importKeyMap(Map<String, dynamic> keyData) async {
     final fingerprint = _optionalString(keyData['fingerprint']);
+    final existingKeys = await _keyRepository.getAll();
     if (fingerprint != null && fingerprint.isNotEmpty) {
-      final existingByFingerprint = await (_db.select(
-        _db.sshKeys,
-      )..where((tbl) => tbl.fingerprint.equals(fingerprint))).getSingleOrNull();
-      if (existingByFingerprint != null) {
-        return existingByFingerprint;
+      for (final key in existingKeys) {
+        if (key.fingerprint == fingerprint) {
+          return key;
+        }
       }
     }
 
     final publicKey = _requiredString(keyData, 'publicKey');
     final privateKey = _requiredString(keyData, 'privateKey');
-    final existingByMaterial =
-        await (_db.select(_db.sshKeys)..where(
-              (tbl) =>
-                  tbl.publicKey.equals(publicKey) &
-                  tbl.privateKey.equals(privateKey),
-            ))
-            .getSingleOrNull();
-    if (existingByMaterial != null) {
-      return existingByMaterial;
+    for (final key in existingKeys) {
+      if (key.publicKey == publicKey && key.privateKey == privateKey) {
+        return key;
+      }
     }
 
-    final keyId = await _db
-        .into(_db.sshKeys)
-        .insert(
-          SshKeysCompanion.insert(
-            name: _requiredString(keyData, 'name'),
-            keyType: _requiredString(keyData, 'keyType'),
-            publicKey: publicKey,
-            privateKey: privateKey,
-            passphrase: Value(_optionalString(keyData['passphrase'])),
-            fingerprint: Value(fingerprint),
-            createdAt: Value(
-              _optionalDateTime(keyData['createdAt']) ?? DateTime.now(),
-            ),
-          ),
-        );
-    final createdKey = await (_db.select(
-      _db.sshKeys,
-    )..where((tbl) => tbl.id.equals(keyId))).getSingleOrNull();
+    final keyId = await _keyRepository.insert(
+      SshKeysCompanion.insert(
+        name: _requiredString(keyData, 'name'),
+        keyType: _requiredString(keyData, 'keyType'),
+        publicKey: publicKey,
+        privateKey: privateKey,
+        passphrase: Value(_optionalString(keyData['passphrase'])),
+        fingerprint: Value(fingerprint),
+        createdAt: Value(
+          _optionalDateTime(keyData['createdAt']) ?? DateTime.now(),
+        ),
+      ),
+    );
+    final createdKey = await _keyRepository.getById(keyId);
     if (createdKey == null) {
       throw const FormatException('Failed to import SSH key');
     }
@@ -614,23 +620,9 @@ class SecureTransferService {
     final idMapping = <int, int>{};
     for (final item in rawKeys) {
       final oldId = _optionalInt(item['id']);
-      final newId = await _db
-          .into(_db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: _requiredString(item, 'name'),
-              keyType: _requiredString(item, 'keyType'),
-              publicKey: _requiredString(item, 'publicKey'),
-              privateKey: _requiredString(item, 'privateKey'),
-              passphrase: Value(_optionalString(item['passphrase'])),
-              fingerprint: Value(_optionalString(item['fingerprint'])),
-              createdAt: Value(
-                _optionalDateTime(item['createdAt']) ?? DateTime.now(),
-              ),
-            ),
-          );
+      final importedKey = await _importKeyMap(item);
       if (oldId != null) {
-        idMapping[oldId] = newId;
+        idMapping[oldId] = importedKey.id;
       }
     }
     return idMapping;
@@ -649,45 +641,57 @@ class SecureTransferService {
       final oldGroupId = _optionalInt(item['groupId']);
       final oldKeyId = _optionalInt(item['keyId']);
       final oldJumpId = _optionalInt(item['jumpHostId']);
-
-      final newId = await _db
-          .into(_db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: _requiredString(item, 'label'),
-              hostname: _requiredString(item, 'hostname'),
-              port: Value(_optionalInt(item['port']) ?? 22),
-              username: _requiredString(item, 'username'),
-              password: Value(_optionalString(item['password'])),
-              keyId: Value(oldKeyId == null ? null : keyMapping[oldKeyId]),
-              groupId: Value(
-                oldGroupId == null ? null : groupMapping[oldGroupId],
-              ),
-              jumpHostId: const Value(null),
-              isFavorite: Value((item['isFavorite'] as bool?) ?? false),
-              color: Value(_optionalString(item['color'])),
-              notes: Value(_optionalString(item['notes'])),
-              tags: Value(_optionalString(item['tags'])),
-              createdAt: Value(
-                _optionalDateTime(item['createdAt']) ?? DateTime.now(),
-              ),
-              updatedAt: Value(
-                _optionalDateTime(item['updatedAt']) ?? DateTime.now(),
-              ),
-              lastConnectedAt: Value(
-                _optionalDateTime(item['lastConnectedAt']),
-              ),
-              terminalThemeLightId: Value(
-                _optionalString(item['terminalThemeLightId']),
-              ),
-              terminalThemeDarkId: Value(
-                _optionalString(item['terminalThemeDarkId']),
-              ),
-              terminalFontFamily: Value(
-                _optionalString(item['terminalFontFamily']),
-              ),
-            ),
+      int? mappedGroupId;
+      int? mappedKeyId;
+      if (oldGroupId != null) {
+        mappedGroupId = groupMapping[oldGroupId];
+        if (mappedGroupId == null) {
+          throw const FormatException(
+            'Invalid group reference in migration payload',
           );
+        }
+      }
+      if (oldKeyId != null) {
+        mappedKeyId = keyMapping[oldKeyId];
+        if (mappedKeyId == null) {
+          throw const FormatException(
+            'Invalid key reference in migration payload',
+          );
+        }
+      }
+
+      final newId = await _hostRepository.insert(
+        HostsCompanion.insert(
+          label: _requiredString(item, 'label'),
+          hostname: _requiredString(item, 'hostname'),
+          port: Value(_optionalInt(item['port']) ?? 22),
+          username: _requiredString(item, 'username'),
+          password: Value(_optionalString(item['password'])),
+          keyId: Value(mappedKeyId),
+          groupId: Value(mappedGroupId),
+          jumpHostId: const Value(null),
+          isFavorite: Value((item['isFavorite'] as bool?) ?? false),
+          color: Value(_optionalString(item['color'])),
+          notes: Value(_optionalString(item['notes'])),
+          tags: Value(_optionalString(item['tags'])),
+          createdAt: Value(
+            _optionalDateTime(item['createdAt']) ?? DateTime.now(),
+          ),
+          updatedAt: Value(
+            _optionalDateTime(item['updatedAt']) ?? DateTime.now(),
+          ),
+          lastConnectedAt: Value(_optionalDateTime(item['lastConnectedAt'])),
+          terminalThemeLightId: Value(
+            _optionalString(item['terminalThemeLightId']),
+          ),
+          terminalThemeDarkId: Value(
+            _optionalString(item['terminalThemeDarkId']),
+          ),
+          terminalFontFamily: Value(
+            _optionalString(item['terminalFontFamily']),
+          ),
+        ),
+      );
 
       if (oldId != null) {
         idMapping[oldId] = newId;
@@ -703,7 +707,9 @@ class SecureTransferService {
       }
       final mappedJumpId = idMapping[oldJumpId];
       if (mappedJumpId == null) {
-        continue;
+        throw const FormatException(
+          'Invalid jump host reference in migration payload',
+        );
       }
       await (_db.update(_db.hosts)..where((tbl) => tbl.id.equals(newHostId)))
           .write(HostsCompanion(jumpHostId: Value(mappedJumpId)));
@@ -805,9 +811,16 @@ class SecureTransferService {
   }) async {
     for (final item in rawPortForwards) {
       final oldHostId = _optionalInt(item['hostId']);
-      final mappedHostId = oldHostId == null ? null : hostMapping[oldHostId];
+      if (oldHostId == null) {
+        throw const FormatException(
+          'Missing host reference in migration payload',
+        );
+      }
+      final mappedHostId = hostMapping[oldHostId];
       if (mappedHostId == null) {
-        continue;
+        throw const FormatException(
+          'Invalid host reference in migration payload',
+        );
       }
 
       await _db
@@ -953,5 +966,6 @@ final secureTransferServiceProvider = Provider<SecureTransferService>(
   (ref) => SecureTransferService(
     ref.watch(databaseProvider),
     ref.watch(keyRepositoryProvider),
+    ref.watch(hostRepositoryProvider),
   ),
 );
