@@ -96,6 +96,7 @@ jobs:
           EOF
 
       - name: Build AAB
+        if: inputs.deploy-android-to != 'none'
         run: |
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
@@ -112,6 +113,7 @@ jobs:
             --build-number=${{ inputs.build-number }}
 
       - name: Upload AAB artifact
+        if: inputs.deploy-android-to != 'none'
         uses: actions/upload-artifact@v6
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
