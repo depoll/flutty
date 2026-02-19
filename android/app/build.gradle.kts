@@ -52,7 +52,7 @@ android {
         create("private") {
             dimension = "environment"
             applicationIdSuffix = ".private"
-            resValue("string", "app_name", "MonkeySSH Private")
+            resValue("string", "app_name", "MonkeySSH β")
         }
         create("production") {
             dimension = "environment"
