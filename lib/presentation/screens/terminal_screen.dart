@@ -42,6 +42,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   late Terminal _terminal;
+  late final TerminalController _terminalController;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
@@ -50,6 +51,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _error;
   bool _showKeyboard = true;
   bool _isUsingAltBuffer = false;
+  bool _hasTerminalSelection = false;
   int? _connectionId;
 
   // Theme state
@@ -70,8 +72,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _terminal = Terminal(maxLines: 10000);
+    _terminalController = TerminalController();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminal.addListener(_onTerminalStateChanged);
+    _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
@@ -85,6 +89,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     setState(() {
       _isUsingAltBuffer = isUsingAltBuffer;
+    });
+  }
+
+  void _onSelectionChanged() {
+    final hasSelection = _terminalController.selection != null;
+    if (!mounted || _hasTerminalSelection == hasSelection) {
+      return;
+    }
+
+    setState(() {
+      _hasTerminalSelection = hasSelection;
     });
   }
 
@@ -388,6 +403,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _terminal.removeListener(_onTerminalStateChanged);
+    _terminalController
+      ..removeListener(_onSelectionChanged)
+      ..dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     super.dispose();
@@ -636,6 +654,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final terminalView = TerminalView(
       _terminal,
+      controller: _terminalController,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: textStyle,
@@ -668,6 +687,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
+    if (_hasTerminalSelection) {
+      mobileTerminalView = Stack(
+        fit: StackFit.expand,
+        children: [
+          mobileTerminalView,
+          Positioned(left: 12, right: 12, bottom: 12, child: _selectionActions),
+        ],
+      );
+    }
+
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
@@ -708,23 +737,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'snippets':
         await _showSnippetPicker();
       case 'copy':
-        // xterm doesn't expose selectedText directly
-        // Copy functionality requires integration with TerminalView's selection
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Use long-press to select and copy')),
-          );
-        }
+        await _copySelection();
       case 'paste':
-        final data = await Clipboard.getData(Clipboard.kTextPlain);
-        if (data?.text != null) {
-          _terminal.paste(data!.text!);
-        }
+        await _pasteClipboard();
       case 'clear':
         _terminal.buffer.clear();
+        _terminalController.clearSelection();
       case 'disconnect':
         await _disconnect();
     }
+  }
+
+  Widget get _selectionActions => SafeArea(
+    top: false,
+    child: Material(
+      elevation: 2,
+      borderRadius: BorderRadius.circular(12),
+      color: Theme.of(context).colorScheme.surfaceContainerHigh,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        child: Row(
+          children: [
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () => unawaited(_copySelection()),
+                icon: const Icon(Icons.copy_outlined),
+                label: const Text('Copy'),
+              ),
+            ),
+            Expanded(
+              child: TextButton.icon(
+                onPressed: () => unawaited(_pasteClipboard()),
+                icon: const Icon(Icons.paste_outlined),
+                label: const Text('Paste'),
+              ),
+            ),
+            Expanded(
+              child: TextButton.icon(
+                onPressed: _terminalController.clearSelection,
+                icon: const Icon(Icons.close),
+                label: const Text('Clear'),
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Future<void> _copySelection() async {
+    final selection = _terminalController.selection;
+    if (selection == null) {
+      return;
+    }
+
+    final text = _terminal.buffer.getText(selection);
+    if (text.isEmpty) {
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: text));
+    _terminalController.clearSelection();
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  Future<void> _pasteClipboard() async {
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty) {
+      return;
+    }
+
+    _terminal.paste(text);
+    _terminalController.clearSelection();
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
