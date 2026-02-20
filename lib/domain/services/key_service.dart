@@ -1,8 +1,10 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as p;
 
 import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
@@ -62,6 +64,65 @@ class KeyService {
       return _keyRepository.getById(id);
     } on FormatException {
       return null;
+    }
+  }
+
+  /// Generate a key pair using the local ssh-keygen tool, then import it.
+  Future<SshKey?> generateKey({
+    required String name,
+    required SshKeyType keyType,
+    String? passphrase,
+  }) async {
+    if (!Platform.isMacOS && !Platform.isLinux && !Platform.isWindows) {
+      throw Exception(
+        'Key generation is only supported on desktop. Use Import on this platform.',
+      );
+    }
+
+    final tempDir = await Directory.systemTemp.createTemp('monkeyssh-keygen-');
+    final keyPath = p.join(tempDir.path, 'id_key');
+    final normalizedPassphrase = passphrase?.isEmpty ?? true ? '' : passphrase!;
+
+    try {
+      final arguments = <String>[
+        '-t',
+        switch (keyType) {
+          SshKeyType.ed25519 => 'ed25519',
+          SshKeyType.rsa2048 || SshKeyType.rsa4096 => 'rsa',
+        },
+        '-f',
+        keyPath,
+        '-N',
+        normalizedPassphrase,
+        '-C',
+        name,
+      ];
+      if (keyType == SshKeyType.rsa2048) {
+        arguments.addAll(['-b', '2048']);
+      } else if (keyType == SshKeyType.rsa4096) {
+        arguments.addAll(['-b', '4096']);
+      }
+
+      final result = await Process.run('ssh-keygen', arguments);
+      if (result.exitCode != 0) {
+        final error = (result.stderr as String).trim();
+        throw StateError(
+          error.isEmpty
+              ? 'ssh-keygen failed with code ${result.exitCode}'
+              : error,
+        );
+      }
+
+      final privateKeyPem = await File(keyPath).readAsString();
+      return importKey(
+        name: name,
+        privateKeyPem: privateKeyPem,
+        passphrase: normalizedPassphrase.isEmpty ? null : normalizedPassphrase,
+      );
+    } on ProcessException catch (e) {
+      throw Exception('ssh-keygen is not available: ${e.message}');
+    } finally {
+      await tempDir.delete(recursive: true);
     }
   }
 

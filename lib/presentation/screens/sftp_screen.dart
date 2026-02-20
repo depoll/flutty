@@ -1,6 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -303,7 +307,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   void _handleFileTap(SftpName file) {
     if (file.attr.isDirectory) {
-      _navigateTo('$_currentPath/${file.filename}');
+      _navigateTo(_joinRemotePath(_currentPath, file.filename));
     } else {
       _showFileOptions(file);
     }
@@ -326,11 +330,20 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             ),
             if (!file.attr.isDirectory)
               ListTile(
+                leading: const Icon(Icons.edit_outlined),
+                title: const Text('Edit'),
+                onTap: () {
+                  Navigator.pop(context);
+                  unawaited(_editTextFile(file));
+                },
+              ),
+            if (!file.attr.isDirectory)
+              ListTile(
                 leading: const Icon(Icons.download),
                 title: const Text('Download'),
                 onTap: () {
                   Navigator.pop(context);
-                  _downloadFile(file);
+                  unawaited(_downloadFile(file));
                 },
               ),
             ListTile(
@@ -418,7 +431,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     if (name != null && name.isNotEmpty && _sftp != null) {
       try {
-        await _sftp!.mkdir('$_currentPath/$name');
+        await _sftp!.mkdir(_joinRemotePath(_currentPath, name));
         await _loadDirectory(_currentPath);
         if (mounted) {
           ScaffoldMessenger.of(
@@ -463,8 +476,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     if (newName != null && newName.isNotEmpty && _sftp != null) {
       try {
         await _sftp!.rename(
-          '$_currentPath/${file.filename}',
-          '$_currentPath/$newName',
+          _joinRemotePath(_currentPath, file.filename),
+          _joinRemotePath(_currentPath, newName),
         );
         await _loadDirectory(_currentPath);
         if (mounted) {
@@ -506,7 +519,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     if ((confirmed ?? false) && _sftp != null) {
       try {
-        final path = '$_currentPath/${file.filename}';
+        final path = _joinRemotePath(_currentPath, file.filename);
         if (file.attr.isDirectory) {
           await _sftp!.rmdir(path);
         } else {
@@ -528,18 +541,227 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  void _downloadFile(SftpName file) {
-    // TODO: Implement file download with progress
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Download not yet implemented')),
+  Future<void> _downloadFile(SftpName file) async {
+    if (_sftp == null) {
+      return;
+    }
+
+    final savePath = await FilePicker.platform.saveFile(
+      dialogTitle: 'Save ${file.filename}',
+      fileName: file.filename,
     );
+    if (savePath == null) {
+      return;
+    }
+
+    try {
+      final remotePath = _joinRemotePath(_currentPath, file.filename);
+      final remoteFile = await _sftp!.open(remotePath);
+      final sink = File(savePath).openWrite();
+      try {
+        await for (final chunk in remoteFile.read()) {
+          sink.add(chunk);
+        }
+      } finally {
+        await sink.close();
+        await remoteFile.close();
+      }
+
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Downloaded "${file.filename}"')),
+        );
+      }
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
+      }
+    }
   }
 
-  void _showUploadDialog() {
-    // TODO: Implement file upload
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Upload not yet implemented')));
+  Future<void> _showUploadDialog() async {
+    if (_sftp == null) {
+      return;
+    }
+
+    final result = await FilePicker.platform.pickFiles(withReadStream: true);
+    if (result == null || result.files.isEmpty) {
+      return;
+    }
+
+    final file = result.files.single;
+    final readStream =
+        file.readStream ??
+        (file.path == null ? null : File(file.path!).openRead());
+    if (readStream == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Unable to read selected file')),
+        );
+      }
+      return;
+    }
+
+    try {
+      final remotePath = _joinRemotePath(_currentPath, file.name);
+      final remoteFile = await _sftp!.open(
+        remotePath,
+        mode:
+            SftpFileOpenMode.write |
+            SftpFileOpenMode.create |
+            SftpFileOpenMode.truncate,
+      );
+      try {
+        await remoteFile
+            .write(
+              readStream.map(
+                (chunk) =>
+                    chunk is Uint8List ? chunk : Uint8List.fromList(chunk),
+              ),
+            )
+            .done;
+      } finally {
+        await remoteFile.close();
+      }
+      await _loadDirectory(_currentPath);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Uploaded "${file.name}"')));
+      }
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
+      }
+    }
+  }
+
+  Future<void> _editTextFile(SftpName file) async {
+    if (_sftp == null) {
+      return;
+    }
+
+    const maxEditableBytes = 1024 * 1024;
+    if ((file.attr.size ?? 0) > maxEditableBytes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('File is too large to edit here (max 1 MB)'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final remotePath = _joinRemotePath(_currentPath, file.filename);
+    try {
+      final remoteFile = await _sftp!.open(remotePath);
+      late final Uint8List bytes;
+      try {
+        bytes = await remoteFile.readBytes(length: maxEditableBytes + 1);
+      } finally {
+        await remoteFile.close();
+      }
+
+      if (bytes.length > maxEditableBytes) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('File is too large to edit here (max 1 MB)'),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (_looksBinary(bytes)) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Binary files cannot be edited here')),
+          );
+        }
+        return;
+      }
+
+      final controller = TextEditingController(
+        text: utf8.decode(bytes, allowMalformed: true),
+      );
+      if (!mounted) {
+        controller.dispose();
+        return;
+      }
+      final updated = await showDialog<String>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: Text('Edit ${file.filename}'),
+          content: SizedBox(
+            width: 520,
+            child: TextField(
+              controller: controller,
+              autofocus: true,
+              maxLines: 20,
+              style: const TextStyle(fontFamily: 'monospace'),
+              decoration: const InputDecoration(border: OutlineInputBorder()),
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(context, controller.text),
+              child: const Text('Save'),
+            ),
+          ],
+        ),
+      );
+      controller.dispose();
+      if (updated == null) {
+        return;
+      }
+
+      final saveFile = await _sftp!.open(
+        remotePath,
+        mode:
+            SftpFileOpenMode.write |
+            SftpFileOpenMode.create |
+            SftpFileOpenMode.truncate,
+      );
+      try {
+        await saveFile.writeBytes(Uint8List.fromList(utf8.encode(updated)));
+      } finally {
+        await saveFile.close();
+      }
+      await _loadDirectory(_currentPath);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Saved "${file.filename}"')));
+      }
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Edit failed: $e')));
+      }
+    }
+  }
+
+  String _joinRemotePath(String directory, String name) {
+    if (directory == '/') {
+      return '/$name';
+    }
+    return '$directory/$name';
+  }
+
+  bool _looksBinary(Uint8List bytes) {
+    final sample = bytes.length > 1024 ? bytes.sublist(0, 1024) : bytes;
+    return sample.contains(0);
   }
 
   String _formatSize(int bytes) {

@@ -109,75 +109,85 @@ class _HomeScreenState extends ConsumerState<HomeScreen> {
                 right: BorderSide(color: colorScheme.outline.withAlpha(60)),
               ),
             ),
-            child: Column(
-              children: [
-                // App header
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-                  child: Row(
-                    children: [
-                      ClipRRect(
-                        borderRadius: BorderRadius.circular(6),
-                        child: Image.asset(
-                          'assets/icons/monkeyssh_icon.png',
-                          width: 28,
-                          height: 28,
+            child: SafeArea(
+              bottom: false,
+              child: Column(
+                children: [
+                  // App header
+                  Padding(
+                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    child: Row(
+                      children: [
+                        ClipRRect(
+                          borderRadius: BorderRadius.circular(6),
+                          child: Image.asset(
+                            'assets/icons/monkeyssh_icon.png',
+                            width: 28,
+                            height: 28,
+                          ),
                         ),
-                      ),
-                      const SizedBox(width: 10),
-                      Text(
-                        'MonkeySSH',
-                        style: theme.textTheme.titleMedium?.copyWith(
-                          fontWeight: FontWeight.w700,
+                        const SizedBox(width: 10),
+                        Text(
+                          'MonkeySSH',
+                          style: theme.textTheme.titleMedium?.copyWith(
+                            fontWeight: FontWeight.w700,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
-                ),
-                const SizedBox(height: 8),
+                  const SizedBox(height: 8),
 
-                // Navigation items
-                _NavItem(
-                  icon: Icons.dns_rounded,
-                  label: 'Hosts',
-                  selected: _selectedIndex == 0,
-                  onTap: () => setState(() => _selectedIndex = 0),
-                ),
-                _NavItem(
-                  icon: Icons.link,
-                  label: 'Connections',
-                  selected: _selectedIndex == 1,
-                  onTap: () => setState(() => _selectedIndex = 1),
-                ),
-                _NavItem(
-                  icon: Icons.key_rounded,
-                  label: 'Keys',
-                  selected: _selectedIndex == 2,
-                  onTap: () => setState(() => _selectedIndex = 2),
-                ),
-                _NavItem(
-                  icon: Icons.code_rounded,
-                  label: 'Snippets',
-                  selected: _selectedIndex == 3,
-                  onTap: () => setState(() => _selectedIndex = 3),
-                ),
+                  // Navigation items
+                  _NavItem(
+                    icon: Icons.dns_rounded,
+                    label: 'Hosts',
+                    selected: _selectedIndex == 0,
+                    onTap: () => setState(() => _selectedIndex = 0),
+                  ),
+                  _NavItem(
+                    icon: Icons.link,
+                    label: 'Connections',
+                    selected: _selectedIndex == 1,
+                    onTap: () => setState(() => _selectedIndex = 1),
+                  ),
+                  _NavItem(
+                    icon: Icons.key_rounded,
+                    label: 'Keys',
+                    selected: _selectedIndex == 2,
+                    onTap: () => setState(() => _selectedIndex = 2),
+                  ),
+                  _NavItem(
+                    icon: Icons.code_rounded,
+                    label: 'Snippets',
+                    selected: _selectedIndex == 3,
+                    onTap: () => setState(() => _selectedIndex = 3),
+                  ),
 
-                const Spacer(),
+                  const Spacer(),
 
-                // Settings at bottom
-                _NavItem(
-                  icon: Icons.settings_outlined,
-                  label: 'Settings',
-                  selected: false,
-                  onTap: () => context.push('/settings'),
-                ),
-                const SizedBox(height: 12),
-              ],
+                  // Settings at bottom
+                  _NavItem(
+                    icon: Icons.settings_outlined,
+                    label: 'Settings',
+                    selected: false,
+                    onTap: () => context.push('/settings'),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+              ),
             ),
           ),
 
           // Main content
-          Expanded(child: _buildContent()),
+          Expanded(
+            child: SafeArea(
+              left: false,
+              right: false,
+              bottom: false,
+              child: _buildContent(),
+            ),
+          ),
         ],
       ),
     );
@@ -626,7 +636,7 @@ class _HostRow extends ConsumerWidget {
               title: const Text('Duplicate'),
               onTap: () {
                 Navigator.pop(context);
-                // TODO: duplicate
+                unawaited(_duplicateHost(context, ref));
               },
             ),
             ListTile(
@@ -667,6 +677,34 @@ class _HostRow extends ConsumerWidget {
 
     if ((confirmed ?? false) && context.mounted) {
       await ref.read(hostRepositoryProvider).delete(host.id);
+    }
+  }
+
+  Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
+    await ref
+        .read(hostRepositoryProvider)
+        .insert(
+          HostsCompanion.insert(
+            label: '${host.label} (copy)',
+            hostname: host.hostname,
+            port: drift.Value(host.port),
+            username: host.username,
+            password: drift.Value(host.password),
+            keyId: drift.Value(host.keyId),
+            groupId: drift.Value(host.groupId),
+            jumpHostId: drift.Value(host.jumpHostId),
+            color: drift.Value(host.color),
+            tags: drift.Value(host.tags),
+            terminalThemeLightId: drift.Value(host.terminalThemeLightId),
+            terminalThemeDarkId: drift.Value(host.terminalThemeDarkId),
+            terminalFontFamily: drift.Value(host.terminalFontFamily),
+            isFavorite: drift.Value(host.isFavorite),
+          ),
+        );
+    if (context.mounted) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
     }
   }
 }
