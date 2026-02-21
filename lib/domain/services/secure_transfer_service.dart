@@ -150,6 +150,7 @@ class SecureTransferService {
   static const _saltBytes = 16;
   static const _nonceBytes = 12;
   static const _pbkdf2Iterations = 120000;
+  static const _maxPbkdf2Iterations = 1000000;
 
   /// Creates an encrypted host transfer payload.
   Future<String> createHostPayload({
@@ -264,7 +265,7 @@ class SecureTransferService {
     }
     final envelopeIterations =
         _optionalInt(envelopeMap['iter']) ?? _pbkdf2Iterations;
-    if (envelopeIterations <= 0) {
+    if (envelopeIterations <= 0 || envelopeIterations > _maxPbkdf2Iterations) {
       throw const FormatException('Invalid transfer envelope');
     }
 

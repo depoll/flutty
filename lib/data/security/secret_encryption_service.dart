@@ -48,7 +48,7 @@ class SecretEncryptionService {
     if (plaintext == null || plaintext.isEmpty) {
       return plaintext;
     }
-    if (isEncryptedValue(plaintext)) {
+    if (_isValidEncryptedEnvelope(plaintext)) {
       return plaintext;
     }
 
@@ -112,6 +112,29 @@ class SecretEncryptionService {
   /// Decrypts a required value loaded from database persistence.
   Future<String> decryptRequired(String storedValue) async =>
       (await decryptNullable(storedValue)) ?? '';
+
+  bool _isValidEncryptedEnvelope(String value) {
+    if (!isEncryptedValue(value)) {
+      return false;
+    }
+    try {
+      final compact = value.substring(_encryptedPrefix.length);
+      final envelopeJson = utf8.decode(
+        base64Url.decode(base64Url.normalize(compact)),
+      );
+      final decodedEnvelope = jsonDecode(envelopeJson);
+      if (decodedEnvelope is! Map) {
+        return false;
+      }
+      final envelope = Map<String, dynamic>.from(decodedEnvelope);
+      final nonce = _decodeEnvelopeField(envelope, 'n');
+      _decodeEnvelopeField(envelope, 'c');
+      final mac = _decodeEnvelopeField(envelope, 'm');
+      return nonce.length == _nonceBytes && mac.length >= 16;
+    } on FormatException {
+      return false;
+    }
+  }
 
   Future<SecretKey> _getOrCreateMasterKey() async {
     if (_cachedMasterKey != null) {

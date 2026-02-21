@@ -253,6 +253,42 @@ void main() {
       );
     });
 
+    test('rejects envelope with excessive iteration count', () async {
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Host',
+              hostname: 'example.com',
+              username: 'user',
+            ),
+          );
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(hostId))).getSingle();
+      final encodedPayload = await transferService.createHostPayload(
+        host: host,
+        transferPassphrase: '1234',
+      );
+
+      final compact = encodedPayload.substring('MSSH1:'.length);
+      final envelope = Map<String, dynamic>.from(
+        jsonDecode(utf8.decode(base64Url.decode(base64Url.normalize(compact))))
+            as Map,
+      );
+      envelope['iter'] = 1000001;
+      final tampered =
+          'MSSH1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
+
+      await expectLater(
+        transferService.decryptPayload(
+          encodedPayload: tampered,
+          transferPassphrase: '1234',
+        ),
+        throwsFormatException,
+      );
+    });
+
     test('fails migration when host references missing key mapping', () async {
       final payload = TransferPayload(
         type: TransferPayloadType.fullMigration,
