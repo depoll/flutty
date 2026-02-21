@@ -510,9 +510,12 @@ class SecureTransferService {
   List<int> _randomBytes(int length) =>
       List<int>.generate(length, (_) => _random.nextInt(256), growable: false);
 
-  Future<SshKey> _importKeyMap(Map<String, dynamic> keyData) async {
+  Future<SshKey> _importKeyMap(
+    Map<String, dynamic> keyData, {
+    List<SshKey>? existingKeysCache,
+  }) async {
     final fingerprint = _optionalString(keyData['fingerprint']);
-    final existingKeys = await _keyRepository.getAll();
+    final existingKeys = existingKeysCache ?? await _keyRepository.getAll();
     if (fingerprint != null && fingerprint.isNotEmpty) {
       for (final key in existingKeys) {
         if (key.fingerprint == fingerprint) {
@@ -546,6 +549,7 @@ class SecureTransferService {
     if (createdKey == null) {
       throw const FormatException('Failed to import SSH key');
     }
+    existingKeysCache?.add(createdKey);
     return createdKey;
   }
 
@@ -618,9 +622,13 @@ class SecureTransferService {
 
   Future<Map<int, int>> _importKeys(List<Map<String, dynamic>> rawKeys) async {
     final idMapping = <int, int>{};
+    final existingKeys = await _keyRepository.getAll();
     for (final item in rawKeys) {
       final oldId = _optionalInt(item['id']);
-      final importedKey = await _importKeyMap(item);
+      final importedKey = await _importKeyMap(
+        item,
+        existingKeysCache: existingKeys,
+      );
       if (oldId != null) {
         idMapping[oldId] = importedKey.id;
       }

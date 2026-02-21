@@ -153,7 +153,7 @@ This is an **experimental project** and has not undergone a security audit.
 Do not use for production workloads or to connect to sensitive systems.
 
 Recent hardening changes:
-- PIN verification uses PBKDF2-HMAC-SHA256 (120k iterations, per-device salt) in secure storage, and legacy PIN hashes are migrated on successful verification.
+- PIN verification uses PBKDF2-HMAC-SHA256 (120k iterations, per-device salt) in secure storage. Legacy PIN hashes are not migrated; users on unsupported pre-release data must re-create their PIN.
 - The SQLite database is stored in the platform Application Support directory, with automatic migration from legacy Documents storage.
 - Platform backup/file exposure is restricted:
   - Android disables app backup and excludes app data from backup/device-transfer rules.
