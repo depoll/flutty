@@ -41,6 +41,8 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
+  static const _terminalViewportPadding = EdgeInsets.all(8);
+
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
@@ -72,6 +74,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _wasBackgrounded = false;
   bool _connectionLostWhileBackgrounded = false;
 
+  bool get _isMobilePlatform =>
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
+
   @override
   void initState() {
     super.initState();
@@ -102,8 +108,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onSelectionChanged() {
+    if (!mounted) {
+      return;
+    }
+
     final hasSelection = _terminalController.selection != null;
-    if (!mounted || _hasTerminalSelection == hasSelection) {
+    if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
+      _enterNativeSelectionMode();
+      return;
+    }
+
+    if (_hasTerminalSelection == hasSelection) {
       return;
     }
 
@@ -709,9 +724,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final fontFamily = hostFont ?? globalFont;
     final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
-      fontFamily,
-      fontSize,
+      terminalTextStyle,
     );
+    final mediaPadding = MediaQuery.paddingOf(context);
 
     final terminalView = TerminalView(
       _terminal,
@@ -720,7 +735,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
-      padding: const EdgeInsets.all(8),
+      padding: _terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
@@ -755,7 +770,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          _nativeSelectionOverlay(nativeSelectionTextStyle),
+          _nativeSelectionOverlay(nativeSelectionTextStyle, mediaPadding),
         ],
       );
     } else if (_hasTerminalSelection) {
@@ -777,9 +792,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
+  Widget _nativeSelectionOverlay(
+    TextStyle textStyle,
+    EdgeInsets mediaPadding,
+  ) => Positioned.fill(
     child: Padding(
-      padding: const EdgeInsets.all(8),
+      padding: EdgeInsets.fromLTRB(
+        _terminalViewportPadding.left + mediaPadding.left,
+        _terminalViewportPadding.top + mediaPadding.top,
+        _terminalViewportPadding.right + mediaPadding.right,
+        _terminalViewportPadding.bottom + mediaPadding.bottom,
+      ),
       child: Stack(
         children: [
           SingleChildScrollView(
@@ -817,12 +840,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalStyle(fontSize: fontSize);
   }
 
-  TextStyle _getNativeSelectionTextStyle(String fontFamily, double fontSize) {
-    final textStyle =
-        _resolveTerminalTextStyle(fontFamily, fontSize) ??
-        TextStyle(fontFamily: 'monospace', fontSize: fontSize);
-    return textStyle.copyWith(color: Colors.transparent);
-  }
+  TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
+      terminalTextStyle
+          .toTextStyle(color: Colors.transparent)
+          .copyWith(
+            letterSpacing: 0,
+            fontFeatures: const [
+              FontFeature.disable('liga'),
+              FontFeature.disable('calt'),
+            ],
+          );
 
   TextStyle? _resolveTerminalTextStyle(String fontFamily, double fontSize) =>
       switch (fontFamily) {
@@ -870,11 +897,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _toggleNativeSelectionMode() {
     if (_isNativeSelectionMode) {
-      setState(() {
-        _isNativeSelectionMode = false;
-        _nativeSelectionSnapshot = '';
-      });
-      _terminalFocusNode.requestFocus();
+      _exitNativeSelectionMode();
+      return;
+    }
+
+    _enterNativeSelectionMode();
+  }
+
+  void _enterNativeSelectionMode() {
+    if (_isNativeSelectionMode) {
       return;
     }
 
@@ -882,11 +913,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     setState(() {
       _isNativeSelectionMode = true;
+      _hasTerminalSelection = false;
       _nativeSelectionSnapshot = _buildNativeSelectionSnapshot();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
     });
+  }
+
+  void _exitNativeSelectionMode() {
+    setState(() {
+      _isNativeSelectionMode = false;
+      _nativeSelectionSnapshot = '';
+    });
+    _terminalFocusNode.requestFocus();
   }
 
   String _buildNativeSelectionSnapshot() {
