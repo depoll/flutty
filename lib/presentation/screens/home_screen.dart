@@ -84,18 +84,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       return;
     }
     _isHandlingIncomingTransfer = true;
-
-    final transferPassphrase = await showTransferPassphraseDialog(
-      context: context,
-      title: 'Incoming transfer passphrase',
-    );
-    if (!mounted || transferPassphrase == null) {
-      _isHandlingIncomingTransfer = false;
-      return;
-    }
-
-    final transferService = ref.read(secureTransferServiceProvider);
     try {
+      final transferPassphrase = await showTransferPassphraseDialog(
+        context: context,
+        title: 'Incoming transfer passphrase',
+      );
+      if (!mounted || transferPassphrase == null) {
+        return;
+      }
+
+      final transferService = ref.read(secureTransferServiceProvider);
       final payload = await transferService.decryptPayload(
         encodedPayload: encodedPayload,
         transferPassphrase: transferPassphrase,

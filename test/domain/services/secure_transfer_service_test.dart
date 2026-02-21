@@ -475,5 +475,76 @@ void main() {
         expect(portForwards, hasLength(1));
       },
     );
+
+    test(
+      'imports full migration in merge mode and preserves extra data',
+      () async {
+        await db
+            .into(db.settings)
+            .insert(SettingsCompanion.insert(key: 'theme_mode', value: 'dark'));
+
+        final migrationPayload = await transferService
+            .createFullMigrationPayload(transferPassphrase: '1234');
+
+        await db
+            .into(db.settings)
+            .insertOnConflictUpdate(
+              SettingsCompanion.insert(key: 'extra', value: '1'),
+            );
+
+        final decrypted = await transferService.decryptPayload(
+          encodedPayload: migrationPayload,
+          transferPassphrase: '1234',
+        );
+        await transferService.importFullMigrationPayload(
+          payload: decrypted,
+          mode: MigrationImportMode.merge,
+        );
+
+        final extraSetting = await (db.select(
+          db.settings,
+        )..where((s) => s.key.equals('extra'))).getSingleOrNull();
+        final themeSetting = await (db.select(
+          db.settings,
+        )..where((s) => s.key.equals('theme_mode'))).getSingleOrNull();
+
+        expect(extraSetting, isNot(equals(null)));
+        expect(themeSetting?.value, 'dark');
+      },
+    );
+
+    test('encrypts and imports key payload roundtrip', () async {
+      final keyId = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Deploy Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAA',
+              privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----xyz',
+              passphrase: const Value('key-passphrase'),
+            ),
+          );
+      final key = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(keyId))).getSingle();
+
+      final encodedPayload = await transferService.createKeyPayload(
+        key: key,
+        transferPassphrase: '1234',
+      );
+
+      await db.delete(db.sshKeys).go();
+
+      final decrypted = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: '1234',
+      );
+      final importedKey = await transferService.importKeyPayload(decrypted);
+
+      expect(importedKey.name, 'Deploy Key');
+      expect(importedKey.privateKey, contains('OPENSSH PRIVATE KEY'));
+      expect(importedKey.passphrase, 'key-passphrase');
+    });
   });
 }
