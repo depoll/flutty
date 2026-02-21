@@ -7,6 +7,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 
 class _CapturingSshService extends SshService {
@@ -25,7 +26,11 @@ class _CapturingSshService extends SshService {
 }
 
 class _CountingKeyRepository extends KeyRepository {
-  _CountingKeyRepository(super.db, {this.returnNullOnGetById = false});
+  _CountingKeyRepository(
+    super.db,
+    super.secretEncryptionService, {
+    this.returnNullOnGetById = false,
+  });
 
   final bool returnNullOnGetById;
   int getAllCallCount = 0;
@@ -310,8 +315,9 @@ void main() {
 
     test('connectToHost fails when host not found', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
-      final hostRepo = HostRepository(db);
-      final keyRepo = KeyRepository(db);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
       final service = SshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
@@ -328,33 +334,30 @@ void main() {
     test('connectToHost uses Auto keys when host has no password', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      final hostRepo = HostRepository(db);
-      final keyRepo = KeyRepository(db);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
       );
 
-      await db
-          .into(db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: 'Auto Key 1',
-              keyType: 'ed25519',
-              publicKey: 'ssh-ed25519 AAAA...',
-              privateKey: 'private-key-1',
-            ),
-          );
-      await db
-          .into(db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: 'Auto Key 2',
-              keyType: 'rsa',
-              publicKey: 'ssh-rsa BBBB...',
-              privateKey: 'private-key-2',
-            ),
-          );
+      await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Auto Key 1',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: 'private-key-1',
+        ),
+      );
+      await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Auto Key 2',
+          keyType: 'rsa',
+          publicKey: 'ssh-rsa BBBB...',
+          privateKey: 'private-key-2',
+        ),
+      );
       final hostId = await db
           .into(db.hosts)
           .insert(
@@ -376,24 +379,23 @@ void main() {
     test('connectToHost caps Auto keys to avoid auth lockout', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      final hostRepo = HostRepository(db);
-      final keyRepo = KeyRepository(db);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
       );
 
       for (var i = 0; i < 7; i++) {
-        await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Auto Key $i',
-                keyType: 'ed25519',
-                publicKey: 'ssh-ed25519 KEY$i',
-                privateKey: 'private-key-$i',
-              ),
-            );
+        await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Auto Key $i',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 KEY$i',
+            privateKey: 'private-key-$i',
+          ),
+        );
       }
       final hostId = await db
           .into(db.hosts)
@@ -424,8 +426,9 @@ void main() {
       () async {
         final db = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(db.close);
-        final hostRepo = HostRepository(db);
-        final keyRepo = _CountingKeyRepository(db);
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostRepo = HostRepository(db, encryptionService);
+        final keyRepo = _CountingKeyRepository(db, encryptionService);
         final service = _CapturingSshService(
           hostRepository: hostRepo,
           keyRepository: keyRepo,
@@ -450,26 +453,22 @@ void main() {
                 jumpHostId: Value(jumpHostId),
               ),
             );
-        await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Auto Key 1',
-                keyType: 'ed25519',
-                publicKey: 'ssh-ed25519 AAAA...',
-                privateKey: 'private-key-1',
-              ),
-            );
-        await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Auto Key 2',
-                keyType: 'rsa',
-                publicKey: 'ssh-rsa BBBB...',
-                privateKey: 'private-key-2',
-              ),
-            );
+        await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Auto Key 1',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA...',
+            privateKey: 'private-key-1',
+          ),
+        );
+        await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Auto Key 2',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa BBBB...',
+            privateKey: 'private-key-2',
+          ),
+        );
 
         await service.connectToHost(hostId);
 
@@ -485,33 +484,30 @@ void main() {
     test('connectToHost keeps explicit key override', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      final hostRepo = HostRepository(db);
-      final keyRepo = KeyRepository(db);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
       );
 
-      final selectedKeyId = await db
-          .into(db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: 'Selected Key',
-              keyType: 'ed25519',
-              publicKey: 'ssh-ed25519 CCCC...',
-              privateKey: 'selected-private-key',
-            ),
-          );
-      await db
-          .into(db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: 'Other Key',
-              keyType: 'rsa',
-              publicKey: 'ssh-rsa DDDD...',
-              privateKey: 'other-private-key',
-            ),
-          );
+      final selectedKeyId = await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Selected Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 CCCC...',
+          privateKey: 'selected-private-key',
+        ),
+      );
+      await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Other Key',
+          keyType: 'rsa',
+          publicKey: 'ssh-rsa DDDD...',
+          privateKey: 'other-private-key',
+        ),
+      );
       final hostId = await db
           .into(db.hosts)
           .insert(
@@ -536,33 +532,34 @@ void main() {
       () async {
         final db = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(db.close);
-        final hostRepo = HostRepository(db);
-        final keyRepo = _CountingKeyRepository(db, returnNullOnGetById: true);
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostRepo = HostRepository(db, encryptionService);
+        final keyRepo = _CountingKeyRepository(
+          db,
+          encryptionService,
+          returnNullOnGetById: true,
+        );
         final service = _CapturingSshService(
           hostRepository: hostRepo,
           keyRepository: keyRepo,
         );
 
-        final selectedKeyId = await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Selected Key',
-                keyType: 'ed25519',
-                publicKey: 'ssh-ed25519 CCCC...',
-                privateKey: 'selected-private-key',
-              ),
-            );
-        await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Auto Key',
-                keyType: 'rsa',
-                publicKey: 'ssh-rsa DDDD...',
-                privateKey: 'auto-private-key',
-              ),
-            );
+        final selectedKeyId = await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Selected Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 CCCC...',
+            privateKey: 'selected-private-key',
+          ),
+        );
+        await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Auto Key',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa DDDD...',
+            privateKey: 'auto-private-key',
+          ),
+        );
         final hostId = await db
             .into(db.hosts)
             .insert(
@@ -588,33 +585,34 @@ void main() {
       () async {
         final db = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(db.close);
-        final hostRepo = HostRepository(db);
-        final keyRepo = _CountingKeyRepository(db, returnNullOnGetById: true);
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostRepo = HostRepository(db, encryptionService);
+        final keyRepo = _CountingKeyRepository(
+          db,
+          encryptionService,
+          returnNullOnGetById: true,
+        );
         final service = _CapturingSshService(
           hostRepository: hostRepo,
           keyRepository: keyRepo,
         );
 
-        final selectedJumpKeyId = await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Selected Jump Key',
-                keyType: 'ed25519',
-                publicKey: 'ssh-ed25519 EEEE...',
-                privateKey: 'selected-jump-private-key',
-              ),
-            );
-        await db
-            .into(db.sshKeys)
-            .insert(
-              SshKeysCompanion.insert(
-                name: 'Auto Key',
-                keyType: 'rsa',
-                publicKey: 'ssh-rsa FFFF...',
-                privateKey: 'auto-private-key',
-              ),
-            );
+        final selectedJumpKeyId = await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Selected Jump Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 EEEE...',
+            privateKey: 'selected-jump-private-key',
+          ),
+        );
+        await keyRepo.insert(
+          SshKeysCompanion.insert(
+            name: 'Auto Key',
+            keyType: 'rsa',
+            publicKey: 'ssh-rsa FFFF...',
+            privateKey: 'auto-private-key',
+          ),
+        );
         final jumpHostId = await db
             .into(db.hosts)
             .insert(
@@ -649,33 +647,30 @@ void main() {
     test('connectToHost skips Auto keys when host has a password', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      final hostRepo = HostRepository(db);
-      final keyRepo = KeyRepository(db);
+      final encryptionService = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryptionService);
+      final keyRepo = KeyRepository(db, encryptionService);
       final service = _CapturingSshService(
         hostRepository: hostRepo,
         keyRepository: keyRepo,
       );
 
-      await db
-          .into(db.sshKeys)
-          .insert(
-            SshKeysCompanion.insert(
-              name: 'Unused Auto Key',
-              keyType: 'ed25519',
-              publicKey: 'ssh-ed25519 EEEE...',
-              privateKey: 'unused-private-key',
-            ),
-          );
-      final hostId = await db
-          .into(db.hosts)
-          .insert(
-            HostsCompanion.insert(
-              label: 'Password Host',
-              hostname: '10.0.0.12',
-              username: 'admin',
-              password: const Value('secret'),
-            ),
-          );
+      await keyRepo.insert(
+        SshKeysCompanion.insert(
+          name: 'Unused Auto Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 EEEE...',
+          privateKey: 'unused-private-key',
+        ),
+      );
+      final hostId = await hostRepo.insert(
+        HostsCompanion.insert(
+          label: 'Password Host',
+          hostname: '10.0.0.12',
+          username: 'admin',
+          password: const Value('secret'),
+        ),
+      );
 
       await service.connectToHost(hostId);
 

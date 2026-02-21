@@ -1,10 +1,12 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:io';
+
 import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:path/path.dart' as p;
 
 void main() {
   late AppDatabase db;
@@ -274,5 +276,120 @@ void main() {
       expect(forward.remotePort, 3306);
       expect(forward.hostId, hostId);
     });
+  });
+
+  group('Database storage path', () {
+    test('migrates legacy flutty.db from documents to app support', () async {
+      final rootDirectory = await Directory.systemTemp.createTemp(
+        'flutty-db-migration-test-',
+      );
+      addTearDown(() async {
+        if (rootDirectory.existsSync()) {
+          await rootDirectory.delete(recursive: true);
+        }
+      });
+
+      final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
+      final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
+      await documentsDirectory.create(recursive: true);
+
+      final legacyFile = File(p.join(documentsDirectory.path, 'flutty.db'));
+      await legacyFile.writeAsString('legacy-db');
+      final legacyJournalFile = File('${legacyFile.path}-journal');
+      await legacyJournalFile.writeAsString('legacy-journal');
+
+      final resolvedFile = await resolveDatabaseFile(
+        getSupportDirectory: () async => supportDirectory,
+        getDocumentsDirectory: () async => documentsDirectory,
+      );
+
+      expect(resolvedFile.path, p.join(supportDirectory.path, 'flutty.db'));
+      expect(resolvedFile.existsSync(), isTrue);
+      expect(await resolvedFile.readAsString(), 'legacy-db');
+      final migratedJournalFile = File('${resolvedFile.path}-journal');
+      expect(migratedJournalFile.existsSync(), isTrue);
+      expect(await migratedJournalFile.readAsString(), 'legacy-journal');
+      expect(legacyFile.existsSync(), isFalse);
+      expect(legacyJournalFile.existsSync(), isFalse);
+    });
+
+    test('moves legacy companion files when migration marker exists', () async {
+      final rootDirectory = await Directory.systemTemp.createTemp(
+        'flutty-db-companion-migration-test-',
+      );
+      addTearDown(() async {
+        if (rootDirectory.existsSync()) {
+          await rootDirectory.delete(recursive: true);
+        }
+      });
+
+      final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
+      final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
+      await documentsDirectory.create(recursive: true);
+      await supportDirectory.create(recursive: true);
+
+      final supportFile = File(p.join(supportDirectory.path, 'flutty.db'));
+      await supportFile.writeAsString('new-db');
+      final markerFile = File(
+        p.join(supportDirectory.path, 'flutty.db.legacy-migration-incomplete'),
+      );
+      await markerFile.writeAsString('pending');
+
+      final legacyJournalFile = File(
+        p.join(documentsDirectory.path, 'flutty.db-journal'),
+      );
+      await legacyJournalFile.writeAsString('legacy-journal');
+
+      final resolvedFile = await resolveDatabaseFile(
+        getSupportDirectory: () async => supportDirectory,
+        getDocumentsDirectory: () async => documentsDirectory,
+      );
+
+      expect(resolvedFile.path, supportFile.path);
+      final migratedJournalFile = File('${resolvedFile.path}-journal');
+      expect(migratedJournalFile.existsSync(), isTrue);
+      expect(await migratedJournalFile.readAsString(), 'legacy-journal');
+      expect(legacyJournalFile.existsSync(), isFalse);
+      expect(markerFile.existsSync(), isFalse);
+    });
+
+    test(
+      'deletes orphan legacy companion files after migration completion',
+      () async {
+        final rootDirectory = await Directory.systemTemp.createTemp(
+          'flutty-db-companion-cleanup-test-',
+        );
+        addTearDown(() async {
+          if (rootDirectory.existsSync()) {
+            await rootDirectory.delete(recursive: true);
+          }
+        });
+
+        final documentsDirectory = Directory(
+          p.join(rootDirectory.path, 'docs'),
+        );
+        final supportDirectory = Directory(
+          p.join(rootDirectory.path, 'support'),
+        );
+        await documentsDirectory.create(recursive: true);
+        await supportDirectory.create(recursive: true);
+
+        final supportFile = File(p.join(supportDirectory.path, 'flutty.db'));
+        await supportFile.writeAsString('new-db');
+
+        final legacyJournalFile = File(
+          p.join(documentsDirectory.path, 'flutty.db-journal'),
+        );
+        await legacyJournalFile.writeAsString('orphan-journal');
+
+        await resolveDatabaseFile(
+          getSupportDirectory: () async => supportDirectory,
+          getDocumentsDirectory: () async => documentsDirectory,
+        );
+
+        expect(File('${supportFile.path}-journal').existsSync(), isFalse);
+        expect(legacyJournalFile.existsSync(), isFalse);
+      },
+    );
   });
 }

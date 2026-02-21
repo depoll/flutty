@@ -6,14 +6,17 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 
 void main() {
   late AppDatabase db;
   late HostRepository repository;
+  late SecretEncryptionService encryptionService;
 
   setUp(() {
     db = AppDatabase.forTesting(NativeDatabase.memory());
-    repository = HostRepository(db);
+    encryptionService = SecretEncryptionService.forTesting();
+    repository = HostRepository(db, encryptionService);
   });
 
   tearDown(() async {
@@ -42,6 +45,27 @@ void main() {
       expect(hosts.first.label, 'Test Server');
       expect(hosts.first.hostname, '192.168.1.1');
       expect(hosts.first.username, 'admin');
+    });
+
+    test('insert encrypts password at rest', () async {
+      const plaintextPassword = 'super-secret';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Secure Host',
+          hostname: '192.168.1.10',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      final storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, isNot(plaintextPassword));
+      expect(storedHost.password, startsWith('ENCv1:'));
+
+      final host = await repository.getById(id);
+      expect(host!.password, plaintextPassword);
     });
 
     test('getById returns host when exists', () async {
