@@ -309,8 +309,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } else {
           failedNames.add(forward.name);
         }
+      } else if (forward.forwardType == 'remote') {
+        final success = await session.startRemoteForward(
+          portForwardId: forward.id,
+          remoteHost: forward.remoteHost,
+          remotePort: forward.remotePort,
+          localHost: forward.localHost,
+          localPort: forward.localPort,
+        );
+        if (success) {
+          startedCount++;
+        } else {
+          failedNames.add(forward.name);
+        }
       }
-      // TODO: Add remote forwarding support when needed
     }
 
     if (mounted) {

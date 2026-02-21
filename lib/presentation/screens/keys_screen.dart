@@ -229,6 +229,7 @@ class _KeyDetailsSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    var isPrivateKeyVisible = false;
 
     return Container(
       padding: const EdgeInsets.all(16),
@@ -279,6 +280,61 @@ class _KeyDetailsSheet extends StatelessWidget {
             icon: const Icon(Icons.copy),
             label: const Text('Copy Public Key'),
           ),
+          if (sshKey.privateKey.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text('Private Key', style: theme.textTheme.titleMedium),
+            const SizedBox(height: 8),
+            StatefulBuilder(
+              builder: (context, setPrivateKeyState) => Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(12),
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: isPrivateKeyVisible
+                        ? SelectableText(
+                            sshKey.privateKey,
+                            style: const TextStyle(
+                              fontFamily: 'monospace',
+                              fontSize: 12,
+                            ),
+                          )
+                        : const Text(
+                            'Private key hidden. Tap "Reveal Private Key" to view.',
+                          ),
+                  ),
+                  const SizedBox(height: 8),
+                  OutlinedButton.icon(
+                    onPressed: () => setPrivateKeyState(
+                      () => isPrivateKeyVisible = !isPrivateKeyVisible,
+                    ),
+                    icon: Icon(
+                      isPrivateKeyVisible
+                          ? Icons.visibility_off
+                          : Icons.visibility,
+                    ),
+                    label: Text(
+                      isPrivateKeyVisible
+                          ? 'Hide Private Key'
+                          : 'Reveal Private Key',
+                    ),
+                  ),
+                  if (isPrivateKeyVisible) ...[
+                    const SizedBox(height: 8),
+                    OutlinedButton.icon(
+                      onPressed: () => _confirmAndCopyPrivateKey(context),
+                      icon: const Icon(Icons.key),
+                      label: const Text('Copy Private Key'),
+                    ),
+                  ],
+                ],
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
 
           // Created date
@@ -298,6 +354,35 @@ class _KeyDetailsSheet extends StatelessWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied to clipboard')));
+  }
+
+  Future<void> _confirmAndCopyPrivateKey(BuildContext context) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Copy private key?'),
+        content: const Text(
+          'Private keys are sensitive. Other apps may read clipboard contents.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('Copy'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) {
+      return;
+    }
+    if (!context.mounted) {
+      return;
+    }
+    _copyToClipboard(context, sshKey.privateKey);
   }
 
   String _getKeyTypeLabel() {

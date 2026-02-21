@@ -14,7 +14,7 @@ if [ -n "$STAGED_DART_FILES" ]; then
     dart format --set-exit-if-changed $STAGED_DART_FILES
     
     echo "Running analyzer..."
-    flutter analyze --fatal-infos
+    flutter analyze --fatal-infos --no-pub
     
     echo "Running tests..."
     flutter test --no-pub

@@ -59,6 +59,14 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.x'
@@ -88,6 +96,7 @@ jobs:
           EOF
 
       - name: Build AAB
+        if: inputs.deploy-android-to != 'none'
         run: |
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
@@ -104,6 +113,7 @@ jobs:
             --build-number=${{ inputs.build-number }}
 
       - name: Upload AAB artifact
+        if: inputs.deploy-android-to != 'none'
         uses: actions/upload-artifact@v6
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
@@ -164,6 +174,12 @@ jobs:
       - name: Capture source SHA
         id: source-sha
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        with:
+          path: ios/Pods
+          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-${{ runner.os }}-
 
       - uses: subosito/flutter-action@v2
         with:

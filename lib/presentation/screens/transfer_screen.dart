@@ -1,6 +1,8 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
@@ -156,6 +158,25 @@ Future<void> saveTransferPayloadToFile({
     return;
   }
 
+  final shouldWriteFileDirectly =
+      !kIsWeb && (Platform.isMacOS || Platform.isWindows || Platform.isLinux);
+  if (shouldWriteFileDirectly) {
+    try {
+      await File(targetPath).writeAsBytes(bytes, flush: true);
+    } on FileSystemException {
+      if (!context.mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to write transfer file')),
+      );
+      return;
+    }
+  }
+  if (!context.mounted) {
+    return;
+  }
+
   ScaffoldMessenger.of(
     context,
   ).showSnackBar(SnackBar(content: Text('Encrypted file saved: $targetPath')));
@@ -205,7 +226,21 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
   }
 
   final bytes = result.files.single.bytes;
-  if (bytes == null || bytes.isEmpty) {
+  if (bytes != null && bytes.isNotEmpty) {
+    try {
+      return utf8.decode(bytes);
+    } on FormatException {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Invalid transfer file format')),
+        );
+      }
+      return null;
+    }
+  }
+
+  final path = result.files.single.path;
+  if (path == null || path.isEmpty) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Could not read selected transfer file')),
@@ -215,7 +250,14 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
   }
 
   try {
-    return utf8.decode(bytes);
+    return await File(path).readAsString();
+  } on FileSystemException {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Could not read selected transfer file')),
+      );
+    }
+    return null;
   } on FormatException {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

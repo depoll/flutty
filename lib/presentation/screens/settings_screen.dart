@@ -779,6 +779,23 @@ class _MigrationSection extends ConsumerWidget {
   }
 
   Future<void> _importMigration(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to import migration package',
+    );
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Authentication required for migration import'),
+        ),
+      );
+      return;
+    }
+
     final source = await showTransferImportSourceSheet(context);
     if (!context.mounted || source == null) {
       return;

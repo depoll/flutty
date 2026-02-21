@@ -6,7 +6,7 @@ This guide covers setting up automated deployment to TestFlight, Play Store inte
 
 | Variant | Android Package | iOS Bundle ID | Display Name | Purpose |
 |---------|----------------|---------------|--------------|---------|
-| **private** | `xyz.depollsoft.monkeyssh.private` | `xyz.depollsoft.monkeyssh.private` | MonkeySSH Private | PR previews, internal testing |
+| **private** | `xyz.depollsoft.monkeyssh.private` | `xyz.depollsoft.monkeyssh.private` | MonkeySSH β | PR previews, internal testing |
 | **production** | `xyz.depollsoft.monkeyssh` | `xyz.depollsoft.monkeyssh` | MonkeySSH | App Store / Play Store releases |
 
 Both variants install side-by-side on the same device.

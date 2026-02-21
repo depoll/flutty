@@ -10,6 +10,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/secure_transfer_service.dart';
+import '../../domain/services/ssh_service.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'hosts_screen.dart';
 import 'transfer_screen.dart';
@@ -34,6 +35,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _portController;
   late TextEditingController _usernameController;
   late TextEditingController _passwordController;
+  late TextEditingController _tagsController;
 
   int? _selectedKeyId;
   int? _selectedGroupId;
@@ -56,6 +58,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _portController = TextEditingController(text: '22');
     _usernameController = TextEditingController();
     _passwordController = TextEditingController();
+    _tagsController = TextEditingController();
 
     if (widget.hostId != null) {
       _loadHost();
@@ -81,6 +84,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _portController.text = host.port.toString();
       _usernameController.text = host.username;
       _passwordController.text = host.password ?? '';
+      _tagsController.text = host.tags ?? '';
       _selectedKeyId = host.keyId;
       _selectedGroupId = host.groupId;
       _selectedJumpHostId = host.jumpHostId;
@@ -100,6 +104,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _portController.dispose();
     _usernameController.dispose();
     _passwordController.dispose();
+    _tagsController.dispose();
     super.dispose();
   }
 
@@ -211,6 +216,20 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                       return null;
                     },
                   ),
+                  const SizedBox(height: 16),
+
+                  TextFormField(
+                    controller: _tagsController,
+                    decoration: const InputDecoration(
+                      labelText: 'Tags (optional)',
+                      hintText: 'prod, db, eu-west',
+                      prefixIcon: Icon(Icons.sell_outlined),
+                      helperText:
+                          'Comma-separated tags for search/organization',
+                    ),
+                    textInputAction: TextInputAction.next,
+                    autocorrect: false,
+                  ),
                   const SizedBox(height: 24),
 
                   // Authentication section
@@ -265,9 +284,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         decoration: const InputDecoration(
                           labelText: 'SSH Key (optional)',
                           prefixIcon: Icon(Icons.key),
+                          helperText:
+                              'Auto tries up to 5 installed keys when password is empty',
                         ),
                         items: [
-                          const DropdownMenuItem(child: Text('None')),
+                          const DropdownMenuItem<int?>(child: Text('Auto')),
                           ...keys.map(
                             (key) => DropdownMenuItem(
                               value: key.id,
@@ -407,6 +428,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final password = _passwordController.text.isEmpty
           ? null
           : _passwordController.text;
+      final tags = _tagsController.text.trim().isEmpty
+          ? null
+          : _tagsController.text.trim();
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
@@ -417,6 +441,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             port: port,
             username: _usernameController.text,
             password: drift.Value(password),
+            tags: drift.Value(tags),
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
@@ -435,6 +460,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             port: drift.Value(port),
             username: _usernameController.text,
             password: drift.Value(password),
+            tags: drift.Value(tags),
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
@@ -472,17 +498,65 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   Future<void> _testConnection() async {
     if (!_formKey.currentState!.validate()) return;
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Testing connection...')));
+    final messenger = ScaffoldMessenger.of(context)
+      ..showSnackBar(const SnackBar(content: Text('Testing connection...')));
 
-    // TODO: Implement connection test
-    await Future<void>.delayed(const Duration(seconds: 1));
+    try {
+      final keyRepo = ref.read(keyRepositoryProvider);
+      final sshService = ref.read(sshServiceProvider);
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Connection test not yet implemented')),
+      SshKey? key;
+      if (_selectedKeyId != null) {
+        key = await keyRepo.getById(_selectedKeyId!);
+      }
+
+      SshConnectionConfig? jumpHostConfig;
+      if (_selectedJumpHostId != null) {
+        final jumpHost = await ref
+            .read(hostRepositoryProvider)
+            .getById(_selectedJumpHostId!);
+        if (jumpHost != null) {
+          SshKey? jumpKey;
+          if (jumpHost.keyId != null) {
+            jumpKey = await keyRepo.getById(jumpHost.keyId!);
+          }
+          jumpHostConfig = SshConnectionConfig.fromHost(jumpHost, key: jumpKey);
+        }
+      }
+
+      final config = SshConnectionConfig(
+        hostname: _hostnameController.text.trim(),
+        port: int.parse(_portController.text),
+        username: _usernameController.text.trim(),
+        password: _passwordController.text.isEmpty
+            ? null
+            : _passwordController.text,
+        privateKey: key?.privateKey,
+        passphrase: key?.passphrase,
+        jumpHost: jumpHostConfig,
       );
+
+      final result = await sshService.connect(config);
+      if (!mounted) {
+        return;
+      }
+
+      if (!result.success || result.client == null) {
+        messenger.showSnackBar(
+          SnackBar(content: Text(result.error ?? 'Connection test failed')),
+        );
+        return;
+      }
+
+      await result.closeAll();
+      messenger.showSnackBar(
+        const SnackBar(content: Text('Connection successful')),
+      );
+    } on Exception catch (e) {
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text('Connection failed: $e')));
     }
   }
 
