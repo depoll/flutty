@@ -722,6 +722,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hostFont = _host?.terminalFontFamily;
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
+    final textScaler = MediaQuery.textScalerOf(context);
     final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
@@ -770,7 +771,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          _nativeSelectionOverlay(nativeSelectionTextStyle, mediaPadding),
+          _nativeSelectionOverlay(
+            nativeSelectionTextStyle,
+            mediaPadding,
+            textScaler,
+          ),
         ],
       );
     } else if (_hasTerminalSelection) {
@@ -795,6 +800,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget _nativeSelectionOverlay(
     TextStyle textStyle,
     EdgeInsets mediaPadding,
+    TextScaler textScaler,
   ) => Positioned.fill(
     child: Padding(
       padding: EdgeInsets.fromLTRB(
@@ -811,6 +817,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             child: SelectableText(
               _nativeSelectionSnapshot,
               style: textStyle,
+              textScaler: textScaler,
               strutStyle: StrutStyle.fromTextStyle(
                 textStyle,
                 forceStrutHeight: true,
@@ -936,8 +943,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (i > 0) {
         builder.write('\n');
       }
-      builder.write(buffer.lines[i].getText(0, buffer.viewWidth));
+      builder.write(
+        _buildNativeSelectionLine(buffer.lines[i], buffer.viewWidth),
+      );
     }
+    return builder.toString();
+  }
+
+  String _buildNativeSelectionLine(BufferLine line, int viewWidth) {
+    final builder = StringBuffer();
+    var col = 0;
+
+    while (col < viewWidth) {
+      final codePoint = line.getCodePoint(col);
+      final width = line.getWidth(col);
+
+      if (codePoint == 0) {
+        builder.writeCharCode(0x20);
+        col++;
+        continue;
+      }
+
+      builder.writeCharCode(codePoint);
+      col += width <= 0 ? 1 : width;
+    }
+
     return builder.toString();
   }
 
