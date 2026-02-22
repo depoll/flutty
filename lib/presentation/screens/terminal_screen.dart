@@ -845,11 +845,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         textAlignVertical: TextAlignVertical.top,
         style: textStyle,
         strutStyle: StrutStyle.fromTextStyle(textStyle, forceStrutHeight: true),
-        decoration: const InputDecoration(
-          border: InputBorder.none,
-          isCollapsed: true,
-          contentPadding: EdgeInsets.zero,
-        ),
+        decoration: null,
       ),
     ),
   );
