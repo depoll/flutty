@@ -61,6 +61,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
   bool _hadNativeSelection = false;
+  Timer? _nativeSelectionClearTimer;
   int? _connectionId;
 
   // Theme state
@@ -140,14 +141,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final hasSelection = !_nativeSelectionController.selection.isCollapsed;
     if (hasSelection) {
+      _nativeSelectionClearTimer?.cancel();
       _hadNativeSelection = true;
       return;
     }
 
-    if (_hadNativeSelection) {
-      _hadNativeSelection = false;
-      _exitNativeSelectionMode();
+    if (!_hadNativeSelection) {
+      return;
     }
+
+    _nativeSelectionClearTimer?.cancel();
+    _nativeSelectionClearTimer = Timer(const Duration(milliseconds: 250), () {
+      if (!_isNativeSelectionMode) {
+        return;
+      }
+      if (_nativeSelectionController.selection.isCollapsed) {
+        _hadNativeSelection = false;
+        _exitNativeSelectionMode();
+      }
+    });
   }
 
   void _syncNativeScrollFromTerminal() {
@@ -496,6 +508,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController
       ..removeListener(_onNativeSelectionChanged)
       ..dispose();
+    _nativeSelectionClearTimer?.cancel();
     _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
@@ -825,6 +838,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         controller: _nativeSelectionController,
         focusNode: _nativeSelectionFocusNode,
         readOnly: true,
+        enableInteractiveSelection: true,
         showCursor: false,
         scrollController: _nativeSelectionScrollController,
         expands: true,
@@ -942,6 +956,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
       _nativeSelectionFocusNode.requestFocus();
+      if (!selection.isCollapsed) {
+        _nativeSelectionController.selection = selection;
+      }
     });
     if (_terminalController.selection != null) {
       _terminalController.clearSelection();
@@ -949,6 +966,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _exitNativeSelectionMode() {
+    _nativeSelectionClearTimer?.cancel();
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
