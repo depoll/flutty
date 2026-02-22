@@ -47,8 +47,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
-  late final TextEditingController _nativeSelectionController;
-  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
@@ -60,6 +58,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
+  String _nativeSelectionSnapshot = '';
   int? _connectionId;
 
   // Theme state
@@ -89,8 +88,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..addListener(_syncNativeScrollFromTerminal);
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
-    _nativeSelectionController = TextEditingController();
-    _nativeSelectionFocusNode = FocusNode();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
@@ -118,7 +115,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
     if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
-      _enterNativeSelectionMode(initialRange: selection);
+      _enterNativeSelectionMode();
       return;
     }
 
@@ -474,8 +471,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController
       ..removeListener(_syncTerminalScrollFromNative)
       ..dispose();
-    _nativeSelectionController.dispose();
-    _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     super.dispose();
@@ -728,11 +723,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hostFont = _host?.terminalFontFamily;
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
-    final textScaler = MediaQuery.textScalerOf(context);
     final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
-      textScaler,
     );
     final mediaPadding = MediaQuery.paddingOf(context);
 
@@ -816,21 +809,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           SingleChildScrollView(
             controller: _nativeSelectionScrollController,
             physics: const ClampingScrollPhysics(),
-            child: TextField(
-              controller: _nativeSelectionController,
-              focusNode: _nativeSelectionFocusNode,
-              readOnly: true,
-              showCursor: false,
-              maxLines: null,
+            child: SelectableText(
+              _nativeSelectionSnapshot,
               style: textStyle,
               strutStyle: StrutStyle.fromTextStyle(
                 textStyle,
                 forceStrutHeight: true,
-              ),
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                isCollapsed: true,
-                contentPadding: EdgeInsets.zero,
               ),
             ),
           ),
@@ -857,21 +841,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalStyle(fontSize: fontSize);
   }
 
-  TextStyle _getNativeSelectionTextStyle(
-    TerminalStyle terminalTextStyle,
-    TextScaler textScaler,
-  ) {
-    final baseStyle = terminalTextStyle.toTextStyle(color: Colors.transparent);
-    final baseFontSize = baseStyle.fontSize ?? terminalTextStyle.fontSize;
-    return baseStyle.copyWith(
-      fontSize: textScaler.scale(baseFontSize),
-      letterSpacing: 0,
-      fontFeatures: const [
-        FontFeature.disable('liga'),
-        FontFeature.disable('calt'),
-      ],
-    );
-  }
+  TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
+      terminalTextStyle
+          .toTextStyle(color: Colors.transparent)
+          .copyWith(
+            letterSpacing: 0,
+            fontFeatures: const [
+              FontFeature.disable('liga'),
+              FontFeature.disable('calt'),
+            ],
+          );
 
   TextStyle? _resolveTerminalTextStyle(String fontFamily, double fontSize) =>
       switch (fontFamily) {
@@ -926,43 +905,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _enterNativeSelectionMode();
   }
 
-  void _enterNativeSelectionMode({BufferRange? initialRange}) {
+  void _enterNativeSelectionMode() {
     if (_isNativeSelectionMode) {
       return;
     }
 
     _terminalFocusNode.unfocus();
-    final snapshot = _buildNativeSelectionSnapshot();
-    final initialTextSelection = initialRange == null
-        ? const TextSelection.collapsed(offset: 0)
-        : _bufferRangeToTextSelection(
-            initialRange,
-            viewWidth: _terminal.buffer.viewWidth,
-            lineCount: _terminal.buffer.height,
-            textLength: snapshot.length,
-          );
-    _nativeSelectionController.value = TextEditingValue(
-      text: snapshot,
-      selection: initialTextSelection,
-    );
+    _terminalController.clearSelection();
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
+      _nativeSelectionSnapshot = _buildNativeSelectionSnapshot();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
-      _nativeSelectionFocusNode.requestFocus();
     });
-    if (_terminalController.selection != null) {
-      _terminalController.clearSelection();
-    }
   }
 
   void _exitNativeSelectionMode() {
     setState(() {
       _isNativeSelectionMode = false;
+      _nativeSelectionSnapshot = '';
     });
-    _nativeSelectionController.clear();
     _terminalFocusNode.requestFocus();
   }
 
@@ -999,26 +963,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     return builder.toString();
-  }
-
-  TextSelection _bufferRangeToTextSelection(
-    BufferRange range, {
-    required int viewWidth,
-    required int lineCount,
-    required int textLength,
-  }) {
-    final normalized = range.normalized;
-
-    int toOffset(CellOffset position) {
-      final y = position.y.clamp(0, lineCount - 1);
-      final x = position.x.clamp(0, viewWidth);
-      final rawOffset = y * (viewWidth + 1) + x;
-      return rawOffset.clamp(0, textLength);
-    }
-
-    final start = toOffset(normalized.begin);
-    final end = toOffset(normalized.end);
-    return TextSelection(baseOffset: start, extentOffset: end);
   }
 
   Widget get _selectionActions => SafeArea(
