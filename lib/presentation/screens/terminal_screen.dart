@@ -47,6 +47,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
+  late final TextEditingController _nativeSelectionController;
+  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
@@ -58,7 +60,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
-  String _nativeSelectionSnapshot = '';
+  bool _hadNativeSelection = false;
   int? _connectionId;
 
   // Theme state
@@ -88,6 +90,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..addListener(_syncNativeScrollFromTerminal);
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
+    _nativeSelectionController = TextEditingController();
+    _nativeSelectionController.addListener(_onNativeSelectionChanged);
+    _nativeSelectionFocusNode = FocusNode();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
@@ -115,7 +120,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
     if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
-      _enterNativeSelectionMode();
+      _enterNativeSelectionMode(initialRange: selection);
       return;
     }
 
@@ -126,6 +131,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _hasTerminalSelection = hasSelection;
     });
+  }
+
+  void _onNativeSelectionChanged() {
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+
+    final hasSelection = !_nativeSelectionController.selection.isCollapsed;
+    if (hasSelection) {
+      _hadNativeSelection = true;
+      return;
+    }
+
+    if (_hadNativeSelection) {
+      _hadNativeSelection = false;
+      _exitNativeSelectionMode();
+    }
   }
 
   void _syncNativeScrollFromTerminal() {
@@ -471,6 +493,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController
       ..removeListener(_syncTerminalScrollFromNative)
       ..dispose();
+    _nativeSelectionController
+      ..removeListener(_onNativeSelectionChanged)
+      ..dispose();
+    _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     super.dispose();
@@ -809,12 +835,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           SingleChildScrollView(
             controller: _nativeSelectionScrollController,
             physics: const ClampingScrollPhysics(),
-            child: SelectableText(
-              _nativeSelectionSnapshot,
+            child: TextField(
+              controller: _nativeSelectionController,
+              focusNode: _nativeSelectionFocusNode,
+              readOnly: true,
+              showCursor: false,
+              maxLines: null,
+              textAlignVertical: TextAlignVertical.top,
               style: textStyle,
               strutStyle: StrutStyle.fromTextStyle(
                 textStyle,
                 forceStrutHeight: true,
+              ),
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                isCollapsed: true,
+                contentPadding: EdgeInsets.zero,
               ),
             ),
           ),
@@ -902,67 +938,136 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _enterNativeSelectionMode();
+    _enterNativeSelectionMode(initialRange: _terminalController.selection);
   }
 
-  void _enterNativeSelectionMode() {
+  void _enterNativeSelectionMode({BufferRange? initialRange}) {
     if (_isNativeSelectionMode) {
       return;
     }
 
     _terminalFocusNode.unfocus();
-    _terminalController.clearSelection();
+    final snapshot = _buildNativeSelectionSnapshotData();
+    final selection = initialRange == null
+        ? const TextSelection.collapsed(offset: 0)
+        : _bufferRangeToTextSelection(
+            initialRange,
+            viewWidth: _terminal.buffer.viewWidth,
+            lineCount: _terminal.buffer.height,
+            lineStarts: snapshot.lineStarts,
+            columnOffsets: snapshot.columnOffsets,
+            textLength: snapshot.text.length,
+          );
+    _nativeSelectionController.value = TextEditingValue(
+      text: snapshot.text,
+      selection: selection,
+    );
+    _hadNativeSelection = !selection.isCollapsed;
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
-      _nativeSelectionSnapshot = _buildNativeSelectionSnapshot();
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
+      _nativeSelectionFocusNode.requestFocus();
     });
+    if (_terminalController.selection != null) {
+      _terminalController.clearSelection();
+    }
   }
 
   void _exitNativeSelectionMode() {
     setState(() {
       _isNativeSelectionMode = false;
-      _nativeSelectionSnapshot = '';
+      _hasTerminalSelection = false;
     });
+    _hadNativeSelection = false;
+    _nativeSelectionController.clear();
+    _terminalController.clearSelection();
     _terminalFocusNode.requestFocus();
   }
 
-  String _buildNativeSelectionSnapshot() {
+  ({String text, List<int> lineStarts, List<List<int>> columnOffsets})
+  _buildNativeSelectionSnapshotData() {
     final buffer = _terminal.buffer;
     final builder = StringBuffer();
+    final lineStarts = <int>[];
+    final lineColumnOffsets = <List<int>>[];
+
     for (var i = 0; i < buffer.height; i++) {
-      if (i > 0) {
+      lineStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[i],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      lineColumnOffsets.add(lineSnapshot.columnOffsets);
+      if (i < buffer.height - 1) {
         builder.write('\n');
       }
-      builder.write(
-        _buildNativeSelectionLine(buffer.lines[i], buffer.viewWidth),
-      );
     }
-    return builder.toString();
+
+    return (
+      text: builder.toString(),
+      lineStarts: lineStarts,
+      columnOffsets: lineColumnOffsets,
+    );
   }
 
-  String _buildNativeSelectionLine(BufferLine line, int viewWidth) {
+  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+    BufferLine line,
+    int viewWidth,
+  ) {
     final builder = StringBuffer();
+    final columnOffsets = List<int>.filled(viewWidth + 1, 0);
     var col = 0;
 
     while (col < viewWidth) {
+      final startOffset = builder.length;
+      columnOffsets[col] = startOffset;
       final codePoint = line.getCodePoint(col);
       final width = line.getWidth(col);
 
       if (codePoint == 0) {
         builder.writeCharCode(0x20);
+        columnOffsets[col + 1] = builder.length;
         col++;
         continue;
       }
 
       builder.writeCharCode(codePoint);
-      col += width <= 0 ? 1 : width;
+      final step = (width <= 0 ? 1 : width).clamp(1, viewWidth - col);
+      for (var i = col + 1; i < col + step; i++) {
+        columnOffsets[i] = startOffset;
+      }
+      columnOffsets[col + step] = builder.length;
+      col += step;
     }
 
-    return builder.toString();
+    return (text: builder.toString(), columnOffsets: columnOffsets);
+  }
+
+  TextSelection _bufferRangeToTextSelection(
+    BufferRange range, {
+    required int viewWidth,
+    required int lineCount,
+    required List<int> lineStarts,
+    required List<List<int>> columnOffsets,
+    required int textLength,
+  }) {
+    final normalized = range.normalized;
+
+    int toOffset(CellOffset position) {
+      final y = position.y.clamp(0, lineCount - 1);
+      final x = position.x.clamp(0, viewWidth);
+      final lineStart = lineStarts[y];
+      final lineOffset = columnOffsets[y][x];
+      return (lineStart + lineOffset).clamp(0, textLength);
+    }
+
+    final start = toOffset(normalized.begin);
+    final end = toOffset(normalized.end);
+    return TextSelection(baseOffset: start, extentOffset: end);
   }
 
   Widget get _selectionActions => SafeArea(
