@@ -753,7 +753,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
     );
-    final mediaPadding = MediaQuery.paddingOf(context);
 
     final terminalView = TerminalView(
       _terminal,
@@ -797,7 +796,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          _nativeSelectionOverlay(nativeSelectionTextStyle, mediaPadding),
+          _nativeSelectionOverlay(nativeSelectionTextStyle),
         ],
       );
     } else if (_hasTerminalSelection) {
@@ -819,51 +818,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  Widget _nativeSelectionOverlay(
-    TextStyle textStyle,
-    EdgeInsets mediaPadding,
-  ) => Positioned.fill(
+  Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
-      padding: EdgeInsets.fromLTRB(
-        _terminalViewportPadding.left + mediaPadding.left,
-        _terminalViewportPadding.top + mediaPadding.top,
-        _terminalViewportPadding.right + mediaPadding.right,
-        _terminalViewportPadding.bottom + mediaPadding.bottom,
-      ),
-      child: Stack(
-        children: [
-          SingleChildScrollView(
-            controller: _nativeSelectionScrollController,
-            physics: const ClampingScrollPhysics(),
-            child: TextField(
-              controller: _nativeSelectionController,
-              focusNode: _nativeSelectionFocusNode,
-              readOnly: true,
-              showCursor: false,
-              maxLines: null,
-              textAlignVertical: TextAlignVertical.top,
-              style: textStyle,
-              strutStyle: StrutStyle.fromTextStyle(
-                textStyle,
-                forceStrutHeight: true,
-              ),
-              decoration: const InputDecoration(
-                border: InputBorder.none,
-                isCollapsed: true,
-                contentPadding: EdgeInsets.zero,
-              ),
-            ),
-          ),
-          Positioned(
-            top: 0,
-            right: 0,
-            child: FilledButton.tonalIcon(
-              onPressed: _toggleNativeSelectionMode,
-              icon: const Icon(Icons.check),
-              label: const Text('Done'),
-            ),
-          ),
-        ],
+      padding: _terminalViewportPadding,
+      child: TextField(
+        controller: _nativeSelectionController,
+        focusNode: _nativeSelectionFocusNode,
+        readOnly: true,
+        showCursor: false,
+        scrollController: _nativeSelectionScrollController,
+        expands: true,
+        textAlignVertical: TextAlignVertical.top,
+        style: textStyle,
+        strutStyle: StrutStyle.fromTextStyle(textStyle, forceStrutHeight: true),
+        decoration: const InputDecoration(
+          border: InputBorder.none,
+          isCollapsed: true,
+          contentPadding: EdgeInsets.zero,
+        ),
       ),
     ),
   );
