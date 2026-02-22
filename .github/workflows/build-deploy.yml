@@ -46,7 +46,7 @@ on:
 jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
-    runs-on: [self-hosted, X64, linux]
+    runs-on: [self-hosted, x64, linux]
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
