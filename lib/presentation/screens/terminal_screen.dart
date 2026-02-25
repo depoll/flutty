@@ -48,7 +48,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
-  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
@@ -90,8 +89,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
     _nativeSelectionController = TextEditingController();
-    _nativeSelectionController.addListener(_onNativeSelectionChanged);
-    _nativeSelectionFocusNode = FocusNode();
     _isNativeSelectionMode = _isMobilePlatform;
     if (_isNativeSelectionMode) {
       _refreshNativeOverlayText(preserveSelection: false);
@@ -138,10 +135,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _hasTerminalSelection = hasSelection;
     });
-  }
-
-  void _onNativeSelectionChanged() {
-    // Intentionally no-op. Selection is handled by the native text field.
   }
 
   void _syncNativeScrollFromTerminal() {
@@ -487,10 +480,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController
       ..removeListener(_syncTerminalScrollFromNative)
       ..dispose();
-    _nativeSelectionController
-      ..removeListener(_onNativeSelectionChanged)
-      ..dispose();
-    _nativeSelectionFocusNode.dispose();
+    _nativeSelectionController.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
     super.dispose();
@@ -814,18 +804,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
       padding: _terminalViewportPadding,
-      child: TextField(
-        controller: _nativeSelectionController,
-        focusNode: _nativeSelectionFocusNode,
-        readOnly: true,
-        enableInteractiveSelection: true,
-        showCursor: false,
-        scrollController: _nativeSelectionScrollController,
-        expands: true,
-        textAlignVertical: TextAlignVertical.top,
-        style: textStyle,
-        strutStyle: StrutStyle.fromTextStyle(textStyle, forceStrutHeight: true),
-        decoration: null,
+      child: SingleChildScrollView(
+        controller: _nativeSelectionScrollController,
+        physics: const ClampingScrollPhysics(),
+        child: ValueListenableBuilder<TextEditingValue>(
+          valueListenable: _nativeSelectionController,
+          builder: (context, value, _) => SelectableText(
+            value.text,
+            style: textStyle,
+            strutStyle: StrutStyle.fromTextStyle(
+              textStyle,
+              forceStrutHeight: true,
+            ),
+          ),
+        ),
       ),
     ),
   );
@@ -933,10 +925,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
-      _nativeSelectionFocusNode.requestFocus();
-      if (!selection.isCollapsed) {
-        _nativeSelectionController.selection = selection;
-      }
     });
     if (_terminalController.selection != null) {
       _terminalController.clearSelection();
