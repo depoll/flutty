@@ -60,8 +60,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
-  bool _hadNativeSelection = false;
-  Timer? _nativeSelectionClearTimer;
   int? _connectionId;
 
   // Theme state
@@ -94,6 +92,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController = TextEditingController();
     _nativeSelectionController.addListener(_onNativeSelectionChanged);
     _nativeSelectionFocusNode = FocusNode();
+    _isNativeSelectionMode = _isMobilePlatform;
+    if (_isNativeSelectionMode) {
+      _refreshNativeOverlayText(preserveSelection: false);
+    }
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
@@ -103,6 +105,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onTerminalStateChanged() {
+    if (_isNativeSelectionMode) {
+      _refreshNativeOverlayText(preserveSelection: true);
+    }
+
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
     if (!mounted || _isUsingAltBuffer == isUsingAltBuffer) {
       return;
@@ -135,31 +141,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onNativeSelectionChanged() {
-    if (!_isNativeSelectionMode) {
-      return;
-    }
-
-    final hasSelection = !_nativeSelectionController.selection.isCollapsed;
-    if (hasSelection) {
-      _nativeSelectionClearTimer?.cancel();
-      _hadNativeSelection = true;
-      return;
-    }
-
-    if (!_hadNativeSelection) {
-      return;
-    }
-
-    _nativeSelectionClearTimer?.cancel();
-    _nativeSelectionClearTimer = Timer(const Duration(milliseconds: 250), () {
-      if (!_isNativeSelectionMode) {
-        return;
-      }
-      if (_nativeSelectionController.selection.isCollapsed) {
-        _hadNativeSelection = false;
-        _exitNativeSelectionMode();
-      }
-    });
+    // Intentionally no-op. Selection is handled by the native text field.
   }
 
   void _syncNativeScrollFromTerminal() {
@@ -508,7 +490,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController
       ..removeListener(_onNativeSelectionChanged)
       ..dispose();
-    _nativeSelectionClearTimer?.cancel();
     _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
@@ -587,14 +568,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
               const PopupMenuDivider(),
-              PopupMenuItem(
-                value: 'native_select',
-                child: Text(
-                  _isNativeSelectionMode
-                      ? 'Exit Native Selection'
-                      : 'Native Selection',
+              if (!isMobile)
+                PopupMenuItem(
+                  value: 'native_select',
+                  child: Text(
+                    _isNativeSelectionMode
+                        ? 'Exit Native Selection'
+                        : 'Native Selection',
+                  ),
                 ),
-              ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
@@ -778,7 +760,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      readOnly: _isNativeSelectionMode,
       // On touch devices, simulating wheel scroll with Up/Down keys in alt
       // buffer makes swipe scroll behave like rapid history navigation.
       simulateScroll: !isMobile && _isUsingAltBuffer,
@@ -826,7 +807,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       deleteDetection: true,
-      readOnly: _isNativeSelectionMode,
       child: mobileTerminalView,
     );
   }
@@ -915,6 +895,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _toggleNativeSelectionMode() {
+    if (_isMobilePlatform) {
+      return;
+    }
     if (_isNativeSelectionMode) {
       _exitNativeSelectionMode();
       return;
@@ -944,7 +927,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: snapshot.text,
       selection: selection,
     );
-    _hadNativeSelection = !selection.isCollapsed;
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
@@ -962,15 +944,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _exitNativeSelectionMode() {
-    _nativeSelectionClearTimer?.cancel();
+    if (_isMobilePlatform) {
+      return;
+    }
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
     });
-    _hadNativeSelection = false;
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
     _terminalFocusNode.requestFocus();
+  }
+
+  void _refreshNativeOverlayText({required bool preserveSelection}) {
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+    final snapshot = _buildNativeSelectionSnapshotData();
+    final previousSelection = _nativeSelectionController.selection;
+    final maxOffset = snapshot.text.length;
+    final nextSelection = preserveSelection
+        ? TextSelection(
+            baseOffset: previousSelection.baseOffset.clamp(0, maxOffset),
+            extentOffset: previousSelection.extentOffset.clamp(0, maxOffset),
+          )
+        : const TextSelection.collapsed(offset: 0);
+    _nativeSelectionController.value = TextEditingValue(
+      text: snapshot.text,
+      selection: nextSelection,
+    );
   }
 
   ({String text, List<int> lineStarts, List<List<int>> columnOffsets})
