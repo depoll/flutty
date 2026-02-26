@@ -30,6 +30,16 @@ on:
         type: string
         default: 'none'
         description: 'Android deploy target: internal, production, or none'
+      build-android:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to run the Android build job'
+      build-ios:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to run the iOS build job'
       sync-metadata:
         required: false
         type: boolean
@@ -46,7 +56,8 @@ on:
 jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
-    runs-on: ubuntu-latest
+    if: inputs.build-android
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
@@ -156,6 +167,7 @@ jobs:
 
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
+    if: inputs.build-ios
     runs-on: macos-26
     outputs:
       source-sha: ${{ steps.source-sha.outputs.value }}
