@@ -102,8 +102,12 @@ jobs:
                   return '❌ Failed';
               }
             };
-            const androidJob = jobs.find((job) => job.name.includes('Build Android Preview'));
-            const iosJob = jobs.find((job) => job.name.includes('Build iOS Preview'));
+            const androidJob = jobs.find((job) =>
+              job.name.startsWith('Build Android Preview / Build & Deploy Android'),
+            );
+            const iosJob = jobs.find((job) =>
+              job.name.startsWith('Build iOS Preview / Build & Deploy iOS'),
+            );
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               owner,
               repo,
@@ -184,8 +188,12 @@ jobs:
                   return '❌ Failed';
               }
             };
-            const androidJob = jobs.find((job) => job.name.includes('Build Android Preview'));
-            const iosJob = jobs.find((job) => job.name.includes('Build iOS Preview'));
+            const androidJob = jobs.find((job) =>
+              job.name.startsWith('Build Android Preview / Build & Deploy Android'),
+            );
+            const iosJob = jobs.find((job) =>
+              job.name.startsWith('Build iOS Preview / Build & Deploy iOS'),
+            );
             const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
               owner,
               repo,
