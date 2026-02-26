@@ -35,8 +35,8 @@ jobs:
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
-  build:
-    name: Build & Deploy Preview
+  build-android:
+    name: Build Android Preview
     needs: compute-version
     if: github.event.pull_request.head.repo.full_name == github.repository
     uses: ./.github/workflows/build-deploy.yml
@@ -46,16 +46,85 @@ jobs:
       flavor: private
       deploy-ios-to: none
       deploy-android-to: none
+      build-ios: false
+      build-android: true
     secrets: inherit
 
-  comment:
-    name: PR Comment
+  build-ios:
+    name: Build iOS Preview
+    needs: compute-version
+    if: github.event.pull_request.head.repo.full_name == github.repository
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.compute-version.outputs.build-name }}
+      build-number: ${{ needs.compute-version.outputs.build-number }}
+      flavor: private
+      deploy-ios-to: none
+      deploy-android-to: none
+      build-ios: true
+      build-android: false
+    secrets: inherit
+
+  comment-android:
+    name: PR Comment (Android)
     runs-on: ubuntu-latest
-    needs: [compute-version, build]
+    needs: [compute-version, build-android]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       pull-requests: write
+      actions: read
     steps:
+      - name: Resolve preview status
+        id: preview-status
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runId = context.runId;
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner,
+              repo,
+              run_id: runId,
+              per_page: 100,
+            });
+            const statusFor = (job) => {
+              if (!job || job.status !== 'completed') return '⏳ Building';
+              switch (job.conclusion) {
+                case 'success':
+                  return '✅ Deployed';
+                case 'skipped':
+                  return '⏭️ Skipped';
+                case 'cancelled':
+                  return '⛔ Cancelled';
+                default:
+                  return '❌ Failed';
+              }
+            };
+            const androidJob = jobs.find((job) => job.name.includes('Build Android Preview'));
+            const iosJob = jobs.find((job) => job.name.includes('Build iOS Preview'));
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id: runId,
+              per_page: 100,
+            });
+            const apkArtifact = artifacts.find((artifact) =>
+              artifact.name.startsWith('android-apk-private-'),
+            );
+            let androidLink = `[View workflow run](${runUrl})`;
+            if (androidJob && androidJob.status === 'completed') {
+              if (androidJob.conclusion === 'success' && apkArtifact) {
+                androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+              } else if (androidJob.conclusion === 'skipped') {
+                androidLink = 'N/A (build skipped for fork PR)';
+              }
+            }
+            core.setOutput('android-status', statusFor(androidJob));
+            core.setOutput('ios-status', statusFor(iosJob));
+            core.setOutput('android-link', androidLink);
+
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@v2
         with:
@@ -67,12 +136,95 @@ jobs:
             |---|---|
             | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
-            | **Status** | ${{ needs.build.result == 'success' && '✅ Deployed' || needs.build.result == 'skipped' && '⏭️ Skipped (fork)' || '❌ Failed' }} |
+            | **Android Status** | ${{ steps.preview-status.outputs.android-status }} |
+            | **iOS Status** | ${{ steps.preview-status.outputs.ios-status }} |
 
             ### Install
             | Platform | Link |
             |----------|------|
             | 🍎 **iOS** | Run the **Deploy PR to TestFlight** workflow manually from the Actions tab |
-            | 🤖 **Android (APK)** | ${{ needs.build.result == 'success' && needs.build.outputs.apk-artifact-id != '' && format('[Download APK](https://github.com/{0}/actions/runs/{1}/artifacts/{2})', github.repository, github.run_id, needs.build.outputs.apk-artifact-id) || needs.build.result == 'skipped' && 'N/A (build skipped for fork PR)' || format('[View workflow run](https://github.com/{0}/actions/runs/{1})', github.repository, github.run_id) }} |
+            | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
+
+            > Build triggered by ${{ github.event.pull_request.head.sha }}
+
+  comment-ios:
+    name: PR Comment (iOS)
+    runs-on: ubuntu-latest
+    needs: [compute-version, build-ios]
+    if: always() && github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      pull-requests: write
+      actions: read
+    steps:
+      - name: Resolve preview status
+        id: preview-status
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const runId = context.runId;
+            const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
+            const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
+              owner,
+              repo,
+              run_id: runId,
+              per_page: 100,
+            });
+            const statusFor = (job) => {
+              if (!job || job.status !== 'completed') return '⏳ Building';
+              switch (job.conclusion) {
+                case 'success':
+                  return '✅ Deployed';
+                case 'skipped':
+                  return '⏭️ Skipped';
+                case 'cancelled':
+                  return '⛔ Cancelled';
+                default:
+                  return '❌ Failed';
+              }
+            };
+            const androidJob = jobs.find((job) => job.name.includes('Build Android Preview'));
+            const iosJob = jobs.find((job) => job.name.includes('Build iOS Preview'));
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id: runId,
+              per_page: 100,
+            });
+            const apkArtifact = artifacts.find((artifact) =>
+              artifact.name.startsWith('android-apk-private-'),
+            );
+            let androidLink = `[View workflow run](${runUrl})`;
+            if (androidJob && androidJob.status === 'completed') {
+              if (androidJob.conclusion === 'success' && apkArtifact) {
+                androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+              } else if (androidJob.conclusion === 'skipped') {
+                androidLink = 'N/A (build skipped for fork PR)';
+              }
+            }
+            core.setOutput('android-status', statusFor(androidJob));
+            core.setOutput('ios-status', statusFor(iosJob));
+            core.setOutput('android-link', androidLink);
+
+      - name: Comment on PR
+        uses: marocchino/sticky-pull-request-comment@v2
+        with:
+          header: preview-build
+          message: |
+            ## 📱 Preview Build
+
+            | | Details |
+            |---|---|
+            | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
+            | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
+            | **Android Status** | ${{ steps.preview-status.outputs.android-status }} |
+            | **iOS Status** | ${{ steps.preview-status.outputs.ios-status }} |
+
+            ### Install
+            | Platform | Link |
+            |----------|------|
+            | 🍎 **iOS** | Run the **Deploy PR to TestFlight** workflow manually from the Actions tab |
+            | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
