@@ -59,18 +59,14 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
             colorScheme.surfaceContainerHighest,
           );
-    final previewBackgroundStart = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.cursor.withAlpha(previewTheme.isDark ? 12 : 18),
-            previewBackgroundBase,
-          );
     final previewTextColor =
         previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
-    final accentColor = previewTheme?.cursor ?? colorScheme.primary;
     final borderColor = Color.alphaBlend(
-      accentColor.withAlpha(26),
+      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(18),
       colorScheme.outlineVariant,
+    );
+    final edgeFadeColor = previewBackgroundBase.withAlpha(
+      previewTheme?.isDark ?? false ? 176 : 132,
     );
 
     return Column(
@@ -89,15 +85,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                   constraints: const BoxConstraints(minHeight: 52),
                   padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
                   decoration: BoxDecoration(
-                    gradient: LinearGradient(
-                      begin: Alignment.topLeft,
-                      end: Alignment.bottomRight,
-                      colors: [
-                        previewBackgroundStart,
-                        previewBackgroundBase,
-                        previewBackgroundBase.withAlpha(248),
-                      ],
-                    ),
+                    color: previewBackgroundBase,
                     border: Border.all(color: borderColor),
                     borderRadius: BorderRadius.circular(12),
                   ),
@@ -114,6 +102,29 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                 ),
                 Positioned(
                   left: 0,
+                  right: 0,
+                  top: 0,
+                  bottom: 0,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        gradient: LinearGradient(
+                          stops: const [0, 0.08, 0.92, 1],
+                          colors: [
+                            edgeFadeColor,
+                            Colors.transparent,
+                            Colors.transparent,
+                            edgeFadeColor,
+                          ],
+                        ),
+                      ),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
+                ),
+                Positioned(
+                  left: 0,
+                  right: 0,
                   top: 0,
                   bottom: 0,
                   child: IgnorePointer(
@@ -122,31 +133,16 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                         gradient: LinearGradient(
                           begin: Alignment.topCenter,
                           end: Alignment.bottomCenter,
-                          colors: [
-                            accentColor.withAlpha(72),
-                            accentColor.withAlpha(8),
-                          ],
-                        ),
-                      ),
-                      child: const SizedBox(width: 3),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
+                          stops: const [0, 0.1, 0.9, 1],
                           colors: [
                             Colors.transparent,
-                            previewBackgroundBase.withAlpha(168),
+                            Colors.transparent,
+                            Colors.transparent,
+                            edgeFadeColor.withAlpha(112),
                           ],
                         ),
                       ),
-                      child: const SizedBox(width: 18),
+                      child: const SizedBox.expand(),
                     ),
                   ),
                 ),
