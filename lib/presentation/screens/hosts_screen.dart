@@ -704,8 +704,8 @@ class _StackedHostPreview {
 class _StackedHostPreviewList extends StatelessWidget {
   const _StackedHostPreviewList({required this.previews});
 
-  static const double _verticalOffset = 10;
-  static const double _horizontalOffset = 6;
+  static const double _verticalOffset = 14;
+  static const double _horizontalOffset = 12;
 
   final List<_StackedHostPreview> previews;
 
@@ -719,18 +719,21 @@ class _StackedHostPreviewList extends StatelessWidget {
       child: Stack(
         children: [
           for (var index = 0; index < previews.length; index++)
-            Positioned(
-              top: index * _verticalOffset,
-              left: index * _horizontalOffset,
-              right: (previews.length - index - 1) * _horizontalOffset,
-              child: ConnectionPreviewSnippet(
-                endpoint: '',
-                preview: previews[index].preview,
-                terminalTheme: previews[index].terminalTheme,
-                showEndpoint: false,
-                previewMaxLines: 2,
-              ),
-            ),
+            () {
+              final stackDepth = previews.length - index - 1;
+              return Positioned(
+                top: stackDepth * _verticalOffset,
+                left: stackDepth * _horizontalOffset,
+                right: 0,
+                child: ConnectionPreviewSnippet(
+                  endpoint: '',
+                  preview: previews[index].preview,
+                  terminalTheme: previews[index].terminalTheme,
+                  showEndpoint: false,
+                  previewMaxLines: 2,
+                ),
+              );
+            }(),
         ],
       ),
     );
