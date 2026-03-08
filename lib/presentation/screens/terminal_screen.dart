@@ -565,7 +565,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard && !_isNativeSelectionMode)
+          if (_showKeyboard && (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
               key: _toolbarKey,
               terminal: _terminal,

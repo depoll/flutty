@@ -11,7 +11,11 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/terminal_theme.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/connection_preview_snippet.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -384,6 +388,17 @@ class _HostRow extends ConsumerWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final previewTheme = resolveConnectionPreviewTheme(
+      brightness: theme.brightness,
+      themeSettings: terminalThemeSettings,
+      availableThemes: terminalThemes,
+      lightThemeId: host.terminalThemeLightId,
+      darkThemeId: host.terminalThemeDarkId,
+    );
 
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionStates = ref.watch(activeSessionsProvider);
@@ -496,16 +511,16 @@ class _HostRow extends ConsumerWidget {
                         color: colorScheme.onSurface.withAlpha(100),
                       ),
                     ),
-                    if (latestConnection?.preview case final preview?) ...[
+                    if (latestConnection?.preview?.trim().isNotEmpty ??
+                        false) ...[
                       const SizedBox(height: 4),
-                      Text(
-                        preview,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: FluttyTheme.monoStyle.copyWith(
-                          fontSize: 11,
-                          color: colorScheme.onSurface.withAlpha(130),
+                      ConnectionPreviewSnippet(
+                        endpoint: 'Connection preview',
+                        endpointStyle: theme.textTheme.labelSmall?.copyWith(
+                          color: colorScheme.onSurface.withAlpha(110),
                         ),
+                        preview: latestConnection?.preview,
+                        terminalTheme: previewTheme,
                       ),
                     ],
                   ],
@@ -573,6 +588,17 @@ class _HostRow extends ConsumerWidget {
       context: context,
       builder: (context) {
         final connectionStates = ref.read(activeSessionsProvider);
+        final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
+        final terminalThemes =
+            ref.read(allTerminalThemesProvider).asData?.value ??
+            TerminalThemes.all;
+        final previewTheme = resolveConnectionPreviewTheme(
+          brightness: Theme.of(context).brightness,
+          themeSettings: terminalThemeSettings,
+          availableThemes: terminalThemes,
+          lightThemeId: host.terminalThemeLightId,
+          darkThemeId: host.terminalThemeDarkId,
+        );
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -591,6 +617,7 @@ class _HostRow extends ConsumerWidget {
                   preview: sessionsNotifier
                       .getActiveConnection(connectionId)
                       ?.preview,
+                  terminalTheme: previewTheme,
                   createdAt: sessionsNotifier
                       .getSession(connectionId)
                       ?.createdAt,
@@ -738,6 +765,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.endpoint,
     required this.onTap,
     this.preview,
+    this.terminalTheme,
     this.createdAt,
   });
 
@@ -745,6 +773,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final SshConnectionState state;
   final String endpoint;
   final String? preview;
+  final TerminalThemeData? terminalTheme;
   final DateTime? createdAt;
   final VoidCallback onTap;
 
@@ -756,8 +785,12 @@ class _ConnectionSelectionTile extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.terminal),
       title: Text('Connection #$connectionId'),
-      subtitle: _ConnectionPreviewText(endpoint: subtitle, preview: preview),
-      isThreeLine: preview != null,
+      subtitle: _ConnectionPreviewText(
+        endpoint: subtitle,
+        preview: preview,
+        terminalTheme: terminalTheme,
+      ),
+      isThreeLine: preview?.trim().isNotEmpty ?? false,
       trailing: Text(
         _stateLabel(state),
         style: Theme.of(context).textTheme.labelMedium,
@@ -792,6 +825,10 @@ class _ConnectionsPanel extends ConsumerWidget {
     final hostsAsync = ref.watch(_allHostsStreamProvider);
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
     final connections = sessionsNotifier.getActiveConnections();
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
@@ -829,6 +866,13 @@ class _ConnectionsPanel extends ConsumerWidget {
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
                     final preview = connection.preview;
+                    final previewTheme = resolveConnectionPreviewTheme(
+                      brightness: theme.brightness,
+                      themeSettings: terminalThemeSettings,
+                      availableThemes: terminalThemes,
+                      lightThemeId: host?.terminalThemeLightId,
+                      darkThemeId: host?.terminalThemeDarkId,
+                    );
 
                     return ListTile(
                       leading: Icon(
@@ -842,8 +886,9 @@ class _ConnectionsPanel extends ConsumerWidget {
                         endpoint:
                             '$endpoint  •  Connection #${connection.connectionId}',
                         preview: preview,
+                        terminalTheme: previewTheme,
                       ),
-                      isThreeLine: preview != null,
+                      isThreeLine: preview?.trim().isNotEmpty ?? false,
                       trailing: IconButton(
                         icon: const Icon(Icons.close),
                         tooltip: 'Disconnect',
@@ -900,14 +945,22 @@ class _ConnectionsPanel extends ConsumerWidget {
 }
 
 class _ConnectionPreviewText extends StatelessWidget {
-  const _ConnectionPreviewText({required this.endpoint, this.preview});
+  const _ConnectionPreviewText({
+    required this.endpoint,
+    this.preview,
+    this.terminalTheme,
+  });
 
   final String endpoint;
   final String? preview;
+  final TerminalThemeData? terminalTheme;
 
   @override
-  Widget build(BuildContext context) =>
-      ConnectionPreviewSnippet(endpoint: endpoint, preview: preview);
+  Widget build(BuildContext context) => ConnectionPreviewSnippet(
+    endpoint: endpoint,
+    preview: preview,
+    terminalTheme: terminalTheme,
+  );
 }
 
 class _ActionButton extends StatelessWidget {

@@ -8,7 +8,11 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
+import '../../domain/models/terminal_theme.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/connection_preview_snippet.dart';
 
 /// Screen displaying list of saved hosts.
@@ -77,6 +81,11 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   Widget _buildHostList(List<Host> hosts) {
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final brightness = Theme.of(context).brightness;
     var filteredHosts = hosts;
 
     // Apply search filter
@@ -135,6 +144,13 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         final host = filteredHosts[index];
         return _HostListTile(
           host: host,
+          previewTheme: resolveConnectionPreviewTheme(
+            brightness: brightness,
+            themeSettings: terminalThemeSettings,
+            availableThemes: terminalThemes,
+            lightThemeId: host.terminalThemeLightId,
+            darkThemeId: host.terminalThemeDarkId,
+          ),
           onTap: () => _connectToHost(host),
           onNewConnection: () => unawaited(_openNewConnection(host)),
           onEdit: () => context.push('/hosts/edit/${host.id}'),
@@ -192,39 +208,53 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 
     final selected = await showModalBottomSheet<String>(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: Text(host.label),
-              subtitle: Text('${connectionIds.length} active connections'),
-            ),
-            for (final connectionId in connectionIds.reversed)
+      builder: (context) {
+        final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
+        final terminalThemes =
+            ref.read(allTerminalThemesProvider).asData?.value ??
+            TerminalThemes.all;
+        final previewTheme = resolveConnectionPreviewTheme(
+          brightness: Theme.of(context).brightness,
+          themeSettings: terminalThemeSettings,
+          availableThemes: terminalThemes,
+          lightThemeId: host.terminalThemeLightId,
+          darkThemeId: host.terminalThemeDarkId,
+        );
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                leading: const Icon(Icons.terminal),
-                title: Text('Connection #$connectionId'),
-                subtitle: _HostPreviewText(
-                  endpoint: '${host.username}@${host.hostname}:${host.port}',
-                  preview: sessionsNotifier
-                      .getActiveConnection(connectionId)
-                      ?.preview,
-                ),
-                isThreeLine:
-                    sessionsNotifier
-                        .getActiveConnection(connectionId)
-                        ?.preview !=
-                    null,
-                onTap: () => Navigator.pop(context, '$connectionId'),
+                title: Text(host.label),
+                subtitle: Text('${connectionIds.length} active connections'),
               ),
-            ListTile(
-              leading: const Icon(Icons.add),
-              title: const Text('New connection'),
-              onTap: () => Navigator.pop(context, 'new'),
-            ),
-          ],
-        ),
-      ),
+              for (final connectionId in connectionIds.reversed)
+                () {
+                  final preview = sessionsNotifier
+                      .getActiveConnection(connectionId)
+                      ?.preview;
+                  return ListTile(
+                    leading: const Icon(Icons.terminal),
+                    title: Text('Connection #$connectionId'),
+                    subtitle: _HostPreviewText(
+                      endpoint:
+                          '${host.username}@${host.hostname}:${host.port}',
+                      preview: preview,
+                      terminalTheme: previewTheme,
+                    ),
+                    isThreeLine: preview?.trim().isNotEmpty ?? false,
+                    onTap: () => Navigator.pop(context, '$connectionId'),
+                  );
+                }(),
+              ListTile(
+                leading: const Icon(Icons.add),
+                title: const Text('New connection'),
+                onTap: () => Navigator.pop(context, 'new'),
+              ),
+            ],
+          ),
+        );
+      },
     );
 
     if (!mounted || selected == null) {
@@ -469,6 +499,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 class _HostListTile extends ConsumerWidget {
   const _HostListTile({
     required this.host,
+    required this.previewTheme,
     required this.onTap,
     required this.onNewConnection,
     required this.onEdit,
@@ -476,6 +507,7 @@ class _HostListTile extends ConsumerWidget {
   });
 
   final Host host;
+  final TerminalThemeData previewTheme;
   final VoidCallback onTap;
   final VoidCallback onNewConnection;
   final VoidCallback onEdit;
@@ -524,8 +556,9 @@ class _HostListTile extends ConsumerWidget {
             : '${host.username}@${host.hostname}:${host.port}  •  '
                   '${connectionIds.length} connection(s)',
         preview: latestConnection?.preview,
+        terminalTheme: previewTheme,
       ),
-      isThreeLine: latestConnection?.preview != null,
+      isThreeLine: latestConnection?.preview?.trim().isNotEmpty ?? false,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -596,14 +629,22 @@ class _HostListTile extends ConsumerWidget {
 }
 
 class _HostPreviewText extends StatelessWidget {
-  const _HostPreviewText({required this.endpoint, this.preview});
+  const _HostPreviewText({
+    required this.endpoint,
+    this.preview,
+    this.terminalTheme,
+  });
 
   final String endpoint;
   final String? preview;
+  final TerminalThemeData? terminalTheme;
 
   @override
-  Widget build(BuildContext context) =>
-      ConnectionPreviewSnippet(endpoint: endpoint, preview: preview);
+  Widget build(BuildContext context) => ConnectionPreviewSnippet(
+    endpoint: endpoint,
+    preview: preview,
+    terminalTheme: terminalTheme,
+  );
 }
 
 /// Provider for all hosts - uses stream for auto-refresh on changes.
