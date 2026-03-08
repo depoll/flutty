@@ -52,7 +52,6 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     final theme = Theme.of(context);
     final previewText = preview?.trim();
     final colorScheme = theme.colorScheme;
-    final surroundingBackground = theme.scaffoldBackgroundColor;
     final previewTheme = terminalTheme;
     final previewBackgroundBase = previewTheme == null
         ? colorScheme.surfaceContainerHighest
@@ -66,7 +65,10 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       (previewTheme?.cursor ?? colorScheme.primary).withAlpha(18),
       colorScheme.outlineVariant,
     );
-    final edgeFadeColor = surroundingBackground;
+    final shadowColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(12),
+      theme.shadowColor.withAlpha(16),
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -75,53 +77,31 @@ class ConnectionPreviewSnippet extends StatelessWidget {
         Text(endpoint, style: endpointStyle),
         if (previewText != null && previewText.isNotEmpty) ...[
           const SizedBox(height: 4),
-          ClipRRect(
-            borderRadius: BorderRadius.circular(12),
-            child: Stack(
-              children: [
-                Container(
-                  width: double.infinity,
-                  constraints: const BoxConstraints(minHeight: 52),
-                  padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
-                  decoration: BoxDecoration(
-                    color: previewBackgroundBase,
-                    border: Border.all(color: borderColor),
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    previewText,
-                    maxLines: 5,
-                    overflow: TextOverflow.ellipsis,
-                    style: FluttyTheme.monoStyle.copyWith(
-                      fontSize: 9,
-                      color: previewTextColor,
-                      height: 1.25,
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: RadialGradient(
-                          radius: 1.15,
-                          stops: const [0.7, 0.9, 1],
-                          colors: [
-                            Colors.transparent,
-                            edgeFadeColor.withAlpha(220),
-                            edgeFadeColor,
-                          ],
-                        ),
-                      ),
-                      child: const SizedBox.expand(),
-                    ),
-                  ),
+          Container(
+            width: double.infinity,
+            constraints: const BoxConstraints(minHeight: 52),
+            padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+            decoration: BoxDecoration(
+              color: previewBackgroundBase,
+              border: Border.all(color: borderColor),
+              borderRadius: BorderRadius.circular(12),
+              boxShadow: [
+                BoxShadow(
+                  color: shadowColor,
+                  blurRadius: 6,
+                  offset: const Offset(0, 1),
                 ),
               ],
+            ),
+            child: Text(
+              previewText,
+              maxLines: 5,
+              overflow: TextOverflow.ellipsis,
+              style: FluttyTheme.monoStyle.copyWith(
+                fontSize: 9,
+                color: previewTextColor,
+                height: 1.25,
+              ),
             ),
           ),
         ],
