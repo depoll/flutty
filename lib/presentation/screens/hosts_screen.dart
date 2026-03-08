@@ -602,11 +602,8 @@ class _HostPreviewText extends StatelessWidget {
   final String? preview;
 
   @override
-  Widget build(BuildContext context) => ConnectionPreviewSnippet(
-    endpoint: endpoint,
-    endpointStyle: Theme.of(context).textTheme.bodySmall,
-    preview: preview,
-  );
+  Widget build(BuildContext context) =>
+      ConnectionPreviewSnippet(endpoint: endpoint, preview: preview);
 }
 
 /// Provider for all hosts - uses stream for auto-refresh on changes.
