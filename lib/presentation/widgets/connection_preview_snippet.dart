@@ -32,6 +32,8 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     this.preview,
     this.endpointStyle,
     this.terminalTheme,
+    this.showEndpoint = true,
+    this.previewMaxLines = 5,
     super.key,
   });
 
@@ -46,6 +48,12 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 
   /// Terminal theme used to tint the preview surface.
   final TerminalThemeData? terminalTheme;
+
+  /// Whether to render the endpoint metadata line above the preview.
+  final bool showEndpoint;
+
+  /// Maximum number of preview lines to render before truncating.
+  final int previewMaxLines;
 
   @override
   Widget build(BuildContext context) {
@@ -74,9 +82,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       mainAxisSize: MainAxisSize.min,
       children: [
-        Text(endpoint, style: endpointStyle),
+        if (showEndpoint) Text(endpoint, style: endpointStyle),
         if (previewText != null && previewText.isNotEmpty) ...[
-          const SizedBox(height: 4),
+          if (showEndpoint) const SizedBox(height: 4),
           Container(
             width: double.infinity,
             constraints: const BoxConstraints(minHeight: 52),
@@ -95,7 +103,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             ),
             child: Text(
               previewText,
-              maxLines: 5,
+              maxLines: previewMaxLines,
               overflow: TextOverflow.ellipsis,
               style: FluttyTheme.monoStyle.copyWith(
                 fontSize: 9,

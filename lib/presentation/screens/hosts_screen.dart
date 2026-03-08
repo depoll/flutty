@@ -525,9 +525,18 @@ class _HostListTile extends ConsumerWidget {
           state == SshConnectionState.connecting ||
           state == SshConnectionState.authenticating,
     );
+    final previewConnections = activeConnections
+        .where((connection) => connection.preview?.trim().isNotEmpty ?? false)
+        .toList(growable: false);
     final latestConnection = activeConnections.isEmpty
         ? null
         : activeConnections.last;
+    final latestPreviewConnection = previewConnections.isEmpty
+        ? latestConnection
+        : previewConnections.last;
+    final stackedPreviewConnections = previewConnections.length <= 3
+        ? previewConnections
+        : previewConnections.sublist(previewConnections.length - 3);
     final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
@@ -537,10 +546,28 @@ class _HostListTile extends ConsumerWidget {
       themeSettings: terminalThemeSettings,
       availableThemes: terminalThemes,
       lightThemeId:
-          latestConnection?.terminalThemeLightId ?? host.terminalThemeLightId,
+          latestPreviewConnection?.terminalThemeLightId ??
+          host.terminalThemeLightId,
       darkThemeId:
-          latestConnection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
+          latestPreviewConnection?.terminalThemeDarkId ??
+          host.terminalThemeDarkId,
     );
+    final stackedPreviews = stackedPreviewConnections
+        .map(
+          (connection) => _StackedHostPreview(
+            preview: connection.preview!.trim(),
+            terminalTheme: resolveConnectionPreviewTheme(
+              brightness: theme.brightness,
+              themeSettings: terminalThemeSettings,
+              availableThemes: terminalThemes,
+              lightThemeId:
+                  connection.terminalThemeLightId ?? host.terminalThemeLightId,
+              darkThemeId:
+                  connection.terminalThemeDarkId ?? host.terminalThemeDarkId,
+            ),
+          ),
+        )
+        .toList(growable: false);
 
     return ListTile(
       leading: CircleAvatar(
@@ -558,10 +585,11 @@ class _HostListTile extends ConsumerWidget {
             ? '${host.username}@${host.hostname}:${host.port}'
             : '${host.username}@${host.hostname}:${host.port}  •  '
                   '${connectionIds.length} connection(s)',
-        preview: latestConnection?.preview,
+        preview: latestPreviewConnection?.preview,
         terminalTheme: previewTheme,
+        stackedPreviews: stackedPreviews,
       ),
-      isThreeLine: latestConnection?.preview?.trim().isNotEmpty ?? false,
+      isThreeLine: latestPreviewConnection?.preview?.trim().isNotEmpty ?? false,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -636,18 +664,77 @@ class _HostPreviewText extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.terminalTheme,
+    this.stackedPreviews = const [],
   });
 
   final String endpoint;
   final String? preview;
   final TerminalThemeData? terminalTheme;
+  final List<_StackedHostPreview> stackedPreviews;
 
   @override
-  Widget build(BuildContext context) => ConnectionPreviewSnippet(
-    endpoint: endpoint,
-    preview: preview,
-    terminalTheme: terminalTheme,
-  );
+  Widget build(BuildContext context) {
+    if (stackedPreviews.length > 1) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(endpoint),
+          const SizedBox(height: 4),
+          _StackedHostPreviewList(previews: stackedPreviews),
+        ],
+      );
+    }
+
+    return ConnectionPreviewSnippet(
+      endpoint: endpoint,
+      preview: preview,
+      terminalTheme: terminalTheme,
+    );
+  }
+}
+
+class _StackedHostPreview {
+  const _StackedHostPreview({required this.preview, this.terminalTheme});
+
+  final String preview;
+  final TerminalThemeData? terminalTheme;
+}
+
+class _StackedHostPreviewList extends StatelessWidget {
+  const _StackedHostPreviewList({required this.previews});
+
+  static const double _verticalOffset = 10;
+  static const double _horizontalOffset = 6;
+
+  final List<_StackedHostPreview> previews;
+
+  @override
+  Widget build(BuildContext context) {
+    final stackHeight = 52 + ((previews.length - 1) * _verticalOffset);
+
+    return SizedBox(
+      width: double.infinity,
+      height: stackHeight,
+      child: Stack(
+        children: [
+          for (var index = 0; index < previews.length; index++)
+            Positioned(
+              top: index * _verticalOffset,
+              left: index * _horizontalOffset,
+              right: (previews.length - index - 1) * _horizontalOffset,
+              child: ConnectionPreviewSnippet(
+                endpoint: '',
+                preview: previews[index].preview,
+                terminalTheme: previews[index].terminalTheme,
+                showEndpoint: false,
+                previewMaxLines: 2,
+              ),
+            ),
+        ],
+      ),
+    );
+  }
 }
 
 /// Provider for all hosts - uses stream for auto-refresh on changes.
