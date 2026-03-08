@@ -25,8 +25,6 @@ class MainActivity : FlutterActivity() {
                     "updateStatus" -> {
                         val connectionCount = call.argument<Int>("connectionCount") ?: 0
                         val connectedCount = call.argument<Int>("connectedCount") ?: 0
-                        val primaryLabel = call.argument<String>("primaryLabel") ?: "SSH server"
-                        val primaryPreview = call.argument<String>("primaryPreview")
                         if (connectionCount > 0) {
                             ensureNotificationPermission()
                         }
@@ -34,9 +32,7 @@ class MainActivity : FlutterActivity() {
                             context = this,
                             status = SshConnectionService.ConnectionStatus(
                                 connectionCount = connectionCount,
-                                connectedCount = connectedCount,
-                                primaryLabel = primaryLabel,
-                                primaryPreview = primaryPreview
+                                connectedCount = connectedCount
                             ),
                         )
                         result.success(null)

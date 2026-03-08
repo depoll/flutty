@@ -17,8 +17,6 @@ class BackgroundSshService {
   static Future<void> updateStatus({
     required int connectionCount,
     required int connectedCount,
-    required String primaryLabel,
-    String? primaryPreview,
   }) async {
     if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
       return;
@@ -27,8 +25,6 @@ class BackgroundSshService {
       await _channel.invokeMethod<void>('updateStatus', {
         'connectionCount': connectionCount,
         'connectedCount': connectedCount,
-        'primaryLabel': primaryLabel,
-        'primaryPreview': primaryPreview,
       });
     } on PlatformException catch (error) {
       debugPrint(

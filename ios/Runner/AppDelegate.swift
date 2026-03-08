@@ -25,8 +25,7 @@ import UIKit
           guard
             let arguments = call.arguments as? [String: Any],
             let connectionCount = arguments["connectionCount"] as? Int,
-            let connectedCount = arguments["connectedCount"] as? Int,
-            let primaryLabel = arguments["primaryLabel"] as? String
+            let connectedCount = arguments["connectedCount"] as? Int
           else {
             result(
               FlutterError(
@@ -40,9 +39,7 @@ import UIKit
 
           ConnectionStatusLiveActivityManager.shared.updateStatus(
             connectionCount: connectionCount,
-            connectedCount: connectedCount,
-            primaryLabel: primaryLabel,
-            primaryPreview: arguments["primaryPreview"] as? String
+            connectedCount: connectedCount
           )
           result(nil)
         case "setForegroundState":

@@ -14,16 +14,15 @@ struct ConnectionStatusLiveActivityWidget: Widget {
           )
           .font(.headline)
           Spacer()
-          Text(context.state.primaryLabel)
+          Text(connectionStatusSummary(for: context.state))
             .font(.caption)
             .foregroundStyle(.secondary)
-            .lineLimit(1)
+            .multilineTextAlignment(.trailing)
         }
 
-        Text(context.state.primaryPreview ?? "Connected — waiting for terminal output")
-          .font(.system(.caption, design: .monospaced))
-          .lineLimit(3)
-          .multilineTextAlignment(.leading)
+        Text("Keeping SSH connections alive in the background")
+          .font(.caption)
+          .foregroundStyle(.secondary)
       }
       .padding()
       .activityBackgroundTint(Color.black)
@@ -40,14 +39,15 @@ struct ConnectionStatusLiveActivityWidget: Widget {
           }
         }
         DynamicIslandExpandedRegion(.trailing) {
-          Text(context.state.primaryLabel)
+          Text(connectionStatusSummary(for: context.state))
             .font(.caption)
             .multilineTextAlignment(.trailing)
             .lineLimit(2)
         }
         DynamicIslandExpandedRegion(.bottom) {
-          Text(context.state.primaryPreview ?? "Connected — waiting for terminal output")
-            .font(.system(.caption, design: .monospaced))
+          Text("Keeping SSH connections alive in the background")
+            .font(.caption)
+            .foregroundStyle(.secondary)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -61,5 +61,14 @@ struct ConnectionStatusLiveActivityWidget: Widget {
           .font(.caption2.bold())
       }
     }
+  }
+
+  private func connectionStatusSummary(
+    for state: ConnectionStatusAttributes.ContentState
+  ) -> String {
+    if state.connectedCount == state.connectionCount {
+      return "All sessions connected"
+    }
+    return "\(state.connectedCount)/\(state.connectionCount) connected"
   }
 }

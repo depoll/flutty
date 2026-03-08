@@ -7,8 +7,6 @@ final class ConnectionStatusLiveActivityManager {
   private struct StatusPayload {
     let connectionCount: Int
     let connectedCount: Int
-    let primaryLabel: String
-    let primaryPreview: String?
   }
 
   private var latestStatus: StatusPayload?
@@ -18,15 +16,11 @@ final class ConnectionStatusLiveActivityManager {
 
   func updateStatus(
     connectionCount: Int,
-    connectedCount: Int,
-    primaryLabel: String,
-    primaryPreview: String?
+    connectedCount: Int
   ) {
     latestStatus = StatusPayload(
       connectionCount: connectionCount,
-      connectedCount: connectedCount,
-      primaryLabel: primaryLabel,
-      primaryPreview: primaryPreview
+      connectedCount: connectedCount
     )
     refreshPresentation()
   }
@@ -76,9 +70,7 @@ final class ConnectionStatusLiveActivityManager {
 
     let contentState = ConnectionStatusAttributes.ContentState(
       connectionCount: status.connectionCount,
-      connectedCount: status.connectedCount,
-      primaryLabel: status.primaryLabel,
-      primaryPreview: status.primaryPreview
+      connectedCount: status.connectedCount
     )
 
     if let activity = Activity<ConnectionStatusAttributes>.activities.first {

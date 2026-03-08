@@ -19,9 +19,7 @@ class SshConnectionService : Service() {
 
     data class ConnectionStatus(
         val connectionCount: Int,
-        val connectedCount: Int,
-        val primaryLabel: String,
-        val primaryPreview: String?
+        val connectedCount: Int
     )
 
     companion object {
@@ -31,8 +29,6 @@ class SshConnectionService : Service() {
         private const val ACTION_SYNC = "xyz.depollsoft.monkeyssh.action.SYNC"
         private const val EXTRA_CONNECTION_COUNT = "connectionCount"
         private const val EXTRA_CONNECTED_COUNT = "connectedCount"
-        private const val EXTRA_PRIMARY_LABEL = "primaryLabel"
-        private const val EXTRA_PRIMARY_PREVIEW = "primaryPreview"
 
         private var latestStatus: ConnectionStatus? = null
         private var isAppForeground = true
@@ -67,8 +63,6 @@ class SshConnectionService : Service() {
                 action = ACTION_SYNC
                 putExtra(EXTRA_CONNECTION_COUNT, status.connectionCount)
                 putExtra(EXTRA_CONNECTED_COUNT, status.connectedCount)
-                putExtra(EXTRA_PRIMARY_LABEL, status.primaryLabel)
-                putExtra(EXTRA_PRIMARY_PREVIEW, status.primaryPreview)
             }
             ContextCompat.startForegroundService(context, intent)
         }
@@ -108,9 +102,7 @@ class SshConnectionService : Service() {
         }
         return ConnectionStatus(
             connectionCount = connectionCount,
-            connectedCount = intent.getIntExtra(EXTRA_CONNECTED_COUNT, 0),
-            primaryLabel = intent.getStringExtra(EXTRA_PRIMARY_LABEL) ?: "SSH server",
-            primaryPreview = intent.getStringExtra(EXTRA_PRIMARY_PREVIEW)
+            connectedCount = intent.getIntExtra(EXTRA_CONNECTED_COUNT, 0)
         )
     }
 
@@ -136,16 +128,12 @@ class SshConnectionService : Service() {
         } else {
             "${status.connectionCount} active SSH connections"
         }
-        val summary = if (status.connectionCount == 1) {
-            status.primaryLabel
+        val summary = if (status.connectedCount == status.connectionCount) {
+            "All sessions connected"
         } else {
-            "${status.primaryLabel} + ${status.connectionCount - 1} more"
+            "${status.connectedCount}/${status.connectionCount} connected"
         }
-        val previewText = status.primaryPreview
-            ?.replace('\n', ' ')
-            ?.trim()
-            ?.takeIf { it.isNotEmpty() }
-            ?: "Keeping SSH connections alive in the background"
+        val detailText = "Keeping SSH connections alive in the background"
 
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
@@ -165,7 +153,7 @@ class SshConnectionService : Service() {
             }")
             .setStyle(
                 BigTextStyle()
-                    .bigText(previewText)
+                    .bigText(detailText)
                     .setSummaryText(summary)
             )
             .build()

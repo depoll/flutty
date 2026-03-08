@@ -1338,7 +1338,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
 
-    final primaryConnection = connections.first;
     final connectedCount = connections
         .where((connection) => connection.state == SshConnectionState.connected)
         .length;
@@ -1346,10 +1345,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     await BackgroundSshService.updateStatus(
       connectionCount: connections.length,
       connectedCount: connectedCount,
-      primaryLabel:
-          '${primaryConnection.config.username}@'
-          '${primaryConnection.config.hostname}',
-      primaryPreview: primaryConnection.preview,
     );
   }
 }
