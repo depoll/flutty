@@ -203,9 +203,17 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
               ListTile(
                 leading: const Icon(Icons.terminal),
                 title: Text('Connection #$connectionId'),
-                subtitle: Text(
-                  '${host.username}@${host.hostname}:${host.port}',
+                subtitle: _HostPreviewText(
+                  endpoint: '${host.username}@${host.hostname}:${host.port}',
+                  preview: sessionsNotifier
+                      .getActiveConnection(connectionId)
+                      ?.preview,
                 ),
+                isThreeLine:
+                    sessionsNotifier
+                        .getActiveConnection(connectionId)
+                        ?.preview !=
+                    null,
                 onTap: () => Navigator.pop(context, '$connectionId'),
               ),
             ListTile(
@@ -478,6 +486,10 @@ class _HostListTile extends ConsumerWidget {
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+    final activeConnections = connectionIds
+        .map(sessionsNotifier.getActiveConnection)
+        .whereType<ActiveConnection>()
+        .toList(growable: false);
     final states = connectionIds
         .map((connectionId) => connectionStates[connectionId])
         .whereType<SshConnectionState>()
@@ -490,6 +502,9 @@ class _HostListTile extends ConsumerWidget {
           state == SshConnectionState.connecting ||
           state == SshConnectionState.authenticating,
     );
+    final latestConnection = activeConnections.isEmpty
+        ? null
+        : activeConnections.last;
 
     return ListTile(
       leading: CircleAvatar(
@@ -502,12 +517,12 @@ class _HostListTile extends ConsumerWidget {
         ),
       ),
       title: Text(host.label),
-      subtitle: Text(
-        connectionIds.isEmpty
+      subtitle: _HostPreviewText(
+        endpoint: connectionIds.isEmpty
             ? '${host.username}@${host.hostname}:${host.port}'
             : '${host.username}@${host.hostname}:${host.port}  •  '
                   '${connectionIds.length} connection(s)',
-        style: theme.textTheme.bodySmall,
+        preview: latestConnection?.preview,
       ),
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
@@ -575,6 +590,37 @@ class _HostListTile extends ConsumerWidget {
         context,
       ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
     }
+  }
+}
+
+class _HostPreviewText extends StatelessWidget {
+  const _HostPreviewText({required this.endpoint, this.preview});
+
+  final String endpoint;
+  final String? preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(endpoint, style: theme.textTheme.bodySmall),
+        if (preview != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            preview!,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              fontFamily: 'monospace',
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ],
+    );
   }
 }
 

@@ -10,6 +10,7 @@ import 'package:xterm/xterm.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import 'background_ssh_service.dart';
 
 /// Connection state for an SSH session.
 enum SshConnectionState {
@@ -487,6 +488,9 @@ class SshSession {
     this.dependentClients = const <SSHClient>[],
   }) : createdAt = DateTime.now();
 
+  static const _previewLineCount = 3;
+  static const _previewMaxChars = 220;
+
   /// The connection ID for this active session.
   final int connectionId;
 
@@ -516,12 +520,20 @@ class SshSession {
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
 
+  /// Callback invoked whenever the terminal preview changes.
+  VoidCallback? onPreviewChanged;
+  String? _terminalPreview;
+
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _terminal;
+
+  /// A plain-text preview of the latest terminal content.
+  String? get terminalPreview => _terminalPreview;
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
     _terminal ??= Terminal(maxLines: maxLines);
+    _refreshTerminalPreview();
     return _terminal!;
   }
 
@@ -583,6 +595,7 @@ class SshSession {
     _shell?.close();
     _shell = null;
     _terminal = null;
+    _terminalPreview = null;
   }
 
   void _ensureShellStreamPipes() {
@@ -601,6 +614,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
+          _refreshTerminalPreview();
           _shellStdoutController!.add(data);
         }, onError: _shellStdoutController!.addError);
     _shellStderrSubscription = shell.stderr
@@ -608,6 +622,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
+          _refreshTerminalPreview();
           _shellStderrController!.add(data);
         }, onError: _shellStderrController!.addError);
     _shellDoneSubscription = shell.done.asStream().listen(
@@ -619,7 +634,69 @@ class SshSession {
     terminal.onOutput = (data) {
       shell.write(utf8.encode(data));
     };
+    _refreshTerminalPreview();
   }
+
+  void _refreshTerminalPreview() {
+    final nextPreview = _terminal == null
+        ? null
+        : buildTerminalPreview(_terminal!);
+    if (nextPreview == _terminalPreview) {
+      return;
+    }
+    _terminalPreview = nextPreview;
+    onPreviewChanged?.call();
+  }
+
+  /// Builds a compact plain-text preview from the terminal scrollback.
+  static String? buildTerminalPreview(
+    Terminal terminal, {
+    int maxLines = _previewLineCount,
+    int maxChars = _previewMaxChars,
+  }) {
+    final previewLines = <String>[];
+    final currentSegments = <String>[];
+
+    for (
+      var index = terminal.lines.length - 1;
+      index >= 0 && previewLines.length < maxLines;
+      index--
+    ) {
+      final rawLine = terminal.lines[index].getText();
+      final cleanedLine = _sanitizePreviewFragment(rawLine);
+
+      if (cleanedLine.isEmpty) {
+        if (currentSegments.isNotEmpty) {
+          previewLines.insert(0, currentSegments.reversed.join());
+          currentSegments.clear();
+        }
+        continue;
+      }
+
+      currentSegments.add(cleanedLine);
+      if (!terminal.lines[index].isWrapped) {
+        previewLines.insert(0, currentSegments.reversed.join());
+        currentSegments.clear();
+      }
+    }
+
+    if (currentSegments.isNotEmpty && previewLines.length < maxLines) {
+      previewLines.insert(0, currentSegments.reversed.join());
+    }
+
+    if (previewLines.isEmpty) {
+      return null;
+    }
+
+    var preview = previewLines.join('\n');
+    if (preview.length > maxChars) {
+      preview = '…${preview.substring(preview.length - maxChars + 1)}';
+    }
+    return preview;
+  }
+
+  static String _sanitizePreviewFragment(String text) =>
+      text.replaceAll(RegExp(r'[\x00-\x08\x0B-\x1F\x7F]'), '').trimRight();
 
   /// Execute a command.
   Future<SSHSession> execute(String command) => client.execute(command);
@@ -793,6 +870,7 @@ class ActiveConnection {
     required this.state,
     required this.createdAt,
     required this.config,
+    this.preview,
   });
 
   /// Connection identifier.
@@ -809,6 +887,9 @@ class ActiveConnection {
 
   /// SSH endpoint details.
   final SshConnectionConfig config;
+
+  /// The latest terminal preview snippet, when available.
+  final String? preview;
 }
 
 /// Info about an active tunnel for UI display.
@@ -913,7 +994,12 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (result.success && result.connectionId != null) {
       final connectionId = result.connectionId!;
       _connectionHostIds[connectionId] = hostId;
+      final session = _sshService.getSession(connectionId);
+      if (session != null) {
+        _attachSessionPreviewListener(session);
+      }
       state = {...state, connectionId: SshConnectionState.connected};
+      unawaited(_syncBackgroundStatus());
     }
 
     return result;
@@ -921,17 +1007,23 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
+    _sshService.getSession(connectionId)?.onPreviewChanged = null;
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
+    await _syncBackgroundStatus();
   }
 
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
+    for (final session in _sshService.sessions.values) {
+      session.onPreviewChanged = null;
+    }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
     state = {};
+    await _syncBackgroundStatus();
   }
 
   /// Get the state of a connection.
@@ -941,6 +1033,24 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Get a session.
   SshSession? getSession(int connectionId) =>
       _sshService.getSession(connectionId);
+
+  /// Get active connection metadata for a single connection.
+  ActiveConnection? getActiveConnection(int connectionId) {
+    final session = _sshService.getSession(connectionId);
+    final hostId = _connectionHostIds[connectionId];
+    final connectionState = state[connectionId];
+    if (session == null || hostId == null || connectionState == null) {
+      return null;
+    }
+    return ActiveConnection(
+      connectionId: connectionId,
+      hostId: hostId,
+      state: connectionState,
+      createdAt: session.createdAt,
+      config: session.config,
+      preview: session.terminalPreview,
+    );
+  }
 
   /// Get all active connection IDs for a host.
   List<int> getConnectionsForHost(int hostId) {
@@ -994,10 +1104,40 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           state: entry.value,
           createdAt: session.createdAt,
           config: session.config,
+          preview: session.terminalPreview,
         ),
       );
     }
     connections.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return connections;
+  }
+
+  void _attachSessionPreviewListener(SshSession session) {
+    session.onPreviewChanged = () {
+      state = {...state};
+      unawaited(_syncBackgroundStatus());
+    };
+  }
+
+  Future<void> _syncBackgroundStatus() async {
+    final connections = getActiveConnections();
+    if (connections.isEmpty) {
+      await BackgroundSshService.stop();
+      return;
+    }
+
+    final primaryConnection = connections.first;
+    final connectedCount = connections
+        .where((connection) => connection.state == SshConnectionState.connected)
+        .length;
+
+    await BackgroundSshService.updateStatus(
+      connectionCount: connections.length,
+      connectedCount: connectedCount,
+      primaryLabel:
+          '${primaryConnection.config.username}@'
+          '${primaryConnection.config.hostname}',
+      primaryPreview: primaryConnection.preview,
+    );
   }
 }

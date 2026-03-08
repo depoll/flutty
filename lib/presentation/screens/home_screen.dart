@@ -11,7 +11,6 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
-import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -388,6 +387,10 @@ class _HostRow extends ConsumerWidget {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionStates = ref.watch(activeSessionsProvider);
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+    final activeConnections = connectionIds
+        .map(sessionsNotifier.getActiveConnection)
+        .whereType<ActiveConnection>()
+        .toList(growable: false);
     final hostConnectionStates = connectionIds
         .map((connectionId) => connectionStates[connectionId])
         .whereType<SshConnectionState>()
@@ -401,6 +404,9 @@ class _HostRow extends ConsumerWidget {
           state == SshConnectionState.authenticating,
     );
     final connectionCount = connectionIds.length;
+    final latestConnection = activeConnections.isEmpty
+        ? null
+        : activeConnections.last;
 
     return Material(
       color: Colors.transparent,
@@ -489,6 +495,18 @@ class _HostRow extends ConsumerWidget {
                         color: colorScheme.onSurface.withAlpha(100),
                       ),
                     ),
+                    if (latestConnection?.preview case final preview?) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        preview,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: FluttyTheme.monoStyle.copyWith(
+                          fontSize: 11,
+                          color: colorScheme.onSurface.withAlpha(130),
+                        ),
+                      ),
+                    ],
                   ],
                 ),
               ),
@@ -569,6 +587,9 @@ class _HostRow extends ConsumerWidget {
                       connectionStates[connectionId] ??
                       SshConnectionState.disconnected,
                   endpoint: '${host.username}@${host.hostname}:${host.port}',
+                  preview: sessionsNotifier
+                      .getActiveConnection(connectionId)
+                      ?.preview,
                   createdAt: sessionsNotifier
                       .getSession(connectionId)
                       ?.createdAt,
@@ -715,12 +736,14 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.state,
     required this.endpoint,
     required this.onTap,
+    this.preview,
     this.createdAt,
   });
 
   final int connectionId;
   final SshConnectionState state;
   final String endpoint;
+  final String? preview;
   final DateTime? createdAt;
   final VoidCallback onTap;
 
@@ -732,7 +755,8 @@ class _ConnectionSelectionTile extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.terminal),
       title: Text('Connection #$connectionId'),
-      subtitle: Text(subtitle),
+      subtitle: _ConnectionPreviewText(endpoint: subtitle, preview: preview),
+      isThreeLine: preview != null,
       trailing: Text(
         _stateLabel(state),
         style: Theme.of(context).textTheme.labelMedium,
@@ -803,6 +827,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                     final endpoint =
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
+                    final preview = connection.preview;
 
                     return ListTile(
                       leading: Icon(
@@ -812,10 +837,12 @@ class _ConnectionsPanel extends ConsumerWidget {
                             : colorScheme.onSurfaceVariant,
                       ),
                       title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: Text(
-                        '$endpoint\nConnection #${connection.connectionId}',
+                      subtitle: _ConnectionPreviewText(
+                        endpoint:
+                            '$endpoint  •  Connection #${connection.connectionId}',
+                        preview: preview,
                       ),
-                      isThreeLine: true,
+                      isThreeLine: preview != null,
                       trailing: IconButton(
                         icon: const Icon(Icons.close),
                         tooltip: 'Disconnect',
@@ -823,9 +850,6 @@ class _ConnectionsPanel extends ConsumerWidget {
                           await ref
                               .read(activeSessionsProvider.notifier)
                               .disconnect(connection.connectionId);
-                          if (ref.read(activeSessionsProvider).isEmpty) {
-                            unawaited(BackgroundSshService.stop());
-                          }
                         },
                       ),
                       onTap: () => unawaited(
@@ -870,6 +894,37 @@ class _ConnectionsPanel extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ConnectionPreviewText extends StatelessWidget {
+  const _ConnectionPreviewText({required this.endpoint, this.preview});
+
+  final String endpoint;
+  final String? preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(endpoint),
+        if (preview != null) ...[
+          const SizedBox(height: 4),
+          Text(
+            preview!,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: FluttyTheme.monoStyle.copyWith(
+              fontSize: 11,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

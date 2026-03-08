@@ -16,7 +16,6 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
-import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
@@ -266,11 +265,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
         setState(() => _isConnecting = false);
-        unawaited(
-          BackgroundSshService.start(
-            hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-          ),
-        );
         return;
       }
 
@@ -293,14 +287,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) return;
 
       setState(() => _isConnecting = false);
-
-      // Start the background service to keep the connection alive
-      // when the app is backgrounded.
-      unawaited(
-        BackgroundSshService.start(
-          hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-        ),
-      );
 
       // Start port forwards
       await _startPortForwards(session);
@@ -436,7 +422,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (connectionId != null) {
         unawaited(_sessionsNotifier?.disconnect(connectionId));
       }
-      _stopBackgroundServiceIfNoConnections();
       return;
     }
     // If the app is in the background, don't show the error screen
@@ -452,7 +437,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionId != null) {
       unawaited(_sessionsNotifier?.disconnect(connectionId));
     }
-    _stopBackgroundServiceIfNoConnections();
   }
 
   Future<void> _disconnect() async {
@@ -461,7 +445,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_connectionId != null) {
       await _sessionsNotifier?.disconnect(_connectionId!);
     }
-    _stopBackgroundServiceIfNoConnections();
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -591,20 +574,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
-  }
-
-  void _stopBackgroundServiceIfNoConnections() {
-    final connectionStates = ref.read(activeSessionsProvider);
-    final hasActiveConnection = connectionStates.values.any(
-      (state) =>
-          state == SshConnectionState.connected ||
-          state == SshConnectionState.connecting ||
-          state == SshConnectionState.authenticating ||
-          state == SshConnectionState.reconnecting,
-    );
-    if (!hasActiveConnection) {
-      unawaited(BackgroundSshService.stop());
-    }
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.

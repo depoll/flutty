@@ -3,6 +3,8 @@ import UIKit
 
 @main
 @objc class AppDelegate: FlutterAppDelegate {
+  private let channelName = "xyz.depollsoft.monkeyssh/ssh_service"
+
   /// Background task identifier used to keep SSH connections alive
   /// for a short period after the app enters the background.
   private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
@@ -12,6 +14,64 @@ import UIKit
     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?
   ) -> Bool {
     GeneratedPluginRegistrant.register(with: self)
+    if let controller = window?.rootViewController as? FlutterViewController {
+      let channel = FlutterMethodChannel(
+        name: channelName,
+        binaryMessenger: controller.binaryMessenger
+      )
+      channel.setMethodCallHandler { call, result in
+        switch call.method {
+        case "updateStatus":
+          guard
+            let arguments = call.arguments as? [String: Any],
+            let connectionCount = arguments["connectionCount"] as? Int,
+            let connectedCount = arguments["connectedCount"] as? Int,
+            let primaryLabel = arguments["primaryLabel"] as? String
+          else {
+            result(
+              FlutterError(
+                code: "invalid_args",
+                message: "Missing live activity status arguments",
+                details: nil
+              )
+            )
+            return
+          }
+
+          ConnectionStatusLiveActivityManager.shared.updateStatus(
+            connectionCount: connectionCount,
+            connectedCount: connectedCount,
+            primaryLabel: primaryLabel,
+            primaryPreview: arguments["primaryPreview"] as? String
+          )
+          result(nil)
+        case "setForegroundState":
+          guard
+            let arguments = call.arguments as? [String: Any],
+            let isForeground = arguments["isForeground"] as? Bool
+          else {
+            result(
+              FlutterError(
+                code: "invalid_args",
+                message: "Missing foreground state argument",
+                details: nil
+              )
+            )
+            return
+          }
+
+          ConnectionStatusLiveActivityManager.shared.setForegroundState(
+            isForeground: isForeground
+          )
+          result(nil)
+        case "stopService":
+          ConnectionStatusLiveActivityManager.shared.stop()
+          result(nil)
+        default:
+          result(FlutterMethodNotImplemented)
+        }
+      }
+    }
     return super.application(application, didFinishLaunchingWithOptions: launchOptions)
   }
 

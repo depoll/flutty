@@ -3,12 +3,12 @@
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
-
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:xterm/xterm.dart';
 
 class _CapturingSshService extends SshService {
   _CapturingSshService({
@@ -274,6 +274,30 @@ void main() {
       );
 
       expect(info.isLocal, isFalse);
+    });
+  });
+
+  group('SshSession terminal previews', () {
+    test('builds preview from the latest non-empty lines', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write('first line\r\nsecond line\r\n\r\nthird line');
+
+      final preview = SshSession.buildTerminalPreview(terminal, maxLines: 2);
+
+      expect(preview, 'second line\nthird line');
+    });
+
+    test('sanitizes control characters and truncates long previews', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write('prompt> \u0007hello world\r\n')
+        ..write(List<String>.filled(80, 'x').join());
+
+      final preview = SshSession.buildTerminalPreview(terminal, maxChars: 40);
+
+      expect(preview, isNotNull);
+      expect(preview, isNot(contains('\u0007')));
+      expect(preview, startsWith('…'));
+      expect(preview, contains('xxxxxxxx'));
     });
   });
 

@@ -1,7 +1,5 @@
 package xyz.depollsoft.monkeyssh
 
-import android.content.Intent
-import android.os.Bundle
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
@@ -17,9 +15,24 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startService" -> {
-                        val hostName = call.argument<String>("hostName") ?: "SSH server"
-                        sshService?.start(hostName)
+                    "updateStatus" -> {
+                        val connectionCount = call.argument<Int>("connectionCount") ?: 0
+                        val connectedCount = call.argument<Int>("connectedCount") ?: 0
+                        val primaryLabel = call.argument<String>("primaryLabel") ?: "SSH server"
+                        val primaryPreview = call.argument<String>("primaryPreview")
+                        sshService?.updateStatus(
+                            SshConnectionService.ConnectionStatus(
+                                connectionCount = connectionCount,
+                                connectedCount = connectedCount,
+                                primaryLabel = primaryLabel,
+                                primaryPreview = primaryPreview
+                            )
+                        )
+                        result.success(null)
+                    }
+                    "setForegroundState" -> {
+                        val isForeground = call.argument<Boolean>("isForeground") ?: true
+                        sshService?.setForegroundState(isForeground)
                         result.success(null)
                     }
                     "stopService" -> {
@@ -29,13 +42,6 @@ class MainActivity : FlutterActivity() {
                     else -> result.notImplemented()
                 }
             }
-    }
-
-    override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
-        if (intent.action == SshConnectionService.ACTION_STOP) {
-            sshService?.stop()
-        }
     }
 
     override fun onDestroy() {
