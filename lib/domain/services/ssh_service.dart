@@ -246,6 +246,8 @@ class SshService {
         client: result.client!,
         config: config,
         dependentClients: result.dependentClients,
+        terminalThemeLightId: host.terminalThemeLightId,
+        terminalThemeDarkId: host.terminalThemeDarkId,
       );
 
       // Update last connected timestamp
@@ -486,6 +488,8 @@ class SshSession {
     required this.client,
     required this.config,
     this.dependentClients = const <SSHClient>[],
+    this.terminalThemeLightId,
+    this.terminalThemeDarkId,
   }) : createdAt = DateTime.now();
 
   static const _previewLineCount = 3;
@@ -505,6 +509,12 @@ class SshSession {
 
   /// Additional clients that should be closed with the session client.
   final List<SSHClient> dependentClients;
+
+  /// Session-specific light theme override.
+  String? terminalThemeLightId;
+
+  /// Session-specific dark theme override.
+  String? terminalThemeDarkId;
 
   /// When the session was created.
   final DateTime createdAt;
@@ -529,6 +539,15 @@ class SshSession {
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
+
+  /// Persist a per-session terminal theme override.
+  void setTerminalThemeId(String themeId, {required bool isDark}) {
+    if (isDark) {
+      terminalThemeDarkId = themeId;
+      return;
+    }
+    terminalThemeLightId = themeId;
+  }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
@@ -871,6 +890,8 @@ class ActiveConnection {
     required this.createdAt,
     required this.config,
     this.preview,
+    this.terminalThemeLightId,
+    this.terminalThemeDarkId,
   });
 
   /// Connection identifier.
@@ -890,6 +911,12 @@ class ActiveConnection {
 
   /// The latest terminal preview snippet, when available.
   final String? preview;
+
+  /// Session-specific light theme override.
+  final String? terminalThemeLightId;
+
+  /// Session-specific dark theme override.
+  final String? terminalThemeDarkId;
 }
 
 /// Info about an active tunnel for UI display.
@@ -1049,6 +1076,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       createdAt: session.createdAt,
       config: session.config,
       preview: session.terminalPreview,
+      terminalThemeLightId: session.terminalThemeLightId,
+      terminalThemeDarkId: session.terminalThemeDarkId,
     );
   }
 
@@ -1105,6 +1134,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           createdAt: session.createdAt,
           config: session.config,
           preview: session.terminalPreview,
+          terminalThemeLightId: session.terminalThemeLightId,
+          terminalThemeDarkId: session.terminalThemeDarkId,
         ),
       );
     }
@@ -1117,6 +1148,20 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       state = {...state};
       unawaited(_syncBackgroundStatus());
     };
+  }
+
+  /// Update the session-specific terminal theme for an active connection.
+  void updateSessionTheme(
+    int connectionId,
+    String themeId, {
+    required bool isDark,
+  }) {
+    final session = _sshService.getSession(connectionId);
+    if (session == null) {
+      return;
+    }
+    session.setTerminalThemeId(themeId, isDark: isDark);
+    state = {...state};
   }
 
   Future<void> _syncBackgroundStatus() async {

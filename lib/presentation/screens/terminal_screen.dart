@@ -190,6 +190,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<bool> _restoreSessionThemeOverride(SshSession session) async {
+    final brightness = Theme.of(context).brightness;
+    final themeId = brightness == Brightness.dark
+        ? session.terminalThemeDarkId
+        : session.terminalThemeLightId;
+
+    if (themeId == null) {
+      if (mounted) {
+        setState(() => _sessionThemeOverride = null);
+      }
+      return false;
+    }
+
+    final themeService = ref.read(terminalThemeServiceProvider);
+    final resolvedTheme = await themeService.getThemeById(themeId);
+    if (!mounted) {
+      return false;
+    }
+    setState(() => _sessionThemeOverride = resolvedTheme);
+    return resolvedTheme != null;
+  }
+
   Future<void> _connect({
     int? preferredConnectionId,
     bool forceNew = false,
@@ -264,6 +286,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
+        await _restoreSessionThemeOverride(session);
         setState(() => _isConnecting = false);
         return;
       }
@@ -286,6 +309,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!mounted) return;
 
+      await _restoreSessionThemeOverride(session);
       setState(() => _isConnecting = false);
 
       // Start port forwards
@@ -488,7 +512,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
-    if (_currentTheme != null && _sessionThemeOverride == null) {
+    if (_currentTheme == null) {
+      return;
+    }
+
+    final session = _connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(_connectionId!);
+    if (session != null) {
+      unawaited(
+        _restoreSessionThemeOverride(session).then((restored) {
+          if (!restored) {
+            return _loadTheme();
+          }
+        }),
+      );
+      return;
+    }
+
+    if (_sessionThemeOverride == null) {
       _loadTheme();
     }
   }
@@ -595,11 +637,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (theme != null && mounted) {
+      final isDark = Theme.of(context).brightness == Brightness.dark;
+      if (_connectionId != null) {
+        ref
+            .read(activeSessionsProvider.notifier)
+            .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
+      }
       setState(() => _sessionThemeOverride = theme);
 
       // Show option to save to host
       if (_host != null) {
-        final isDark = Theme.of(context).brightness == Brightness.dark;
         final scaffoldMessenger = ScaffoldMessenger.of(context);
 
         // Clear any existing snackbar first to prevent stacking

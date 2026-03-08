@@ -81,11 +81,6 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   Widget _buildHostList(List<Host> hosts) {
-    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
-    final terminalThemes =
-        ref.watch(allTerminalThemesProvider).asData?.value ??
-        TerminalThemes.all;
-    final brightness = Theme.of(context).brightness;
     var filteredHosts = hosts;
 
     // Apply search filter
@@ -144,13 +139,6 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         final host = filteredHosts[index];
         return _HostListTile(
           host: host,
-          previewTheme: resolveConnectionPreviewTheme(
-            brightness: brightness,
-            themeSettings: terminalThemeSettings,
-            availableThemes: terminalThemes,
-            lightThemeId: host.terminalThemeLightId,
-            darkThemeId: host.terminalThemeDarkId,
-          ),
           onTap: () => _connectToHost(host),
           onNewConnection: () => unawaited(_openNewConnection(host)),
           onEdit: () => context.push('/hosts/edit/${host.id}'),
@@ -213,13 +201,6 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         final terminalThemes =
             ref.read(allTerminalThemesProvider).asData?.value ??
             TerminalThemes.all;
-        final previewTheme = resolveConnectionPreviewTheme(
-          brightness: Theme.of(context).brightness,
-          themeSettings: terminalThemeSettings,
-          availableThemes: terminalThemes,
-          lightThemeId: host.terminalThemeLightId,
-          darkThemeId: host.terminalThemeDarkId,
-        );
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -230,9 +211,10 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
               ),
               for (final connectionId in connectionIds.reversed)
                 () {
-                  final preview = sessionsNotifier
-                      .getActiveConnection(connectionId)
-                      ?.preview;
+                  final connection = sessionsNotifier.getActiveConnection(
+                    connectionId,
+                  );
+                  final preview = connection?.preview;
                   return ListTile(
                     leading: const Icon(Icons.terminal),
                     title: Text('Connection #$connectionId'),
@@ -240,7 +222,17 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
                       endpoint:
                           '${host.username}@${host.hostname}:${host.port}',
                       preview: preview,
-                      terminalTheme: previewTheme,
+                      terminalTheme: resolveConnectionPreviewTheme(
+                        brightness: Theme.of(context).brightness,
+                        themeSettings: terminalThemeSettings,
+                        availableThemes: terminalThemes,
+                        lightThemeId:
+                            connection?.terminalThemeLightId ??
+                            host.terminalThemeLightId,
+                        darkThemeId:
+                            connection?.terminalThemeDarkId ??
+                            host.terminalThemeDarkId,
+                      ),
                     ),
                     isThreeLine: preview?.trim().isNotEmpty ?? false,
                     onTap: () => Navigator.pop(context, '$connectionId'),
@@ -499,7 +491,6 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 class _HostListTile extends ConsumerWidget {
   const _HostListTile({
     required this.host,
-    required this.previewTheme,
     required this.onTap,
     required this.onNewConnection,
     required this.onEdit,
@@ -507,7 +498,6 @@ class _HostListTile extends ConsumerWidget {
   });
 
   final Host host;
-  final TerminalThemeData previewTheme;
   final VoidCallback onTap;
   final VoidCallback onNewConnection;
   final VoidCallback onEdit;
@@ -538,6 +528,19 @@ class _HostListTile extends ConsumerWidget {
     final latestConnection = activeConnections.isEmpty
         ? null
         : activeConnections.last;
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final previewTheme = resolveConnectionPreviewTheme(
+      brightness: theme.brightness,
+      themeSettings: terminalThemeSettings,
+      availableThemes: terminalThemes,
+      lightThemeId:
+          latestConnection?.terminalThemeLightId ?? host.terminalThemeLightId,
+      darkThemeId:
+          latestConnection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
+    );
 
     return ListTile(
       leading: CircleAvatar(

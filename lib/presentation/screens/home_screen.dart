@@ -388,17 +388,6 @@ class _HostRow extends ConsumerWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
-    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
-    final terminalThemes =
-        ref.watch(allTerminalThemesProvider).asData?.value ??
-        TerminalThemes.all;
-    final previewTheme = resolveConnectionPreviewTheme(
-      brightness: theme.brightness,
-      themeSettings: terminalThemeSettings,
-      availableThemes: terminalThemes,
-      lightThemeId: host.terminalThemeLightId,
-      darkThemeId: host.terminalThemeDarkId,
-    );
 
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionStates = ref.watch(activeSessionsProvider);
@@ -423,6 +412,19 @@ class _HostRow extends ConsumerWidget {
     final latestConnection = activeConnections.isEmpty
         ? null
         : activeConnections.last;
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final previewTheme = resolveConnectionPreviewTheme(
+      brightness: theme.brightness,
+      themeSettings: terminalThemeSettings,
+      availableThemes: terminalThemes,
+      lightThemeId:
+          latestConnection?.terminalThemeLightId ?? host.terminalThemeLightId,
+      darkThemeId:
+          latestConnection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
+    );
 
     return Material(
       color: Colors.transparent,
@@ -592,13 +594,6 @@ class _HostRow extends ConsumerWidget {
         final terminalThemes =
             ref.read(allTerminalThemesProvider).asData?.value ??
             TerminalThemes.all;
-        final previewTheme = resolveConnectionPreviewTheme(
-          brightness: Theme.of(context).brightness,
-          themeSettings: terminalThemeSettings,
-          availableThemes: terminalThemes,
-          lightThemeId: host.terminalThemeLightId,
-          darkThemeId: host.terminalThemeDarkId,
-        );
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -608,22 +603,35 @@ class _HostRow extends ConsumerWidget {
                 subtitle: Text('${connectionIds.length} active connections'),
               ),
               for (final connectionId in connectionIds.reversed)
-                _ConnectionSelectionTile(
-                  connectionId: connectionId,
-                  state:
-                      connectionStates[connectionId] ??
-                      SshConnectionState.disconnected,
-                  endpoint: '${host.username}@${host.hostname}:${host.port}',
-                  preview: sessionsNotifier
-                      .getActiveConnection(connectionId)
-                      ?.preview,
-                  terminalTheme: previewTheme,
-                  createdAt: sessionsNotifier
-                      .getSession(connectionId)
-                      ?.createdAt,
-                  onTap: () =>
-                      Navigator.pop(context, 'connection:$connectionId'),
-                ),
+                () {
+                  final connection = sessionsNotifier.getActiveConnection(
+                    connectionId,
+                  );
+                  return _ConnectionSelectionTile(
+                    connectionId: connectionId,
+                    state:
+                        connectionStates[connectionId] ??
+                        SshConnectionState.disconnected,
+                    endpoint: '${host.username}@${host.hostname}:${host.port}',
+                    preview: connection?.preview,
+                    terminalTheme: resolveConnectionPreviewTheme(
+                      brightness: Theme.of(context).brightness,
+                      themeSettings: terminalThemeSettings,
+                      availableThemes: terminalThemes,
+                      lightThemeId:
+                          connection?.terminalThemeLightId ??
+                          host.terminalThemeLightId,
+                      darkThemeId:
+                          connection?.terminalThemeDarkId ??
+                          host.terminalThemeDarkId,
+                    ),
+                    createdAt: sessionsNotifier
+                        .getSession(connectionId)
+                        ?.createdAt,
+                    onTap: () =>
+                        Navigator.pop(context, 'connection:$connectionId'),
+                  );
+                }(),
               ListTile(
                 leading: const Icon(Icons.add),
                 title: const Text('New connection'),
@@ -870,8 +878,12 @@ class _ConnectionsPanel extends ConsumerWidget {
                       brightness: theme.brightness,
                       themeSettings: terminalThemeSettings,
                       availableThemes: terminalThemes,
-                      lightThemeId: host?.terminalThemeLightId,
-                      darkThemeId: host?.terminalThemeDarkId,
+                      lightThemeId:
+                          connection.terminalThemeLightId ??
+                          host?.terminalThemeLightId,
+                      darkThemeId:
+                          connection.terminalThemeDarkId ??
+                          host?.terminalThemeDarkId,
                     );
 
                     return ListTile(
