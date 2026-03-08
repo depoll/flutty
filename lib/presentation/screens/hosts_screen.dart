@@ -9,6 +9,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/services/ssh_service.dart';
+import '../widgets/connection_preview_snippet.dart';
 
 /// Screen displaying list of saved hosts.
 class HostsScreen extends ConsumerStatefulWidget {
@@ -600,28 +601,11 @@ class _HostPreviewText extends StatelessWidget {
   final String? preview;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(endpoint, style: theme.textTheme.bodySmall),
-        if (preview != null) ...[
-          const SizedBox(height: 4),
-          Text(
-            preview!,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(
-              fontFamily: 'monospace',
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
+  Widget build(BuildContext context) => ConnectionPreviewSnippet(
+    endpoint: endpoint,
+    endpointStyle: Theme.of(context).textTheme.bodySmall,
+    preview: preview,
+  );
 }
 
 /// Provider for all hosts - uses stream for auto-refresh on changes.

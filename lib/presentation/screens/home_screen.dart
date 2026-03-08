@@ -12,6 +12,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/services/ssh_service.dart';
+import '../widgets/connection_preview_snippet.dart';
 
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
@@ -905,28 +906,8 @@ class _ConnectionPreviewText extends StatelessWidget {
   final String? preview;
 
   @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(endpoint),
-        if (preview != null) ...[
-          const SizedBox(height: 4),
-          Text(
-            preview!,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            style: FluttyTheme.monoStyle.copyWith(
-              fontSize: 11,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ],
-      ],
-    );
-  }
+  Widget build(BuildContext context) =>
+      ConnectionPreviewSnippet(endpoint: endpoint, preview: preview);
 }
 
 class _ActionButton extends StatelessWidget {

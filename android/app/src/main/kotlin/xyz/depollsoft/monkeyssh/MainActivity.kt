@@ -1,16 +1,23 @@
 package xyz.depollsoft.monkeyssh
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 
 class MainActivity : FlutterActivity() {
+    companion object {
+        private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
+    }
+
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
-    private var sshService: SshConnectionService? = null
+    private var hasRequestedNotificationPermission = false
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        sshService = SshConnectionService(this)
 
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
@@ -20,23 +27,27 @@ class MainActivity : FlutterActivity() {
                         val connectedCount = call.argument<Int>("connectedCount") ?: 0
                         val primaryLabel = call.argument<String>("primaryLabel") ?: "SSH server"
                         val primaryPreview = call.argument<String>("primaryPreview")
-                        sshService?.updateStatus(
-                            SshConnectionService.ConnectionStatus(
+                        if (connectionCount > 0) {
+                            ensureNotificationPermission()
+                        }
+                        SshConnectionService.updateStatus(
+                            context = this,
+                            status = SshConnectionService.ConnectionStatus(
                                 connectionCount = connectionCount,
                                 connectedCount = connectedCount,
                                 primaryLabel = primaryLabel,
                                 primaryPreview = primaryPreview
-                            )
+                            ),
                         )
                         result.success(null)
                     }
                     "setForegroundState" -> {
                         val isForeground = call.argument<Boolean>("isForeground") ?: true
-                        sshService?.setForegroundState(isForeground)
+                        SshConnectionService.setForegroundState(this, isForeground)
                         result.success(null)
                     }
                     "stopService" -> {
-                        sshService?.stop()
+                        SshConnectionService.stop(this)
                         result.success(null)
                     }
                     else -> result.notImplemented()
@@ -44,8 +55,39 @@ class MainActivity : FlutterActivity() {
             }
     }
 
-    override fun onDestroy() {
-        sshService?.stop()
-        super.onDestroy()
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        if (
+            requestCode == NOTIFICATION_PERMISSION_REQUEST_CODE &&
+            grantResults.firstOrNull() == PackageManager.PERMISSION_GRANTED
+        ) {
+            SshConnectionService.refresh(this)
+        }
+    }
+
+    private fun ensureNotificationPermission() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+            return
+        }
+        if (
+            ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        if (hasRequestedNotificationPermission) {
+            return
+        }
+        hasRequestedNotificationPermission = true
+        requestPermissions(
+            arrayOf(Manifest.permission.POST_NOTIFICATIONS),
+            NOTIFICATION_PERMISSION_REQUEST_CODE
+        )
     }
 }
