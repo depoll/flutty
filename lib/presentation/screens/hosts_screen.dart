@@ -569,69 +569,128 @@ class _HostListTile extends ConsumerWidget {
         )
         .toList(growable: false);
 
-    return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: isConnected
-            ? Colors.green.withAlpha(50)
-            : theme.colorScheme.surfaceContainerHighest,
-        child: Icon(
-          isConnected ? Icons.link : Icons.dns,
-          color: isConnected ? Colors.green : theme.colorScheme.primary,
-        ),
-      ),
-      title: Text(host.label),
-      subtitle: _HostPreviewText(
-        endpoint: connectionIds.isEmpty
-            ? '${host.username}@${host.hostname}:${host.port}'
-            : '${host.username}@${host.hostname}:${host.port}  •  '
-                  '${connectionIds.length} connection(s)',
-        preview: latestPreviewConnection?.preview,
-        terminalTheme: previewTheme,
-        stackedPreviews: stackedPreviews,
-      ),
-      isThreeLine: latestPreviewConnection?.preview?.trim().isNotEmpty ?? false,
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (host.isFavorite)
-            const Icon(Icons.star, color: Colors.amber, size: 20),
-          if (isConnecting)
-            const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'New connection',
-            onPressed: onNewConnection,
-          ),
-          PopupMenuButton<String>(
-            onSelected: (action) {
-              switch (action) {
-                case 'edit':
-                  onEdit();
-                case 'delete':
-                  onDelete();
-                case 'duplicate':
-                  _duplicateHost(context, ref);
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'edit', child: Text('Edit')),
-              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
-              PopupMenuItem(
-                value: 'delete',
-                child: Text(
-                  'Delete',
-                  style: TextStyle(color: theme.colorScheme.error),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(16, 12, 8, 12),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(top: 2),
+                child: CircleAvatar(
+                  backgroundColor: isConnected
+                      ? Colors.green.withAlpha(50)
+                      : theme.colorScheme.surfaceContainerHighest,
+                  child: Icon(
+                    isConnected ? Icons.link : Icons.dns,
+                    color: isConnected
+                        ? Colors.green
+                        : theme.colorScheme.primary,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 16),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            host.label,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                        if (host.isFavorite)
+                          const Padding(
+                            padding: EdgeInsetsDirectional.only(
+                              top: 8,
+                              start: 8,
+                              end: 4,
+                            ),
+                            child: Icon(
+                              Icons.star,
+                              color: Colors.amber,
+                              size: 20,
+                            ),
+                          ),
+                        if (isConnecting)
+                          const Padding(
+                            padding: EdgeInsetsDirectional.only(
+                              top: 8,
+                              start: 8,
+                              end: 4,
+                            ),
+                            child: SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            ),
+                          ),
+                        IconButton(
+                          icon: const Icon(Icons.add),
+                          tooltip: 'New connection',
+                          onPressed: onNewConnection,
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        PopupMenuButton<String>(
+                          onSelected: (action) {
+                            switch (action) {
+                              case 'edit':
+                                onEdit();
+                              case 'delete':
+                                onDelete();
+                              case 'duplicate':
+                                _duplicateHost(context, ref);
+                            }
+                          },
+                          itemBuilder: (context) => [
+                            const PopupMenuItem(
+                              value: 'edit',
+                              child: Text('Edit'),
+                            ),
+                            const PopupMenuItem(
+                              value: 'duplicate',
+                              child: Text('Duplicate'),
+                            ),
+                            PopupMenuItem(
+                              value: 'delete',
+                              child: Text(
+                                'Delete',
+                                style: TextStyle(
+                                  color: theme.colorScheme.error,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    _HostPreviewText(
+                      endpoint: connectionIds.isEmpty
+                          ? '${host.username}@${host.hostname}:${host.port}'
+                          : '${host.username}@${host.hostname}:${host.port}  •  '
+                                '${connectionIds.length} connection(s)',
+                      preview: latestPreviewConnection?.preview,
+                      terminalTheme: previewTheme,
+                      stackedPreviews: stackedPreviews,
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-        ],
+        ),
       ),
-      onTap: onTap,
     );
   }
 
