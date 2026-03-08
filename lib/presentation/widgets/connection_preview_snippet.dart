@@ -255,7 +255,7 @@ class _ConnectionPreviewStackCard extends StatelessWidget {
       opacity: opacity.clamp(0.7, 1).toDouble(),
       child: Container(
         height: height,
-        padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+        padding: const EdgeInsets.fromLTRB(10, 8, 10, 8),
         decoration: BoxDecoration(
           color: backgroundColor,
           border: Border.all(color: borderColor),
