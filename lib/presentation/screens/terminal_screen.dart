@@ -23,6 +23,19 @@ import '../widgets/keyboard_toolbar.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
+const _minTerminalFontSize = 8.0;
+const _maxTerminalFontSize = 32.0;
+
+/// Clamps a terminal font size into the supported zoom range.
+@visibleForTesting
+double clampTerminalFontSize(double size) =>
+    size.clamp(_minTerminalFontSize, _maxTerminalFontSize);
+
+/// Scales a terminal font size while keeping it within the supported range.
+@visibleForTesting
+double scaleTerminalFontSize(double baseSize, double scale) =>
+    clampTerminalFontSize(baseSize * scale);
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -59,6 +72,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
+  double? _pinchFontSize;
+  double? _pinchBaseFontSize;
+  bool _isPinchZooming = false;
 
   // Theme state
   Host? _host;
@@ -629,6 +645,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _handleTerminalScaleStart(double currentFontSize) {
+    _pinchBaseFontSize = _pinchFontSize ?? currentFontSize;
+    _isPinchZooming = false;
+  }
+
+  void _handleTerminalScaleUpdate(
+    ScaleUpdateDetails details,
+    double currentFontSize,
+  ) {
+    if (details.pointerCount < 2) {
+      return;
+    }
+
+    final baseFontSize =
+        _pinchBaseFontSize ?? _pinchFontSize ?? currentFontSize;
+    final nextFontSize = scaleTerminalFontSize(baseFontSize, details.scale);
+    if (_isPinchZooming && _pinchFontSize == nextFontSize) {
+      return;
+    }
+
+    setState(() {
+      _isPinchZooming = true;
+      _pinchFontSize = nextFontSize;
+    });
+  }
+
+  void _handleTerminalScaleEnd() {
+    final nextFontSize = _pinchFontSize;
+    final shouldPersist = _isPinchZooming && nextFontSize != null;
+    setState(() {
+      _isPinchZooming = false;
+      _pinchBaseFontSize = null;
+      _pinchFontSize = null;
+    });
+
+    if (!shouldPersist) {
+      return;
+    }
+
+    unawaited(
+      ref.read(fontSizeNotifierProvider.notifier).setFontSize(nextFontSize),
+    );
+  }
+
   Future<void> _showThemePicker() async {
     final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
     final theme = await showThemePickerDialog(
@@ -696,6 +756,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
+    final theme = Theme.of(context);
+
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -744,7 +806,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     // Get font size from settings (use setting value, not responsive calculation)
-    final fontSize = ref.watch(fontSizeNotifierProvider);
+    final storedFontSize = ref.watch(fontSizeNotifierProvider);
+    final fontSize = _pinchFontSize ?? storedFontSize;
 
     // Get font family from host (if set) or global settings
     final hostFont = _host?.terminalFontFamily;
@@ -809,11 +872,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
+    if (_isPinchZooming) {
+      mobileTerminalView = Stack(
+        fit: StackFit.expand,
+        children: [
+          mobileTerminalView,
+          Positioned(
+            top: 12,
+            right: 12,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface.withAlpha(220),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: theme.colorScheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                child: Text(
+                  '${fontSize.toStringAsFixed(0)} pt',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       deleteDetection: true,
-      child: mobileTerminalView,
+      child: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onScaleStart: (_) => _handleTerminalScaleStart(storedFontSize),
+        onScaleUpdate: (details) =>
+            _handleTerminalScaleUpdate(details, storedFontSize),
+        onScaleEnd: (_) => _handleTerminalScaleEnd(),
+        child: mobileTerminalView,
+      ),
     );
   }
 

@@ -214,8 +214,8 @@ class FontSizeNotifier extends Notifier<double> {
 
   /// Set the font size.
   Future<void> setFontSize(double size) async {
-    await _settings.setInt(SettingKeys.terminalFontSize, size.round());
     state = size;
+    await _settings.setInt(SettingKeys.terminalFontSize, size.round());
   }
 }
 

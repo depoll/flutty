@@ -611,12 +611,16 @@ class SshSession {
   /// Callback invoked whenever the terminal preview changes.
   VoidCallback? onPreviewChanged;
   String? _terminalPreview;
+  String? _windowTitle;
 
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _terminal;
 
   /// A plain-text preview of the latest terminal content.
   String? get terminalPreview => _terminalPreview;
+
+  /// The latest terminal window title emitted by the remote session.
+  String? get windowTitle => _windowTitle;
 
   /// Persist a per-session terminal theme override.
   void setTerminalThemeId(String themeId, {required bool isDark}) {
@@ -630,6 +634,7 @@ class SshSession {
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
     _terminal ??= Terminal(maxLines: maxLines);
+    _terminal!.onTitleChange = _handleWindowTitleChange;
     _refreshTerminalPreview();
     return _terminal!;
   }
@@ -693,6 +698,7 @@ class SshSession {
     _shell = null;
     _terminal = null;
     _terminalPreview = null;
+    _windowTitle = null;
   }
 
   void _ensureShellStreamPipes() {
@@ -745,6 +751,15 @@ class SshSession {
     onPreviewChanged?.call();
   }
 
+  void _handleWindowTitleChange(String title) {
+    final sanitizedTitle = _sanitizeWindowTitle(title);
+    if (sanitizedTitle == _windowTitle) {
+      return;
+    }
+    _windowTitle = sanitizedTitle;
+    onPreviewChanged?.call();
+  }
+
   /// Builds a compact plain-text preview from the terminal scrollback.
   static String? buildTerminalPreview(
     Terminal terminal, {
@@ -794,6 +809,11 @@ class SshSession {
 
   static String _sanitizePreviewFragment(String text) =>
       text.replaceAll(RegExp(r'[\x00-\x08\x0B-\x1F\x7F]'), '').trimRight();
+
+  static String? _sanitizeWindowTitle(String text) {
+    final sanitized = text.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '').trim();
+    return sanitized.isEmpty ? null : sanitized;
+  }
 
   /// Execute a command.
   Future<SSHSession> execute(String command) => client.execute(command);
@@ -968,6 +988,7 @@ class ActiveConnection {
     required this.createdAt,
     required this.config,
     this.preview,
+    this.windowTitle,
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
   });
@@ -989,6 +1010,9 @@ class ActiveConnection {
 
   /// The latest terminal preview snippet, when available.
   final String? preview;
+
+  /// The latest remote window title, when available.
+  final String? windowTitle;
 
   /// Session-specific light theme override.
   final String? terminalThemeLightId;
@@ -1183,6 +1207,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       createdAt: session.createdAt,
       config: session.config,
       preview: session.terminalPreview,
+      windowTitle: session.windowTitle,
       terminalThemeLightId: session.terminalThemeLightId,
       terminalThemeDarkId: session.terminalThemeDarkId,
     );
@@ -1245,6 +1270,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           createdAt: session.createdAt,
           config: session.config,
           preview: session.terminalPreview,
+          windowTitle: session.windowTitle,
           terminalThemeLightId: session.terminalThemeLightId,
           terminalThemeDarkId: session.terminalThemeDarkId,
         ),

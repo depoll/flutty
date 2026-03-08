@@ -216,6 +216,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
                       endpoint:
                           '${host.username}@${host.hostname}:${host.port}',
                       preview: preview,
+                      windowTitle: connection?.windowTitle,
                       terminalTheme: resolveConnectionPreviewTheme(
                         brightness: Theme.of(context).brightness,
                         themeSettings: terminalThemeSettings,
@@ -554,6 +555,7 @@ class _HostListTile extends ConsumerWidget {
           return _StackedHostPreview(
             connectionId: connectionId,
             preview: connection?.preview?.trim(),
+            windowTitle: connection?.windowTitle,
             state: connectionState,
             terminalTheme: resolveConnectionPreviewTheme(
               brightness: theme.brightness,
@@ -574,121 +576,150 @@ class _HostListTile extends ConsumerWidget {
         onTap: onTap,
         child: Padding(
           padding: const EdgeInsetsDirectional.fromSTEB(16, 12, 8, 12),
-          child: Row(
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: CircleAvatar(
-                  backgroundColor: isConnected
-                      ? Colors.green.withAlpha(50)
-                      : theme.colorScheme.surfaceContainerHighest,
-                  child: Icon(
-                    isConnected ? Icons.link : Icons.dns,
-                    color: isConnected
-                        ? Colors.green
-                        : theme.colorScheme.primary,
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: CircleAvatar(
+                      backgroundColor: isConnected
+                          ? Colors.green.withAlpha(50)
+                          : theme.colorScheme.surfaceContainerHighest,
+                      child: Icon(
+                        isConnected ? Icons.link : Icons.dns,
+                        color: isConnected
+                            ? Colors.green
+                            : theme.colorScheme.primary,
+                      ),
+                    ),
                   ),
-                ),
-              ),
-              const SizedBox(width: 16),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Row(
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
                       children: [
-                        Expanded(
-                          child: Text(
-                            host.label,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ),
-                        if (host.isFavorite)
-                          const Padding(
-                            padding: EdgeInsetsDirectional.only(
-                              top: 8,
-                              start: 8,
-                              end: 4,
-                            ),
-                            child: Icon(
-                              Icons.star,
-                              color: Colors.amber,
-                              size: 20,
-                            ),
-                          ),
-                        if (isConnectionStarting)
-                          const Padding(
-                            padding: EdgeInsetsDirectional.only(
-                              top: 8,
-                              start: 8,
-                              end: 4,
-                            ),
-                            child: SizedBox(
-                              width: 20,
-                              height: 20,
-                              child: CircularProgressIndicator(strokeWidth: 2),
-                            ),
-                          ),
-                        IconButton(
-                          icon: const Icon(Icons.add),
-                          tooltip: 'New connection',
-                          onPressed: onNewConnection,
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        PopupMenuButton<String>(
-                          onSelected: (action) {
-                            switch (action) {
-                              case 'edit':
-                                onEdit();
-                              case 'delete':
-                                onDelete();
-                              case 'duplicate':
-                                _duplicateHost(context, ref);
-                            }
-                          },
-                          itemBuilder: (context) => [
-                            const PopupMenuItem(
-                              value: 'edit',
-                              child: Text('Edit'),
-                            ),
-                            const PopupMenuItem(
-                              value: 'duplicate',
-                              child: Text('Duplicate'),
-                            ),
-                            PopupMenuItem(
-                              value: 'delete',
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
                               child: Text(
-                                'Delete',
-                                style: TextStyle(
-                                  color: theme.colorScheme.error,
+                                host.label,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
                                 ),
                               ),
                             ),
+                            if (host.isFavorite)
+                              const Padding(
+                                padding: EdgeInsetsDirectional.only(
+                                  top: 8,
+                                  start: 8,
+                                  end: 4,
+                                ),
+                                child: Icon(
+                                  Icons.star,
+                                  color: Colors.amber,
+                                  size: 20,
+                                ),
+                              ),
+                            if (isConnectionStarting)
+                              const Padding(
+                                padding: EdgeInsetsDirectional.only(
+                                  top: 8,
+                                  start: 8,
+                                  end: 4,
+                                ),
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              ),
+                            IconButton(
+                              icon: const Icon(Icons.add),
+                              tooltip: 'New connection',
+                              onPressed: onNewConnection,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            PopupMenuButton<String>(
+                              onSelected: (action) {
+                                switch (action) {
+                                  case 'edit':
+                                    onEdit();
+                                  case 'delete':
+                                    onDelete();
+                                  case 'duplicate':
+                                    _duplicateHost(context, ref);
+                                }
+                              },
+                              itemBuilder: (context) => [
+                                const PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Edit'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'duplicate',
+                                  child: Text('Duplicate'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text(
+                                    'Delete',
+                                    style: TextStyle(
+                                      color: theme.colorScheme.error,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
                           ],
                         ),
+                        const SizedBox(height: 4),
+                        Text(
+                          connectionIds.isEmpty
+                              ? '${host.username}@${host.hostname}:${host.port}'
+                              : '${host.username}@${host.hostname}:${host.port}  •  '
+                                    '${connectionIds.length} connection(s)',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        if (connectionAttempt?.isInProgress ?? false) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            connectionAttempt!.latestMessage,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
                       ],
                     ),
-                    const SizedBox(height: 4),
-                    _HostPreviewText(
-                      endpoint: connectionIds.isEmpty
-                          ? '${host.username}@${host.hostname}:${host.port}'
-                          : '${host.username}@${host.hostname}:${host.port}  •  '
-                                '${connectionIds.length} connection(s)',
-                      preview: latestPreviewConnection?.preview,
-                      terminalTheme: previewTheme,
-                      statusMessage: connectionAttempt?.isInProgress ?? false
-                          ? connectionAttempt!.latestMessage
-                          : null,
-                      stackedPreviews: stackedPreviews,
-                    ),
-                  ],
-                ),
+                  ),
+                ],
               ),
+              if (stackedPreviews.isNotEmpty ||
+                  latestPreviewConnection != null) ...[
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsetsDirectional.only(start: 56),
+                  child: _HostPreviewText(
+                    endpoint: '',
+                    preview: latestPreviewConnection?.preview,
+                    windowTitle: latestPreviewConnection?.windowTitle,
+                    terminalTheme: previewTheme,
+                    showEndpoint: false,
+                    stackedPreviews: stackedPreviews,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
@@ -724,21 +755,21 @@ class _HostPreviewText extends StatelessWidget {
   const _HostPreviewText({
     required this.endpoint,
     this.preview,
+    this.windowTitle,
     this.terminalTheme,
-    this.statusMessage,
+    this.showEndpoint = true,
     this.stackedPreviews = const [],
   });
 
   final String endpoint;
   final String? preview;
+  final String? windowTitle;
   final TerminalThemeData? terminalTheme;
-  final String? statusMessage;
+  final bool showEndpoint;
   final List<_StackedHostPreview> stackedPreviews;
 
   @override
   Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
     final previewText = preview?.trim();
 
     if (stackedPreviews.length > 1) {
@@ -746,46 +777,9 @@ class _HostPreviewText extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Text(endpoint),
-          if (statusMessage != null) ...[
-            const SizedBox(height: 4),
-            Text(
-              statusMessage!,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.primary,
-                fontWeight: FontWeight.w500,
-              ),
-            ),
-          ],
+          if (showEndpoint) Text(endpoint),
           const SizedBox(height: 4),
           _StackedHostPreviewList(previews: stackedPreviews),
-        ],
-      );
-    }
-
-    if (statusMessage != null) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Text(endpoint),
-          const SizedBox(height: 4),
-          Text(
-            statusMessage!,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.primary,
-              fontWeight: FontWeight.w500,
-            ),
-          ),
-          if (previewText != null && previewText.isNotEmpty) ...[
-            const SizedBox(height: 6),
-            ConnectionPreviewSnippet(
-              endpoint: '',
-              preview: previewText,
-              terminalTheme: terminalTheme,
-              showEndpoint: false,
-            ),
-          ],
         ],
       );
     }
@@ -793,7 +787,9 @@ class _HostPreviewText extends StatelessWidget {
     return ConnectionPreviewSnippet(
       endpoint: endpoint,
       preview: previewText,
+      windowTitle: windowTitle,
       terminalTheme: terminalTheme,
+      showEndpoint: showEndpoint,
     );
   }
 }
@@ -803,18 +799,23 @@ class _StackedHostPreview {
     required this.connectionId,
     required this.state,
     this.preview,
+    this.windowTitle,
     this.terminalTheme,
   });
 
   final int connectionId;
   final SshConnectionState state;
   final String? preview;
+  final String? windowTitle;
   final TerminalThemeData? terminalTheme;
 
   String get displayText {
+    final connectionLabel = windowTitle?.trim().isNotEmpty ?? false
+        ? 'Connection #$connectionId • ${windowTitle!.trim()}'
+        : 'Connection #$connectionId';
     final previewText = preview?.trim();
     if (previewText != null && previewText.isNotEmpty) {
-      return 'Connection #$connectionId\n$previewText';
+      return '$connectionLabel\n$previewText';
     }
 
     final statusText = switch (state) {
@@ -824,7 +825,7 @@ class _StackedHostPreview {
       SshConnectionState.reconnecting => 'Reconnecting…',
       _ => 'Waiting for terminal output…',
     };
-    return 'Connection #$connectionId\n$statusText';
+    return '$connectionLabel\n$statusText';
   }
 }
 

@@ -30,6 +30,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   const ConnectionPreviewSnippet({
     required this.endpoint,
     this.preview,
+    this.windowTitle,
     this.endpointStyle,
     this.terminalTheme,
     this.showEndpoint = true,
@@ -42,6 +43,9 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 
   /// Latest terminal preview text, when available.
   final String? preview;
+
+  /// Latest remote window title, when available.
+  final String? windowTitle;
 
   /// Optional style override for the endpoint metadata.
   final TextStyle? endpointStyle;
@@ -59,6 +63,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final previewText = preview?.trim();
+    final resolvedWindowTitle = windowTitle?.trim();
     final colorScheme = theme.colorScheme;
     final previewTheme = terminalTheme;
     final previewBackgroundBase = previewTheme == null
@@ -83,8 +88,21 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (showEndpoint) Text(endpoint, style: endpointStyle),
+        if (resolvedWindowTitle != null && resolvedWindowTitle.isNotEmpty) ...[
+          if (showEndpoint) const SizedBox(height: 2),
+          Text(
+            resolvedWindowTitle,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: previewTextColor,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
         if (previewText != null && previewText.isNotEmpty) ...[
-          if (showEndpoint) const SizedBox(height: 4),
+          if (showEndpoint || (resolvedWindowTitle?.isNotEmpty ?? false))
+            const SizedBox(height: 4),
           Container(
             width: double.infinity,
             constraints: const BoxConstraints(minHeight: 52),

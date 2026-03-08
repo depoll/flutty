@@ -531,12 +531,11 @@ class _HostRow extends ConsumerWidget {
                         false) ...[
                       const SizedBox(height: 4),
                       ConnectionPreviewSnippet(
-                        endpoint: 'Connection preview',
-                        endpointStyle: theme.textTheme.labelSmall?.copyWith(
-                          color: colorScheme.onSurface.withAlpha(110),
-                        ),
+                        endpoint: '',
                         preview: latestConnection?.preview,
+                        windowTitle: latestConnection?.windowTitle,
                         terminalTheme: previewTheme,
+                        showEndpoint: false,
                       ),
                     ],
                   ],
@@ -628,6 +627,7 @@ class _HostRow extends ConsumerWidget {
                         SshConnectionState.disconnected,
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
+                    windowTitle: connection?.windowTitle,
                     terminalTheme: resolveConnectionPreviewTheme(
                       brightness: Theme.of(context).brightness,
                       themeSettings: terminalThemeSettings,
@@ -782,6 +782,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.endpoint,
     required this.onTap,
     this.preview,
+    this.windowTitle,
     this.terminalTheme,
     this.createdAt,
   });
@@ -790,6 +791,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final SshConnectionState state;
   final String endpoint;
   final String? preview;
+  final String? windowTitle;
   final TerminalThemeData? terminalTheme;
   final DateTime? createdAt;
   final VoidCallback onTap;
@@ -805,6 +807,7 @@ class _ConnectionSelectionTile extends StatelessWidget {
       subtitle: _ConnectionPreviewText(
         endpoint: subtitle,
         preview: preview,
+        windowTitle: windowTitle,
         terminalTheme: terminalTheme,
       ),
       isThreeLine: preview?.trim().isNotEmpty ?? false,
@@ -907,6 +910,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                         endpoint:
                             '$endpoint  •  Connection #${connection.connectionId}',
                         preview: preview,
+                        windowTitle: connection.windowTitle,
                         terminalTheme: previewTheme,
                       ),
                       isThreeLine: preview?.trim().isNotEmpty ?? false,
@@ -969,17 +973,20 @@ class _ConnectionPreviewText extends StatelessWidget {
   const _ConnectionPreviewText({
     required this.endpoint,
     this.preview,
+    this.windowTitle,
     this.terminalTheme,
   });
 
   final String endpoint;
   final String? preview;
+  final String? windowTitle;
   final TerminalThemeData? terminalTheme;
 
   @override
   Widget build(BuildContext context) => ConnectionPreviewSnippet(
     endpoint: endpoint,
     preview: preview,
+    windowTitle: windowTitle,
     terminalTheme: terminalTheme,
   );
 }
