@@ -52,6 +52,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     final theme = Theme.of(context);
     final previewText = preview?.trim();
     final colorScheme = theme.colorScheme;
+    final surroundingBackground = theme.scaffoldBackgroundColor;
     final previewTheme = terminalTheme;
     final previewBackgroundBase = previewTheme == null
         ? colorScheme.surfaceContainerHighest
@@ -65,9 +66,7 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       (previewTheme?.cursor ?? colorScheme.primary).withAlpha(18),
       colorScheme.outlineVariant,
     );
-    final edgeFadeColor = previewBackgroundBase.withAlpha(
-      previewTheme?.isDark ?? false ? 176 : 132,
-    );
+    final edgeFadeColor = surroundingBackground;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -108,37 +107,13 @@ class ConnectionPreviewSnippet extends StatelessWidget {
                   child: IgnorePointer(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          stops: const [0, 0.08, 0.92, 1],
-                          colors: [
-                            edgeFadeColor,
-                            Colors.transparent,
-                            Colors.transparent,
-                            edgeFadeColor,
-                          ],
-                        ),
-                      ),
-                      child: const SizedBox.expand(),
-                    ),
-                  ),
-                ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  top: 0,
-                  bottom: 0,
-                  child: IgnorePointer(
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        gradient: LinearGradient(
-                          begin: Alignment.topCenter,
-                          end: Alignment.bottomCenter,
-                          stops: const [0, 0.1, 0.9, 1],
+                        gradient: RadialGradient(
+                          radius: 1.15,
+                          stops: const [0.7, 0.9, 1],
                           colors: [
                             Colors.transparent,
-                            Colors.transparent,
-                            Colors.transparent,
-                            edgeFadeColor.withAlpha(112),
+                            edgeFadeColor.withAlpha(220),
+                            edgeFadeColor,
                           ],
                         ),
                       ),
