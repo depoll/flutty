@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
@@ -830,19 +831,21 @@ class _StackedHostPreview {
 class _StackedHostPreviewList extends StatelessWidget {
   const _StackedHostPreviewList({required this.previews});
 
-  static const double _verticalOffset = 14;
-  static const double _horizontalOffset = 12;
+  static const double _cardHeight = 64;
+  static const double _verticalOffset = 16;
+  static const double _horizontalOffset = 14;
 
   final List<_StackedHostPreview> previews;
 
   @override
   Widget build(BuildContext context) {
-    final stackHeight = 52 + ((previews.length - 1) * _verticalOffset);
+    final stackHeight = _cardHeight + ((previews.length - 1) * _verticalOffset);
 
     return SizedBox(
       width: double.infinity,
       height: stackHeight,
       child: Stack(
+        clipBehavior: Clip.none,
         children: [
           for (var index = 0; index < previews.length; index++)
             () {
@@ -851,16 +854,84 @@ class _StackedHostPreviewList extends StatelessWidget {
                 top: stackDepth * _verticalOffset,
                 left: stackDepth * _horizontalOffset,
                 right: 0,
-                child: ConnectionPreviewSnippet(
-                  endpoint: '',
-                  preview: previews[index].displayText,
-                  terminalTheme: previews[index].terminalTheme,
-                  showEndpoint: false,
-                  previewMaxLines: 3,
+                child: _StackedHostPreviewCard(
+                  preview: previews[index],
+                  height: _cardHeight,
+                  maxLines: index == previews.length - 1 ? 3 : 2,
+                  opacity: index == previews.length - 1
+                      ? 1
+                      : 0.9 - (stackDepth * 0.04),
                 ),
               );
             }(),
         ],
+      ),
+    );
+  }
+}
+
+class _StackedHostPreviewCard extends StatelessWidget {
+  const _StackedHostPreviewCard({
+    required this.preview,
+    required this.height,
+    required this.maxLines,
+    required this.opacity,
+  });
+
+  final _StackedHostPreview preview;
+  final double height;
+  final int maxLines;
+  final double opacity;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final previewTheme = preview.terminalTheme;
+    final backgroundColor = previewTheme == null
+        ? colorScheme.surfaceContainerHighest
+        : Color.alphaBlend(
+            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
+            colorScheme.surfaceContainerHighest,
+          );
+    final borderColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(28),
+      colorScheme.outlineVariant,
+    );
+    final shadowColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(14),
+      theme.shadowColor.withAlpha(20),
+    );
+    final textColor =
+        previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
+
+    return Opacity(
+      opacity: opacity,
+      child: Container(
+        height: height,
+        padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          border: Border.all(color: borderColor),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: shadowColor,
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Text(
+          preview.displayText,
+          maxLines: maxLines,
+          overflow: TextOverflow.ellipsis,
+          style: FluttyTheme.monoStyle.copyWith(
+            fontSize: 9,
+            color: textColor,
+            height: 1.25,
+          ),
+        ),
       ),
     );
   }
