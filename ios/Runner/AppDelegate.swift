@@ -40,7 +40,13 @@ private struct SshConnectionsAttributes: ActivityAttributes {
       )
       channel.setMethodCallHandler { [weak self] call, result in
         guard let self else {
-          result(nil)
+          result(
+            FlutterError(
+              code: "handler_unavailable",
+              message: "MonkeySSH background activity handler is unavailable",
+              details: nil
+            )
+          )
           return
         }
 
