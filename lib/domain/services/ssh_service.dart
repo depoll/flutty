@@ -135,6 +135,34 @@ class SshConnectionResult {
   }
 }
 
+String _bufferLineToPlainText(
+  BufferLine line,
+  int viewWidth, {
+  int? maxColumns,
+}) {
+  final builder = StringBuffer();
+  var col = 0;
+  final columnLimit = maxColumns == null
+      ? viewWidth
+      : maxColumns.clamp(1, viewWidth);
+
+  while (col < viewWidth && col < columnLimit) {
+    final codePoint = line.getCodePoint(col);
+    final width = line.getWidth(col);
+
+    if (codePoint == 0) {
+      builder.writeCharCode(0x20);
+      col++;
+      continue;
+    }
+
+    builder.writeCharCode(codePoint);
+    col += width <= 0 ? 1 : width;
+  }
+
+  return builder.toString().trimRight();
+}
+
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
@@ -519,6 +547,38 @@ class SshSession {
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _terminal;
 
+  /// Returns a compact preview of the terminal contents for list UIs.
+  String getTerminalPreview({
+    int maxLines = 2,
+    int maxColumns = 60,
+  }) {
+    final terminal = _terminal;
+    if (terminal == null || maxLines <= 0 || maxColumns <= 0) {
+      return '';
+    }
+
+    final buffer = terminal.buffer;
+    if (buffer.height == 0) {
+      return '';
+    }
+
+    final previewLines = <String>[];
+    for (var index = buffer.height - 1;
+        index >= 0 && previewLines.length < maxLines;
+        index--) {
+      final line = _bufferLineToPlainText(
+        buffer.lines[index],
+        buffer.viewWidth,
+        maxColumns: maxColumns,
+      );
+      if (line.isNotEmpty) {
+        previewLines.add(line);
+      }
+    }
+
+    return previewLines.reversed.join('\n');
+  }
+
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
     _terminal ??= Terminal(maxLines: maxLines);
@@ -793,6 +853,7 @@ class ActiveConnection {
     required this.state,
     required this.createdAt,
     required this.config,
+    required this.preview,
   });
 
   /// Connection identifier.
@@ -809,6 +870,9 @@ class ActiveConnection {
 
   /// SSH endpoint details.
   final SshConnectionConfig config;
+
+  /// Compact preview of the current terminal contents.
+  final String preview;
 }
 
 /// Info about an active tunnel for UI display.
@@ -994,6 +1058,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           state: entry.value,
           createdAt: session.createdAt,
           config: session.config,
+          preview: session.getTerminalPreview(),
         ),
       );
     }

@@ -2,13 +2,17 @@
 
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+
+class _MockSshClient extends Mock implements SSHClient {}
 
 class _CapturingSshService extends SshService {
   _CapturingSshService({
@@ -274,6 +278,48 @@ void main() {
       );
 
       expect(info.isLocal, isFalse);
+    });
+  });
+
+  group('SshSession terminal preview', () {
+    late SshSession session;
+
+    setUp(() {
+      session = SshSession(
+        connectionId: 1,
+        hostId: 42,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+    });
+
+    test('returns the latest non-empty terminal lines', () {
+      final terminal = session.getOrCreateTerminal();
+      terminal.write('first line\r\n');
+      terminal.write('\r\n');
+      terminal.write('second line\r\n');
+      terminal.write('third line');
+
+      expect(
+        session.getTerminalPreview(),
+        'second line\nthird line',
+      );
+    });
+
+    test('truncates preview columns and handles empty terminals', () {
+      expect(session.getTerminalPreview(), isEmpty);
+
+      final terminal = session.getOrCreateTerminal();
+      terminal.write('abcdefghijklmnopqrstuvwxyz');
+
+      expect(
+        session.getTerminalPreview(maxLines: 1, maxColumns: 8),
+        'abcdefgh',
+      );
     });
   });
 

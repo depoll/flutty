@@ -17,9 +17,12 @@ class MainActivity : FlutterActivity() {
         MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
             .setMethodCallHandler { call, result ->
                 when (call.method) {
-                    "startService" -> {
-                        val hostName = call.argument<String>("hostName") ?: "SSH server"
-                        sshService?.start(hostName)
+                    "syncService" -> {
+                        val activeConnectionCount =
+                            call.argument<Int>("activeConnectionCount") ?: 0
+                        val hostNames =
+                            call.argument<List<String>>("hostNames") ?: emptyList()
+                        sshService?.sync(activeConnectionCount, hostNames)
                         result.success(null)
                     }
                     "stopService" -> {

@@ -8,8 +8,8 @@ import android.content.Intent
 import android.os.PowerManager
 import androidx.core.app.NotificationCompat
 
-/// Shows a persistent notification and holds a wake lock while an SSH
-/// session is active. This is NOT a foreground service — it avoids the
+/// Shows a persistent notification and holds a wake lock while SSH
+/// sessions are active. This is NOT a foreground service — it avoids the
 /// Play Store foreground-service permission declaration requirement.
 class SshConnectionService(private val context: Context) {
 
@@ -25,8 +25,13 @@ class SshConnectionService(private val context: Context) {
         createNotificationChannel()
     }
 
-    /// Show a persistent notification and acquire a wake lock.
-    fun start(hostName: String) {
+    /// Sync the persistent notification and wake lock to the active sessions.
+    fun sync(activeConnectionCount: Int, hostNames: List<String>) {
+        if (activeConnectionCount <= 0) {
+            stop()
+            return
+        }
+
         val stopIntent = Intent(context, MainActivity::class.java).apply {
             action = ACTION_STOP
             flags = Intent.FLAG_ACTIVITY_SINGLE_TOP
@@ -44,14 +49,34 @@ class SshConnectionService(private val context: Context) {
             )
         } else null
 
+        val uniqueHosts = hostNames.distinct()
+        val title = if (activeConnectionCount == 1) {
+            "1 active SSH connection"
+        } else {
+            "$activeConnectionCount active SSH connections"
+        }
+        val hostSummary = when {
+            uniqueHosts.isEmpty() -> "Background keep-alive is active"
+            uniqueHosts.size == 1 -> uniqueHosts.first()
+            uniqueHosts.size == 2 -> "${uniqueHosts.first()} and ${uniqueHosts.last()}"
+            else -> "${uniqueHosts[0]}, ${uniqueHosts[1]}, +${uniqueHosts.size - 2} more"
+        }
+
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
-            .setContentTitle("Connected to $hostName")
-            .setContentText("SSH session is active")
+            .setContentTitle(title)
+            .setContentText(hostSummary)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(hostSummary))
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
             .setSilent(true)
+            .setNumber(activeConnectionCount)
+            .setSubText("MonkeySSH keep-alive")
             .setContentIntent(tapPendingIntent)
-            .addAction(android.R.drawable.ic_delete, "Disconnect", stopPendingIntent)
+            .addAction(
+                android.R.drawable.ic_delete,
+                "Stop keep-alive",
+                stopPendingIntent
+            )
             .build()
 
         val manager = context.getSystemService(NotificationManager::class.java)

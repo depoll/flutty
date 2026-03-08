@@ -782,7 +782,9 @@ class _ConnectionsPanel extends ConsumerWidget {
             ),
           ),
           child: Text(
-            'Connections',
+            connections.isEmpty
+                ? 'Connections'
+                : 'Connections (${connections.length})',
             style: theme.textTheme.titleMedium?.copyWith(
               fontWeight: FontWeight.w600,
             ),
@@ -812,20 +814,25 @@ class _ConnectionsPanel extends ConsumerWidget {
                             : colorScheme.onSurfaceVariant,
                       ),
                       title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: Text(
-                        '$endpoint\nConnection #${connection.connectionId}',
+                      subtitle: _ConnectionPreview(
+                        endpoint: endpoint,
+                        connectionId: connection.connectionId,
+                        preview: connection.preview,
                       ),
                       isThreeLine: true,
                       trailing: IconButton(
                         icon: const Icon(Icons.close),
                         tooltip: 'Disconnect',
                         onPressed: () async {
-                          await ref
-                              .read(activeSessionsProvider.notifier)
-                              .disconnect(connection.connectionId);
-                          if (ref.read(activeSessionsProvider).isEmpty) {
-                            unawaited(BackgroundSshService.stop());
-                          }
+                          final notifier = ref.read(
+                            activeSessionsProvider.notifier,
+                          );
+                          await notifier.disconnect(connection.connectionId);
+                          unawaited(
+                            BackgroundSshService.syncConnections(
+                              notifier.getActiveConnections(),
+                            ),
+                          );
                         },
                       ),
                       onTap: () => unawaited(
@@ -870,6 +877,53 @@ class _ConnectionsPanel extends ConsumerWidget {
           ),
         ],
       ),
+    );
+  }
+}
+
+class _ConnectionPreview extends StatelessWidget {
+  const _ConnectionPreview({
+    required this.endpoint,
+    required this.connectionId,
+    required this.preview,
+  });
+
+  final String endpoint;
+  final int connectionId;
+  final String preview;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(endpoint),
+        Text('Connection #$connectionId'),
+        if (preview.isNotEmpty) ...[
+          const SizedBox(height: 6),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(8),
+            ),
+            child: Text(
+              preview,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontFamily: 'monospace',
+                color: colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ),
+        ],
+      ],
     );
   }
 }

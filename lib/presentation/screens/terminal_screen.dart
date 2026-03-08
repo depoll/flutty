@@ -266,11 +266,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
         setState(() => _isConnecting = false);
-        unawaited(
-          BackgroundSshService.start(
-            hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-          ),
-        );
+        unawaited(_syncBackgroundKeepAlive());
         return;
       }
 
@@ -294,13 +290,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       setState(() => _isConnecting = false);
 
-      // Start the background service to keep the connection alive
-      // when the app is backgrounded.
-      unawaited(
-        BackgroundSshService.start(
-          hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-        ),
-      );
+      // Sync the background keep-alive surface for all active connections.
+      unawaited(_syncBackgroundKeepAlive());
 
       // Start port forwards
       await _startPortForwards(session);
@@ -434,9 +425,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final connectionId = _connectionId;
     if (!mounted) {
       if (connectionId != null) {
-        unawaited(_sessionsNotifier?.disconnect(connectionId));
+        unawaited(_removeClosedConnection(connectionId));
+      } else {
+        unawaited(_syncBackgroundKeepAlive());
       }
-      _stopBackgroundServiceIfNoConnections();
       return;
     }
     // If the app is in the background, don't show the error screen
@@ -450,9 +442,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     // Clean up the session state regardless of background/foreground.
     if (connectionId != null) {
-      unawaited(_sessionsNotifier?.disconnect(connectionId));
+      unawaited(_removeClosedConnection(connectionId));
+    } else {
+      unawaited(_syncBackgroundKeepAlive());
     }
-    _stopBackgroundServiceIfNoConnections();
   }
 
   Future<void> _disconnect() async {
@@ -461,7 +454,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_connectionId != null) {
       await _sessionsNotifier?.disconnect(_connectionId!);
     }
-    _stopBackgroundServiceIfNoConnections();
+    await _syncBackgroundKeepAlive();
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -593,18 +586,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  void _stopBackgroundServiceIfNoConnections() {
-    final connectionStates = ref.read(activeSessionsProvider);
-    final hasActiveConnection = connectionStates.values.any(
-      (state) =>
-          state == SshConnectionState.connected ||
-          state == SshConnectionState.connecting ||
-          state == SshConnectionState.authenticating ||
-          state == SshConnectionState.reconnecting,
-    );
-    if (!hasActiveConnection) {
-      unawaited(BackgroundSshService.stop());
-    }
+  Future<void> _syncBackgroundKeepAlive() =>
+      BackgroundSshService.syncConnections(
+        ref.read(activeSessionsProvider.notifier).getActiveConnections(),
+      );
+
+  Future<void> _removeClosedConnection(int connectionId) async {
+    await _sessionsNotifier?.disconnect(connectionId);
+    await _syncBackgroundKeepAlive();
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.

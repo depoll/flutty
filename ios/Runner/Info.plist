@@ -55,5 +55,7 @@
 	<string>MonkeySSH needs camera access to scan encrypted transfer QR codes.</string>
 	<key>ITSAppUsesNonExemptEncryption</key>
 	<false/>
+	<key>NSSupportsLiveActivities</key>
+	<true/>
 </dict>
 </plist>
