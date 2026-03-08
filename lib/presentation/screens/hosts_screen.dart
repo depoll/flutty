@@ -525,6 +525,7 @@ class _HostListTile extends ConsumerWidget {
                   '${connectionIds.length} connection(s)',
         preview: latestConnection?.preview,
       ),
+      isThreeLine: latestConnection?.preview != null,
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
