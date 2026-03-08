@@ -13,6 +13,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 
 /// Screen displaying list of saved hosts.
@@ -149,14 +150,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   Future<void> _openNewConnection(Host host) async {
-    final result = await ref
-        .read(activeSessionsProvider.notifier)
-        .connect(host.id, forceNew: true);
+    final result = await connectToHostWithProgressDialog(context, ref, host);
     if (!mounted) return;
     if (!result.success || result.connectionId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.error ?? 'Connection failed')),
-      );
       return;
     }
     unawaited(
@@ -169,12 +165,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
 
     if (connectionIds.isEmpty) {
-      final result = await sessionsNotifier.connect(host.id, forceNew: true);
+      final result = await connectToHostWithProgressDialog(context, ref, host);
       if (!mounted) return;
       if (!result.success || result.connectionId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.error ?? 'Connection failed')),
-        );
         return;
       }
       unawaited(
@@ -253,12 +246,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
       return;
     }
     if (selected == 'new') {
-      final result = await sessionsNotifier.connect(host.id, forceNew: true);
+      final result = await connectToHostWithProgressDialog(context, ref, host);
       if (!mounted) return;
       if (!result.success || result.connectionId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.error ?? 'Connection failed')),
-        );
         return;
       }
       unawaited(
@@ -525,6 +515,9 @@ class _HostListTile extends ConsumerWidget {
           state == SshConnectionState.connecting ||
           state == SshConnectionState.authenticating,
     );
+    final connectionAttempt = sessionsNotifier.getConnectionAttempt(host.id);
+    final isConnectionStarting =
+        isConnecting || (connectionAttempt?.isInProgress ?? false);
     final previewConnections = activeConnections
         .where((connection) => connection.preview?.trim().isNotEmpty ?? false)
         .toList(growable: false);
@@ -534,9 +527,9 @@ class _HostListTile extends ConsumerWidget {
     final latestPreviewConnection = previewConnections.isEmpty
         ? latestConnection
         : previewConnections.last;
-    final stackedPreviewConnections = previewConnections.length <= 3
-        ? previewConnections
-        : previewConnections.sublist(previewConnections.length - 3);
+    final stackedConnectionIds = connectionIds.length <= 3
+        ? connectionIds
+        : connectionIds.sublist(connectionIds.length - 3);
     final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
@@ -552,21 +545,26 @@ class _HostListTile extends ConsumerWidget {
           latestPreviewConnection?.terminalThemeDarkId ??
           host.terminalThemeDarkId,
     );
-    final stackedPreviews = stackedPreviewConnections
-        .map(
-          (connection) => _StackedHostPreview(
-            preview: connection.preview!.trim(),
+    final stackedPreviews = stackedConnectionIds
+        .map((connectionId) {
+          final connection = sessionsNotifier.getActiveConnection(connectionId);
+          final connectionState =
+              connectionStates[connectionId] ?? SshConnectionState.connected;
+          return _StackedHostPreview(
+            connectionId: connectionId,
+            preview: connection?.preview?.trim(),
+            state: connectionState,
             terminalTheme: resolveConnectionPreviewTheme(
               brightness: theme.brightness,
               themeSettings: terminalThemeSettings,
               availableThemes: terminalThemes,
               lightThemeId:
-                  connection.terminalThemeLightId ?? host.terminalThemeLightId,
+                  connection?.terminalThemeLightId ?? host.terminalThemeLightId,
               darkThemeId:
-                  connection.terminalThemeDarkId ?? host.terminalThemeDarkId,
+                  connection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
             ),
-          ),
-        )
+          );
+        })
         .toList(growable: false);
 
     return Material(
@@ -622,7 +620,7 @@ class _HostListTile extends ConsumerWidget {
                               size: 20,
                             ),
                           ),
-                        if (isConnecting)
+                        if (isConnectionStarting)
                           const Padding(
                             padding: EdgeInsetsDirectional.only(
                               top: 8,
@@ -682,6 +680,9 @@ class _HostListTile extends ConsumerWidget {
                                 '${connectionIds.length} connection(s)',
                       preview: latestPreviewConnection?.preview,
                       terminalTheme: previewTheme,
+                      statusMessage: connectionAttempt?.isInProgress ?? false
+                          ? connectionAttempt!.latestMessage
+                          : null,
                       stackedPreviews: stackedPreviews,
                     ),
                   ],
@@ -723,41 +724,107 @@ class _HostPreviewText extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.terminalTheme,
+    this.statusMessage,
     this.stackedPreviews = const [],
   });
 
   final String endpoint;
   final String? preview;
   final TerminalThemeData? terminalTheme;
+  final String? statusMessage;
   final List<_StackedHostPreview> stackedPreviews;
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final previewText = preview?.trim();
+
     if (stackedPreviews.length > 1) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisSize: MainAxisSize.min,
         children: [
           Text(endpoint),
+          if (statusMessage != null) ...[
+            const SizedBox(height: 4),
+            Text(
+              statusMessage!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.primary,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ],
           const SizedBox(height: 4),
           _StackedHostPreviewList(previews: stackedPreviews),
         ],
       );
     }
 
+    if (statusMessage != null) {
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(endpoint),
+          const SizedBox(height: 4),
+          Text(
+            statusMessage!,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: colorScheme.primary,
+              fontWeight: FontWeight.w500,
+            ),
+          ),
+          if (previewText != null && previewText.isNotEmpty) ...[
+            const SizedBox(height: 6),
+            ConnectionPreviewSnippet(
+              endpoint: '',
+              preview: previewText,
+              terminalTheme: terminalTheme,
+              showEndpoint: false,
+            ),
+          ],
+        ],
+      );
+    }
+
     return ConnectionPreviewSnippet(
       endpoint: endpoint,
-      preview: preview,
+      preview: previewText,
       terminalTheme: terminalTheme,
     );
   }
 }
 
 class _StackedHostPreview {
-  const _StackedHostPreview({required this.preview, this.terminalTheme});
+  const _StackedHostPreview({
+    required this.connectionId,
+    required this.state,
+    this.preview,
+    this.terminalTheme,
+  });
 
-  final String preview;
+  final int connectionId;
+  final SshConnectionState state;
+  final String? preview;
   final TerminalThemeData? terminalTheme;
+
+  String get displayText {
+    final previewText = preview?.trim();
+    if (previewText != null && previewText.isNotEmpty) {
+      return 'Connection #$connectionId\n$previewText';
+    }
+
+    final statusText = switch (state) {
+      SshConnectionState.connecting => 'Connecting…',
+      SshConnectionState.authenticating => 'Authenticating…',
+      SshConnectionState.error => 'Connection failed',
+      SshConnectionState.reconnecting => 'Reconnecting…',
+      _ => 'Waiting for terminal output…',
+    };
+    return 'Connection #$connectionId\n$statusText';
+  }
 }
 
 class _StackedHostPreviewList extends StatelessWidget {
@@ -786,10 +853,10 @@ class _StackedHostPreviewList extends StatelessWidget {
                 right: 0,
                 child: ConnectionPreviewSnippet(
                   endpoint: '',
-                  preview: previews[index].preview,
+                  preview: previews[index].displayText,
                   terminalTheme: previews[index].terminalTheme,
                   showEndpoint: false,
-                  previewMaxLines: 2,
+                  previewMaxLines: 3,
                 ),
               );
             }(),

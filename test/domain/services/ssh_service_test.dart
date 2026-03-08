@@ -19,7 +19,11 @@ class _CapturingSshService extends SshService {
   SshConnectionConfig? capturedConfig;
 
   @override
-  Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+  Future<SshConnectionResult> connect(
+    SshConnectionConfig config, {
+    ConnectionProgressCallback? onProgress,
+    bool isJumpHost = false,
+  }) async {
     capturedConfig = config;
     return const SshConnectionResult(success: false, error: 'stubbed');
   }

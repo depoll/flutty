@@ -16,6 +16,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -408,6 +409,9 @@ class _HostRow extends ConsumerWidget {
           state == SshConnectionState.connecting ||
           state == SshConnectionState.authenticating,
     );
+    final connectionAttempt = sessionsNotifier.getConnectionAttempt(host.id);
+    final isConnectionStarting =
+        isConnecting || (connectionAttempt?.isInProgress ?? false);
     final connectionCount = connectionIds.length;
     final latestConnection = activeConnections.isEmpty
         ? null
@@ -447,7 +451,7 @@ class _HostRow extends ConsumerWidget {
                   shape: BoxShape.circle,
                   color: isConnected
                       ? colorScheme.primary
-                      : isConnecting
+                      : isConnectionStarting
                       ? Colors.orange
                       : colorScheme.onSurface.withAlpha(40),
                   boxShadow: isConnected && isDark
@@ -513,6 +517,16 @@ class _HostRow extends ConsumerWidget {
                         color: colorScheme.onSurface.withAlpha(100),
                       ),
                     ),
+                    if (connectionAttempt?.isInProgress ?? false) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        connectionAttempt!.latestMessage,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    ],
                     if (latestConnection?.preview?.trim().isNotEmpty ??
                         false) ...[
                       const SizedBox(height: 4),
@@ -659,18 +673,13 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _openNewConnection(BuildContext context, WidgetRef ref) async {
-    final result = await ref
-        .read(activeSessionsProvider.notifier)
-        .connect(host.id, forceNew: true);
+    final result = await connectToHostWithProgressDialog(context, ref, host);
 
     if (!context.mounted) {
       return;
     }
 
     if (!result.success || result.connectionId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.error ?? 'Connection failed')),
-      );
       return;
     }
 

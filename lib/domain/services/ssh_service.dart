@@ -136,6 +136,51 @@ class SshConnectionResult {
   }
 }
 
+/// Progress callback for long-running SSH connection attempts.
+typedef ConnectionProgressCallback =
+    void Function(ConnectionProgressUpdate update);
+
+/// A single progress update emitted while an SSH connection is being created.
+class ConnectionProgressUpdate {
+  /// Creates a [ConnectionProgressUpdate].
+  const ConnectionProgressUpdate({required this.state, required this.message});
+
+  /// The current connection phase.
+  final SshConnectionState state;
+
+  /// Human-readable status text for the current phase.
+  final String message;
+}
+
+/// Host-level connection attempt state for live progress UI.
+class ConnectionAttemptStatus {
+  /// Creates a [ConnectionAttemptStatus].
+  const ConnectionAttemptStatus({
+    required this.hostId,
+    required this.state,
+    required this.latestMessage,
+    required this.logLines,
+  });
+
+  /// The host currently being connected.
+  final int hostId;
+
+  /// The latest known connection state.
+  final SshConnectionState state;
+
+  /// The newest status message shown to the user.
+  final String latestMessage;
+
+  /// Rolling log of recent connection progress messages.
+  final List<String> logLines;
+
+  /// Whether the connection attempt is still actively progressing.
+  bool get isInProgress =>
+      state == SshConnectionState.connecting ||
+      state == SshConnectionState.authenticating ||
+      state == SshConnectionState.reconnecting;
+}
+
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
@@ -160,7 +205,10 @@ class SshService {
   Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
 
   /// Connect to a host by ID.
-  Future<SshConnectionResult> connectToHost(int hostId) async {
+  Future<SshConnectionResult> connectToHost(
+    int hostId, {
+    ConnectionProgressCallback? onProgress,
+  }) async {
     if (hostRepository == null) {
       return const SshConnectionResult(
         success: false,
@@ -236,7 +284,7 @@ class SshService {
       jumpHostConfig: jumpHostConfig,
     );
 
-    final result = await connect(config);
+    final result = await connect(config, onProgress: onProgress);
 
     if (result.success && result.client != null) {
       final connectionId = _nextConnectionId++;
@@ -264,15 +312,30 @@ class SshService {
   }
 
   /// Connect with a configuration.
-  Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+  Future<SshConnectionResult> connect(
+    SshConnectionConfig config, {
+    ConnectionProgressCallback? onProgress,
+    bool isJumpHost = false,
+  }) async {
     SSHClient? client;
     final dependentClients = <SSHClient>[];
+    void report(SshConnectionState state, String message) {
+      onProgress?.call(
+        ConnectionProgressUpdate(state: state, message: message),
+      );
+    }
+
     try {
       SSHSocket socket;
 
       // Handle jump host
       if (config.jumpHost != null) {
-        final jumpResult = await connect(config.jumpHost!);
+        report(SshConnectionState.connecting, 'Connecting to jump host…');
+        final jumpResult = await connect(
+          config.jumpHost!,
+          onProgress: onProgress,
+          isJumpHost: true,
+        );
         if (!jumpResult.success || jumpResult.client == null) {
           return SshConnectionResult(
             success: false,
@@ -285,11 +348,18 @@ class SshService {
 
         // Create forwarded connection through jump host
         // SSHForwardChannel implements SSHSocket
+        report(SshConnectionState.connecting, 'Opening tunnel to destination…');
         socket = await jumpResult.client!.forwardLocal(
           config.hostname,
           config.port,
         );
       } else {
+        report(
+          SshConnectionState.connecting,
+          isJumpHost
+              ? 'Opening jump host connection…'
+              : 'Opening network connection…',
+        );
         socket = await _connectWithKeepAlive(
           config.hostname,
           config.port,
@@ -297,6 +367,10 @@ class SshService {
         );
       }
 
+      report(
+        SshConnectionState.authenticating,
+        isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
+      );
       client = SSHClient(
         socket,
         username: config.username,
@@ -309,6 +383,10 @@ class SshService {
 
       // Wait for authentication to complete
       await client.authenticated;
+      report(
+        SshConnectionState.connected,
+        isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
+      );
 
       return SshConnectionResult(
         success: true,
@@ -992,11 +1070,13 @@ final activeSessionsProvider =
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
+  final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
 
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
     _connectionHostIds.clear();
+    _connectionAttempts.clear();
     return {};
   }
 
@@ -1016,7 +1096,19 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       }
     }
 
-    final result = await _sshService.connectToHost(hostId);
+    _updateConnectionAttempt(
+      hostId,
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connecting,
+        message: 'Preparing connection…',
+      ),
+      resetLog: true,
+    );
+
+    final result = await _sshService.connectToHost(
+      hostId,
+      onProgress: (update) => _updateConnectionAttempt(hostId, update),
+    );
 
     if (result.success && result.connectionId != null) {
       final connectionId = result.connectionId!;
@@ -1026,7 +1118,22 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         _attachSessionPreviewListener(session);
       }
       state = {...state, connectionId: SshConnectionState.connected};
+      _updateConnectionAttempt(
+        hostId,
+        const ConnectionProgressUpdate(
+          state: SshConnectionState.connected,
+          message: 'Connection established. Opening terminal…',
+        ),
+      );
       unawaited(_syncBackgroundStatus());
+    } else {
+      _updateConnectionAttempt(
+        hostId,
+        ConnectionProgressUpdate(
+          state: SshConnectionState.error,
+          message: result.error ?? 'Connection failed',
+        ),
+      );
     }
 
     return result;
@@ -1080,6 +1187,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       terminalThemeDarkId: session.terminalThemeDarkId,
     );
   }
+
+  /// Get the current connection attempt state for a host.
+  ConnectionAttemptStatus? getConnectionAttempt(int hostId) =>
+      _connectionAttempts[hostId];
 
   /// Get all active connection IDs for a host.
   List<int> getConnectionsForHost(int hostId) {
@@ -1143,11 +1254,41 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     return connections;
   }
 
+  /// Clear the current connection attempt state for a host.
+  void clearConnectionAttempt(int hostId) {
+    if (_connectionAttempts.remove(hostId) != null) {
+      state = {...state};
+    }
+  }
+
   void _attachSessionPreviewListener(SshSession session) {
     session.onPreviewChanged = () {
       state = {...state};
       unawaited(_syncBackgroundStatus());
     };
+  }
+
+  void _updateConnectionAttempt(
+    int hostId,
+    ConnectionProgressUpdate update, {
+    bool resetLog = false,
+  }) {
+    final existing = resetLog ? null : _connectionAttempts[hostId];
+    final nextLogLines = <String>[if (existing != null) ...existing.logLines];
+    if (nextLogLines.isEmpty || nextLogLines.last != update.message) {
+      nextLogLines.add(update.message);
+    }
+    if (nextLogLines.length > 8) {
+      nextLogLines.removeRange(0, nextLogLines.length - 8);
+    }
+
+    _connectionAttempts[hostId] = ConnectionAttemptStatus(
+      hostId: hostId,
+      state: update.state,
+      latestMessage: update.message,
+      logLines: List.unmodifiable(nextLogLines),
+    );
+    state = {...state};
   }
 
   /// Update the session-specific terminal theme for an active connection.
