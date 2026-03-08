@@ -16,5 +16,11 @@ void main() {
       expect(scaleTerminalFontSize(14, 0.1), 8);
       expect(scaleTerminalFontSize(14, 3), 32);
     });
+
+    test('applies incremental scale deltas in both directions', () {
+      expect(applyTerminalScaleDelta(14, 1, 0.85), 11.9);
+      expect(applyTerminalScaleDelta(11.9, 0.85, 0.95), closeTo(13.3, 0.1));
+      expect(applyTerminalScaleDelta(13.3, 0.95, 0.75), closeTo(10.5, 0.1));
+    });
   });
 }

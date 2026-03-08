@@ -36,6 +36,17 @@ double clampTerminalFontSize(double size) =>
 double scaleTerminalFontSize(double baseSize, double scale) =>
     clampTerminalFontSize(baseSize * scale);
 
+/// Applies an incremental pinch delta to the currently displayed font size.
+@visibleForTesting
+double applyTerminalScaleDelta(
+  double currentFontSize,
+  double previousScale,
+  double nextScale,
+) {
+  final safePreviousScale = previousScale <= 0 ? 1.0 : previousScale;
+  return scaleTerminalFontSize(currentFontSize, nextScale / safePreviousScale);
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -73,7 +84,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
   double? _pinchFontSize;
-  double? _pinchBaseFontSize;
+  double? _lastPinchScale;
   bool _isPinchZooming = false;
 
   // Theme state
@@ -646,7 +657,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalScaleStart(double currentFontSize) {
-    _pinchBaseFontSize = _pinchFontSize ?? currentFontSize;
+    _pinchFontSize = currentFontSize;
+    _lastPinchScale = 1;
     _isPinchZooming = false;
   }
 
@@ -658,9 +670,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final baseFontSize =
-        _pinchBaseFontSize ?? _pinchFontSize ?? currentFontSize;
-    final nextFontSize = scaleTerminalFontSize(baseFontSize, details.scale);
+    final displayedFontSize = _pinchFontSize ?? currentFontSize;
+    final previousScale = _lastPinchScale ?? 1;
+    final nextFontSize = applyTerminalScaleDelta(
+      displayedFontSize,
+      previousScale,
+      details.scale,
+    );
     if (_isPinchZooming && _pinchFontSize == nextFontSize) {
       return;
     }
@@ -668,6 +684,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isPinchZooming = true;
       _pinchFontSize = nextFontSize;
+      _lastPinchScale = details.scale;
     });
   }
 
@@ -676,7 +693,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldPersist = _isPinchZooming && nextFontSize != null;
     setState(() {
       _isPinchZooming = false;
-      _pinchBaseFontSize = null;
+      _lastPinchScale = null;
       _pinchFontSize = null;
     });
 

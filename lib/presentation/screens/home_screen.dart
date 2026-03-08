@@ -393,10 +393,6 @@ class _HostRow extends ConsumerWidget {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionStates = ref.watch(activeSessionsProvider);
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
-    final activeConnections = connectionIds
-        .map(sessionsNotifier.getActiveConnection)
-        .whereType<ActiveConnection>()
-        .toList(growable: false);
     final hostConnectionStates = connectionIds
         .map((connectionId) => connectionStates[connectionId])
         .whereType<SshConnectionState>()
@@ -413,22 +409,44 @@ class _HostRow extends ConsumerWidget {
     final isConnectionStarting =
         isConnecting || (connectionAttempt?.isInProgress ?? false);
     final connectionCount = connectionIds.length;
-    final latestConnection = activeConnections.isEmpty
-        ? null
-        : activeConnections.last;
     final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
-    final previewTheme = resolveConnectionPreviewTheme(
-      brightness: theme.brightness,
-      themeSettings: terminalThemeSettings,
-      availableThemes: terminalThemes,
-      lightThemeId:
-          latestConnection?.terminalThemeLightId ?? host.terminalThemeLightId,
-      darkThemeId:
-          latestConnection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
-    );
+    String fallbackPreviewStatus(SshConnectionState state) => switch (state) {
+      SshConnectionState.connecting => 'Connecting…',
+      SshConnectionState.authenticating => 'Authenticating…',
+      SshConnectionState.error => 'Connection failed',
+      SshConnectionState.reconnecting => 'Reconnecting…',
+      _ => 'Waiting for terminal output…',
+    };
+    final previewEntries = connectionIds
+        .map((connectionId) {
+          final connection = sessionsNotifier.getActiveConnection(connectionId);
+          final state =
+              connectionStates[connectionId] ?? SshConnectionState.connected;
+          final windowTitle = connection?.windowTitle?.trim();
+          final title = windowTitle == null || windowTitle.isEmpty
+              ? 'Connection #$connectionId'
+              : 'Connection #$connectionId • $windowTitle';
+          final preview = connection?.preview?.trim();
+          return ConnectionPreviewStackEntry(
+            title: title,
+            body: preview == null || preview.isEmpty
+                ? fallbackPreviewStatus(state)
+                : preview,
+            terminalTheme: resolveConnectionPreviewTheme(
+              brightness: theme.brightness,
+              themeSettings: terminalThemeSettings,
+              availableThemes: terminalThemes,
+              lightThemeId:
+                  connection?.terminalThemeLightId ?? host.terminalThemeLightId,
+              darkThemeId:
+                  connection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
+            ),
+          );
+        })
+        .toList(growable: false);
 
     return Material(
       color: Colors.transparent,
@@ -441,137 +459,142 @@ class _HostRow extends ConsumerWidget {
               bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
             ),
           ),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Status indicator
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: isConnected
-                      ? colorScheme.primary
-                      : isConnectionStarting
-                      ? Colors.orange
-                      : colorScheme.onSurface.withAlpha(40),
-                  boxShadow: isConnected && isDark
-                      ? [
-                          BoxShadow(
-                            color: colorScheme.primary.withAlpha(100),
-                            blurRadius: 6,
-                          ),
-                        ]
-                      : null,
-                ),
-              ),
-              const SizedBox(width: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Status indicator
+                  Container(
+                    width: 8,
+                    height: 8,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: isConnected
+                          ? colorScheme.primary
+                          : isConnectionStarting
+                          ? Colors.orange
+                          : colorScheme.onSurface.withAlpha(40),
+                      boxShadow: isConnected && isDark
+                          ? [
+                              BoxShadow(
+                                color: colorScheme.primary.withAlpha(100),
+                                blurRadius: 6,
+                              ),
+                            ]
+                          : null,
+                    ),
+                  ),
+                  const SizedBox(width: 12),
 
-              // Host info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
+                  // Host info
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        Text(
-                          host.label,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w500,
-                          ),
-                        ),
-                        if (connectionCount > 0) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: colorScheme.primary.withAlpha(20),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              '$connectionCount',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: colorScheme.primary,
-                                fontWeight: FontWeight.w600,
+                        Row(
+                          children: [
+                            Text(
+                              host.label,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
+                            if (connectionCount > 0) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: colorScheme.primary.withAlpha(20),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '$connectionCount',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: colorScheme.primary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (host.isFavorite) ...[
+                              const SizedBox(width: 6),
+                              Icon(
+                                Icons.star_rounded,
+                                size: 14,
+                                color: Colors.amber.shade600,
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${host.username}@${host.hostname}',
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 11,
+                            color: colorScheme.onSurface.withAlpha(100),
                           ),
-                        ],
-                        if (host.isFavorite) ...[
-                          const SizedBox(width: 6),
-                          Icon(
-                            Icons.star_rounded,
-                            size: 14,
-                            color: Colors.amber.shade600,
+                        ),
+                        if (connectionAttempt?.isInProgress ?? false) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            connectionAttempt!.latestMessage,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.primary,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${host.username}@${host.hostname}',
+                  ),
+
+                  // Port badge
+                  Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 6,
+                      vertical: 2,
+                    ),
+                    decoration: BoxDecoration(
+                      color: colorScheme.outline.withAlpha(40),
+                      borderRadius: BorderRadius.circular(4),
+                    ),
+                    child: Text(
+                      ':${host.port}',
                       style: FluttyTheme.monoStyle.copyWith(
-                        fontSize: 11,
-                        color: colorScheme.onSurface.withAlpha(100),
+                        fontSize: 10,
+                        color: colorScheme.onSurface.withAlpha(120),
                       ),
                     ),
-                    if (connectionAttempt?.isInProgress ?? false) ...[
-                      const SizedBox(height: 4),
-                      Text(
-                        connectionAttempt!.latestMessage,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colorScheme.primary,
-                          fontWeight: FontWeight.w500,
-                        ),
-                      ),
-                    ],
-                    if (latestConnection?.preview?.trim().isNotEmpty ??
-                        false) ...[
-                      const SizedBox(height: 4),
-                      ConnectionPreviewSnippet(
-                        endpoint: '',
-                        preview: latestConnection?.preview,
-                        windowTitle: latestConnection?.windowTitle,
-                        terminalTheme: previewTheme,
-                        showEndpoint: false,
-                      ),
-                    ],
-                  ],
-                ),
-              ),
-
-              // Port badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: colorScheme.outline.withAlpha(40),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  ':${host.port}',
-                  style: FluttyTheme.monoStyle.copyWith(
-                    fontSize: 10,
-                    color: colorScheme.onSurface.withAlpha(120),
                   ),
-                ),
-              ),
-              const SizedBox(width: 8),
+                  const SizedBox(width: 8),
 
-              // Actions
-              _SmallIconButton(
-                icon: Icons.add,
-                onTap: () => unawaited(_openNewConnection(context, ref)),
+                  // Actions
+                  _SmallIconButton(
+                    icon: Icons.add,
+                    onTap: () => unawaited(_openNewConnection(context, ref)),
+                  ),
+                  _SmallIconButton(
+                    icon: Icons.edit_outlined,
+                    onTap: () => context.push('/hosts/edit/${host.id}'),
+                  ),
+                  _SmallIconButton(
+                    icon: Icons.more_vert,
+                    onTap: () => _showMenu(context, ref),
+                  ),
+                ],
               ),
-              _SmallIconButton(
-                icon: Icons.edit_outlined,
-                onTap: () => context.push('/hosts/edit/${host.id}'),
-              ),
-              _SmallIconButton(
-                icon: Icons.more_vert,
-                onTap: () => _showMenu(context, ref),
-              ),
+              if (previewEntries.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: ConnectionPreviewStack(entries: previewEntries),
+                ),
+              ],
             ],
           ),
         ),

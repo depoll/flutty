@@ -135,3 +135,160 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     );
   }
 }
+
+/// Data for a single card in a stacked connection preview.
+class ConnectionPreviewStackEntry {
+  /// Creates a [ConnectionPreviewStackEntry].
+  const ConnectionPreviewStackEntry({
+    required this.title,
+    required this.body,
+    this.terminalTheme,
+  });
+
+  /// Short title shown at the top of the stacked card.
+  final String title;
+
+  /// Main preview or status text shown inside the card.
+  final String body;
+
+  /// Terminal theme used to tint the preview surface.
+  final TerminalThemeData? terminalTheme;
+}
+
+/// Renders one or more connection preview cards in a visibly offset stack.
+class ConnectionPreviewStack extends StatelessWidget {
+  /// Creates a [ConnectionPreviewStack].
+  const ConnectionPreviewStack({
+    required this.entries,
+    this.cardHeight = 74,
+    this.verticalOffset = 20,
+    this.horizontalOffset = 14,
+    super.key,
+  });
+
+  /// Cards to render in the stack, ordered from oldest to newest.
+  final List<ConnectionPreviewStackEntry> entries;
+
+  /// Height of each stacked preview card.
+  final double cardHeight;
+
+  /// Vertical offset applied between stacked cards.
+  final double verticalOffset;
+
+  /// Horizontal offset applied between stacked cards.
+  final double horizontalOffset;
+
+  @override
+  Widget build(BuildContext context) {
+    if (entries.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final stackHeight = cardHeight + ((entries.length - 1) * verticalOffset);
+
+    return SizedBox(
+      width: double.infinity,
+      height: stackHeight,
+      child: Stack(
+        clipBehavior: Clip.none,
+        children: [
+          for (var index = 0; index < entries.length; index++)
+            Positioned(
+              top: index * verticalOffset,
+              left: index * horizontalOffset,
+              right: 0,
+              child: _ConnectionPreviewStackCard(
+                entry: entries[index],
+                height: cardHeight,
+                opacity: index == entries.length - 1
+                    ? 1
+                    : 0.9 - ((entries.length - index - 2) * 0.05),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ConnectionPreviewStackCard extends StatelessWidget {
+  const _ConnectionPreviewStackCard({
+    required this.entry,
+    required this.height,
+    required this.opacity,
+  });
+
+  final ConnectionPreviewStackEntry entry;
+  final double height;
+  final double opacity;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final previewTheme = entry.terminalTheme;
+    final backgroundColor = previewTheme == null
+        ? colorScheme.surfaceContainerHighest
+        : Color.alphaBlend(
+            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
+            colorScheme.surfaceContainerHighest,
+          );
+    final borderColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(28),
+      colorScheme.outlineVariant,
+    );
+    final shadowColor = Color.alphaBlend(
+      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(14),
+      theme.shadowColor.withAlpha(20),
+    );
+    final textColor =
+        previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
+
+    return Opacity(
+      opacity: opacity.clamp(0.7, 1).toDouble(),
+      child: Container(
+        height: height,
+        padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
+        decoration: BoxDecoration(
+          color: backgroundColor,
+          border: Border.all(color: borderColor),
+          borderRadius: BorderRadius.circular(12),
+          boxShadow: [
+            BoxShadow(
+              color: shadowColor,
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              entry.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: textColor,
+                fontWeight: FontWeight.w700,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Expanded(
+              child: Text(
+                entry.body,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: FluttyTheme.monoStyle.copyWith(
+                  fontSize: 9,
+                  color: textColor,
+                  height: 1.25,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}

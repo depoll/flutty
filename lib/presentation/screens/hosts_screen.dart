@@ -5,11 +5,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
-import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
-import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -212,7 +210,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
                   return ListTile(
                     leading: const Icon(Icons.terminal),
                     title: Text('Connection #$connectionId'),
-                    subtitle: _HostPreviewText(
+                    subtitle: ConnectionPreviewSnippet(
                       endpoint:
                           '${host.username}@${host.hostname}:${host.port}',
                       preview: preview,
@@ -501,10 +499,6 @@ class _HostListTile extends ConsumerWidget {
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
-    final activeConnections = connectionIds
-        .map(sessionsNotifier.getActiveConnection)
-        .whereType<ActiveConnection>()
-        .toList(growable: false);
     final states = connectionIds
         .map((connectionId) => connectionStates[connectionId])
         .whereType<SshConnectionState>()
@@ -520,43 +514,32 @@ class _HostListTile extends ConsumerWidget {
     final connectionAttempt = sessionsNotifier.getConnectionAttempt(host.id);
     final isConnectionStarting =
         isConnecting || (connectionAttempt?.isInProgress ?? false);
-    final previewConnections = activeConnections
-        .where((connection) => connection.preview?.trim().isNotEmpty ?? false)
-        .toList(growable: false);
-    final latestConnection = activeConnections.isEmpty
-        ? null
-        : activeConnections.last;
-    final latestPreviewConnection = previewConnections.isEmpty
-        ? latestConnection
-        : previewConnections.last;
-    final stackedConnectionIds = connectionIds.length <= 3
-        ? connectionIds
-        : connectionIds.sublist(connectionIds.length - 3);
     final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
-    final previewTheme = resolveConnectionPreviewTheme(
-      brightness: theme.brightness,
-      themeSettings: terminalThemeSettings,
-      availableThemes: terminalThemes,
-      lightThemeId:
-          latestPreviewConnection?.terminalThemeLightId ??
-          host.terminalThemeLightId,
-      darkThemeId:
-          latestPreviewConnection?.terminalThemeDarkId ??
-          host.terminalThemeDarkId,
-    );
-    final stackedPreviews = stackedConnectionIds
+    String fallbackPreviewStatus(SshConnectionState state) => switch (state) {
+      SshConnectionState.connecting => 'Connecting…',
+      SshConnectionState.authenticating => 'Authenticating…',
+      SshConnectionState.error => 'Connection failed',
+      SshConnectionState.reconnecting => 'Reconnecting…',
+      _ => 'Waiting for terminal output…',
+    };
+    final previewEntries = connectionIds
         .map((connectionId) {
           final connection = sessionsNotifier.getActiveConnection(connectionId);
           final connectionState =
               connectionStates[connectionId] ?? SshConnectionState.connected;
-          return _StackedHostPreview(
-            connectionId: connectionId,
-            preview: connection?.preview?.trim(),
-            windowTitle: connection?.windowTitle,
-            state: connectionState,
+          final windowTitle = connection?.windowTitle?.trim();
+          final title = windowTitle == null || windowTitle.isEmpty
+              ? 'Connection #$connectionId'
+              : 'Connection #$connectionId • $windowTitle';
+          final preview = connection?.preview?.trim();
+          return ConnectionPreviewStackEntry(
+            title: title,
+            body: preview == null || preview.isEmpty
+                ? fallbackPreviewStatus(connectionState)
+                : preview,
             terminalTheme: resolveConnectionPreviewTheme(
               brightness: theme.brightness,
               themeSettings: terminalThemeSettings,
@@ -705,19 +688,11 @@ class _HostListTile extends ConsumerWidget {
                   ),
                 ],
               ),
-              if (stackedPreviews.isNotEmpty ||
-                  latestPreviewConnection != null) ...[
+              if (previewEntries.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsetsDirectional.only(start: 56),
-                  child: _HostPreviewText(
-                    endpoint: '',
-                    preview: latestPreviewConnection?.preview,
-                    windowTitle: latestPreviewConnection?.windowTitle,
-                    terminalTheme: previewTheme,
-                    showEndpoint: false,
-                    stackedPreviews: stackedPreviews,
-                  ),
+                  child: ConnectionPreviewStack(entries: previewEntries),
                 ),
               ],
             ],
@@ -748,193 +723,6 @@ class _HostListTile extends ConsumerWidget {
         context,
       ).showSnackBar(const SnackBar(content: Text('Host duplicated')));
     }
-  }
-}
-
-class _HostPreviewText extends StatelessWidget {
-  const _HostPreviewText({
-    required this.endpoint,
-    this.preview,
-    this.windowTitle,
-    this.terminalTheme,
-    this.showEndpoint = true,
-    this.stackedPreviews = const [],
-  });
-
-  final String endpoint;
-  final String? preview;
-  final String? windowTitle;
-  final TerminalThemeData? terminalTheme;
-  final bool showEndpoint;
-  final List<_StackedHostPreview> stackedPreviews;
-
-  @override
-  Widget build(BuildContext context) {
-    final previewText = preview?.trim();
-
-    if (stackedPreviews.length > 1) {
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (showEndpoint) Text(endpoint),
-          const SizedBox(height: 4),
-          _StackedHostPreviewList(previews: stackedPreviews),
-        ],
-      );
-    }
-
-    return ConnectionPreviewSnippet(
-      endpoint: endpoint,
-      preview: previewText,
-      windowTitle: windowTitle,
-      terminalTheme: terminalTheme,
-      showEndpoint: showEndpoint,
-    );
-  }
-}
-
-class _StackedHostPreview {
-  const _StackedHostPreview({
-    required this.connectionId,
-    required this.state,
-    this.preview,
-    this.windowTitle,
-    this.terminalTheme,
-  });
-
-  final int connectionId;
-  final SshConnectionState state;
-  final String? preview;
-  final String? windowTitle;
-  final TerminalThemeData? terminalTheme;
-
-  String get displayText {
-    final connectionLabel = windowTitle?.trim().isNotEmpty ?? false
-        ? 'Connection #$connectionId • ${windowTitle!.trim()}'
-        : 'Connection #$connectionId';
-    final previewText = preview?.trim();
-    if (previewText != null && previewText.isNotEmpty) {
-      return '$connectionLabel\n$previewText';
-    }
-
-    final statusText = switch (state) {
-      SshConnectionState.connecting => 'Connecting…',
-      SshConnectionState.authenticating => 'Authenticating…',
-      SshConnectionState.error => 'Connection failed',
-      SshConnectionState.reconnecting => 'Reconnecting…',
-      _ => 'Waiting for terminal output…',
-    };
-    return '$connectionLabel\n$statusText';
-  }
-}
-
-class _StackedHostPreviewList extends StatelessWidget {
-  const _StackedHostPreviewList({required this.previews});
-
-  static const double _cardHeight = 64;
-  static const double _verticalOffset = 16;
-  static const double _horizontalOffset = 14;
-
-  final List<_StackedHostPreview> previews;
-
-  @override
-  Widget build(BuildContext context) {
-    final stackHeight = _cardHeight + ((previews.length - 1) * _verticalOffset);
-
-    return SizedBox(
-      width: double.infinity,
-      height: stackHeight,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          for (var index = 0; index < previews.length; index++)
-            () {
-              final stackDepth = previews.length - index - 1;
-              return Positioned(
-                top: stackDepth * _verticalOffset,
-                left: stackDepth * _horizontalOffset,
-                right: 0,
-                child: _StackedHostPreviewCard(
-                  preview: previews[index],
-                  height: _cardHeight,
-                  maxLines: index == previews.length - 1 ? 3 : 2,
-                  opacity: index == previews.length - 1
-                      ? 1
-                      : 0.9 - (stackDepth * 0.04),
-                ),
-              );
-            }(),
-        ],
-      ),
-    );
-  }
-}
-
-class _StackedHostPreviewCard extends StatelessWidget {
-  const _StackedHostPreviewCard({
-    required this.preview,
-    required this.height,
-    required this.maxLines,
-    required this.opacity,
-  });
-
-  final _StackedHostPreview preview;
-  final double height;
-  final int maxLines;
-  final double opacity;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    final previewTheme = preview.terminalTheme;
-    final backgroundColor = previewTheme == null
-        ? colorScheme.surfaceContainerHighest
-        : Color.alphaBlend(
-            previewTheme.background.withAlpha(previewTheme.isDark ? 230 : 170),
-            colorScheme.surfaceContainerHighest,
-          );
-    final borderColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? colorScheme.primary).withAlpha(28),
-      colorScheme.outlineVariant,
-    );
-    final shadowColor = Color.alphaBlend(
-      (previewTheme?.cursor ?? theme.shadowColor).withAlpha(14),
-      theme.shadowColor.withAlpha(20),
-    );
-    final textColor =
-        previewTheme?.foreground.withAlpha(230) ?? colorScheme.onSurfaceVariant;
-
-    return Opacity(
-      opacity: opacity,
-      child: Container(
-        height: height,
-        padding: const EdgeInsets.fromLTRB(14, 10, 12, 10),
-        decoration: BoxDecoration(
-          color: backgroundColor,
-          border: Border.all(color: borderColor),
-          borderRadius: BorderRadius.circular(12),
-          boxShadow: [
-            BoxShadow(
-              color: shadowColor,
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-            ),
-          ],
-        ),
-        child: Text(
-          preview.displayText,
-          maxLines: maxLines,
-          overflow: TextOverflow.ellipsis,
-          style: FluttyTheme.monoStyle.copyWith(
-            fontSize: 9,
-            color: textColor,
-            height: 1.25,
-          ),
-        ),
-      ),
-    );
   }
 }
 
