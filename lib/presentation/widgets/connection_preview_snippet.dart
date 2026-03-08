@@ -161,8 +161,8 @@ class ConnectionPreviewStack extends StatelessWidget {
   const ConnectionPreviewStack({
     required this.entries,
     this.cardHeight = 74,
-    this.verticalOffset = 20,
-    this.horizontalOffset = 14,
+    this.verticalOffset = 14,
+    this.horizontalOffset = 10,
     super.key,
   });
 
@@ -189,23 +189,30 @@ class ConnectionPreviewStack extends StatelessWidget {
     return SizedBox(
       width: double.infinity,
       height: stackHeight,
-      child: Stack(
-        clipBehavior: Clip.none,
-        children: [
-          for (var index = 0; index < entries.length; index++)
-            Positioned(
-              top: index * verticalOffset,
-              left: index * horizontalOffset,
-              right: 0,
-              child: _ConnectionPreviewStackCard(
-                entry: entries[index],
-                height: cardHeight,
-                opacity: index == entries.length - 1
-                    ? 1
-                    : 0.9 - ((entries.length - index - 2) * 0.05),
-              ),
-            ),
-        ],
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
+          final cardWidth = constraints.maxWidth - maxHorizontalInset;
+
+          return Stack(
+            clipBehavior: Clip.none,
+            children: [
+              for (var index = 0; index < entries.length; index++)
+                Positioned(
+                  top: index * verticalOffset,
+                  left: index * horizontalOffset,
+                  width: cardWidth,
+                  child: _ConnectionPreviewStackCard(
+                    entry: entries[index],
+                    height: cardHeight,
+                    opacity: index == entries.length - 1
+                        ? 1
+                        : 0.9 - ((entries.length - index - 2) * 0.05),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
