@@ -8,6 +8,7 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
+import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -202,35 +203,14 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
                 subtitle: Text('${connectionIds.length} active connections'),
               ),
               for (final connectionId in connectionIds.reversed)
-                () {
-                  final connection = sessionsNotifier.getActiveConnection(
-                    connectionId,
-                  );
-                  final preview = connection?.preview;
-                  return ListTile(
-                    leading: const Icon(Icons.terminal),
-                    title: Text('Connection #$connectionId'),
-                    subtitle: ConnectionPreviewSnippet(
-                      endpoint:
-                          '${host.username}@${host.hostname}:${host.port}',
-                      preview: preview,
-                      windowTitle: connection?.windowTitle,
-                      terminalTheme: resolveConnectionPreviewTheme(
-                        brightness: Theme.of(context).brightness,
-                        themeSettings: terminalThemeSettings,
-                        availableThemes: terminalThemes,
-                        lightThemeId:
-                            connection?.terminalThemeLightId ??
-                            host.terminalThemeLightId,
-                        darkThemeId:
-                            connection?.terminalThemeDarkId ??
-                            host.terminalThemeDarkId,
-                      ),
-                    ),
-                    isThreeLine: preview?.trim().isNotEmpty ?? false,
-                    onTap: () => Navigator.pop(context, '$connectionId'),
-                  );
-                }(),
+                _buildConnectionTile(
+                  context,
+                  sessionsNotifier,
+                  terminalThemeSettings,
+                  terminalThemes,
+                  host,
+                  connectionId,
+                ),
               ListTile(
                 leading: const Icon(Icons.add),
                 title: const Text('New connection'),
@@ -298,6 +278,39 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         ).showSnackBar(SnackBar(content: Text('Deleted "${host.label}"')));
       }
     }
+  }
+
+  Widget _buildConnectionTile(
+    BuildContext context,
+    ActiveSessionsNotifier sessionsNotifier,
+    TerminalThemeSettings terminalThemeSettings,
+    List<TerminalThemeData> terminalThemes,
+    Host host,
+    int connectionId,
+  ) {
+    final connection = sessionsNotifier.getActiveConnection(connectionId);
+    final preview = connection?.preview;
+
+    return ListTile(
+      leading: const Icon(Icons.terminal),
+      title: Text('Connection #$connectionId'),
+      subtitle: ConnectionPreviewSnippet(
+        endpoint: '${host.username}@${host.hostname}:${host.port}',
+        preview: preview,
+        windowTitle: connection?.windowTitle,
+        terminalTheme: resolveConnectionPreviewTheme(
+          brightness: Theme.of(context).brightness,
+          themeSettings: terminalThemeSettings,
+          availableThemes: terminalThemes,
+          lightThemeId:
+              connection?.terminalThemeLightId ?? host.terminalThemeLightId,
+          darkThemeId:
+              connection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
+        ),
+      ),
+      isThreeLine: preview?.trim().isNotEmpty ?? false,
+      onTap: () => Navigator.pop(context, '$connectionId'),
+    );
   }
 
   void _showSearchDialog() {
