@@ -35,6 +35,7 @@ platform :ios do
   private_lane :sync_certs do |options|
     app_id = options[:app_identifier]
     match_type = options[:type] || 'appstore'
+    readonly = options.key?(:readonly) ? options[:readonly] : true
 
     api_key = get_api_key
 
@@ -42,7 +43,7 @@ platform :ios do
       type: match_type,
       app_identifier: app_id,
       api_key: api_key,
-      readonly: true,
+      readonly: readonly,
     )
   end
 
@@ -51,7 +52,11 @@ platform :ios do
     app_id = APP_IDS[scheme]
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
-    sync_certs(app_identifier: [app_id, live_activity_app_id], type: 'appstore')
+    sync_certs(
+      app_identifier: [app_id, live_activity_app_id],
+      type: 'appstore',
+      readonly: false,
+    )
 
     profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
                    "match AppStore #{app_id}"
