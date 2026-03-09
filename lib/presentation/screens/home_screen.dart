@@ -413,37 +413,23 @@ class _HostRow extends ConsumerWidget {
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
-    String fallbackPreviewStatus(SshConnectionState state) => switch (state) {
-      SshConnectionState.connecting => 'Connecting…',
-      SshConnectionState.authenticating => 'Authenticating…',
-      SshConnectionState.error => 'Connection failed',
-      SshConnectionState.reconnecting => 'Reconnecting…',
-      _ => 'Waiting for terminal output…',
-    };
     final previewEntries = connectionIds
         .map((connectionId) {
           final connection = sessionsNotifier.getActiveConnection(connectionId);
           final state =
               connectionStates[connectionId] ?? SshConnectionState.connected;
-          final windowTitle = connection?.windowTitle?.trim();
-          final title = windowTitle == null || windowTitle.isEmpty
-              ? 'Connection #$connectionId'
-              : 'Connection #$connectionId • $windowTitle';
-          final preview = connection?.preview?.trim();
-          return ConnectionPreviewStackEntry(
-            title: title,
-            body: preview == null || preview.isEmpty
-                ? fallbackPreviewStatus(state)
-                : preview,
-            terminalTheme: resolveConnectionPreviewTheme(
-              brightness: theme.brightness,
-              themeSettings: terminalThemeSettings,
-              availableThemes: terminalThemes,
-              lightThemeId:
-                  connection?.terminalThemeLightId ?? host.terminalThemeLightId,
-              darkThemeId:
-                  connection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
-            ),
+          return buildConnectionPreviewStackEntry(
+            connectionId: connectionId,
+            state: state,
+            preview: connection?.preview,
+            windowTitle: connection?.windowTitle,
+            brightness: theme.brightness,
+            themeSettings: terminalThemeSettings,
+            availableThemes: terminalThemes,
+            hostLightThemeId: host.terminalThemeLightId,
+            hostDarkThemeId: host.terminalThemeDarkId,
+            connectionLightThemeId: connection?.terminalThemeLightId,
+            connectionDarkThemeId: connection?.terminalThemeDarkId,
           );
         })
         .toList(growable: false);

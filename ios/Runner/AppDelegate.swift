@@ -37,10 +37,12 @@ import UIKit
             return
           }
 
-          ConnectionStatusLiveActivityManager.shared.updateStatus(
-            connectionCount: connectionCount,
-            connectedCount: connectedCount
-          )
+          if #available(iOS 16.1, *) {
+            ConnectionStatusLiveActivityManager.shared.updateStatus(
+              connectionCount: connectionCount,
+              connectedCount: connectedCount
+            )
+          }
           result(nil)
         case "setForegroundState":
           guard
@@ -57,12 +59,16 @@ import UIKit
             return
           }
 
-          ConnectionStatusLiveActivityManager.shared.setForegroundState(
-            isForeground: isForeground
-          )
+          if #available(iOS 16.1, *) {
+            ConnectionStatusLiveActivityManager.shared.setForegroundState(
+              isForeground: isForeground
+            )
+          }
           result(nil)
         case "stopService":
-          ConnectionStatusLiveActivityManager.shared.stop()
+          if #available(iOS 16.1, *) {
+            ConnectionStatusLiveActivityManager.shared.stop()
+          }
           result(nil)
         default:
           result(FlutterMethodNotImplemented)

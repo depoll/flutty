@@ -4,6 +4,7 @@ import '../../app/theme.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/ssh_service.dart';
 
 /// Resolves the terminal theme that should be reflected in a preview chip.
 TerminalThemeData resolveConnectionPreviewTheme({
@@ -22,6 +23,51 @@ TerminalThemeData resolveConnectionPreviewTheme({
   return themeLookup[preferredThemeId] ??
       TerminalThemes.getById(preferredThemeId) ??
       (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+}
+
+/// Fallback status text for a connection preview with no terminal output yet.
+String fallbackConnectionPreviewStatus(SshConnectionState state) =>
+    switch (state) {
+      SshConnectionState.connecting => 'Connecting…',
+      SshConnectionState.authenticating => 'Authenticating…',
+      SshConnectionState.error => 'Connection failed',
+      SshConnectionState.reconnecting => 'Reconnecting…',
+      _ => 'Waiting for terminal output…',
+    };
+
+/// Builds a stacked preview entry for a connection.
+ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
+  required int connectionId,
+  required SshConnectionState state,
+  required Brightness brightness,
+  required TerminalThemeSettings themeSettings,
+  required Iterable<TerminalThemeData> availableThemes,
+  String? preview,
+  String? windowTitle,
+  String? hostLightThemeId,
+  String? hostDarkThemeId,
+  String? connectionLightThemeId,
+  String? connectionDarkThemeId,
+}) {
+  final resolvedWindowTitle = windowTitle?.trim();
+  final title = resolvedWindowTitle == null || resolvedWindowTitle.isEmpty
+      ? 'Connection #$connectionId'
+      : 'Connection #$connectionId • $resolvedWindowTitle';
+  final resolvedPreview = preview?.trim();
+
+  return ConnectionPreviewStackEntry(
+    title: title,
+    body: resolvedPreview == null || resolvedPreview.isEmpty
+        ? fallbackConnectionPreviewStatus(state)
+        : resolvedPreview,
+    terminalTheme: resolveConnectionPreviewTheme(
+      brightness: brightness,
+      themeSettings: themeSettings,
+      availableThemes: availableThemes,
+      lightThemeId: connectionLightThemeId ?? hostLightThemeId,
+      darkThemeId: connectionDarkThemeId ?? hostDarkThemeId,
+    ),
+  );
 }
 
 /// Renders connection metadata with a visually distinct live terminal preview.
