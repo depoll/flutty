@@ -709,18 +709,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalPointerDown(PointerDownEvent _) {
-    setState(() {
-      _activeTouchPointers += 1;
-    });
+    final nextPointerCount = _activeTouchPointers + 1;
+    final crossesThreshold =
+        (_activeTouchPointers >= 2) != (nextPointerCount >= 2);
+    if (crossesThreshold) {
+      setState(() {
+        _activeTouchPointers = nextPointerCount;
+      });
+      return;
+    }
+    _activeTouchPointers = nextPointerCount;
   }
 
   void _handleTerminalPointerUp(PointerEvent _) {
     if (_activeTouchPointers == 0) {
       return;
     }
-    setState(() {
-      _activeTouchPointers -= 1;
-    });
+    final nextPointerCount = _activeTouchPointers - 1;
+    final crossesThreshold =
+        (_activeTouchPointers >= 2) != (nextPointerCount >= 2);
+    if (crossesThreshold) {
+      setState(() {
+        _activeTouchPointers = nextPointerCount;
+      });
+      return;
+    }
+    _activeTouchPointers = nextPointerCount;
   }
 
   Future<void> _showThemePicker() async {

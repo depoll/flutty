@@ -192,7 +192,9 @@ class ConnectionPreviewStack extends StatelessWidget {
       child: LayoutBuilder(
         builder: (context, constraints) {
           final maxHorizontalInset = (entries.length - 1) * horizontalOffset;
-          final cardWidth = constraints.maxWidth - maxHorizontalInset;
+          final cardWidth = constraints.maxWidth > maxHorizontalInset
+              ? constraints.maxWidth - maxHorizontalInset
+              : 0.0;
 
           return Stack(
             clipBehavior: Clip.none,

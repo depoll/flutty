@@ -578,8 +578,11 @@ class SshSession {
     this.terminalThemeDarkId,
   }) : createdAt = DateTime.now();
 
+  static const _previewRefreshInterval = Duration(milliseconds: 150);
   static const _previewLineCount = 3;
   static const _previewMaxChars = 220;
+  static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
+  static final _windowTitleSanitizerPattern = RegExp(r'[\x00-\x1F\x7F]');
 
   /// The connection ID for this active session.
   final int connectionId;
@@ -612,6 +615,7 @@ class SshSession {
   StreamSubscription<String>? _shellStdoutSubscription;
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
+  Timer? _previewRefreshTimer;
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
@@ -690,6 +694,8 @@ class SshSession {
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell() async {
+    _previewRefreshTimer?.cancel();
+    _previewRefreshTimer = null;
     await _shellStdoutSubscription?.cancel();
     await _shellStderrSubscription?.cancel();
     await _shellDoneSubscription?.cancel();
@@ -725,7 +731,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
-          _refreshTerminalPreview();
+          _scheduleTerminalPreviewRefresh();
           _shellStdoutController!.add(data);
         }, onError: _shellStdoutController!.addError);
     _shellStderrSubscription = shell.stderr
@@ -733,7 +739,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
-          _refreshTerminalPreview();
+          _scheduleTerminalPreviewRefresh();
           _shellStderrController!.add(data);
         }, onError: _shellStderrController!.addError);
     _shellDoneSubscription = shell.done.asStream().listen(
@@ -746,6 +752,16 @@ class SshSession {
       shell.write(utf8.encode(data));
     };
     _refreshTerminalPreview();
+  }
+
+  void _scheduleTerminalPreviewRefresh() {
+    if (_previewRefreshTimer?.isActive ?? false) {
+      return;
+    }
+    _previewRefreshTimer = Timer(_previewRefreshInterval, () {
+      _previewRefreshTimer = null;
+      _refreshTerminalPreview();
+    });
   }
 
   void _refreshTerminalPreview() {
@@ -774,12 +790,14 @@ class SshSession {
     int maxLines = _previewLineCount,
     int maxChars = _previewMaxChars,
   }) {
+    final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
+    final effectiveMaxChars = maxChars < 1 ? 1 : maxChars;
     final previewLines = <String>[];
     final currentSegments = <String>[];
 
     for (
       var index = terminal.lines.length - 1;
-      index >= 0 && previewLines.length < maxLines;
+      index >= 0 && previewLines.length < effectiveMaxLines;
       index--
     ) {
       final rawLine = terminal.lines[index].getText();
@@ -800,7 +818,7 @@ class SshSession {
       }
     }
 
-    if (currentSegments.isNotEmpty && previewLines.length < maxLines) {
+    if (currentSegments.isNotEmpty && previewLines.length < effectiveMaxLines) {
       previewLines.insert(0, currentSegments.reversed.join());
     }
 
@@ -809,17 +827,17 @@ class SshSession {
     }
 
     var preview = previewLines.join('\n');
-    if (preview.length > maxChars) {
-      preview = '…${preview.substring(preview.length - maxChars + 1)}';
+    if (preview.length > effectiveMaxChars) {
+      preview = '…${preview.substring(preview.length - effectiveMaxChars + 1)}';
     }
     return preview;
   }
 
   static String _sanitizePreviewFragment(String text) =>
-      text.replaceAll(RegExp(r'[\x00-\x08\x0B-\x1F\x7F]'), '').trimRight();
+      text.replaceAll(_previewSanitizerPattern, '').trimRight();
 
   static String? _sanitizeWindowTitle(String text) {
-    final sanitized = text.replaceAll(RegExp(r'[\x00-\x1F\x7F]'), '').trim();
+    final sanitized = text.replaceAll(_windowTitleSanitizerPattern, '').trim();
     return sanitized.isEmpty ? null : sanitized;
   }
 
@@ -1100,13 +1118,19 @@ final activeSessionsProvider =
 
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
+  static const _previewStateRefreshInterval = Duration(milliseconds: 150);
+
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
+  Timer? _previewStateRefreshTimer;
+  bool _previewStateRefreshQueued = false;
+  Future<void> _backgroundStatusSyncQueue = Future<void>.value();
 
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
+    ref.onDispose(() => _previewStateRefreshTimer?.cancel());
     _connectionHostIds.clear();
     _connectionAttempts.clear();
     return {};
@@ -1157,7 +1181,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           message: 'Connection established. Opening terminal…',
         ),
       );
-      unawaited(_syncBackgroundStatus());
+      unawaited(_queueBackgroundStatusSync());
     } else {
       _updateConnectionAttempt(
         hostId,
@@ -1178,7 +1202,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
-    await _syncBackgroundStatus();
+    await _queueBackgroundStatusSync();
   }
 
   /// Disconnect all active sessions.
@@ -1189,7 +1213,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
     state = {};
-    await _syncBackgroundStatus();
+    await _queueBackgroundStatusSync();
   }
 
   /// Get the state of a connection.
@@ -1296,9 +1320,23 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   void _attachSessionPreviewListener(SshSession session) {
-    session.onPreviewChanged = () {
+    session.onPreviewChanged = _schedulePreviewStateRefresh;
+  }
+
+  void _schedulePreviewStateRefresh() {
+    if (_previewStateRefreshTimer?.isActive ?? false) {
+      _previewStateRefreshQueued = true;
+      return;
+    }
+    _previewStateRefreshTimer = Timer(_previewStateRefreshInterval, () {
+      _previewStateRefreshTimer = null;
+      final shouldReschedule = _previewStateRefreshQueued;
+      _previewStateRefreshQueued = false;
       state = {...state};
-    };
+      if (shouldReschedule) {
+        _schedulePreviewStateRefresh();
+      }
+    });
   }
 
   void _updateConnectionAttempt(
@@ -1364,5 +1402,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       connectionCount: connections.length,
       connectedCount: connectedCount,
     );
+  }
+
+  Future<void> _queueBackgroundStatusSync() {
+    final nextSync = _backgroundStatusSyncQueue
+        .catchError((Object _) {})
+        .then((_) => _syncBackgroundStatus());
+    _backgroundStatusSyncQueue = nextSync;
+    return nextSync;
   }
 }

@@ -25,9 +25,6 @@ class MainActivity : FlutterActivity() {
                     "updateStatus" -> {
                         val connectionCount = call.argument<Int>("connectionCount") ?: 0
                         val connectedCount = call.argument<Int>("connectedCount") ?: 0
-                        if (connectionCount > 0) {
-                            ensureNotificationPermission()
-                        }
                         SshConnectionService.updateStatus(
                             context = this,
                             status = SshConnectionService.ConnectionStatus(
@@ -39,6 +36,9 @@ class MainActivity : FlutterActivity() {
                     }
                     "setForegroundState" -> {
                         val isForeground = call.argument<Boolean>("isForeground") ?: true
+                        if (!isForeground && SshConnectionService.hasActiveConnections()) {
+                            ensureNotificationPermission()
+                        }
                         SshConnectionService.setForegroundState(this, isForeground)
                         result.success(null)
                     }

@@ -48,6 +48,8 @@ class SshConnectionService : Service() {
             syncServiceState(context)
         }
 
+        fun hasActiveConnections(): Boolean = (latestStatus?.connectionCount ?: 0) > 0
+
         fun stop(context: Context) {
             latestStatus = null
             context.stopService(Intent(context, SshConnectionService::class.java))
@@ -59,6 +61,10 @@ class SshConnectionService : Service() {
                 context.stopService(Intent(context, SshConnectionService::class.java))
                 return
             }
+            if (!hasNotificationPermission(context)) {
+                context.stopService(Intent(context, SshConnectionService::class.java))
+                return
+            }
 
             val intent = Intent(context, SshConnectionService::class.java).apply {
                 action = ACTION_SYNC
@@ -66,6 +72,16 @@ class SshConnectionService : Service() {
                 putExtra(EXTRA_CONNECTED_COUNT, status.connectedCount)
             }
             ContextCompat.startForegroundService(context, intent)
+        }
+
+        private fun hasNotificationPermission(context: Context): Boolean {
+            if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
+                return true
+            }
+            return ContextCompat.checkSelfPermission(
+                context,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         }
     }
 
@@ -116,6 +132,17 @@ class SshConnectionService : Service() {
     private fun refreshPresentation() {
         val status = latestStatus ?: Companion.latestStatus
         if (status == null || status.connectionCount <= 0 || Companion.isAppForeground) {
+            hidePresentation()
+            stopSelf()
+            return
+        }
+        if (
+            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) != android.content.pm.PackageManager.PERMISSION_GRANTED
+        ) {
             hidePresentation()
             stopSelf()
             return
@@ -200,6 +227,9 @@ class SshConnectionService : Service() {
     }
 
     private fun createNotificationChannel() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.O) {
+            return
+        }
         val channel = NotificationChannel(
             CHANNEL_ID,
             "SSH Connection",

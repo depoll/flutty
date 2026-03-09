@@ -303,6 +303,16 @@ void main() {
       expect(preview, startsWith('…'));
       expect(preview, contains('xxxxxxxx'));
     });
+
+    test('clamps invalid preview limits to safe minimums', () {
+      final terminal = Terminal(maxLines: 100)..write('alpha\r\nbeta');
+
+      expect(
+        SshSession.buildTerminalPreview(terminal, maxLines: 0, maxChars: 4),
+        'beta',
+      );
+      expect(SshSession.buildTerminalPreview(terminal, maxChars: 0), '…');
+    });
   });
 
   group('SshService', () {
