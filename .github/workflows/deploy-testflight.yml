@@ -33,7 +33,9 @@ jobs:
         id: version
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          # Keep new builds above historical PR-prefixed build numbers while
+          # staying below Android's signed-32-bit versionCode ceiling.
+          BUILD_NUMBER=$(( 200000000 + $(date +%s) ))
 
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"

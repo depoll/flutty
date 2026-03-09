@@ -33,7 +33,9 @@ jobs:
             BUILD_NAME="${{ inputs.version }}"
           fi
 
-          BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          # Keep new builds above historical PR-prefixed build numbers while
+          # staying below Android's signed-32-bit versionCode ceiling.
+          BUILD_NUMBER=$(( 200000000 + $(date +%s) ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
