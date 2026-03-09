@@ -51,7 +51,7 @@ class _BackgroundLifecycleBridgeState
     WidgetsBinding.instance.addObserver(this);
     _runLifecycleSync(
       _syncForegroundBackgroundStatus,
-      context: 'while syncing background SSH status during app startup',
+      errorContext: 'while syncing background SSH status during app startup',
       defer: true,
     );
   }
@@ -69,7 +69,7 @@ class _BackgroundLifecycleBridgeState
 
   void _runLifecycleSync(
     Future<void> Function() operation, {
-    required String context,
+    required String errorContext,
     bool defer = false,
   }) {
     final future = defer ? Future<void>.microtask(operation) : operation();
@@ -80,7 +80,7 @@ class _BackgroundLifecycleBridgeState
             exception: error,
             stack: stackTrace,
             library: 'app',
-            context: ErrorDescription(context),
+            context: ErrorDescription(errorContext),
           ),
         );
       }),
@@ -98,14 +98,14 @@ class _BackgroundLifecycleBridgeState
     if (isForeground) {
       _runLifecycleSync(
         _syncForegroundBackgroundStatus,
-        context:
+        errorContext:
             'while syncing background SSH status after returning to the foreground',
       );
       return;
     }
     _runLifecycleSync(
       () => BackgroundSshService.setForegroundState(isForeground: false),
-      context:
+      errorContext:
           'while syncing background SSH status after moving to the background',
     );
   }

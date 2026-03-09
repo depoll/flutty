@@ -418,14 +418,16 @@
 			files = (
 			);
 			inputPaths = (
+				"${SRCROOT}/Flutter/flutter_export_environment.sh",
 				"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}",
 			);
 			name = "Stamp Extension Version";
 			outputPaths = (
+				"$(DERIVED_FILE_DIR)/ConnectionStatusLiveActivityExtension-version-stamp.txt",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\n\nif [ -f \"${SRCROOT}/Flutter/flutter_export_environment.sh\" ]; then\n  . \"${SRCROOT}/Flutter/flutter_export_environment.sh\"\nfi\n\nMARKETING_VERSION_VALUE=\"${MARKETING_VERSION:-${FLUTTER_BUILD_NAME:-}}\"\nCURRENT_PROJECT_VERSION_VALUE=\"${CURRENT_PROJECT_VERSION:-${FLUTTER_BUILD_NUMBER:-}}\"\n\nif [ -z \"$MARKETING_VERSION_VALUE\" ] || [ -z \"$CURRENT_PROJECT_VERSION_VALUE\" ]; then\n  echo \"error: Extension version build settings are missing.\" >&2\n  exit 1\nfi\n\nINFO_PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleShortVersionString\" \"$INFO_PLIST\" >/dev/null 2>&1 || true\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleVersion\" \"$INFO_PLIST\" >/dev/null 2>&1 || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleShortVersionString string $MARKETING_VERSION_VALUE\" \"$INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleVersion string $CURRENT_PROJECT_VERSION_VALUE\" \"$INFO_PLIST\"\n";
+			shellScript = "set -eu\n\nif [ -f \"${SRCROOT}/Flutter/flutter_export_environment.sh\" ]; then\n  . \"${SRCROOT}/Flutter/flutter_export_environment.sh\"\nfi\n\nMARKETING_VERSION_VALUE=\"${MARKETING_VERSION:-${FLUTTER_BUILD_NAME:-}}\"\nCURRENT_PROJECT_VERSION_VALUE=\"${CURRENT_PROJECT_VERSION:-${FLUTTER_BUILD_NUMBER:-}}\"\n\nif [ -z \"$MARKETING_VERSION_VALUE\" ] || [ -z \"$CURRENT_PROJECT_VERSION_VALUE\" ]; then\n  echo \"error: Extension version build settings are missing.\" >&2\n  exit 1\nfi\n\nINFO_PLIST=\"${TARGET_BUILD_DIR}/${INFOPLIST_PATH}\"\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleShortVersionString\" \"$INFO_PLIST\" >/dev/null 2>&1 || true\n/usr/libexec/PlistBuddy -c \"Delete :CFBundleVersion\" \"$INFO_PLIST\" >/dev/null 2>&1 || true\n/usr/libexec/PlistBuddy -c \"Add :CFBundleShortVersionString string $MARKETING_VERSION_VALUE\" \"$INFO_PLIST\"\n/usr/libexec/PlistBuddy -c \"Add :CFBundleVersion string $CURRENT_PROJECT_VERSION_VALUE\" \"$INFO_PLIST\"\nprintf '%s+%s\\n' \"$MARKETING_VERSION_VALUE\" \"$CURRENT_PROJECT_VERSION_VALUE\" > \"${SCRIPT_OUTPUT_FILE_0}\"\n";
 			showEnvVarsInLog = 0;
 		};
 		3B06AD1E1E4923F5004D2608 /* Thin Binary */ = {

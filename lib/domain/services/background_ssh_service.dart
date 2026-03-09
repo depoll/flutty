@@ -12,13 +12,22 @@ class BackgroundSshService {
   BackgroundSshService._();
 
   static const _channel = MethodChannel('xyz.depollsoft.monkeyssh/ssh_service');
+  static bool get _supportsPlatform =>
+      debugIsSupportedPlatformOverride ??
+      (!kIsWeb && (Platform.isAndroid || Platform.isIOS));
+
+  /// Overrides platform support checks in tests.
+  ///
+  /// Set to `null` to use the real runtime platform detection.
+  @visibleForTesting
+  static bool? debugIsSupportedPlatformOverride;
 
   /// Publish the latest active connection status to native keepalive surfaces.
   static Future<void> updateStatus({
     required int connectionCount,
     required int connectedCount,
   }) async {
-    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
+    if (!_supportsPlatform) {
       return;
     }
     try {
@@ -40,7 +49,7 @@ class BackgroundSshService {
 
   /// Tell native keepalive surfaces whether the app is currently foregrounded.
   static Future<void> setForegroundState({required bool isForeground}) async {
-    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
+    if (!_supportsPlatform) {
       return;
     }
     try {
@@ -62,7 +71,7 @@ class BackgroundSshService {
 
   /// Stop the background service.
   static Future<void> stop() async {
-    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
+    if (!_supportsPlatform) {
       return;
     }
     try {
