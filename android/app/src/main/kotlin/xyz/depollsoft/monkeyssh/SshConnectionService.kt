@@ -1,5 +1,6 @@
 package xyz.depollsoft.monkeyssh
 
+import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -84,6 +85,12 @@ class SshConnectionService : Service() {
             latestStatus = latestStatus ?: Companion.latestStatus
         }
 
+        val status = latestStatus ?: Companion.latestStatus
+        if (status != null && !isPresenting) {
+            startForeground(NOTIFICATION_ID, buildNotification(status))
+            isPresenting = true
+        }
+
         refreshPresentation()
         return START_NOT_STICKY
     }
@@ -115,6 +122,26 @@ class SshConnectionService : Service() {
         }
 
         latestStatus = status
+        val manager = getSystemService(NotificationManager::class.java)
+        val notification = buildNotification(status)
+        if (!isPresenting) {
+            startForeground(NOTIFICATION_ID, notification)
+            isPresenting = true
+        } else {
+            manager.notify(NOTIFICATION_ID, notification)
+        }
+
+        // Acquire a partial wake lock to keep the CPU running for SSH keepalives.
+        if (wakeLock?.isHeld != true) {
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            wakeLock = pm.newWakeLock(
+                PowerManager.PARTIAL_WAKE_LOCK,
+                "monkeyssh:ssh_background"
+            ).apply { acquire(24 * 60 * 60 * 1000L) }
+        }
+    }
+
+    private fun buildNotification(status: ConnectionStatus): Notification {
         val tapIntent = packageManager.getLaunchIntentForPackage(packageName)
         val tapPendingIntent = if (tapIntent != null) {
             PendingIntent.getActivity(
@@ -135,7 +162,7 @@ class SshConnectionService : Service() {
         }
         val detailText = "Keeping SSH connections alive in the background"
 
-        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
+        return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(summary)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
@@ -144,36 +171,13 @@ class SshConnectionService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(tapPendingIntent)
-            .setSubText("${
-                if (status.connectedCount == status.connectionCount) {
-                    "All sessions connected"
-                } else {
-                    "${status.connectedCount}/${status.connectionCount} connected"
-                }
-            }")
+            .setSubText(summary)
             .setStyle(
                 BigTextStyle()
                     .bigText(detailText)
                     .setSummaryText(summary)
             )
             .build()
-
-        val manager = getSystemService(NotificationManager::class.java)
-        if (!isPresenting) {
-            startForeground(NOTIFICATION_ID, notification)
-            isPresenting = true
-        } else {
-            manager.notify(NOTIFICATION_ID, notification)
-        }
-
-        // Acquire a partial wake lock to keep the CPU running for SSH keepalives.
-        if (wakeLock?.isHeld != true) {
-            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
-            wakeLock = pm.newWakeLock(
-                PowerManager.PARTIAL_WAKE_LOCK,
-                "monkeyssh:ssh_background"
-            ).apply { acquire(24 * 60 * 60 * 1000L) }
-        }
     }
 
     private fun hidePresentation() {

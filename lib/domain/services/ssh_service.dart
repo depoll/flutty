@@ -381,8 +381,16 @@ class SshService {
         keepAliveInterval: config.keepAliveInterval,
       );
 
-      // Wait for authentication to complete
-      await client.authenticated;
+      // Bound authentication waits so the progress dialog can surface a
+      // recoverable error instead of hanging indefinitely.
+      await client.authenticated.timeout(
+        config.connectionTimeout,
+        onTimeout: () => throw TimeoutException(
+          isJumpHost
+              ? 'Jump host authentication timed out'
+              : 'Authentication timed out',
+        ),
+      );
       report(
         SshConnectionState.connected,
         isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
@@ -407,12 +415,12 @@ class SshService {
         success: false,
         error: 'Connection failed: ${e.message}',
       );
-    } on TimeoutException {
+    } on TimeoutException catch (e) {
       client?.close();
       _closeClients(dependentClients);
-      return const SshConnectionResult(
+      return SshConnectionResult(
         success: false,
-        error: 'Connection timed out',
+        error: e.message ?? 'Connection timed out',
       );
     } on Exception catch (e) {
       client?.close();
@@ -1290,7 +1298,6 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   void _attachSessionPreviewListener(SshSession session) {
     session.onPreviewChanged = () {
       state = {...state};
-      unawaited(_syncBackgroundStatus());
     };
   }
 
@@ -1315,6 +1322,17 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       logLines: List.unmodifiable(nextLogLines),
     );
     state = {...state};
+  }
+
+  /// Surface an unexpected connection failure in the shared attempt state.
+  void reportConnectionAttemptError(int hostId, String message) {
+    _updateConnectionAttempt(
+      hostId,
+      ConnectionProgressUpdate(
+        state: SshConnectionState.error,
+        message: message,
+      ),
+    );
   }
 
   /// Update the session-specific terminal theme for an active connection.

@@ -20,7 +20,21 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
     builder: (_) => _ConnectionAttemptDialog(host: host),
   );
 
-  final result = await sessionsNotifier.connect(host.id, forceNew: forceNew);
+  late final SshConnectionResult result;
+  try {
+    result = await sessionsNotifier.connect(host.id, forceNew: forceNew);
+  } catch (error, stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'connection_attempt_dialog',
+        context: ErrorDescription('while connecting to host ${host.id}'),
+      ),
+    );
+    sessionsNotifier.reportConnectionAttemptError(host.id, '$error');
+    result = SshConnectionResult(success: false, error: '$error');
+  }
 
   if (result.success && result.connectionId != null && navigator.mounted) {
     navigator.pop();

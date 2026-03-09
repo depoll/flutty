@@ -60,7 +60,12 @@ class _BackgroundLifecycleBridgeState extends State<_BackgroundLifecycleBridge>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    final isForeground = state == AppLifecycleState.resumed;
+    final isForeground = switch (state) {
+      AppLifecycleState.resumed || AppLifecycleState.inactive => true,
+      AppLifecycleState.hidden ||
+      AppLifecycleState.paused ||
+      AppLifecycleState.detached => false,
+    };
     unawaited(
       BackgroundSshService.setForegroundState(isForeground: isForeground),
     );
