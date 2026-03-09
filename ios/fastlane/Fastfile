@@ -10,6 +10,11 @@ platform :ios do
     'Production' => 'xyz.depollsoft.monkeyssh',
   }.freeze
 
+  LIVE_ACTIVITY_APP_IDS = {
+    'Private' => 'xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity',
+    'Production' => 'xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity',
+  }.freeze
+
   METADATA_DIRS = {
     'xyz.depollsoft.monkeyssh.private' => './fastlane/metadata-private',
     'xyz.depollsoft.monkeyssh' => './fastlane/metadata-production',
@@ -44,11 +49,15 @@ platform :ios do
   private_lane :build_and_sign do |options|
     scheme = options[:scheme]
     app_id = APP_IDS[scheme]
+    live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
-    sync_certs(app_identifier: app_id, type: 'appstore')
+    sync_certs(app_identifier: [app_id, live_activity_app_id], type: 'appstore')
 
     profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
                    "match AppStore #{app_id}"
+    live_activity_profile_name =
+      ENV["sigh_#{live_activity_app_id}_appstore_profile-name"] ||
+      "match AppStore #{live_activity_app_id}"
 
     update_code_signing_settings(
       use_automatic_signing: false,
@@ -57,6 +66,18 @@ platform :ios do
       profile_name: profile_name,
       bundle_identifier: app_id,
       path: 'Runner.xcodeproj',
+      targets: ['Runner'],
+      build_configurations: ["Release-#{scheme}"],
+    )
+
+    update_code_signing_settings(
+      use_automatic_signing: false,
+      team_id: TEAM_ID,
+      code_sign_identity: 'Apple Distribution',
+      profile_name: live_activity_profile_name,
+      bundle_identifier: live_activity_app_id,
+      path: 'Runner.xcodeproj',
+      targets: ['ConnectionStatusLiveActivityExtension'],
       build_configurations: ["Release-#{scheme}"],
     )
 
