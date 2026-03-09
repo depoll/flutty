@@ -49,7 +49,11 @@ class _BackgroundLifecycleBridgeState
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    Future.microtask(_syncForegroundBackgroundStatus);
+    _runLifecycleSync(
+      _syncForegroundBackgroundStatus,
+      context: 'while syncing background SSH status during app startup',
+      defer: true,
+    );
   }
 
   @override
@@ -63,6 +67,26 @@ class _BackgroundLifecycleBridgeState
     await ref.read(activeSessionsProvider.notifier).syncBackgroundStatus();
   }
 
+  void _runLifecycleSync(
+    Future<void> Function() operation, {
+    required String context,
+    bool defer = false,
+  }) {
+    final future = defer ? Future<void>.microtask(operation) : operation();
+    unawaited(
+      future.catchError((Object error, StackTrace stackTrace) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'app',
+            context: ErrorDescription(context),
+          ),
+        );
+      }),
+    );
+  }
+
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
     final isForeground = switch (state) {
@@ -72,10 +96,18 @@ class _BackgroundLifecycleBridgeState
       AppLifecycleState.detached => false,
     };
     if (isForeground) {
-      unawaited(_syncForegroundBackgroundStatus());
+      _runLifecycleSync(
+        _syncForegroundBackgroundStatus,
+        context:
+            'while syncing background SSH status after returning to the foreground',
+      );
       return;
     }
-    unawaited(BackgroundSshService.setForegroundState(isForeground: false));
+    _runLifecycleSync(
+      () => BackgroundSshService.setForegroundState(isForeground: false),
+      context:
+          'while syncing background SSH status after moving to the background',
+    );
   }
 
   @override

@@ -30,6 +30,11 @@ class BackgroundSshService {
       debugPrint(
         'Failed to update background SSH status: ${error.message ?? error.code}',
       );
+    } on MissingPluginException catch (error) {
+      debugPrint(
+        'Failed to update background SSH status: '
+        '${error.message ?? 'missing plugin'}',
+      );
     }
   }
 
@@ -47,6 +52,11 @@ class BackgroundSshService {
         'Failed to update background SSH lifecycle: '
         '${error.message ?? error.code}',
       );
+    } on MissingPluginException catch (error) {
+      debugPrint(
+        'Failed to update background SSH lifecycle: '
+        '${error.message ?? 'missing plugin'}',
+      );
     }
   }
 
@@ -60,6 +70,11 @@ class BackgroundSshService {
     } on PlatformException catch (error) {
       debugPrint(
         'Failed to stop background SSH status: ${error.message ?? error.code}',
+      );
+    } on MissingPluginException catch (error) {
+      debugPrint(
+        'Failed to stop background SSH status: '
+        '${error.message ?? 'missing plugin'}',
       );
     }
   }
