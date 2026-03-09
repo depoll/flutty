@@ -10,6 +10,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
+import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationCompat.BigTextStyle
 import androidx.core.content.ContextCompat
@@ -24,6 +25,7 @@ class SshConnectionService : Service() {
     )
 
     companion object {
+        private const val TAG = "SshConnectionService"
         const val CHANNEL_ID = "ssh_connection"
         const val NOTIFICATION_ID = 1
 
@@ -71,7 +73,15 @@ class SshConnectionService : Service() {
                 putExtra(EXTRA_CONNECTION_COUNT, status.connectionCount)
                 putExtra(EXTRA_CONNECTED_COUNT, status.connectedCount)
             }
-            ContextCompat.startForegroundService(context, intent)
+            try {
+                ContextCompat.startForegroundService(context, intent)
+            } catch (error: IllegalStateException) {
+                Log.w(TAG, "Unable to start SSH foreground service", error)
+                context.stopService(Intent(context, SshConnectionService::class.java))
+            } catch (error: SecurityException) {
+                Log.w(TAG, "SSH foreground service start denied", error)
+                context.stopService(Intent(context, SshConnectionService::class.java))
+            }
         }
 
         private fun hasNotificationPermission(context: Context): Boolean {
