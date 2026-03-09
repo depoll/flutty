@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/settings_service.dart';
+import '../domain/services/ssh_service.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -31,31 +32,35 @@ class FluttyApp extends ConsumerWidget {
   }
 }
 
-class _BackgroundLifecycleBridge extends StatefulWidget {
+class _BackgroundLifecycleBridge extends ConsumerStatefulWidget {
   const _BackgroundLifecycleBridge({required this.child});
 
   final Widget child;
 
   @override
-  State<_BackgroundLifecycleBridge> createState() =>
+  ConsumerState<_BackgroundLifecycleBridge> createState() =>
       _BackgroundLifecycleBridgeState();
 }
 
-class _BackgroundLifecycleBridgeState extends State<_BackgroundLifecycleBridge>
+class _BackgroundLifecycleBridgeState
+    extends ConsumerState<_BackgroundLifecycleBridge>
     with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    Future.microtask(
-      () => BackgroundSshService.setForegroundState(isForeground: true),
-    );
+    Future.microtask(_syncForegroundBackgroundStatus);
   }
 
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _syncForegroundBackgroundStatus() async {
+    await BackgroundSshService.setForegroundState(isForeground: true);
+    await ref.read(activeSessionsProvider.notifier).syncBackgroundStatus();
   }
 
   @override
@@ -66,9 +71,11 @@ class _BackgroundLifecycleBridgeState extends State<_BackgroundLifecycleBridge>
       AppLifecycleState.paused ||
       AppLifecycleState.detached => false,
     };
-    unawaited(
-      BackgroundSshService.setForegroundState(isForeground: isForeground),
-    );
+    if (isForeground) {
+      unawaited(_syncForegroundBackgroundStatus());
+      return;
+    }
+    unawaited(BackgroundSshService.setForegroundState(isForeground: false));
   }
 
   @override

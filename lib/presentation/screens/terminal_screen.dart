@@ -274,6 +274,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         preferredConnectionId,
       );
       if (existingSession != null) {
+        await _sessionsNotifier!.syncBackgroundStatus();
         await _openShell(existingSession);
         return;
       }
