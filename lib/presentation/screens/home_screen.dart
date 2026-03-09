@@ -466,26 +466,28 @@ class _HostRow extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Status indicator
-                  Padding(
-                    padding: const EdgeInsets.only(top: 6),
-                    child: Container(
-                      width: 8,
-                      height: 8,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: isConnected
-                            ? colorScheme.primary
-                            : isConnectionStarting
-                            ? Colors.orange
-                            : colorScheme.onSurface.withAlpha(40),
-                        boxShadow: isConnected && isDark
-                            ? [
-                                BoxShadow(
-                                  color: colorScheme.primary.withAlpha(100),
-                                  blurRadius: 6,
-                                ),
-                              ]
-                            : null,
+                  SizedBox(
+                    height: 28,
+                    child: Center(
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isConnected
+                              ? colorScheme.primary
+                              : isConnectionStarting
+                              ? Colors.orange
+                              : colorScheme.onSurface.withAlpha(40),
+                          boxShadow: isConnected && isDark
+                              ? [
+                                  BoxShadow(
+                                    color: colorScheme.primary.withAlpha(100),
+                                    blurRadius: 6,
+                                  ),
+                                ]
+                              : null,
+                        ),
                       ),
                     ),
                   ),
@@ -555,45 +557,41 @@ class _HostRow extends ConsumerWidget {
                       ],
                     ),
                   ),
-
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Container(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                            vertical: 2,
-                          ),
-                          decoration: BoxDecoration(
-                            color: colorScheme.outline.withAlpha(40),
-                            borderRadius: BorderRadius.circular(4),
-                          ),
-                          child: Text(
-                            ':${host.port}',
-                            style: FluttyTheme.monoStyle.copyWith(
-                              fontSize: 10,
-                              color: colorScheme.onSurface.withAlpha(120),
-                            ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.outline.withAlpha(40),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          ':${host.port}',
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 10,
+                            color: colorScheme.onSurface.withAlpha(120),
                           ),
                         ),
-                        const SizedBox(width: 8),
-                        _SmallIconButton(
-                          icon: Icons.add,
-                          onTap: () =>
-                              unawaited(_openNewConnection(context, ref)),
-                        ),
-                        _SmallIconButton(
-                          icon: Icons.edit_outlined,
-                          onTap: () => context.push('/hosts/edit/${host.id}'),
-                        ),
-                        _SmallIconButton(
-                          icon: Icons.more_vert,
-                          onTap: () => _showMenu(context, ref),
-                        ),
-                      ],
-                    ),
+                      ),
+                      const SizedBox(width: 8),
+                      _SmallIconButton(
+                        icon: Icons.add,
+                        onTap: () =>
+                            unawaited(_openNewConnection(context, ref)),
+                      ),
+                      _SmallIconButton(
+                        icon: Icons.edit_outlined,
+                        onTap: () => context.push('/hosts/edit/${host.id}'),
+                      ),
+                      _SmallIconButton(
+                        icon: Icons.more_vert,
+                        onTap: () => _showMenu(context, ref),
+                      ),
+                    ],
                   ),
                 ],
               ),
