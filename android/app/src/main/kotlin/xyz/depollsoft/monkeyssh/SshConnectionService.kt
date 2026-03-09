@@ -108,7 +108,7 @@ class SshConnectionService : Service() {
         }
 
         refreshPresentation()
-        return START_NOT_STICKY
+        return START_STICKY
     }
 
     override fun onDestroy() {
@@ -189,22 +189,29 @@ class SshConnectionService : Service() {
         }
         val detailText = "Keeping SSH connections alive in the background"
 
-        return NotificationCompat.Builder(this, CHANNEL_ID)
+        val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(summary)
             .setSmallIcon(android.R.drawable.ic_lock_lock)
             .setOngoing(true)
+            .setAutoCancel(false)
+            .setOnlyAlertOnce(true)
             .setSilent(true)
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(tapPendingIntent)
             .setSubText(summary)
+            .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setStyle(
                 BigTextStyle()
                     .bigText(detailText)
                     .setSummaryText(summary)
             )
             .build()
+
+        notification.flags =
+            notification.flags or Notification.FLAG_ONGOING_EVENT or Notification.FLAG_NO_CLEAR
+        return notification
     }
 
     private fun hidePresentation() {
