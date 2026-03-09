@@ -22,5 +22,23 @@ void main() {
       expect(applyTerminalScaleDelta(11.9, 0.85, 0.95), closeTo(13.3, 0.1));
       expect(applyTerminalScaleDelta(13.3, 0.95, 0.75), closeTo(10.5, 0.1));
     });
+
+    test('prefers session font size over the global default', () {
+      expect(
+        resolveTerminalFontSize(globalFontSize: 14, sessionFontSize: 18),
+        18,
+      );
+    });
+
+    test('prefers the in-progress pinch size over stored values', () {
+      expect(
+        resolveTerminalFontSize(
+          globalFontSize: 14,
+          sessionFontSize: 18,
+          pinchFontSize: 20,
+        ),
+        20,
+      );
+    });
   });
 }

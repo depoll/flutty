@@ -576,6 +576,7 @@ class SshSession {
     this.dependentClients = const <SSHClient>[],
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
+    this.terminalFontSize,
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
@@ -604,6 +605,9 @@ class SshSession {
 
   /// Session-specific dark theme override.
   String? terminalThemeDarkId;
+
+  /// Session-specific terminal font size override.
+  double? terminalFontSize;
 
   /// When the session was created.
   final DateTime createdAt;
@@ -1384,6 +1388,16 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       return;
     }
     session.setTerminalThemeId(themeId, isDark: isDark);
+    state = {...state};
+  }
+
+  /// Update the session-specific terminal font size for an active connection.
+  void updateSessionFontSize(int connectionId, double fontSize) {
+    final session = _sshService.getSession(connectionId);
+    if (session == null) {
+      return;
+    }
+    session.terminalFontSize = fontSize;
     state = {...state};
   }
 

@@ -48,6 +48,14 @@ double applyTerminalScaleDelta(
   return scaleTerminalFontSize(currentFontSize, nextScale / safePreviousScale);
 }
 
+/// Resolves the currently displayed terminal font size.
+@visibleForTesting
+double resolveTerminalFontSize({
+  required double globalFontSize,
+  double? sessionFontSize,
+  double? pinchFontSize,
+}) => pinchFontSize ?? sessionFontSize ?? globalFontSize;
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -86,6 +94,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _connectionId;
   double? _pinchFontSize;
   double? _lastPinchScale;
+  double? _sessionFontSizeOverride;
   bool _isPinchZooming = false;
   int _activeTouchPointers = 0;
 
@@ -316,7 +325,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
         await _restoreSessionThemeOverride(session);
-        setState(() => _isConnecting = false);
+        setState(() {
+          _sessionFontSizeOverride = session.terminalFontSize;
+          _isConnecting = false;
+        });
         return;
       }
 
@@ -339,7 +351,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) return;
 
       await _restoreSessionThemeOverride(session);
-      setState(() => _isConnecting = false);
+      setState(() {
+        _sessionFontSizeOverride = session.terminalFontSize;
+        _isConnecting = false;
+      });
 
       // Start port forwards
       await _startPortForwards(session);
@@ -692,8 +707,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleTerminalScaleEnd() {
     final nextFontSize = _pinchFontSize;
-    final shouldPersist = _isPinchZooming && nextFontSize != null;
+    final connectionId = _connectionId;
+    final shouldPersist =
+        _isPinchZooming && nextFontSize != null && connectionId != null;
     setState(() {
+      if (shouldPersist) {
+        _sessionFontSizeOverride = nextFontSize;
+      }
       _isPinchZooming = false;
       _lastPinchScale = null;
       _pinchFontSize = null;
@@ -703,9 +723,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    unawaited(
-      ref.read(fontSizeNotifierProvider.notifier).setFontSize(nextFontSize),
-    );
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionFontSize(connectionId, nextFontSize);
   }
 
   void _handleTerminalPointerDown(PointerDownEvent _) {
@@ -853,9 +873,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    // Get font size from settings (use setting value, not responsive calculation)
-    final storedFontSize = ref.watch(fontSizeNotifierProvider);
-    final fontSize = _pinchFontSize ?? storedFontSize;
+    // Use a session override when pinch-zoom has customized this connection.
+    final globalFontSize = ref.watch(fontSizeNotifierProvider);
+    final storedFontSize = _sessionFontSizeOverride ?? globalFontSize;
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+      pinchFontSize: _pinchFontSize,
+    );
     final isCapturingMultiTouch = _activeTouchPointers > 1;
 
     // Get font family from host (if set) or global settings
