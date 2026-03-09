@@ -1,3 +1,4 @@
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
@@ -114,6 +115,55 @@ void main() {
       expect(callCount, 1);
       // keyInput(TerminalKey.enter) produces '\r'
       expect(output, contains('\r'));
+    });
+
+    testWidgets('arrow keys repeat while held', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('↑')),
+      );
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 160));
+      await gesture.up();
+      await tester.pump();
+
+      expect(
+        output.where((value) => value == '\x1b[A').length,
+        greaterThan(1),
+      );
+    });
+
+    testWidgets('repeating navigation stops when released', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('Home')),
+      );
+      await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+      await tester.pump(const Duration(milliseconds: 120));
+      await gesture.up();
+      await tester.pump();
+
+      final outputCount = output.where((value) => value == '\x1b[H').length;
+      await tester.pump(const Duration(milliseconds: 150));
+
+      expect(outputCount, greaterThan(1));
+      expect(output.where((value) => value == '\x1b[H').length, outputCount);
     });
   });
 
