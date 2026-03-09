@@ -41,13 +41,17 @@ final class ConnectionStatusLiveActivityManager {
       return
     }
 
-    guard let latestStatus, latestStatus.connectionCount > 0, !isForeground else {
+    guard let latestStatus, latestStatus.connectionCount > 0 else {
       endActivities()
       return
     }
 
+    let canStartNewActivity = isForeground
     Task {
-      await upsertActivity(for: latestStatus)
+      await upsertActivity(
+        for: latestStatus,
+        canStartNewActivity: canStartNewActivity
+      )
     }
   }
 
@@ -64,8 +68,12 @@ final class ConnectionStatusLiveActivityManager {
   }
 
   @available(iOS 16.1, *)
-  private func upsertActivity(for status: StatusPayload) async {
+  private func upsertActivity(
+    for status: StatusPayload,
+    canStartNewActivity: Bool
+  ) async {
     guard ActivityAuthorizationInfo().areActivitiesEnabled else {
+      NSLog("Skipping SSH live activity because Live Activities are disabled.")
       return
     }
 
@@ -76,6 +84,13 @@ final class ConnectionStatusLiveActivityManager {
 
     if let activity = Activity<ConnectionStatusAttributes>.activities.first {
       await activity.update(using: contentState)
+      return
+    }
+
+    guard canStartNewActivity else {
+      NSLog(
+        "Skipping SSH live activity request because the app is not foregrounded."
+      )
       return
     }
 
