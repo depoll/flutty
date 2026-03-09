@@ -569,13 +569,13 @@ class _HostListTile extends ConsumerWidget {
                     padding: const EdgeInsets.only(top: 2),
                     child: CircleAvatar(
                       backgroundColor: isConnected
-                          ? Colors.green.withAlpha(50)
+                          ? theme.colorScheme.primary.withAlpha(18)
                           : theme.colorScheme.surfaceContainerHighest,
                       child: Icon(
                         isConnected ? Icons.link : Icons.dns,
                         color: isConnected
-                            ? Colors.green
-                            : theme.colorScheme.primary,
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
                       ),
                     ),
                   ),

@@ -466,24 +466,27 @@ class _HostRow extends ConsumerWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   // Status indicator
-                  Container(
-                    width: 8,
-                    height: 8,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: isConnected
-                          ? colorScheme.primary
-                          : isConnectionStarting
-                          ? Colors.orange
-                          : colorScheme.onSurface.withAlpha(40),
-                      boxShadow: isConnected && isDark
-                          ? [
-                              BoxShadow(
-                                color: colorScheme.primary.withAlpha(100),
-                                blurRadius: 6,
-                              ),
-                            ]
-                          : null,
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: isConnected
+                            ? colorScheme.primary
+                            : isConnectionStarting
+                            ? Colors.orange
+                            : colorScheme.onSurface.withAlpha(40),
+                        boxShadow: isConnected && isDark
+                            ? [
+                                BoxShadow(
+                                  color: colorScheme.primary.withAlpha(100),
+                                  blurRadius: 6,
+                                ),
+                              ]
+                            : null,
+                      ),
                     ),
                   ),
                   const SizedBox(width: 12),
