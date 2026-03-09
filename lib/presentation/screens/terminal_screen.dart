@@ -29,8 +29,8 @@ const _maxTerminalFontSize = 32.0;
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
-double clampTerminalFontSize(double size) =>
-    size.clamp(_minTerminalFontSize, _maxTerminalFontSize);
+double clampTerminalFontSize(num size) =>
+    size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
 
 /// Scales a terminal font size while keeping it within the supported range.
 @visibleForTesting
