@@ -6,31 +6,61 @@ import 'package:flutter/services.dart';
 /// Platform service that keeps SSH connections alive while the app is
 /// in the background.
 ///
-/// On Android this starts a foreground service with a persistent notification.
-/// On iOS this is a no-op — background task handling is done natively in
-/// AppDelegate via `beginBackgroundTaskWithExpirationHandler`.
+/// On Android this controls the persistent keepalive notification.
+/// On iOS this controls the Live Activity shown while the app is backgrounded.
 class BackgroundSshService {
   BackgroundSshService._();
 
   static const _channel = MethodChannel('xyz.depollsoft.monkeyssh/ssh_service');
 
-  /// Start the background service for the given host.
-  static Future<void> start({required String hostName}) async {
-    if (kIsWeb || !Platform.isAndroid) return;
+  /// Publish the latest active connection status to native keepalive surfaces.
+  static Future<void> updateStatus({
+    required int connectionCount,
+    required int connectedCount,
+  }) async {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
+      return;
+    }
     try {
-      await _channel.invokeMethod<void>('startService', {'hostName': hostName});
-    } on PlatformException {
-      // Foreground service may not be available on all devices.
+      await _channel.invokeMethod<void>('updateStatus', {
+        'connectionCount': connectionCount,
+        'connectedCount': connectedCount,
+      });
+    } on PlatformException catch (error) {
+      debugPrint(
+        'Failed to update background SSH status: ${error.message ?? error.code}',
+      );
+    }
+  }
+
+  /// Tell native keepalive surfaces whether the app is currently foregrounded.
+  static Future<void> setForegroundState({required bool isForeground}) async {
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
+      return;
+    }
+    try {
+      await _channel.invokeMethod<void>('setForegroundState', {
+        'isForeground': isForeground,
+      });
+    } on PlatformException catch (error) {
+      debugPrint(
+        'Failed to update background SSH lifecycle: '
+        '${error.message ?? error.code}',
+      );
     }
   }
 
   /// Stop the background service.
   static Future<void> stop() async {
-    if (kIsWeb || !Platform.isAndroid) return;
+    if (kIsWeb || !(Platform.isAndroid || Platform.isIOS)) {
+      return;
+    }
     try {
       await _channel.invokeMethod<void>('stopService');
-    } on PlatformException {
-      // Service may already be stopped.
+    } on PlatformException catch (error) {
+      debugPrint(
+        'Failed to stop background SSH status: ${error.message ?? error.code}',
+      );
     }
   }
 }

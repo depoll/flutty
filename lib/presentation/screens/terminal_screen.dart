@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -16,13 +17,44 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
-import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
+
+const _minTerminalFontSize = 8.0;
+const _maxTerminalFontSize = 32.0;
+
+/// Clamps a terminal font size into the supported zoom range.
+@visibleForTesting
+double clampTerminalFontSize(num size) =>
+    size.clamp(_minTerminalFontSize, _maxTerminalFontSize).toDouble();
+
+/// Scales a terminal font size while keeping it within the supported range.
+@visibleForTesting
+double scaleTerminalFontSize(double baseSize, double scale) =>
+    clampTerminalFontSize(baseSize * scale);
+
+/// Applies an incremental pinch delta to the currently displayed font size.
+@visibleForTesting
+double applyTerminalScaleDelta(
+  double currentFontSize,
+  double previousScale,
+  double nextScale,
+) {
+  final safePreviousScale = previousScale <= 0 ? 1.0 : previousScale;
+  return scaleTerminalFontSize(currentFontSize, nextScale / safePreviousScale);
+}
+
+/// Resolves the currently displayed terminal font size.
+@visibleForTesting
+double resolveTerminalFontSize({
+  required double globalFontSize,
+  double? sessionFontSize,
+  double? pinchFontSize,
+}) => pinchFontSize ?? sessionFontSize ?? globalFontSize;
 
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
@@ -60,6 +92,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
+  double? _pinchFontSize;
+  double? _lastPinchScale;
+  double? _sessionFontSizeOverride;
+  bool _isPinchZooming = false;
+  int _activeTouchPointers = 0;
 
   // Theme state
   Host? _host;
@@ -191,6 +228,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<bool> _restoreSessionThemeOverride(SshSession session) async {
+    final brightness = Theme.of(context).brightness;
+    final themeId = brightness == Brightness.dark
+        ? session.terminalThemeDarkId
+        : session.terminalThemeLightId;
+
+    if (themeId == null) {
+      if (mounted) {
+        setState(() => _sessionThemeOverride = null);
+      }
+      return false;
+    }
+
+    final themeService = ref.read(terminalThemeServiceProvider);
+    final resolvedTheme = await themeService.getThemeById(themeId);
+    if (!mounted) {
+      return false;
+    }
+    setState(() => _sessionThemeOverride = resolvedTheme);
+    return resolvedTheme != null;
+  }
+
   Future<void> _connect({
     int? preferredConnectionId,
     bool forceNew = false,
@@ -265,12 +324,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
-        setState(() => _isConnecting = false);
-        unawaited(
-          BackgroundSshService.start(
-            hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-          ),
-        );
+        await _restoreSessionThemeOverride(session);
+        setState(() {
+          _sessionFontSizeOverride = session.terminalFontSize;
+          _isConnecting = false;
+        });
         return;
       }
 
@@ -292,15 +350,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!mounted) return;
 
-      setState(() => _isConnecting = false);
-
-      // Start the background service to keep the connection alive
-      // when the app is backgrounded.
-      unawaited(
-        BackgroundSshService.start(
-          hostName: _host?.label ?? _host?.hostname ?? 'SSH server',
-        ),
-      );
+      await _restoreSessionThemeOverride(session);
+      setState(() {
+        _sessionFontSizeOverride = session.terminalFontSize;
+        _isConnecting = false;
+      });
 
       // Start port forwards
       await _startPortForwards(session);
@@ -436,7 +490,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (connectionId != null) {
         unawaited(_sessionsNotifier?.disconnect(connectionId));
       }
-      _stopBackgroundServiceIfNoConnections();
       return;
     }
     // If the app is in the background, don't show the error screen
@@ -452,7 +505,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionId != null) {
       unawaited(_sessionsNotifier?.disconnect(connectionId));
     }
-    _stopBackgroundServiceIfNoConnections();
   }
 
   Future<void> _disconnect() async {
@@ -461,7 +513,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_connectionId != null) {
       await _sessionsNotifier?.disconnect(_connectionId!);
     }
-    _stopBackgroundServiceIfNoConnections();
     if (mounted) {
       Navigator.of(context).pop();
     }
@@ -505,7 +556,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
-    if (_currentTheme != null && _sessionThemeOverride == null) {
+    if (_currentTheme == null) {
+      return;
+    }
+
+    final session = _connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(_connectionId!);
+    if (session != null) {
+      unawaited(
+        _restoreSessionThemeOverride(session).then((restored) {
+          if (!restored) {
+            return _loadTheme();
+          }
+        }),
+      );
+      return;
+    }
+
+    if (_sessionThemeOverride == null) {
       _loadTheme();
     }
   }
@@ -582,7 +651,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard && !_isNativeSelectionMode)
+          if (_showKeyboard && (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
               key: _toolbarKey,
               terminal: _terminal,
@@ -591,20 +660,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ],
       ),
     );
-  }
-
-  void _stopBackgroundServiceIfNoConnections() {
-    final connectionStates = ref.read(activeSessionsProvider);
-    final hasActiveConnection = connectionStates.values.any(
-      (state) =>
-          state == SshConnectionState.connected ||
-          state == SshConnectionState.connecting ||
-          state == SshConnectionState.authenticating ||
-          state == SshConnectionState.reconnecting,
-    );
-    if (!hasActiveConnection) {
-      unawaited(BackgroundSshService.stop());
-    }
   }
 
   /// Toggles the system keyboard visibility on mobile platforms.
@@ -618,6 +673,90 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _handleTerminalScaleStart(double currentFontSize) {
+    _pinchFontSize = currentFontSize;
+    _lastPinchScale = 1;
+    _isPinchZooming = false;
+  }
+
+  void _handleTerminalScaleUpdate(
+    ScaleUpdateDetails details,
+    double currentFontSize,
+  ) {
+    if (details.pointerCount < 2) {
+      return;
+    }
+
+    final displayedFontSize = _pinchFontSize ?? currentFontSize;
+    final previousScale = _lastPinchScale ?? 1;
+    final nextFontSize = applyTerminalScaleDelta(
+      displayedFontSize,
+      previousScale,
+      details.scale,
+    );
+    if (_isPinchZooming && _pinchFontSize == nextFontSize) {
+      return;
+    }
+
+    setState(() {
+      _isPinchZooming = true;
+      _pinchFontSize = nextFontSize;
+      _lastPinchScale = details.scale;
+    });
+  }
+
+  void _handleTerminalScaleEnd() {
+    final nextFontSize = _pinchFontSize;
+    final connectionId = _connectionId;
+    final shouldPersist =
+        _isPinchZooming && nextFontSize != null && connectionId != null;
+    setState(() {
+      if (shouldPersist) {
+        _sessionFontSizeOverride = nextFontSize;
+      }
+      _isPinchZooming = false;
+      _lastPinchScale = null;
+      _pinchFontSize = null;
+    });
+
+    if (!shouldPersist) {
+      return;
+    }
+
+    ref
+        .read(activeSessionsProvider.notifier)
+        .updateSessionFontSize(connectionId, nextFontSize);
+  }
+
+  void _handleTerminalPointerDown(PointerDownEvent _) {
+    final nextPointerCount = _activeTouchPointers + 1;
+    final crossesThreshold =
+        (_activeTouchPointers >= 2) != (nextPointerCount >= 2);
+    if (crossesThreshold) {
+      setState(() {
+        _activeTouchPointers = nextPointerCount;
+      });
+      return;
+    }
+    _activeTouchPointers = nextPointerCount;
+  }
+
+  void _handleTerminalPointerUp(PointerEvent _) {
+    if (_activeTouchPointers == 0) {
+      return;
+    }
+    final nextPointerCount = _activeTouchPointers - 1;
+    final crossesThreshold =
+        (_activeTouchPointers >= 2) != (nextPointerCount >= 2);
+    if (crossesThreshold) {
+      setState(() {
+        _activeTouchPointers = nextPointerCount;
+      });
+      return;
+    }
+    _activeTouchPointers = nextPointerCount;
+  }
+
   Future<void> _showThemePicker() async {
     final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
     final theme = await showThemePickerDialog(
@@ -626,11 +765,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (theme != null && mounted) {
+      final isDark = Theme.of(context).brightness == Brightness.dark;
+      if (_connectionId != null) {
+        ref
+            .read(activeSessionsProvider.notifier)
+            .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
+      }
       setState(() => _sessionThemeOverride = theme);
 
       // Show option to save to host
       if (_host != null) {
-        final isDark = Theme.of(context).brightness == Brightness.dark;
         final scaffoldMessenger = ScaffoldMessenger.of(context);
 
         // Clear any existing snackbar first to prevent stacking
@@ -680,6 +824,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
+    final theme = Theme.of(context);
+
     if (_isConnecting) {
       return const Center(
         child: Column(
@@ -727,8 +873,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    // Get font size from settings (use setting value, not responsive calculation)
-    final fontSize = ref.watch(fontSizeNotifierProvider);
+    // Use a session override when pinch-zoom has customized this connection.
+    final globalFontSize = ref.watch(fontSizeNotifierProvider);
+    final storedFontSize = _sessionFontSizeOverride ?? globalFontSize;
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+      pinchFontSize: _pinchFontSize,
+    );
+    final isCapturingMultiTouch = _activeTouchPointers > 1;
 
     // Get font family from host (if set) or global settings
     final hostFont = _host?.terminalFontFamily;
@@ -793,11 +946,60 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    return TerminalTextInputHandler(
-      terminal: _terminal,
-      focusNode: _terminalFocusNode,
-      deleteDetection: true,
-      child: mobileTerminalView,
+    if (_isPinchZooming) {
+      mobileTerminalView = Stack(
+        fit: StackFit.expand,
+        children: [
+          mobileTerminalView,
+          Positioned(
+            top: 12,
+            right: 12,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surface.withAlpha(220),
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: theme.colorScheme.outlineVariant),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 12,
+                  vertical: 6,
+                ),
+                child: Text(
+                  '${fontSize.toStringAsFixed(0)} pt',
+                  style: theme.textTheme.labelMedium?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ],
+      );
+    }
+
+    return Listener(
+      behavior: HitTestBehavior.opaque,
+      onPointerDown: _handleTerminalPointerDown,
+      onPointerUp: _handleTerminalPointerUp,
+      onPointerCancel: _handleTerminalPointerUp,
+      child: TerminalTextInputHandler(
+        terminal: _terminal,
+        focusNode: _terminalFocusNode,
+        deleteDetection: true,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          dragStartBehavior: DragStartBehavior.down,
+          onScaleStart: (_) => _handleTerminalScaleStart(storedFontSize),
+          onScaleUpdate: (details) =>
+              _handleTerminalScaleUpdate(details, storedFontSize),
+          onScaleEnd: (_) => _handleTerminalScaleEnd(),
+          child: IgnorePointer(
+            ignoring: isCapturingMultiTouch,
+            child: mobileTerminalView,
+          ),
+        ),
+      ),
     );
   }
 

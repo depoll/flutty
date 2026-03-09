@@ -4,9 +4,9 @@ import 'package:google_fonts/google_fonts.dart';
 /// Theme configuration for the Flutty app.
 /// Inspired by Termius with a modern hacker aesthetic.
 abstract final class FluttyTheme {
-  // Core palette - deep space with neon accents
-  static const _neonGreen = Color(0xFF00FF6A);
-  static const _neonGreenDim = Color(0xFF00D26A);
+  // Core palette - deep space with accents sampled from the app icon.
+  static const _accentTeal = Color(0xFF14756C);
+  static const _accentTealSoft = Color(0xFF58A38C);
   static const _backgroundDark = Color(0xFF0D0D12);
   static const _surfaceDark = Color(0xFF16161D);
   static const _cardDark = Color(0xFF1C1C26);
@@ -33,8 +33,8 @@ abstract final class FluttyTheme {
 
     final colorScheme = ColorScheme(
       brightness: brightness,
-      primary: isDark ? _neonGreen : _neonGreenDim,
-      onPrimary: Colors.black,
+      primary: _accentTeal,
+      onPrimary: Colors.white,
       secondary: isDark ? _cardDark : _surfaceLight,
       onSecondary: isDark ? _textPrimary : Colors.black87,
       tertiary: _warningColor,
@@ -129,7 +129,7 @@ abstract final class FluttyTheme {
       cardTheme: CardThemeData(
         color: isDark ? _cardDark : _cardLight,
         elevation: isDark ? 0 : 1,
-        shadowColor: isDark ? _neonGreen.withAlpha(20) : Colors.black12,
+        shadowColor: isDark ? _accentTeal.withAlpha(20) : Colors.black12,
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(16),
           side: BorderSide(color: isDark ? _borderDark : _borderLight),
@@ -139,8 +139,8 @@ abstract final class FluttyTheme {
 
       // Glowing FAB
       floatingActionButtonTheme: FloatingActionButtonThemeData(
-        backgroundColor: _neonGreen,
-        foregroundColor: Colors.black,
+        backgroundColor: colorScheme.primary,
+        foregroundColor: colorScheme.onPrimary,
         elevation: isDark ? 8 : 4,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
       ),
@@ -160,7 +160,7 @@ abstract final class FluttyTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
-          borderSide: const BorderSide(color: _neonGreen, width: 2),
+          borderSide: const BorderSide(color: _accentTeal, width: 2),
         ),
         errorBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -180,8 +180,8 @@ abstract final class FluttyTheme {
       // Buttons with glow
       filledButtonTheme: FilledButtonThemeData(
         style: FilledButton.styleFrom(
-          backgroundColor: _neonGreen,
-          foregroundColor: Colors.black,
+          backgroundColor: colorScheme.primary,
+          foregroundColor: colorScheme.onPrimary,
           elevation: 0,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
@@ -196,10 +196,10 @@ abstract final class FluttyTheme {
 
       elevatedButtonTheme: ElevatedButtonThemeData(
         style: ElevatedButton.styleFrom(
-          backgroundColor: _neonGreen,
-          foregroundColor: Colors.black,
+          backgroundColor: colorScheme.primary,
+          foregroundColor: colorScheme.onPrimary,
           elevation: isDark ? 4 : 2,
-          shadowColor: isDark ? _neonGreen.withAlpha(80) : Colors.black26,
+          shadowColor: isDark ? _accentTeal.withAlpha(80) : Colors.black26,
           padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(12),
@@ -231,7 +231,7 @@ abstract final class FluttyTheme {
 
       textButtonTheme: TextButtonThemeData(
         style: TextButton.styleFrom(
-          foregroundColor: _neonGreen,
+          foregroundColor: colorScheme.primary,
           padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
           textStyle: GoogleFonts.inter(
             fontSize: 14,
@@ -245,13 +245,13 @@ abstract final class FluttyTheme {
         style: ButtonStyle(
           backgroundColor: WidgetStateProperty.resolveWith((states) {
             if (states.contains(WidgetState.selected)) {
-              return _neonGreen;
+              return colorScheme.primary;
             }
             return isDark ? _cardDark : _cardLight;
           }),
           foregroundColor: WidgetStateProperty.resolveWith((states) {
             if (states.contains(WidgetState.selected)) {
-              return Colors.black;
+              return colorScheme.onPrimary;
             }
             return isDark ? _textPrimary : Colors.black87;
           }),
@@ -264,7 +264,7 @@ abstract final class FluttyTheme {
       // Chips
       chipTheme: ChipThemeData(
         backgroundColor: isDark ? _cardDark : _cardLight,
-        selectedColor: _neonGreen,
+        selectedColor: _accentTealSoft,
         labelStyle: GoogleFonts.inter(
           fontSize: 13,
           fontWeight: FontWeight.w500,
@@ -286,8 +286,8 @@ abstract final class FluttyTheme {
         contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
         tileColor: Colors.transparent,
         selectedTileColor: isDark
-            ? _neonGreen.withAlpha(20)
-            : _neonGreen.withAlpha(30),
+            ? _accentTeal.withAlpha(20)
+            : _accentTeal.withAlpha(30),
         iconColor: isDark ? _textSecondary : Colors.black54,
       ),
 
@@ -320,9 +320,9 @@ abstract final class FluttyTheme {
 
       // Tab bar
       tabBarTheme: TabBarThemeData(
-        labelColor: _neonGreen,
+        labelColor: colorScheme.primary,
         unselectedLabelColor: isDark ? _textSecondary : Colors.black54,
-        indicatorColor: _neonGreen,
+        indicatorColor: colorScheme.primary,
         indicatorSize: TabBarIndicatorSize.label,
         labelStyle: GoogleFonts.inter(
           fontSize: 14,
@@ -336,7 +336,7 @@ abstract final class FluttyTheme {
 
       // Progress indicators
       progressIndicatorTheme: ProgressIndicatorThemeData(
-        color: _neonGreen,
+        color: colorScheme.primary,
         linearTrackColor: isDark ? _borderDark : _borderLight,
         circularTrackColor: isDark ? _borderDark : _borderLight,
       ),
@@ -380,13 +380,13 @@ abstract final class FluttyTheme {
 
   /// Accent gradient for special elements.
   static LinearGradient get accentGradient => const LinearGradient(
-    colors: [_neonGreen, Color(0xFF00C9FF)],
+    colors: [_accentTeal, _accentTealSoft],
     begin: Alignment.topLeft,
     end: Alignment.bottomRight,
   );
 
   /// Glow box shadow for cards/buttons.
   static List<BoxShadow> glowShadow([Color? color]) => [
-    BoxShadow(color: (color ?? _neonGreen).withAlpha(40), blurRadius: 20),
+    BoxShadow(color: (color ?? _accentTeal).withAlpha(40), blurRadius: 20),
   ];
 }

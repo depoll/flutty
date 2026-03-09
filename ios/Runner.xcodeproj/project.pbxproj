@@ -7,17 +7,23 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+		0BBA2D63F69B026808692429 /* ConnectionStatusAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */; };
+		0D148A56B5D9DF36A2760A83 /* ConnectionStatusLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2BCA6DCB8D9820FBD06A21 /* ConnectionStatusLiveActivityBundle.swift */; };
+		10F236A3A094B53411236F3F /* ConnectionStatusLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE6E480B21DAC7FC2B72ED72 /* ConnectionStatusLiveActivityManager.swift */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
+		368C996A2EC5C1820960D9D8 /* ConnectionStatusAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */; };
 		3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */ = {isa = PBXBuildFile; fileRef = 3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */; };
+		3E2CF8BC78FB07EDD52634C4 /* ConnectionStatusLiveActivityExtension.appex in Embed App Extensions */ = {isa = PBXBuildFile; fileRef = C0B9F2DC4F6E27526B4B2044 /* ConnectionStatusLiveActivityExtension.appex */; };
 		43FF6299447B5A7FED2801E9 /* Pods_RunnerTests.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = AFA5B966A7A6BA67D7633CB8 /* Pods_RunnerTests.framework */; };
 		74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 74858FAE1ED2DC5600515810 /* AppDelegate.swift */; };
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
+		DD783BB2BA23C838BCACD3C0 /* AppIcon-private.icon in Resources */ = {isa = PBXBuildFile; fileRef = 47B1DB4833F7FC740D4324B9 /* AppIcon-private.icon */; };
 		E6E3D2D0CB976578F784B54A /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9476D1F8792EFC31903B5B95 /* Pods_Runner.framework */; };
 		F282391CEEDF4515759E057E /* AppIcon-production.icon in Resources */ = {isa = PBXBuildFile; fileRef = 9FEC3F55B80F78C630674143 /* AppIcon-production.icon */; };
-		DD783BB2BA23C838BCACD3C0 /* AppIcon-private.icon in Resources */ = {isa = PBXBuildFile; fileRef = 47B1DB4833F7FC740D4324B9 /* AppIcon-private.icon */; };
+		F8EA8191DE4116532C59A3CE /* ConnectionStatusLiveActivityWidget.swift in Sources */ = {isa = PBXBuildFile; fileRef = EA8C22083AFB91079DC3816C /* ConnectionStatusLiveActivityWidget.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXContainerItemProxy section */
@@ -27,6 +33,13 @@
 			proxyType = 1;
 			remoteGlobalIDString = 97C146ED1CF9000F007C117D;
 			remoteInfo = Runner;
+		};
+		5D0B6B6B68D995EA029375AD /* PBXContainerItemProxy */ = {
+			isa = PBXContainerItemProxy;
+			containerPortal = 97C146E61CF9000F007C117D /* Project object */;
+			proxyType = 1;
+			remoteGlobalIDString = 8523C1B2B3E7456958B6FE0A;
+			remoteInfo = ConnectionStatusLiveActivityExtension;
 		};
 /* End PBXContainerItemProxy section */
 
@@ -39,6 +52,17 @@
 			files = (
 			);
 			name = "Embed Frameworks";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B23AD6412BB47FEE7683542F /* Embed App Extensions */ = {
+			isa = PBXCopyFilesBuildPhase;
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				3E2CF8BC78FB07EDD52634C4 /* ConnectionStatusLiveActivityExtension.appex in Embed App Extensions */,
+			);
+			name = "Embed App Extensions";
 			runOnlyForDeploymentPostprocessing = 0;
 		};
 /* End PBXCopyFilesBuildPhase section */
@@ -55,6 +79,8 @@
 		34FAFABD7179855CD8225322 /* Pods-RunnerTests.release-private.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release-private.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release-private.xcconfig"; sourceTree = "<group>"; };
 		393C10856906256C49427F76 /* Pods-RunnerTests.debug.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug.xcconfig"; sourceTree = "<group>"; };
 		3B3967151E833CAA004F5970 /* AppFrameworkInfo.plist */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = text.plist.xml; name = AppFrameworkInfo.plist; path = Flutter/AppFrameworkInfo.plist; sourceTree = "<group>"; };
+		3D2BCA6DCB8D9820FBD06A21 /* ConnectionStatusLiveActivityBundle.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConnectionStatusLiveActivityBundle.swift; sourceTree = "<group>"; };
+		47B1DB4833F7FC740D4324B9 /* AppIcon-private.icon */ = {isa = PBXFileReference; lastKnownFileType = "document.icon-composer"; path = "AppIcon-private.icon"; sourceTree = "<group>"; };
 		49A93B50B2F1D584364C102B /* Pods-Runner.debug-production.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.debug-production.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.debug-production.xcconfig"; sourceTree = "<group>"; };
 		5D0AB5A0C28B4DE140606470 /* Pods-RunnerTests.debug-production.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug-production.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug-production.xcconfig"; sourceTree = "<group>"; };
 		74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.c.h; path = "Runner-Bridging-Header.h"; sourceTree = "<group>"; };
@@ -71,19 +97,30 @@
 		97C146FD1CF9000F007C117D /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		9FEC3F55B80F78C630674143 /* AppIcon-production.icon */ = {isa = PBXFileReference; lastKnownFileType = "document.icon-composer"; path = "AppIcon-production.icon"; sourceTree = "<group>"; };
 		A7D5024F73DEF28DEBB69428 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		AFA5B966A7A6BA67D7633CB8 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BF3AD2B28587AFE0302C016E /* Pods-Runner.release-production.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release-production.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release-production.xcconfig"; sourceTree = "<group>"; };
+		C0B9F2DC4F6E27526B4B2044 /* ConnectionStatusLiveActivityExtension.appex */ = {isa = PBXFileReference; explicitFileType = "wrapper.app-extension"; includeInIndex = 0; path = ConnectionStatusLiveActivityExtension.appex; sourceTree = BUILT_PRODUCTS_DIR; };
 		C101FB4ABEECFB960467987B /* Pods-Runner.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile.xcconfig"; sourceTree = "<group>"; };
+		C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConnectionStatusAttributes.swift; sourceTree = "<group>"; };
 		DC2BE3F42972CF5FE9D13816 /* Pods-Runner.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release.xcconfig"; sourceTree = "<group>"; };
 		E7AE44A40C2AD11FEC2CD59A /* Pods-Runner.profile-production.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile-production.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile-production.xcconfig"; sourceTree = "<group>"; };
 		E8FB45E277EFB1A5EC6CDDE8 /* Pods-Runner.release-private.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release-private.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release-private.xcconfig"; sourceTree = "<group>"; };
+		EA8C22083AFB91079DC3816C /* ConnectionStatusLiveActivityWidget.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConnectionStatusLiveActivityWidget.swift; sourceTree = "<group>"; };
+		EB229B402BD78D4035BBADEA /* Info.plist */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
+		EE6E480B21DAC7FC2B72ED72 /* ConnectionStatusLiveActivityManager.swift */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = sourcecode.swift; path = ConnectionStatusLiveActivityManager.swift; sourceTree = "<group>"; };
 		F15115BEE3424021FD6D23C8 /* Pods-RunnerTests.debug-private.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.debug-private.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.debug-private.xcconfig"; sourceTree = "<group>"; };
-		9FEC3F55B80F78C630674143 /* AppIcon-production.icon */ = {isa = PBXFileReference; lastKnownFileType = document.icon-composer; path = "AppIcon-production.icon"; sourceTree = "<group>"; };
-		47B1DB4833F7FC740D4324B9 /* AppIcon-private.icon */ = {isa = PBXFileReference; lastKnownFileType = document.icon-composer; path = "AppIcon-private.icon"; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
+		0D2D0E7B918000A197D35F99 /* Frameworks */ = {
+			isa = PBXFrameworksBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
 		97C146EB1CF9000F007C117D /* Frameworks */ = {
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
@@ -108,6 +145,7 @@
 			children = (
 				9476D1F8792EFC31903B5B95 /* Pods_Runner.framework */,
 				AFA5B966A7A6BA67D7633CB8 /* Pods_RunnerTests.framework */,
+				FC03CC4466EB64971979C6AC /* iOS */,
 			);
 			name = Frameworks;
 			sourceTree = "<group>";
@@ -140,6 +178,7 @@
 				331C8082294A63A400263BE5 /* RunnerTests */,
 				C739B49544A5D193C21174BA /* Pods */,
 				0397D0AD6EE3931D31DC4383 /* Frameworks */,
+				AAB50C8F47A4F0E624CEC4AB /* ConnectionStatusLiveActivityExtension */,
 			);
 			sourceTree = "<group>";
 		};
@@ -148,6 +187,7 @@
 			children = (
 				97C146EE1CF9000F007C117D /* Runner.app */,
 				331C8081294A63A400263BE5 /* RunnerTests.xctest */,
+				C0B9F2DC4F6E27526B4B2044 /* ConnectionStatusLiveActivityExtension.appex */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -165,8 +205,21 @@
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
 				74858FAD1ED2DC5600515810 /* Runner-Bridging-Header.h */,
+				C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */,
+				EE6E480B21DAC7FC2B72ED72 /* ConnectionStatusLiveActivityManager.swift */,
 			);
 			path = Runner;
+			sourceTree = "<group>";
+		};
+		AAB50C8F47A4F0E624CEC4AB /* ConnectionStatusLiveActivityExtension */ = {
+			isa = PBXGroup;
+			children = (
+				3D2BCA6DCB8D9820FBD06A21 /* ConnectionStatusLiveActivityBundle.swift */,
+				EA8C22083AFB91079DC3816C /* ConnectionStatusLiveActivityWidget.swift */,
+				EB229B402BD78D4035BBADEA /* Info.plist */,
+			);
+			name = ConnectionStatusLiveActivityExtension;
+			path = ConnectionStatusLiveActivityExtension;
 			sourceTree = "<group>";
 		};
 		C739B49544A5D193C21174BA /* Pods */ = {
@@ -195,6 +248,13 @@
 			path = Pods;
 			sourceTree = "<group>";
 		};
+		FC03CC4466EB64971979C6AC /* iOS */ = {
+			isa = PBXGroup;
+			children = (
+			);
+			name = iOS;
+			sourceTree = "<group>";
+		};
 /* End PBXGroup section */
 
 /* Begin PBXNativeTarget section */
@@ -217,6 +277,23 @@
 			productReference = 331C8081294A63A400263BE5 /* RunnerTests.xctest */;
 			productType = "com.apple.product-type.bundle.unit-test";
 		};
+		8523C1B2B3E7456958B6FE0A /* ConnectionStatusLiveActivityExtension */ = {
+			isa = PBXNativeTarget;
+			buildConfigurationList = 6F8EAFC62CA92C6D00B11DFA /* Build configuration list for PBXNativeTarget "ConnectionStatusLiveActivityExtension" */;
+			buildPhases = (
+				ED415DD42C8930134CBA6C9B /* Sources */,
+				0D2D0E7B918000A197D35F99 /* Frameworks */,
+				B914DF7A6C731909E5EF570D /* Resources */,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			name = ConnectionStatusLiveActivityExtension;
+			productName = ConnectionStatusLiveActivityExtension;
+			productReference = C0B9F2DC4F6E27526B4B2044 /* ConnectionStatusLiveActivityExtension.appex */;
+			productType = "com.apple.product-type.app-extension";
+		};
 		97C146ED1CF9000F007C117D /* Runner */ = {
 			isa = PBXNativeTarget;
 			buildConfigurationList = 97C147051CF9000F007C117D /* Build configuration list for PBXNativeTarget "Runner" */;
@@ -227,12 +304,14 @@
 				97C146EB1CF9000F007C117D /* Frameworks */,
 				97C146EC1CF9000F007C117D /* Resources */,
 				9705A1C41CF9048500538489 /* Embed Frameworks */,
+				B23AD6412BB47FEE7683542F /* Embed App Extensions */,
 				3B06AD1E1E4923F5004D2608 /* Thin Binary */,
 				A0719A42DE757DD3BAB797F8 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
 			);
 			dependencies = (
+				BF01824D252E381CD192DB8E /* PBXTargetDependency */,
 			);
 			name = Runner;
 			productName = Runner;
@@ -274,6 +353,7 @@
 			targets = (
 				97C146ED1CF9000F007C117D /* Runner */,
 				331C8080294A63A400263BE5 /* RunnerTests */,
+				8523C1B2B3E7456958B6FE0A /* ConnectionStatusLiveActivityExtension */,
 			);
 		};
 /* End PBXProject section */
@@ -296,6 +376,13 @@
 				F282391CEEDF4515759E057E /* AppIcon-production.icon in Resources */,
 				DD783BB2BA23C838BCACD3C0 /* AppIcon-private.icon in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		B914DF7A6C731909E5EF570D /* Resources */ = {
+			isa = PBXResourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -411,6 +498,18 @@
 			files = (
 				74858FAF1ED2DC5600515810 /* AppDelegate.swift in Sources */,
 				1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */,
+				0BBA2D63F69B026808692429 /* ConnectionStatusAttributes.swift in Sources */,
+				10F236A3A094B53411236F3F /* ConnectionStatusLiveActivityManager.swift in Sources */,
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		ED415DD42C8930134CBA6C9B /* Sources */ = {
+			isa = PBXSourcesBuildPhase;
+			buildActionMask = 2147483647;
+			files = (
+				368C996A2EC5C1820960D9D8 /* ConnectionStatusAttributes.swift in Sources */,
+				0D148A56B5D9DF36A2760A83 /* ConnectionStatusLiveActivityBundle.swift in Sources */,
+				F8EA8191DE4116532C59A3CE /* ConnectionStatusLiveActivityWidget.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -421,6 +520,12 @@
 			isa = PBXTargetDependency;
 			target = 97C146ED1CF9000F007C117D /* Runner */;
 			targetProxy = 331C8085294A63A400263BE5 /* PBXContainerItemProxy */;
+		};
+		BF01824D252E381CD192DB8E /* PBXTargetDependency */ = {
+			isa = PBXTargetDependency;
+			name = ConnectionStatusLiveActivityExtension;
+			target = 8523C1B2B3E7456958B6FE0A /* ConnectionStatusLiveActivityExtension */;
+			targetProxy = 5D0B6B6B68D995EA029375AD /* PBXContainerItemProxy */;
 		};
 /* End PBXTargetDependency section */
 
@@ -462,6 +567,30 @@
 			};
 			name = "Debug-Production";
 		};
+		065B57468E4545667425B4CF /* Release-Private */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = "Release-Private";
+		};
 		0BE2F1E2D465605DB56E2A48 /* Profile-Production */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
@@ -474,6 +603,11 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh;
 				PRODUCT_NAME = MonkeySSH;
@@ -496,6 +630,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh;
 				PRODUCT_NAME = MonkeySSH;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -504,6 +643,30 @@
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = "Debug-Production";
+		};
+		1EE6C8F79A5C9DF5BEA1A8B1 /* Profile-Private */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = "Profile-Private";
 		};
 		249021D3217E4FDB00AE95B9 /* Profile */ = {
 			isa = XCBuildConfiguration;
@@ -570,6 +733,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -577,6 +745,29 @@
 				VERSIONING_SYSTEM = "apple-generic";
 			};
 			name = Profile;
+		};
+		2D797989C15793AA9FF5E87F /* Debug */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = Debug;
 		};
 		331C8088294A63A400263BE5 /* Debug */ = {
 			isa = XCBuildConfiguration;
@@ -711,6 +902,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh;
 				PRODUCT_NAME = MonkeySSH;
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -773,6 +969,29 @@
 			};
 			name = "Release-Private";
 		};
+		5987707DA8D5EF2EEEC1FD00 /* Debug-Production */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = "Debug-Production";
+		};
 		6A5F71672D6AD0C320B55F56 /* Debug-Private */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 9740EEB21CF90195004384FC /* Debug.xcconfig */;
@@ -785,6 +1004,11 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.private;
 				PRODUCT_NAME = "MonkeySSH β";
@@ -810,6 +1034,78 @@
 				TEST_HOST = "$(BUILT_PRODUCTS_DIR)/Runner.app/$(BUNDLE_EXECUTABLE_FOLDER_PATH)/Runner";
 			};
 			name = "Profile-Private";
+		};
+		7AB0517C8921BE1BE38CB4D4 /* Release */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Release;
+		};
+		877EE6188E1E4592A41D3425 /* Profile */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = Profile;
+		};
+		905B7977191D5A913E2E8A9E /* Profile-Production */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = "Profile-Production";
 		};
 		940425EC225D44E2A66E7846 /* Release-Private */ = {
 			isa = XCBuildConfiguration;
@@ -951,6 +1247,11 @@
 					"$(inherited)",
 					"@executable_path/Frameworks",
 				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
+				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh;
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_OBJC_BRIDGING_HEADER = "Runner/Runner-Bridging-Header.h";
@@ -1070,6 +1371,30 @@
 			};
 			name = "Release-Production";
 		};
+		B3AD2088798CC629AF07A2C8 /* Release-Production */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+				VALIDATE_PRODUCT = YES;
+			};
+			name = "Release-Production";
+		};
 		B77FDDD15A2C70606153BD78 /* Release-Private */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
@@ -1082,6 +1407,11 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.private;
 				PRODUCT_NAME = "MonkeySSH β";
@@ -1254,6 +1584,29 @@
 			};
 			name = "Profile-Private";
 		};
+		DF83BB1DA78E7D4CDAF36BF0 /* Debug-Private */ = {
+			isa = XCBuildConfiguration;
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CLANG_ENABLE_OBJC_WEAK = NO;
+				CODE_SIGN_STYLE = Automatic;
+				GENERATE_INFOPLIST_FILE = NO;
+				INFOPLIST_FILE = ConnectionStatusLiveActivityExtension/Info.plist;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.1;
+				LD_RUNPATH_SEARCH_PATHS = (
+					"$(inherited)",
+					"@executable_path/Frameworks",
+					"@executable_path/../../Frameworks",
+				);
+				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity;
+				PRODUCT_NAME = ConnectionStatusLiveActivityExtension;
+				SDKROOT = iphoneos;
+				SKIP_INSTALL = YES;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			name = "Debug-Private";
+		};
 		EC32CBA867E8301358CB0EDB /* Profile-Private */ = {
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 7AFA3C8E1D35360C0083082E /* Release.xcconfig */;
@@ -1266,6 +1619,11 @@
 				LD_RUNPATH_SEARCH_PATHS = (
 					"$(inherited)",
 					"@executable_path/Frameworks",
+				);
+				OTHER_LDFLAGS = (
+					"$(inherited)",
+					"-weak_framework",
+					ActivityKit,
 				);
 				PRODUCT_BUNDLE_IDENTIFIER = xyz.depollsoft.monkeyssh.private;
 				PRODUCT_NAME = "MonkeySSH β";
@@ -1290,6 +1648,22 @@
 				020DDA331F715B95F0F4D061 /* Debug-Production */,
 				AF8C8120E82B2969C80A97F1 /* Release-Production */,
 				A10F860127CB3CBD23545AA3 /* Profile-Production */,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+		};
+		6F8EAFC62CA92C6D00B11DFA /* Build configuration list for PBXNativeTarget "ConnectionStatusLiveActivityExtension" */ = {
+			isa = XCConfigurationList;
+			buildConfigurations = (
+				7AB0517C8921BE1BE38CB4D4 /* Release */,
+				2D797989C15793AA9FF5E87F /* Debug */,
+				877EE6188E1E4592A41D3425 /* Profile */,
+				DF83BB1DA78E7D4CDAF36BF0 /* Debug-Private */,
+				065B57468E4545667425B4CF /* Release-Private */,
+				1EE6C8F79A5C9DF5BEA1A8B1 /* Profile-Private */,
+				5987707DA8D5EF2EEEC1FD00 /* Debug-Production */,
+				B3AD2088798CC629AF07A2C8 /* Release-Production */,
+				905B7977191D5A913E2E8A9E /* Profile-Production */,
 			);
 			defaultConfigurationIsVisible = 0;
 			defaultConfigurationName = Release;
