@@ -1,3 +1,6 @@
+// ignore_for_file: public_member_api_docs
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
@@ -49,6 +52,52 @@ void main() {
       expect(terminalOutput.join(), 'hello world ');
 
       focusNode.dispose();
+    });
+  });
+
+  group('shouldRequestKeyboardForTerminalPointerDown', () {
+    test('requests the keyboard for the first touch pointer', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerDown(
+          pointerKind: PointerDeviceKind.touch,
+          activeTouchPointers: 1,
+          readOnly: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('suppresses the keyboard for additional touch pointers', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerDown(
+          pointerKind: PointerDeviceKind.touch,
+          activeTouchPointers: 2,
+          readOnly: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('still requests the keyboard for non-touch pointers', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerDown(
+          pointerKind: PointerDeviceKind.mouse,
+          activeTouchPointers: 0,
+          readOnly: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('never requests the keyboard when input is read only', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerDown(
+          pointerKind: PointerDeviceKind.touch,
+          activeTouchPointers: 1,
+          readOnly: true,
+        ),
+        isFalse,
+      );
     });
   });
 }
