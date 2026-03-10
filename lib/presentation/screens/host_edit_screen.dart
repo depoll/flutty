@@ -8,6 +8,8 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/ssh_service.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -34,13 +36,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _usernameController;
   late TextEditingController _passwordController;
   late TextEditingController _tagsController;
+  late TextEditingController _autoConnectCommandController;
 
   int? _selectedKeyId;
   int? _selectedGroupId;
   int? _selectedJumpHostId;
+  int? _selectedAutoConnectSnippetId;
   String? _selectedLightThemeId;
   String? _selectedDarkThemeId;
   String? _selectedFontFamily;
+  AutoConnectCommandMode _selectedAutoConnectMode = AutoConnectCommandMode.none;
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
@@ -57,6 +62,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _usernameController = TextEditingController();
     _passwordController = TextEditingController();
     _tagsController = TextEditingController();
+    _autoConnectCommandController = TextEditingController();
 
     if (widget.hostId != null) {
       _loadHost();
@@ -86,9 +92,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedKeyId = host.keyId;
       _selectedGroupId = host.groupId;
       _selectedJumpHostId = host.jumpHostId;
+      _selectedAutoConnectSnippetId = host.autoConnectSnippetId;
       _selectedLightThemeId = host.terminalThemeLightId;
       _selectedDarkThemeId = host.terminalThemeDarkId;
       _selectedFontFamily = host.terminalFontFamily;
+      _autoConnectCommandController.text = host.autoConnectCommand ?? '';
+      _selectedAutoConnectMode = resolveAutoConnectCommandMode(
+        command: host.autoConnectCommand,
+        snippetId: host.autoConnectSnippetId,
+      );
       _isFavorite = host.isFavorite;
       _portForwards = portForwards;
       _isLoading = false;
@@ -103,6 +115,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _usernameController.dispose();
     _passwordController.dispose();
     _tagsController.dispose();
+    _autoConnectCommandController.dispose();
     super.dispose();
   }
 
@@ -111,6 +124,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final isEditing = widget.hostId != null;
     final keysAsync = ref.watch(_allKeysProvider);
     final hostsAsync = ref.watch(allHostsProvider);
+    final snippetsAsync = ref.watch(_allSnippetsProvider);
 
     return Scaffold(
       appBar: AppBar(
@@ -298,7 +312,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   // Advanced section
                   ExpansionTile(
                     title: const Text('Advanced'),
-                    initiallyExpanded: _selectedJumpHostId != null,
+                    initiallyExpanded:
+                        _selectedJumpHostId != null ||
+                        _selectedAutoConnectMode != AutoConnectCommandMode.none,
                     children: [
                       const SizedBox(height: 8),
                       // Jump host dropdown
@@ -348,6 +364,148 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           );
                         },
                       ),
+                      const SizedBox(height: 24),
+                      Text(
+                        'Auto-Run Command',
+                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 12),
+                      DropdownButtonFormField<AutoConnectCommandMode>(
+                        // ignore: deprecated_member_use
+                        value: _selectedAutoConnectMode,
+                        decoration: const InputDecoration(
+                          labelText: 'After terminal connect',
+                          prefixIcon: Icon(Icons.play_circle_outline),
+                          helperText:
+                              'Optional command to run after connecting or reconnecting.',
+                        ),
+                        items: const [
+                          DropdownMenuItem(
+                            value: AutoConnectCommandMode.none,
+                            child: Text('Do nothing'),
+                          ),
+                          DropdownMenuItem(
+                            value: AutoConnectCommandMode.custom,
+                            child: Text('Run custom command'),
+                          ),
+                          DropdownMenuItem(
+                            value: AutoConnectCommandMode.snippet,
+                            child: Text('Run saved snippet'),
+                          ),
+                        ],
+                        onChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+                          setState(() => _selectedAutoConnectMode = value);
+                        },
+                      ),
+                      if (_selectedAutoConnectMode ==
+                          AutoConnectCommandMode.custom) ...[
+                        const SizedBox(height: 16),
+                        TextFormField(
+                          controller: _autoConnectCommandController,
+                          decoration: const InputDecoration(
+                            labelText: 'Custom command',
+                            hintText: defaultAutoConnectCommandSuggestion,
+                            helperText: 'Suggested: tmux new -As MonkeySSH',
+                            prefixIcon: Icon(Icons.terminal),
+                          ),
+                          minLines: 1,
+                          maxLines: 3,
+                          autocorrect: false,
+                          validator: (value) {
+                            if (_selectedAutoConnectMode !=
+                                AutoConnectCommandMode.custom) {
+                              return null;
+                            }
+                            if (value == null || value.trim().isEmpty) {
+                              return 'Enter a command or choose "Do nothing"';
+                            }
+                            return null;
+                          },
+                        ),
+                      ],
+                      if (_selectedAutoConnectMode ==
+                          AutoConnectCommandMode.snippet) ...[
+                        const SizedBox(height: 16),
+                        snippetsAsync.when(
+                          loading: () => const LinearProgressIndicator(),
+                          error: (_, _) => const Text('Error loading snippets'),
+                          data: (snippets) {
+                            final selectedSnippetStillExists = snippets.any(
+                              (snippet) =>
+                                  snippet.id == _selectedAutoConnectSnippetId,
+                            );
+                            final effectiveSnippetId =
+                                selectedSnippetStillExists
+                                ? _selectedAutoConnectSnippetId
+                                : null;
+                            final selectedSnippet = effectiveSnippetId == null
+                                ? null
+                                : snippets.firstWhere(
+                                    (snippet) =>
+                                        snippet.id == effectiveSnippetId,
+                                  );
+                            return Column(
+                              children: [
+                                DropdownButtonFormField<int?>(
+                                  // ignore: deprecated_member_use
+                                  value: effectiveSnippetId,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Snippet',
+                                    prefixIcon: Icon(Icons.code),
+                                    helperText:
+                                        'Variable prompts are not shown when a snippet runs automatically.',
+                                  ),
+                                  items: [
+                                    const DropdownMenuItem<int?>(
+                                      child: Text('Choose a snippet'),
+                                    ),
+                                    ...snippets.map(
+                                      (snippet) => DropdownMenuItem<int?>(
+                                        value: snippet.id,
+                                        child: Text(snippet.name),
+                                      ),
+                                    ),
+                                  ],
+                                  onChanged: (value) => setState(
+                                    () => _selectedAutoConnectSnippetId = value,
+                                  ),
+                                  validator: (value) {
+                                    if (_selectedAutoConnectMode !=
+                                        AutoConnectCommandMode.snippet) {
+                                      return null;
+                                    }
+                                    if (value == null) {
+                                      return 'Choose a snippet or select "Do nothing"';
+                                    }
+                                    return null;
+                                  },
+                                ),
+                                if (selectedSnippet != null) ...[
+                                  const SizedBox(height: 12),
+                                  Align(
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      selectedSnippet.command,
+                                      maxLines: 3,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: Theme.of(context)
+                                          .textTheme
+                                          .bodySmall
+                                          ?.copyWith(fontFamily: 'monospace'),
+                                    ),
+                                  ),
+                                ],
+                              ],
+                            );
+                          },
+                        ),
+                      ],
                       const SizedBox(height: 24),
                       // Terminal theme section
                       Text(
@@ -423,6 +581,30 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final tags = _tagsController.text.trim().isEmpty
           ? null
           : _tagsController.text.trim();
+      final snippetRepo = ref.read(snippetRepositoryProvider);
+      final autoConnectSnippetId =
+          _selectedAutoConnectMode == AutoConnectCommandMode.snippet
+          ? _selectedAutoConnectSnippetId
+          : null;
+      final selectedSnippet = autoConnectSnippetId == null
+          ? null
+          : await snippetRepo.getById(autoConnectSnippetId);
+      final autoConnectCommand = switch (_selectedAutoConnectMode) {
+        AutoConnectCommandMode.none => null,
+        AutoConnectCommandMode.custom =>
+          _autoConnectCommandController.text.trim(),
+        AutoConnectCommandMode.snippet =>
+          selectedSnippet?.command ?? _autoConnectCommandController.text,
+      };
+      final normalizedAutoConnectCommand =
+          autoConnectCommand == null || autoConnectCommand.trim().isEmpty
+          ? null
+          : autoConnectCommand;
+      final normalizedAutoConnectSnippetId =
+          _selectedAutoConnectMode == AutoConnectCommandMode.snippet &&
+              selectedSnippet != null
+          ? selectedSnippet.id
+          : null;
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
@@ -440,6 +622,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalThemeLightId: drift.Value(_selectedLightThemeId),
             terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
             terminalFontFamily: drift.Value(_selectedFontFamily),
+            autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
+            autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
             isFavorite: _isFavorite,
           ),
         );
@@ -459,6 +643,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalThemeLightId: drift.Value(_selectedLightThemeId),
             terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
             terminalFontFamily: drift.Value(_selectedFontFamily),
+            autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
+            autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -1273,5 +1459,10 @@ class _PortForwardTile extends StatelessWidget {
 /// Provider for all SSH keys as stream.
 final _allKeysProvider = StreamProvider<List<SshKey>>((ref) {
   final repo = ref.watch(keyRepositoryProvider);
+  return repo.watchAll();
+});
+
+final _allSnippetsProvider = StreamProvider<List<Snippet>>((ref) {
+  final repo = ref.watch(snippetRepositoryProvider);
   return repo.watchAll();
 });

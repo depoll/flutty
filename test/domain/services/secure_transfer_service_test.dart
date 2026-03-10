@@ -33,6 +33,14 @@ void main() {
 
   group('SecureTransferService', () {
     test('encrypts and decrypts host payload roundtrip', () async {
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux new -As MonkeySSH',
+            ),
+          );
       final hostId = await db
           .into(db.hosts)
           .insert(
@@ -41,6 +49,8 @@ void main() {
               hostname: 'prod.example.com',
               username: 'root',
               password: const Value('secret'),
+              autoConnectCommand: const Value('tmux new -As MonkeySSH'),
+              autoConnectSnippetId: Value(snippetId),
             ),
           );
       final host = await (db.select(
@@ -60,6 +70,8 @@ void main() {
       final hostData = Map<String, dynamic>.from(decrypted.data['host'] as Map);
       expect(hostData['label'], 'Production');
       expect(hostData['hostname'], 'prod.example.com');
+      expect(hostData['autoConnectCommand'], 'tmux new -As MonkeySSH');
+      expect(hostData['autoConnectSnippetId'], isNull);
     });
 
     test(
@@ -406,7 +418,7 @@ void main() {
                 parentId: Value(parentSnippetFolderId),
               ),
             );
-        await db
+        final snippetId = await db
             .into(db.snippets)
             .insert(
               SnippetsCompanion.insert(
@@ -415,6 +427,14 @@ void main() {
                 folderId: Value(childSnippetFolderId),
               ),
             );
+        await (db.update(
+          db.hosts,
+        )..where((tbl) => tbl.id.equals(hostAId))).write(
+          HostsCompanion(
+            autoConnectCommand: const Value('ls -la'),
+            autoConnectSnippetId: Value(snippetId),
+          ),
+        );
         await db
             .into(db.portForwards)
             .insert(
@@ -464,12 +484,18 @@ void main() {
           db.settings,
         )..where((s) => s.key.equals('extra'))).getSingleOrNull();
         final hosts = await db.select(db.hosts).get();
+        final hostA = hosts.firstWhere((host) => host.label == 'A');
+        final importedSnippet = await (db.select(
+          db.snippets,
+        )..where((snippet) => snippet.name.equals('List files'))).getSingle();
         final groups = await db.select(db.groups).get();
         final snippetFolders = await db.select(db.snippetFolders).get();
         final portForwards = await db.select(db.portForwards).get();
 
         expect(extraSetting, isNull);
         expect(hosts, hasLength(2));
+        expect(hostA.autoConnectCommand, 'ls -la');
+        expect(hostA.autoConnectSnippetId, importedSnippet.id);
         expect(groups, hasLength(2));
         expect(snippetFolders, hasLength(2));
         expect(portForwards, hasLength(1));

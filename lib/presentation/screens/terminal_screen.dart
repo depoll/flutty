@@ -15,6 +15,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
@@ -359,6 +360,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
+      await _runAutoConnectCommand(session);
     } on Object catch (e) {
       if (!mounted) return;
       setState(() {
@@ -483,6 +485,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       }
     }
+  }
+
+  Future<void> _runAutoConnectCommand(SshSession session) async {
+    final host = _host;
+    final shell = _shell;
+    if (host == null || shell == null) {
+      return;
+    }
+
+    final mode = resolveAutoConnectCommandMode(
+      command: host.autoConnectCommand,
+      snippetId: host.autoConnectSnippetId,
+    );
+    if (mode == AutoConnectCommandMode.none) {
+      return;
+    }
+
+    String? snippetCommand;
+    final snippetId = host.autoConnectSnippetId;
+    if (snippetId != null) {
+      final snippetRepo = ref.read(snippetRepositoryProvider);
+      final snippet = await snippetRepo.getById(snippetId);
+      if (snippet == null) {
+        debugPrint(
+          'Auto-connect snippet $snippetId is unavailable; using cached command.',
+        );
+      } else {
+        snippetCommand = snippet.command;
+        unawaited(snippetRepo.incrementUsage(snippet.id));
+      }
+    }
+
+    final command = resolveAutoConnectCommandText(
+      mode: mode,
+      storedCommand: host.autoConnectCommand,
+      snippetCommand: snippetCommand,
+    );
+    if (command == null) {
+      return;
+    }
+
+    shell.write(utf8.encode(formatAutoConnectCommandForShell(command)));
   }
 
   void _handleShellClosed() {

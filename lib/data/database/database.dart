@@ -66,6 +66,13 @@ class Hosts extends Table {
 
   /// Terminal font family (null = use global default).
   TextColumn get terminalFontFamily => text().nullable()();
+
+  /// Cached command to run automatically after connecting/reconnecting.
+  TextColumn get autoConnectCommand => text().nullable()();
+
+  /// Referenced snippet to run automatically after connecting/reconnecting.
+  IntColumn get autoConnectSnippetId =>
+      integer().nullable().references(Snippets, #id)();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -267,7 +274,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -279,6 +286,10 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 3) {
         await m.addColumn(hosts, hosts.terminalFontFamily);
+      }
+      if (from < 4) {
+        await m.addColumn(hosts, hosts.autoConnectCommand);
+        await m.addColumn(hosts, hosts.autoConnectSnippetId);
       }
     },
     beforeOpen: (details) async {
