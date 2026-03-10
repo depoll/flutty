@@ -20,7 +20,7 @@ struct ConnectionStatusLiveActivityWidget: Widget {
             .multilineTextAlignment(.trailing)
         }
 
-        Text("Keeping SSH connections alive in the background")
+        Text("Showing the last known SSH status")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -48,7 +48,7 @@ struct ConnectionStatusLiveActivityWidget: Widget {
             .lineLimit(2)
         }
         DynamicIslandExpandedRegion(.bottom) {
-          Text("Keeping SSH connections alive in the background")
+          Text("Showing the last known SSH status")
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(2)
