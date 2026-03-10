@@ -1,3 +1,5 @@
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
@@ -6,6 +8,23 @@ import 'package:flutter/widgets.dart';
 // ignore: implementation_imports
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
+
+/// Whether a pointer-down event should request the terminal soft keyboard.
+///
+/// Touch input only opens the keyboard for the first active finger so pinch
+/// gestures do not re-open or disturb the IME on Android and iOS.
+@visibleForTesting
+bool shouldRequestKeyboardForTerminalPointerDown({
+  required PointerDeviceKind pointerKind,
+  required int activeTouchPointers,
+  required bool readOnly,
+}) {
+  if (readOnly) {
+    return false;
+  }
+
+  return pointerKind != PointerDeviceKind.touch || activeTouchPointers <= 1;
+}
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
 /// proper IME configuration for swipe typing.
@@ -55,6 +74,7 @@ class TerminalTextInputHandler extends StatefulWidget {
 class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     with TextInputClient {
   TextInputConnection? _connection;
+  final Set<int> _activeTouchPointers = <int>{};
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
 
@@ -81,6 +101,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void dispose() {
     widget.focusNode.removeListener(_onFocusChange);
+    _activeTouchPointers.clear();
     _closeInputConnectionIfNeeded();
     super.dispose();
   }
@@ -88,11 +109,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   Widget build(BuildContext context) => Listener(
     behavior: HitTestBehavior.translucent,
-    onPointerDown: (_) {
-      if (!widget.readOnly) {
-        requestKeyboard();
-      }
-    },
+    onPointerDown: _handlePointerDown,
+    onPointerUp: _handlePointerFinished,
+    onPointerCancel: _handlePointerFinished,
     child: Focus(
       focusNode: widget.focusNode,
       autofocus: true,
@@ -100,6 +119,26 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       child: widget.child,
     ),
   );
+
+  void _handlePointerDown(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _activeTouchPointers.add(event.pointer);
+    }
+
+    if (shouldRequestKeyboardForTerminalPointerDown(
+      pointerKind: event.kind,
+      activeTouchPointers: _activeTouchPointers.length,
+      readOnly: widget.readOnly,
+    )) {
+      requestKeyboard();
+    }
+  }
+
+  void _handlePointerFinished(PointerEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _activeTouchPointers.remove(event.pointer);
+    }
+  }
 
   // -- Hardware key event handling --
 
