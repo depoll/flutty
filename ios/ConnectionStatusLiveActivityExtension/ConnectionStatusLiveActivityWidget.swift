@@ -102,7 +102,6 @@ struct ConnectionStatusLiveActivityWidget: Widget {
           .renderingMode(.original)
           .scaledToFit()
           .frame(width: size, height: size)
-          .foregroundStyle(.primary)
       case .dynamicIsland:
         Image("MonkeySSHDynamicIslandIcon")
           .resizable()
