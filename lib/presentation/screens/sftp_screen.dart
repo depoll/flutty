@@ -75,6 +75,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
 
+      await sessionsNotifier.syncBackgroundStatus();
       _sftp = await session.sftp();
       await _loadDirectory(_currentPath);
     } on Exception catch (e) {

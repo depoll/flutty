@@ -95,6 +95,12 @@ import UIKit
   }
 
   override func applicationDidEnterBackground(_ application: UIApplication) {
+    if #available(iOS 16.1, *) {
+      ConnectionStatusLiveActivityManager.shared.setForegroundState(
+        isForeground: false
+      )
+    }
+
     // Request extra background execution time so the Dart isolate can
     // continue processing SSH keepalive packets and responses.
     // iOS grants roughly 30 seconds before suspending the app.
@@ -106,6 +112,12 @@ import UIKit
   }
 
   override func applicationWillEnterForeground(_ application: UIApplication) {
+    if #available(iOS 16.1, *) {
+      ConnectionStatusLiveActivityManager.shared.setForegroundState(
+        isForeground: true
+      )
+    }
+
     // End the background task when returning to the foreground.
     if backgroundTaskId != .invalid {
       application.endBackgroundTask(backgroundTaskId)

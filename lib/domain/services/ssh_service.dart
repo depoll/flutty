@@ -1148,6 +1148,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (!forceNew) {
       final existingConnectionId = getPreferredConnectionForHost(hostId);
       if (existingConnectionId != null) {
+        unawaited(_queueBackgroundStatusSync());
         return SshConnectionResult(
           success: true,
           connectionId: existingConnectionId,
@@ -1417,6 +1418,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       connectedCount: connectedCount,
     );
   }
+
+  /// Publish the current active-connection status to native keepalive surfaces.
+  Future<void> syncBackgroundStatus() => _queueBackgroundStatusSync();
 
   Future<void> _queueBackgroundStatusSync() {
     final nextSync = _backgroundStatusSyncQueue

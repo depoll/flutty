@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/settings_service.dart';
+import '../domain/services/ssh_service.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -31,24 +32,27 @@ class FluttyApp extends ConsumerWidget {
   }
 }
 
-class _BackgroundLifecycleBridge extends StatefulWidget {
+class _BackgroundLifecycleBridge extends ConsumerStatefulWidget {
   const _BackgroundLifecycleBridge({required this.child});
 
   final Widget child;
 
   @override
-  State<_BackgroundLifecycleBridge> createState() =>
+  ConsumerState<_BackgroundLifecycleBridge> createState() =>
       _BackgroundLifecycleBridgeState();
 }
 
-class _BackgroundLifecycleBridgeState extends State<_BackgroundLifecycleBridge>
+class _BackgroundLifecycleBridgeState
+    extends ConsumerState<_BackgroundLifecycleBridge>
     with WidgetsBindingObserver {
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
-    Future.microtask(
-      () => BackgroundSshService.setForegroundState(isForeground: true),
+    _runLifecycleSync(
+      _syncForegroundBackgroundStatus,
+      errorContext: 'while syncing background SSH status during app startup',
+      defer: true,
     );
   }
 
@@ -56,6 +60,31 @@ class _BackgroundLifecycleBridgeState extends State<_BackgroundLifecycleBridge>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
+  }
+
+  Future<void> _syncForegroundBackgroundStatus() async {
+    await BackgroundSshService.setForegroundState(isForeground: true);
+    await ref.read(activeSessionsProvider.notifier).syncBackgroundStatus();
+  }
+
+  void _runLifecycleSync(
+    Future<void> Function() operation, {
+    required String errorContext,
+    bool defer = false,
+  }) {
+    final future = defer ? Future<void>.microtask(operation) : operation();
+    unawaited(
+      future.catchError((Object error, StackTrace stackTrace) {
+        FlutterError.reportError(
+          FlutterErrorDetails(
+            exception: error,
+            stack: stackTrace,
+            library: 'app',
+            context: ErrorDescription(errorContext),
+          ),
+        );
+      }),
+    );
   }
 
   @override
@@ -66,8 +95,18 @@ class _BackgroundLifecycleBridgeState extends State<_BackgroundLifecycleBridge>
       AppLifecycleState.paused ||
       AppLifecycleState.detached => false,
     };
-    unawaited(
-      BackgroundSshService.setForegroundState(isForeground: isForeground),
+    if (isForeground) {
+      _runLifecycleSync(
+        _syncForegroundBackgroundStatus,
+        errorContext:
+            'while syncing background SSH status after returning to the foreground',
+      );
+      return;
+    }
+    _runLifecycleSync(
+      () => BackgroundSshService.setForegroundState(isForeground: false),
+      errorContext:
+          'while syncing background SSH status after moving to the background',
     );
   }
 
