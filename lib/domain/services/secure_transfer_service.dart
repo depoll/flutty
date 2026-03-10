@@ -679,6 +679,11 @@ class SecureTransferService {
       }
       if (oldSnippetId != null) {
         mappedSnippetId = snippetMapping[oldSnippetId];
+        if (mappedSnippetId == null) {
+          throw const FormatException(
+            'Invalid snippet reference in migration payload',
+          );
+        }
       }
 
       final newId = await _hostRepository.insert(

@@ -44,9 +44,13 @@ String? resolveAutoConnectCommandText({
         : null,
 };
 
-/// Ensures a shell command ends with a newline before sending it.
-String formatAutoConnectCommandForShell(String command) =>
-    command.endsWith('\n') ? command : '$command\n';
+/// Ensures a shell command ends with an Enter key sequence before sending it.
+String formatAutoConnectCommandForShell(String command) {
+  if (command.endsWith('\r') || command.endsWith('\n')) {
+    return command;
+  }
+  return '$command\r';
+}
 
 bool _hasVisibleContent(String? value) =>
     value != null && value.trim().isNotEmpty;

@@ -360,7 +360,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // Start port forwards
       await _startPortForwards(session);
-      await _runAutoConnectCommand(session);
+      await _runAutoConnectCommand();
     } on Object catch (e) {
       if (!mounted) return;
       setState(() {
@@ -487,7 +487,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _runAutoConnectCommand(SshSession session) async {
+  Future<void> _runAutoConnectCommand() async {
     final host = _host;
     final shell = _shell;
     if (host == null || shell == null) {

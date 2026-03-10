@@ -501,5 +501,57 @@ void main() {
         expect(portForwards, hasLength(1));
       },
     );
+
+    test(
+      'rejects invalid auto-connect snippet reference in migration',
+      () async {
+        final snippetId = await db
+            .into(db.snippets)
+            .insert(
+              SnippetsCompanion.insert(name: 'List files', command: 'ls -la'),
+            );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'A',
+                hostname: 'a.example.com',
+                username: 'root',
+                autoConnectCommand: const Value('ls -la'),
+                autoConnectSnippetId: Value(snippetId),
+              ),
+            );
+
+        final migrationPayload = await transferService
+            .createFullMigrationPayload(transferPassphrase: '1234');
+        final decrypted = await transferService.decryptPayload(
+          encodedPayload: migrationPayload,
+          transferPassphrase: '1234',
+        );
+        final rawHosts = List<Map<String, dynamic>>.from(
+          (decrypted.data['hosts'] as List).cast<Map>(),
+        );
+        final hostIndex = rawHosts.indexWhere((host) => host['id'] == hostId);
+        rawHosts[hostIndex] = {
+          ...rawHosts[hostIndex],
+          'autoConnectSnippetId': snippetId + 999,
+        };
+
+        final tamperedPayload = TransferPayload(
+          type: decrypted.type,
+          schemaVersion: decrypted.schemaVersion,
+          createdAt: decrypted.createdAt,
+          data: {...decrypted.data, 'hosts': rawHosts},
+        );
+
+        await expectLater(
+          transferService.importFullMigrationPayload(
+            payload: tamperedPayload,
+            mode: MigrationImportMode.merge,
+          ),
+          throwsFormatException,
+        );
+      },
+    );
   });
 }

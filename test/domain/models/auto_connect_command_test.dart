@@ -50,11 +50,12 @@ void main() {
       );
     });
 
-    test('adds a trailing newline for shell execution', () {
+    test('adds a trailing enter for shell execution', () {
       expect(
         formatAutoConnectCommandForShell('tmux new -As MonkeySSH'),
-        'tmux new -As MonkeySSH\n',
+        'tmux new -As MonkeySSH\r',
       );
+      expect(formatAutoConnectCommandForShell('echo ready\r'), 'echo ready\r');
       expect(formatAutoConnectCommandForShell('echo ready\n'), 'echo ready\n');
     });
   });
