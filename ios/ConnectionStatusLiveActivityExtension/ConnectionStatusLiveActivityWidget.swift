@@ -8,11 +8,11 @@ struct ConnectionStatusLiveActivityWidget: Widget {
     ActivityConfiguration(for: ConnectionStatusAttributes.self) { context in
       VStack(alignment: .leading, spacing: 8) {
         HStack(alignment: .firstTextBaseline) {
-          Label(
-            "\(context.state.connectionCount) active",
-            systemImage: "terminal.fill"
-          )
-          .font(.headline)
+          HStack(spacing: 8) {
+            monkeyLogo(size: 20)
+            Text("\(context.state.connectionCount) active")
+              .font(.headline)
+          }
           Spacer()
           Text(connectionStatusSummary(for: context.state))
             .font(.caption)
@@ -30,12 +30,15 @@ struct ConnectionStatusLiveActivityWidget: Widget {
     } dynamicIsland: { context in
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
-          VStack(alignment: .leading, spacing: 4) {
-            Text("SSH")
-              .font(.caption2)
-              .foregroundStyle(.secondary)
-            Text("\(context.state.connectionCount) active")
-              .font(.headline)
+          HStack(spacing: 8) {
+            monkeyLogo(size: 24)
+            VStack(alignment: .leading, spacing: 4) {
+              Text("SSH")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+              Text("\(context.state.connectionCount) active")
+                .font(.headline)
+            }
           }
         }
         DynamicIslandExpandedRegion(.trailing) {
@@ -52,15 +55,40 @@ struct ConnectionStatusLiveActivityWidget: Widget {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       } compactLeading: {
-        Image(systemName: "terminal.fill")
+        monkeyLogo(size: 20)
       } compactTrailing: {
         Text("\(context.state.connectionCount)")
           .font(.caption2.bold())
       } minimal: {
-        Text("\(context.state.connectionCount)")
-          .font(.caption2.bold())
+        monkeyLogo(
+          size: 18,
+          accessibilityLabel: "MonkeySSH"
+        )
       }
     }
+  }
+
+  @ViewBuilder
+  private func monkeyLogo(
+    size: CGFloat,
+    accessibilityLabel: String? = nil
+  ) -> some View {
+    if let accessibilityLabel {
+      baseMonkeyLogo(size: size)
+        .accessibilityLabel(Text(accessibilityLabel))
+    } else {
+      baseMonkeyLogo(size: size)
+        .accessibilityHidden(true)
+    }
+  }
+
+  private func baseMonkeyLogo(size: CGFloat) -> some View {
+    Image("MonkeySSHDynamicIslandIcon")
+        .resizable()
+        .interpolation(.high)
+        .renderingMode(.original)
+        .scaledToFit()
+        .frame(width: size, height: size)
   }
 
   private func connectionStatusSummary(
