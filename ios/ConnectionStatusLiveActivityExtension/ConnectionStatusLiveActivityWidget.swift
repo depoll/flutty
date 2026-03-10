@@ -60,18 +60,35 @@ struct ConnectionStatusLiveActivityWidget: Widget {
         Text("\(context.state.connectionCount)")
           .font(.caption2.bold())
       } minimal: {
-        monkeyLogo(size: 18)
+        monkeyLogo(
+          size: 18,
+          accessibilityLabel: "MonkeySSH"
+        )
       }
     }
   }
 
-  private func monkeyLogo(size: CGFloat) -> some View {
+  @ViewBuilder
+  private func monkeyLogo(
+    size: CGFloat,
+    accessibilityLabel: String? = nil
+  ) -> some View {
+    if let accessibilityLabel {
+      baseMonkeyLogo(size: size)
+        .accessibilityLabel(Text(accessibilityLabel))
+    } else {
+      baseMonkeyLogo(size: size)
+        .accessibilityHidden(true)
+    }
+  }
+
+  private func baseMonkeyLogo(size: CGFloat) -> some View {
     Image("MonkeySSHDynamicIslandIcon")
-      .resizable()
-      .interpolation(.high)
-      .renderingMode(.original)
-      .scaledToFit()
-      .frame(width: size, height: size)
+        .resizable()
+        .interpolation(.high)
+        .renderingMode(.original)
+        .scaledToFit()
+        .frame(width: size, height: size)
   }
 
   private func connectionStatusSummary(
