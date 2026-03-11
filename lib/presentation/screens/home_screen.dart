@@ -65,7 +65,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _incomingTransferSubscription?.cancel();
+    unawaited(_incomingTransferSubscription?.cancel());
     super.dispose();
   }
 
@@ -961,13 +961,16 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => TransferQrScreen(
           title: 'Host Transfer QR',
           payload: payload,
-          defaultFileName:
-              'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+          defaultFileName: defaultFileName,
         ),
       ),
     );
@@ -1013,10 +1016,14 @@ class _HostRow extends ConsumerWidget {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await saveTransferPayloadToFile(
       context: context,
       payload: payload,
-      defaultFileName: 'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+      defaultFileName: defaultFileName,
     );
   }
 
@@ -1612,13 +1619,16 @@ class _KeyRow extends ConsumerWidget {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => TransferQrScreen(
           title: 'Key Transfer QR',
           payload: payload,
-          defaultFileName:
-              'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+          defaultFileName: defaultFileName,
         ),
       ),
     );
@@ -1656,10 +1666,14 @@ class _KeyRow extends ConsumerWidget {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await saveTransferPayloadToFile(
       context: context,
       payload: payload,
-      defaultFileName: 'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+      defaultFileName: defaultFileName,
     );
   }
 

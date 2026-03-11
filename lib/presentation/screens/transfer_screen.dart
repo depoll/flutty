@@ -17,7 +17,6 @@ const _maxTransferPayloadBytes = 10 * 1024 * 1024;
 const _defaultTransferFileBaseName = 'monkeyssh-transfer';
 
 /// Normalizes a suggested transfer export filename into a filesystem-safe base.
-@visibleForTesting
 String sanitizeTransferFileBaseName(String input) {
   final normalized = input
       .trim()
