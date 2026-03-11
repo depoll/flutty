@@ -30,6 +30,16 @@ on:
         type: string
         default: 'none'
         description: 'Android deploy target: internal, production, or none'
+      build-android:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to run the Android build job'
+      build-ios:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to run the iOS build job'
       sync-metadata:
         required: false
         type: boolean
@@ -46,7 +56,8 @@ on:
 jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
-    runs-on: ubuntu-latest
+    if: inputs.build-android
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
     steps:
@@ -77,12 +88,14 @@ jobs:
         run: flutter pub get
 
       - name: Decode keystore
+        if: inputs.deploy-android-to != 'none'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
 
       - name: Create key.properties
+        if: inputs.deploy-android-to != 'none'
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -156,6 +169,7 @@ jobs:
 
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
+    if: inputs.build-ios
     runs-on: macos-26
     outputs:
       source-sha: ${{ steps.source-sha.outputs.value }}

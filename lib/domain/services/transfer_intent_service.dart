@@ -19,7 +19,9 @@ class TransferIntentService {
   Future<String?> consumeIncomingTransferPayload() async {
     _ensureInitialized();
     try {
-      return _channel.invokeMethod<String>('consumeIncomingTransferPayload');
+      return await _channel.invokeMethod<String>(
+        'consumeIncomingTransferPayload',
+      );
     } on PlatformException {
       return null;
     } on MissingPluginException {

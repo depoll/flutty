@@ -1,14 +1,25 @@
+import 'dart:async';
+
 // ignore_for_file: public_member_api_docs
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
+import 'package:flutter/services.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:xterm/xterm.dart';
+
+const _backgroundSshChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/ssh_service',
+);
 
 class _CapturingSshService extends SshService {
   _CapturingSshService({
@@ -19,7 +30,11 @@ class _CapturingSshService extends SshService {
   SshConnectionConfig? capturedConfig;
 
   @override
-  Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+  Future<SshConnectionResult> connect(
+    SshConnectionConfig config, {
+    ConnectionProgressCallback? onProgress,
+    bool isJumpHost = false,
+  }) async {
     capturedConfig = config;
     return const SshConnectionResult(success: false, error: 'stubbed');
   }
@@ -50,7 +65,52 @@ class _CountingKeyRepository extends KeyRepository {
   }
 }
 
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _FakeActiveSessionsSshService extends SshService {
+  final Map<int, SshSession> _sessions = {};
+  int _nextConnectionId = 1;
+
+  @override
+  Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
+
+  @override
+  Future<SshConnectionResult> connectToHost(
+    int hostId, {
+    ConnectionProgressCallback? onProgress,
+  }) async {
+    final connectionId = _nextConnectionId++;
+    final session = SshSession(
+      connectionId: connectionId,
+      hostId: hostId,
+      client: _MockSshClient(),
+      config: SshConnectionConfig(
+        hostname: 'host-$hostId.example.com',
+        port: 22,
+        username: 'tester',
+      ),
+    );
+    _sessions[connectionId] = session;
+    return SshConnectionResult(success: true, connectionId: connectionId);
+  }
+
+  @override
+  Future<void> disconnect(int connectionId) async {
+    _sessions.remove(connectionId);
+  }
+
+  @override
+  Future<void> disconnectAll() async {
+    _sessions.clear();
+  }
+
+  @override
+  SshSession? getSession(int connectionId) => _sessions[connectionId];
+}
+
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   group('SshConnectionState', () {
     test('has expected values', () {
       expect(SshConnectionState.values, hasLength(6));
@@ -274,6 +334,143 @@ void main() {
       );
 
       expect(info.isLocal, isFalse);
+    });
+  });
+
+  group('SshSession terminal previews', () {
+    test('builds preview from the latest non-empty lines', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write('first line\r\nsecond line\r\n\r\nthird line');
+
+      final preview = SshSession.buildTerminalPreview(terminal, maxLines: 2);
+
+      expect(preview, 'second line\nthird line');
+    });
+
+    test('sanitizes control characters and truncates long previews', () {
+      final terminal = Terminal(maxLines: 100)
+        ..write('prompt> \u0007hello world\r\n')
+        ..write(List<String>.filled(80, 'x').join());
+
+      final preview = SshSession.buildTerminalPreview(terminal, maxChars: 40);
+
+      expect(preview, isNotNull);
+      expect(preview, isNot(contains('\u0007')));
+      expect(preview, startsWith('…'));
+      expect(preview, contains('xxxxxxxx'));
+    });
+
+    test('clamps invalid preview limits to safe minimums', () {
+      final terminal = Terminal(maxLines: 100)..write('alpha\r\nbeta');
+
+      expect(
+        SshSession.buildTerminalPreview(terminal, maxLines: 0, maxChars: 4),
+        'beta',
+      );
+      expect(SshSession.buildTerminalPreview(terminal, maxChars: 0), '…');
+    });
+  });
+
+  group('ActiveSessionsNotifier', () {
+    late ProviderContainer container;
+    late _FakeActiveSessionsSshService fakeSshService;
+    late List<MethodCall> methodCalls;
+
+    setUp(() {
+      fakeSshService = _FakeActiveSessionsSshService();
+      methodCalls = <MethodCall>[];
+      BackgroundSshService.debugIsSupportedPlatformOverride = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_backgroundSshChannel, (call) async {
+            methodCalls.add(call);
+            return null;
+          });
+      container = ProviderContainer(
+        overrides: [sshServiceProvider.overrideWithValue(fakeSshService)],
+      );
+    });
+
+    tearDown(() async {
+      BackgroundSshService.debugIsSupportedPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_backgroundSshChannel, null);
+      container.dispose();
+    });
+
+    test(
+      'syncBackgroundStatus stops the background service when empty',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+
+        await notifier.syncBackgroundStatus();
+
+        expect(methodCalls, hasLength(1));
+        expect(methodCalls.single.method, 'stopService');
+      },
+    );
+
+    test('syncBackgroundStatus publishes counts for active sessions', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+
+      await Future<void>.delayed(Duration.zero);
+      methodCalls.clear();
+      await notifier.syncBackgroundStatus();
+
+      expect(methodCalls, hasLength(1));
+      expect(methodCalls.single.method, 'updateStatus');
+      final arguments = Map<String, Object?>.from(
+        methodCalls.single.arguments as Map<Object?, Object?>,
+      );
+      expect(arguments, <String, Object?>{
+        'connectionCount': 1,
+        'connectedCount': 1,
+      });
+    });
+
+    test('syncBackgroundStatus serializes queued updates', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final firstCallStarted = Completer<void>();
+      final releaseFirstCall = Completer<void>();
+      var activeCalls = 0;
+      var maxConcurrentCalls = 0;
+      var updateCallCount = 0;
+
+      await notifier.connect(7, forceNew: true);
+      await Future<void>.delayed(Duration.zero);
+      methodCalls.clear();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_backgroundSshChannel, (call) async {
+            if (call.method != 'updateStatus') {
+              return null;
+            }
+            updateCallCount++;
+            activeCalls++;
+            if (activeCalls > maxConcurrentCalls) {
+              maxConcurrentCalls = activeCalls;
+            }
+            if (updateCallCount == 1) {
+              firstCallStarted.complete();
+              await releaseFirstCall.future;
+            }
+            activeCalls--;
+            return null;
+          });
+
+      final firstSync = notifier.syncBackgroundStatus();
+      await firstCallStarted.future;
+      final secondSync = notifier.syncBackgroundStatus();
+      await Future<void>.delayed(Duration.zero);
+
+      expect(updateCallCount, 1);
+
+      releaseFirstCall.complete();
+      await Future.wait<void>([firstSync, secondSync]);
+
+      expect(updateCallCount, 2);
+      expect(maxConcurrentCalls, 1);
     });
   });
 

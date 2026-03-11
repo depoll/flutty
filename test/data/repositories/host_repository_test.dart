@@ -68,6 +68,32 @@ void main() {
       expect(host!.password, plaintextPassword);
     });
 
+    test('insert stores auto-connect command fields', () async {
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux attach',
+            ),
+          );
+
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Test Server',
+          hostname: '192.168.1.1',
+          username: 'admin',
+          autoConnectCommand: const Value('tmux attach'),
+          autoConnectSnippetId: Value(snippetId),
+        ),
+      );
+
+      final host = await repository.getById(id);
+      expect(host, isNotNull);
+      expect(host!.autoConnectCommand, 'tmux attach');
+      expect(host.autoConnectSnippetId, snippetId);
+    });
+
     test('getById returns host when exists', () async {
       final id = await repository.insert(
         HostsCompanion.insert(
@@ -108,6 +134,38 @@ void main() {
       final updated = await repository.getById(id);
       expect(updated!.label, 'Updated Server');
       expect(updated.port, 2222);
+    });
+
+    test('update persists auto-connect command changes', () async {
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux attach',
+            ),
+          );
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Test Server',
+          hostname: '192.168.1.1',
+          username: 'admin',
+        ),
+      );
+
+      final host = await repository.getById(id);
+      final success = await repository.update(
+        host!.copyWith(
+          autoConnectCommand: const Value('tmux new -As MonkeySSH'),
+          autoConnectSnippetId: Value(snippetId),
+        ),
+      );
+
+      expect(success, isTrue);
+
+      final updated = await repository.getById(id);
+      expect(updated!.autoConnectCommand, 'tmux new -As MonkeySSH');
+      expect(updated.autoConnectSnippetId, snippetId);
     });
 
     test('delete removes host', () async {

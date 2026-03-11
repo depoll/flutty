@@ -46,11 +46,13 @@ Both variants install side-by-side on the same device.
    cd ios
    bundle exec fastlane match init
    ```
-3. Generate certificates for both bundle IDs:
-   ```bash
-   bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh
-   bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private
-   ```
+3. Generate certificates for every shipped iOS bundle ID, including the Live Activity extension:
+    ```bash
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity
+    ```
 
 ### Android Upload Keystore
 
