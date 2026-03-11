@@ -9,6 +9,9 @@ import 'package:flutter/widgets.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
+const _deleteDetectionMarker = '\u200B\u200B';
+final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
+
 /// Whether a pointer-down event should request the terminal soft keyboard.
 ///
 /// Touch input only opens the keyboard for the first active finger so pinch
@@ -147,7 +150,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.ignored;
     }
 
-    if (!_currentEditingState.composing.isCollapsed) {
+    final hasShortcutModifier =
+        HardwareKeyboard.instance.isControlPressed ||
+        HardwareKeyboard.instance.isAltPressed ||
+        HardwareKeyboard.instance.isMetaPressed;
+    if (!_currentEditingState.composing.isCollapsed && !hasShortcutModifier) {
       return KeyEventResult.skipRemainingHandlers;
     }
 
@@ -194,8 +201,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   // -- Focus handling --
 
   void _onFocusChange() {
-    if (widget.focusNode.hasFocus && widget.focusNode.consumeKeyboardToken()) {
-      _openInputConnection();
+    if (widget.focusNode.hasFocus) {
+      final consumedKeyboardToken = widget.focusNode.consumeKeyboardToken();
+      if (!hasInputConnection || consumedKeyboardToken) {
+        _openInputConnection();
+      }
     } else if (!widget.focusNode.hasFocus) {
       _closeInputConnectionIfNeeded();
     }
@@ -248,8 +258,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   TextEditingValue get _initEditingState => widget.deleteDetection
       ? const TextEditingValue(
-          text: '  ',
-          selection: TextSelection.collapsed(offset: 2),
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length,
+          ),
         )
       : TextEditingValue.empty;
 
@@ -266,10 +278,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   String _extractInputText(String text) {
     final initText = _initEditingState.text;
-    if (text.startsWith(initText)) {
-      return text.substring(initText.length);
+    final extractedText = text.startsWith(initText)
+        ? text.substring(initText.length)
+        : text;
+    if (_lastSentText.isNotEmpty) {
+      return extractedText;
     }
-    return text;
+    return extractedText.replaceFirst(_leadingSwipeNewlinePattern, '');
   }
 
   int _sendInputDelta(String currentText) {
@@ -287,6 +302,24 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     _lastSentText = currentText;
     return '\n'.allMatches(appendedText).length;
+  }
+
+  void _syncEditingStateWithUserText(String userText) {
+    final nextState = widget.deleteDetection
+        ? TextEditingValue(
+            text: '${_initEditingState.text}$userText',
+            selection: TextSelection.collapsed(
+              offset: _initEditingState.text.length + userText.length,
+            ),
+          )
+        : TextEditingValue(
+            text: userText,
+            selection: TextSelection.collapsed(offset: userText.length),
+          );
+    _currentEditingState = nextState;
+    if (hasInputConnection) {
+      _connection!.setEditingState(nextState);
+    }
   }
 
   // -- TextInputClient implementation --
@@ -312,11 +345,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       widget.terminal.keyInput(TerminalKey.backspace);
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
-    } else {
-      _pendingEnterActionSuppressions += _sendInputDelta(
-        _extractInputText(_currentEditingState.text),
-      );
+      _syncEditingStateWithUserText('');
+      return;
     }
+
+    final currentText = _extractInputText(_currentEditingState.text);
+    _pendingEnterActionSuppressions += _sendInputDelta(currentText);
+    _syncEditingStateWithUserText(currentText);
   }
 
   @override
@@ -342,7 +377,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void updateFloatingCursor(RawFloatingCursorPoint point) {}
 
   @override
-  void connectionClosed() {}
+  void connectionClosed() {
+    _connection = null;
+    _lastSentText = '';
+    _pendingEnterActionSuppressions = 0;
+    _currentEditingState = _initEditingState.copyWith();
+    if (!widget.readOnly && widget.focusNode.hasFocus) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && widget.focusNode.hasFocus) {
+          _openInputConnection();
+        }
+      });
+    }
+  }
 
   @override
   void insertTextPlaceholder(Size size) {}
