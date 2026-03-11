@@ -86,7 +86,11 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         onTap: _sendEscape,
         onLongPressStart: _sendEscape,
       ),
-      _ToolbarButton(label: 'Tab', onTap: _sendTab, onLongPressStart: _sendTab),
+      _ToolbarButton(
+        label: 'Tab',
+        onTap: _sendTab,
+        onLongPressStart: _sendTab,
+      ),
       _ModifierButton(
         label: 'Ctrl',
         state: _ctrlState,
@@ -467,6 +471,9 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
           : null,
       onLongPressEnd: widget.onLongPressRepeat != null
           ? (_) => _stopRepeat()
+          : null,
+      onLongPressCancel: widget.onLongPressRepeat != null
+          ? _stopRepeat
           : null,
       child: Container(
         margin: const EdgeInsets.all(2),

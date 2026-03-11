@@ -141,6 +141,39 @@ void main() {
       );
     });
 
+    testWidgets(
+      'repeating navigation stops when gesture is cancelled',
+      (tester) async {
+        final output = <String>[];
+        terminal.onOutput = output.add;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        );
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(find.text('→')),
+        );
+        await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
+        await tester.pump(const Duration(milliseconds: 120));
+        await gesture.cancel();
+        await tester.pump();
+
+        final outputCount = output
+            .where((value) => value == '\x1b[C')
+            .length;
+        await tester.pump(const Duration(milliseconds: 150));
+
+        expect(outputCount, greaterThan(1));
+        expect(
+          output.where((value) => value == '\x1b[C').length,
+          outputCount,
+        );
+      },
+    );
+
     testWidgets('repeating navigation stops when released', (tester) async {
       final output = <String>[];
       terminal.onOutput = output.add;
@@ -163,7 +196,10 @@ void main() {
       await tester.pump(const Duration(milliseconds: 150));
 
       expect(outputCount, greaterThan(1));
-      expect(output.where((value) => value == '\x1b[H').length, outputCount);
+      expect(
+        output.where((value) => value == '\x1b[H').length,
+        outputCount,
+      );
     });
   });
 
