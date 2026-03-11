@@ -82,9 +82,6 @@ class MainActivity : FlutterActivity() {
         super.onNewIntent(intent)
         setIntent(intent)
         handleTransferIntent(intent)
-        if (intent.action == SshConnectionService.ACTION_STOP) {
-            SshConnectionService.stop(this)
-        }
     }
 
     override fun onDestroy() {
