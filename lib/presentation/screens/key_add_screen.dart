@@ -1,11 +1,10 @@
-import 'dart:convert';
-
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../domain/services/key_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
+import 'transfer_screen.dart';
 
 /// Screen for adding or importing SSH keys.
 class KeyAddScreen extends ConsumerStatefulWidget {
@@ -129,6 +128,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           SegmentedButton<int>(
             segments: const [
               ButtonSegment(value: 2048, label: Text('2048')),
+              ButtonSegment(value: 3072, label: Text('3072')),
               ButtonSegment(value: 4096, label: Text('4096')),
             ],
             selected: {_rsaBits},
@@ -211,41 +211,16 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
     setState(() => _isGenerating = true);
 
     try {
-      final keyService = ref.read(keyServiceProvider);
-      final passphrase = _passphraseController.text.isEmpty
-          ? null
-          : _passphraseController.text;
-      final keyType = switch (_keyType) {
-        'ed25519' => SshKeyType.ed25519,
-        _ => switch (_rsaBits) {
-          2048 => SshKeyType.rsa2048,
-          _ => SshKeyType.rsa4096,
-        },
-      };
-      final result = await keyService.generateKey(
-        name: _nameController.text.trim(),
-        keyType: keyType,
-        passphrase: passphrase,
-      );
-
+      // Key generation requires external tools (ssh-keygen, pointycastle)
+      // For now, show a message to import instead
       if (mounted) {
-        final messenger = ScaffoldMessenger.of(context);
-        if (result == null) {
-          messenger.showSnackBar(
-            const SnackBar(content: Text('Failed to generate key')),
-          );
-        } else {
-          context.pop();
-          messenger.showSnackBar(
-            const SnackBar(content: Text('Key generated successfully')),
-          );
-        }
-      }
-    } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error generating key: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Key generation not yet implemented. Please use Import tab.',
+            ),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _isGenerating = false);
@@ -283,6 +258,42 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     child: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Secure device transfer',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _importFromQrTransfer,
+                        icon: const Icon(Icons.qr_code_scanner),
+                        label: const Text('Scan QR'),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _importFromEncryptedFile,
+                        icon: const Icon(Icons.file_open),
+                        label: const Text('Import File'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+
         // Name
         TextFormField(
           controller: _nameController,
@@ -358,9 +369,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
         // Import from file button
         OutlinedButton.icon(
-          onPressed: _importFromFile,
+          onPressed: _importFromEncryptedFile,
           icon: const Icon(Icons.file_open),
-          label: const Text('Import from File'),
+          label: const Text('Import Encrypted File'),
         ),
       ],
     ),
@@ -411,31 +422,67 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     }
   }
 
-  Future<void> _importFromFile() async {
-    final result = await FilePicker.platform.pickFiles(withData: true);
+  Future<void> _importFromQrTransfer() async {
+    final encodedPayload = await scanTransferPayload(context);
+    await _importFromTransferPayload(encodedPayload);
+  }
 
-    if (!mounted || result == null || result.files.isEmpty) {
+  Future<void> _importFromEncryptedFile() async {
+    final encodedPayload = await pickTransferPayloadFromFile(context);
+    await _importFromTransferPayload(encodedPayload);
+  }
+
+  Future<void> _importFromTransferPayload(String? encodedPayload) async {
+    if (!mounted || encodedPayload == null || encodedPayload.isEmpty) {
       return;
     }
 
-    final file = result.files.single;
-    final bytes = file.bytes;
-    if (bytes == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Unable to read selected file')),
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Key transfer passphrase',
+    );
+    if (!mounted || transferPassphrase == null) {
+      return;
+    }
+
+    setState(() => _isImporting = true);
+    try {
+      final transferService = ref.read(secureTransferServiceProvider);
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
       );
-      return;
+      if (payload.type != TransferPayloadType.key) {
+        throw const FormatException(
+          'This transfer payload does not contain an SSH key',
+        );
+      }
+      final importedKey = await transferService.importKeyPayload(payload);
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported key: ${importedKey.name}')),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    } finally {
+      if (mounted) {
+        setState(() => _isImporting = false);
+      }
     }
-
-    _privateKeyController.text = utf8.decode(bytes, allowMalformed: true);
-    if (_nameController.text.trim().isEmpty) {
-      final dotIndex = file.name.lastIndexOf('.');
-      _nameController.text = dotIndex > 0
-          ? file.name.substring(0, dotIndex)
-          : file.name;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Loaded "${file.name}"')));
   }
 }

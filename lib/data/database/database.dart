@@ -288,8 +288,13 @@ class AppDatabase extends _$AppDatabase {
         await m.addColumn(hosts, hosts.terminalFontFamily);
       }
       if (from < 4) {
-        await m.addColumn(hosts, hosts.autoConnectCommand);
-        await m.addColumn(hosts, hosts.autoConnectSnippetId);
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.autoConnectCommand.$name)) {
+          await m.addColumn(hosts, hosts.autoConnectCommand);
+        }
+        if (!hostColumnNames.contains(hosts.autoConnectSnippetId.$name)) {
+          await m.addColumn(hosts, hosts.autoConnectSnippetId);
+        }
       }
     },
     beforeOpen: (details) async {
@@ -328,6 +333,11 @@ class AppDatabase extends _$AppDatabase {
       }
     },
   );
+
+  Future<Set<String>> _readColumnNames(String tableName) async {
+    final columns = await customSelect('PRAGMA table_info($tableName)').get();
+    return columns.map((row) => row.read<String>('name')).toSet();
+  }
 
   String _detectKeyTypeFromPublicKey(String publicKey) {
     final trimmed = publicKey.trim();

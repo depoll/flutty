@@ -11,9 +11,11 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'hosts_screen.dart';
+import 'transfer_screen.dart';
 
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
@@ -130,6 +132,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       appBar: AppBar(
         title: Text(isEditing ? 'Edit Host' : 'Add Host'),
         actions: [
+          if (!isEditing)
+            IconButton(
+              icon: const Icon(Icons.download_for_offline_outlined),
+              tooltip: 'Import transfer payload',
+              onPressed: _importFromTransfer,
+            ),
           IconButton(
             icon: Icon(_isFavorite ? Icons.star : Icons.star_border),
             onPressed: () => setState(() => _isFavorite = !_isFavorite),
@@ -735,6 +743,68 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         return;
       }
       messenger.showSnackBar(SnackBar(content: Text('Connection failed: $e')));
+    }
+  }
+
+  Future<void> _importFromTransfer() async {
+    final source = await showTransferImportSourceSheet(context);
+    if (!mounted || source == null) {
+      return;
+    }
+
+    String? encodedPayload;
+    if (source == TransferImportSource.qr) {
+      encodedPayload = await scanTransferPayload(context);
+    } else {
+      encodedPayload = await pickTransferPayloadFromFile(context);
+    }
+    if (!mounted || encodedPayload == null) {
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Host transfer passphrase',
+    );
+    if (!mounted || transferPassphrase == null) {
+      return;
+    }
+
+    try {
+      final transferService = ref.read(secureTransferServiceProvider);
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
+      );
+      if (payload.type != TransferPayloadType.host) {
+        throw const FormatException(
+          'This transfer payload does not contain a host',
+        );
+      }
+
+      final importedHost = await transferService.importHostPayload(payload);
+      ref.invalidate(allHostsProvider);
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported host: ${importedHost.label}')),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
     }
   }
 
