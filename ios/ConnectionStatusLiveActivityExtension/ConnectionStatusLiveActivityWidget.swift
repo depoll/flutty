@@ -20,7 +20,7 @@ struct ConnectionStatusLiveActivityWidget: Widget {
             .multilineTextAlignment(.trailing)
         }
 
-        Text("Keeping SSH connections alive in the background")
+        Text("Showing the last known SSH status")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -31,7 +31,7 @@ struct ConnectionStatusLiveActivityWidget: Widget {
       DynamicIsland {
         DynamicIslandExpandedRegion(.leading) {
           HStack(spacing: 8) {
-            monkeyLogo(size: 24)
+            monkeyLogo(size: 24, style: .dynamicIsland)
             VStack(alignment: .leading, spacing: 4) {
               Text("SSH")
                 .font(.caption2)
@@ -48,47 +48,69 @@ struct ConnectionStatusLiveActivityWidget: Widget {
             .lineLimit(2)
         }
         DynamicIslandExpandedRegion(.bottom) {
-          Text("Keeping SSH connections alive in the background")
+          Text("Showing the last known SSH status")
             .font(.caption)
             .foregroundStyle(.secondary)
             .lineLimit(2)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       } compactLeading: {
-        monkeyLogo(size: 20)
+        monkeyLogo(size: 20, style: .dynamicIsland)
       } compactTrailing: {
         Text("\(context.state.connectionCount)")
           .font(.caption2.bold())
       } minimal: {
         monkeyLogo(
           size: 18,
+          style: .dynamicIsland,
           accessibilityLabel: "MonkeySSH"
         )
       }
     }
   }
 
+  private enum MonkeyLogoStyle {
+    case fullColor
+    case dynamicIsland
+  }
+
   @ViewBuilder
   private func monkeyLogo(
     size: CGFloat,
+    style: MonkeyLogoStyle = .fullColor,
     accessibilityLabel: String? = nil
   ) -> some View {
     if let accessibilityLabel {
-      baseMonkeyLogo(size: size)
+      baseMonkeyLogo(size: size, style: style)
         .accessibilityLabel(Text(accessibilityLabel))
     } else {
-      baseMonkeyLogo(size: size)
+      baseMonkeyLogo(size: size, style: style)
         .accessibilityHidden(true)
     }
   }
 
-  private func baseMonkeyLogo(size: CGFloat) -> some View {
-    Image("MonkeySSHDynamicIslandIcon")
-        .resizable()
-        .interpolation(.high)
-        .renderingMode(.original)
-        .scaledToFit()
-        .frame(width: size, height: size)
+  @ViewBuilder
+  private func baseMonkeyLogo(
+    size: CGFloat,
+    style: MonkeyLogoStyle
+  ) -> some View {
+    switch style {
+      case .fullColor:
+        Image("MonkeySSHDynamicIslandIcon")
+          .resizable()
+          .interpolation(.high)
+          .renderingMode(.original)
+          .scaledToFit()
+          .frame(width: size, height: size)
+      case .dynamicIsland:
+        Image("MonkeySSHDynamicIslandIcon")
+          .resizable()
+          .interpolation(.high)
+          .renderingMode(.template)
+          .scaledToFit()
+          .frame(width: size, height: size)
+          .foregroundStyle(.white)
+    }
   }
 
   private func connectionStatusSummary(

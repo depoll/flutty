@@ -6,8 +6,8 @@ import UIKit
   private let channelName = "xyz.depollsoft.monkeyssh/ssh_service"
   private var backgroundSshChannel: FlutterMethodChannel?
 
-  /// Background task identifier used to keep SSH connections alive
-  /// for a short period after the app enters the background.
+  /// Background task identifier used to request a brief grace period
+  /// before iOS suspends the app after entering the background.
   private var backgroundTaskId: UIBackgroundTaskIdentifier = .invalid
 
   override func application(
@@ -101,9 +101,10 @@ import UIKit
       )
     }
 
-    // Request extra background execution time so the Dart isolate can
-    // continue processing SSH keepalive packets and responses.
-    // iOS grants roughly 30 seconds before suspending the app.
+    // Request a brief amount of extra execution time so the Dart isolate can
+    // flush any in-flight SSH keepalive traffic before iOS suspends the app.
+    // The Live Activity remains a status surface only; it does not extend
+    // background execution beyond this short grace period.
     backgroundTaskId = application.beginBackgroundTask(withName: "SSHKeepAlive") {
       // Expiration handler — clean up when time runs out.
       application.endBackgroundTask(self.backgroundTaskId)

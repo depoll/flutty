@@ -3,11 +3,13 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
-/// Platform service that keeps SSH connections alive while the app is
-/// in the background.
+/// Platform service that publishes SSH session status to native background UI.
 ///
-/// On Android this controls the persistent keepalive notification.
+/// On Android this controls the foreground-service notification.
 /// On iOS this controls the Live Activity shown while the app is backgrounded.
+///
+/// This surface reports status only; iOS may still suspend the app shortly
+/// after it enters the background.
 class BackgroundSshService {
   BackgroundSshService._();
 
@@ -22,7 +24,7 @@ class BackgroundSshService {
   @visibleForTesting
   static bool? debugIsSupportedPlatformOverride;
 
-  /// Publish the latest active connection status to native keepalive surfaces.
+  /// Publish the latest active connection status to native background UI.
   static Future<void> updateStatus({
     required int connectionCount,
     required int connectedCount,
@@ -47,7 +49,7 @@ class BackgroundSshService {
     }
   }
 
-  /// Tell native keepalive surfaces whether the app is currently foregrounded.
+  /// Tell native background UI whether the app is currently foregrounded.
   static Future<void> setForegroundState({required bool isForeground}) async {
     if (!_supportsPlatform) {
       return;

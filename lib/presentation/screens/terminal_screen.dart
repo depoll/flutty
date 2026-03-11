@@ -108,7 +108,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double? _lastPinchScale;
   double? _sessionFontSizeOverride;
   bool _isPinchZooming = false;
-  int _activeTouchPointers = 0;
 
   // Theme state
   Host? _host;
@@ -799,35 +798,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .updateSessionFontSize(connectionId, nextFontSize);
   }
 
-  void _handleTerminalPointerDown(PointerDownEvent _) {
-    final nextPointerCount = _activeTouchPointers + 1;
-    final crossesThreshold =
-        (_activeTouchPointers >= 2) != (nextPointerCount >= 2);
-    if (crossesThreshold) {
-      setState(() {
-        _activeTouchPointers = nextPointerCount;
-      });
-      return;
-    }
-    _activeTouchPointers = nextPointerCount;
-  }
-
-  void _handleTerminalPointerUp(PointerEvent _) {
-    if (_activeTouchPointers == 0) {
-      return;
-    }
-    final nextPointerCount = _activeTouchPointers - 1;
-    final crossesThreshold =
-        (_activeTouchPointers >= 2) != (nextPointerCount >= 2);
-    if (crossesThreshold) {
-      setState(() {
-        _activeTouchPointers = nextPointerCount;
-      });
-      return;
-    }
-    _activeTouchPointers = nextPointerCount;
-  }
-
   Future<void> _showThemePicker() async {
     final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
     final theme = await showThemePickerDialog(
@@ -952,7 +922,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionFontSize: _sessionFontSizeOverride,
       pinchFontSize: _pinchFontSize,
     );
-    final isCapturingMultiTouch = _activeTouchPointers > 1;
 
     // Get font family from host (if set) or global settings
     final hostFont = _host?.terminalFontFamily;
@@ -1049,26 +1018,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    return Listener(
-      behavior: HitTestBehavior.opaque,
-      onPointerDown: _handleTerminalPointerDown,
-      onPointerUp: _handleTerminalPointerUp,
-      onPointerCancel: _handleTerminalPointerUp,
-      child: TerminalTextInputHandler(
-        terminal: _terminal,
-        focusNode: _terminalFocusNode,
-        deleteDetection: true,
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          dragStartBehavior: DragStartBehavior.down,
-          onScaleStart: (_) => _handleTerminalScaleStart(storedFontSize),
-          onScaleUpdate: (details) =>
-              _handleTerminalScaleUpdate(details, storedFontSize),
-          onScaleEnd: (_) => _handleTerminalScaleEnd(),
-          child: IgnorePointer(
-            ignoring: isCapturingMultiTouch,
-            child: mobileTerminalView,
-          ),
+    return TerminalTextInputHandler(
+      terminal: _terminal,
+      focusNode: _terminalFocusNode,
+      deleteDetection: true,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        dragStartBehavior: DragStartBehavior.down,
+        onScaleStart: (_) => _handleTerminalScaleStart(storedFontSize),
+        onScaleUpdate: (details) =>
+            _handleTerminalScaleUpdate(details, storedFontSize),
+        onScaleEnd: (_) => _handleTerminalScaleEnd(),
+        child: AbsorbPointer(
+          absorbing: _isPinchZooming,
+          child: mobileTerminalView,
         ),
       ),
     );
