@@ -233,7 +233,7 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     dialogTitle: 'Select encrypted MonkeySSH transfer file',
     type: FileType.custom,
     allowedExtensions: const [monkeySshTransferFileExtension],
-    withData: true,
+    withData: kIsWeb,
   );
 
   if (result == null || result.files.isEmpty) {
