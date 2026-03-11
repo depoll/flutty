@@ -68,6 +68,24 @@ String trimTerminalLinePadding(String line) =>
 String trimTerminalSelectionText(String text) =>
     text.split('\n').map(trimTerminalLinePadding).join('\n');
 
+/// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
+///
+/// We prefer explicit mouse-wheel reporting from terminal applications like
+/// tmux. That keeps wheel scrolling working when the remote app opts in, while
+/// avoiding surprise history navigation when it does not.
+@visibleForTesting
+bool shouldUseSyntheticAltBufferScrollFallback({
+  required bool isMobile,
+  required bool isUsingAltBuffer,
+  required bool preferExplicitMouseReporting,
+}) {
+  if (isMobile || !isUsingAltBuffer) {
+    return false;
+  }
+
+  return !preferExplicitMouseReporting;
+}
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -943,9 +961,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      // On touch devices, simulating wheel scroll with Up/Down keys in alt
-      // buffer makes swipe scroll behave like rapid history navigation.
-      simulateScroll: !isMobile && _isUsingAltBuffer,
+      // xterm already forwards wheel input as mouse events before consulting
+      // this fallback. Keep the synthetic Up/Down fallback disabled so tmux
+      // does not turn scroll gestures into history navigation.
+      simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
+        isMobile: isMobile,
+        isUsingAltBuffer: _isUsingAltBuffer,
+        preferExplicitMouseReporting: true,
+      ),
     );
 
     if (!isMobile) return terminalView;

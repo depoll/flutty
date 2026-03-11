@@ -93,7 +93,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: |
             ~/.gradle/caches
@@ -114,7 +114,7 @@ jobs:
         run: flutter build apk --flavor production --release
 
       - name: Upload APK
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-production-release.apk
@@ -125,7 +125,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: ios/Pods
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
@@ -144,7 +144,7 @@ jobs:
         run: flutter build ios --flavor production --release --no-codesign
 
       - name: Upload iOS build
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: ios-build
           path: build/ios/iphoneos/MonkeySSH.app
@@ -155,7 +155,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: actions/cache@v4
+      - uses: actions/cache@v5
         with:
           path: macos/Pods
           key: pods-macos-${{ runner.os }}-${{ hashFiles('macos/Podfile.lock') }}
@@ -174,7 +174,7 @@ jobs:
         run: flutter build macos --release
 
       - name: Upload macOS build
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: macos-build
           path: build/macos/Build/Products/Release/MonkeySSH.app
@@ -198,7 +198,7 @@ jobs:
         run: flutter build windows --release
 
       - name: Upload Windows build
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: windows-build
           path: build/windows/x64/runner/Release/
@@ -209,7 +209,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
-      - uses: awalsh128/cache-apt-pkgs-action@latest
+      - uses: awalsh128/cache-apt-pkgs-action@v1.6.0
         with:
           packages: clang cmake ninja-build pkg-config libgtk-3-dev liblzma-dev libstdc++-12-dev libsecret-1-dev
           version: 1.0
@@ -227,7 +227,7 @@ jobs:
         run: flutter build linux --release
 
       - name: Upload Linux build
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@v7
         with:
           name: linux-build
           path: build/linux/x64/release/bundle/
