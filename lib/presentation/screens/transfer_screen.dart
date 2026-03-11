@@ -14,6 +14,20 @@ import '../../domain/services/secure_transfer_service.dart';
 /// File extension used for encrypted MonkeySSH transfer packages.
 const monkeySshTransferFileExtension = 'monkeysshx';
 const _maxTransferPayloadBytes = 10 * 1024 * 1024;
+const _defaultTransferFileBaseName = 'monkeyssh-transfer';
+
+/// Normalizes a suggested transfer export filename into a filesystem-safe base.
+@visibleForTesting
+String sanitizeTransferFileBaseName(String input) {
+  final normalized = input
+      .trim()
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '-')
+      .replaceAll(RegExp(r'\s+'), '-')
+      .replaceAll(RegExp('-+'), '-')
+      .replaceAll(RegExp(r'^\.+|\.+$'), '')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  return normalized.isEmpty ? _defaultTransferFileBaseName : normalized;
+}
 
 /// Source options for transfer imports.
 enum TransferImportSource {
@@ -140,9 +154,10 @@ Future<void> saveTransferPayloadToFile({
   required String defaultFileName,
 }) async {
   final bytes = Uint8List.fromList(utf8.encode(payload));
+  final sanitizedBaseName = sanitizeTransferFileBaseName(defaultFileName);
   final targetPath = await FilePicker.platform.saveFile(
     dialogTitle: 'Export encrypted MonkeySSH transfer file',
-    fileName: '$defaultFileName.$monkeySshTransferFileExtension',
+    fileName: '$sanitizedBaseName.$monkeySshTransferFileExtension',
     type: FileType.custom,
     allowedExtensions: const [monkeySshTransferFileExtension],
     bytes: bytes,
