@@ -459,7 +459,7 @@ class SecureTransferService {
         await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
         await _importSettings(
           _settingsFromData(payload.data),
-          clearExisting: mode == MigrationImportMode.replace,
+          clearExisting: false,
         );
       } finally {
         if (deferForeignKeysEnabled) {

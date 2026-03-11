@@ -849,11 +849,12 @@ class _HostRow extends ConsumerWidget {
   }
 
   void _showMenu(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     final colorScheme = Theme.of(context).colorScheme;
 
     showModalBottomSheet<void>(
-      context: context,
-      builder: (context) => SafeArea(
+      context: parentContext,
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -861,32 +862,32 @@ class _HostRow extends ConsumerWidget {
               leading: const Icon(Icons.copy),
               title: const Text('Duplicate'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_duplicateHost(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_duplicateHost(parentContext, ref));
               },
             ),
             ListTile(
               leading: const Icon(Icons.qr_code_2),
               title: const Text('Show Transfer QR'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_showTransferQr(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_showTransferQr(parentContext, ref));
               },
             ),
             ListTile(
               leading: const Icon(Icons.save_alt),
               title: const Text('Export Encrypted File'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_exportEncryptedFile(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_exportEncryptedFile(parentContext, ref));
               },
             ),
             ListTile(
               leading: Icon(Icons.delete_outline, color: colorScheme.error),
               title: Text('Delete', style: TextStyle(color: colorScheme.error)),
               onTap: () {
-                Navigator.pop(context);
-                _confirmDelete(context, ref);
+                Navigator.pop(sheetContext);
+                _confirmDelete(parentContext, ref);
               },
             ),
           ],
@@ -925,7 +926,11 @@ class _HostRow extends ConsumerWidget {
 
     final payload = await ref
         .read(secureTransferServiceProvider)
-        .createHostPayload(host: host, transferPassphrase: transferPassphrase);
+        .createHostPayload(
+          host: host,
+          transferPassphrase: transferPassphrase,
+          includeReferencedKey: host.keyId != null,
+        );
 
     if (!context.mounted) {
       return;
@@ -973,7 +978,11 @@ class _HostRow extends ConsumerWidget {
 
     final payload = await ref
         .read(secureTransferServiceProvider)
-        .createHostPayload(host: host, transferPassphrase: transferPassphrase);
+        .createHostPayload(
+          host: host,
+          transferPassphrase: transferPassphrase,
+          includeReferencedKey: host.keyId != null,
+        );
 
     if (!context.mounted) {
       return;

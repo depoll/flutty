@@ -13,6 +13,7 @@ import '../../domain/services/secure_transfer_service.dart';
 
 /// File extension used for encrypted MonkeySSH transfer packages.
 const monkeySshTransferFileExtension = 'monkeysshx';
+const _maxTransferPayloadBytes = 10 * 1024 * 1024;
 
 /// Source options for transfer imports.
 enum TransferImportSource {
@@ -227,6 +228,14 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
 
   final bytes = result.files.single.bytes;
   if (bytes != null && bytes.isNotEmpty) {
+    if (bytes.length > _maxTransferPayloadBytes) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Transfer file is too large')),
+        );
+      }
+      return null;
+    }
     try {
       return utf8.decode(bytes);
     } on FormatException {
@@ -249,8 +258,18 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
+  final file = File(path);
   try {
-    return await File(path).readAsString();
+    final length = await file.length();
+    if (length > _maxTransferPayloadBytes) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Transfer file is too large')),
+        );
+      }
+      return null;
+    }
+    return await file.readAsString();
   } on FileSystemException {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

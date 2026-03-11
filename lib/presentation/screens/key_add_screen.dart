@@ -1,3 +1,6 @@
+import 'dart:convert';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -128,7 +131,6 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           SegmentedButton<int>(
             segments: const [
               ButtonSegment(value: 2048, label: Text('2048')),
-              ButtonSegment(value: 3072, label: Text('3072')),
               ButtonSegment(value: 4096, label: Text('4096')),
             ],
             selected: {_rsaBits},
@@ -211,16 +213,41 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
     setState(() => _isGenerating = true);
 
     try {
-      // Key generation requires external tools (ssh-keygen, pointycastle)
-      // For now, show a message to import instead
+      final keyService = ref.read(keyServiceProvider);
+      final passphrase = _passphraseController.text.isEmpty
+          ? null
+          : _passphraseController.text;
+      final keyType = switch (_keyType) {
+        'ed25519' => SshKeyType.ed25519,
+        _ => switch (_rsaBits) {
+          2048 => SshKeyType.rsa2048,
+          _ => SshKeyType.rsa4096,
+        },
+      };
+      final result = await keyService.generateKey(
+        name: _nameController.text.trim(),
+        keyType: keyType,
+        passphrase: passphrase,
+      );
+
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text(
-              'Key generation not yet implemented. Please use Import tab.',
-            ),
-          ),
-        );
+        final messenger = ScaffoldMessenger.of(context);
+        if (result == null) {
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Failed to generate key')),
+          );
+        } else {
+          context.pop();
+          messenger.showSnackBar(
+            const SnackBar(content: Text('Key generated successfully')),
+          );
+        }
+      }
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Error generating key: $e')));
       }
     } finally {
       if (mounted) setState(() => _isGenerating = false);
@@ -283,7 +310,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                       child: OutlinedButton.icon(
                         onPressed: _importFromEncryptedFile,
                         icon: const Icon(Icons.file_open),
-                        label: const Text('Import File'),
+                        label: const Text('Import Encrypted File'),
                       ),
                     ),
                   ],
@@ -369,9 +396,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
         // Import from file button
         OutlinedButton.icon(
-          onPressed: _importFromEncryptedFile,
+          onPressed: _importFromFile,
           icon: const Icon(Icons.file_open),
-          label: const Text('Import Encrypted File'),
+          label: const Text('Import from File'),
         ),
       ],
     ),
@@ -425,6 +452,34 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   Future<void> _importFromQrTransfer() async {
     final encodedPayload = await scanTransferPayload(context);
     await _importFromTransferPayload(encodedPayload);
+  }
+
+  Future<void> _importFromFile() async {
+    final result = await FilePicker.platform.pickFiles(withData: true);
+
+    if (!mounted || result == null || result.files.isEmpty) {
+      return;
+    }
+
+    final file = result.files.single;
+    final bytes = file.bytes;
+    if (bytes == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Unable to read selected file')),
+      );
+      return;
+    }
+
+    _privateKeyController.text = utf8.decode(bytes, allowMalformed: true);
+    if (_nameController.text.trim().isEmpty) {
+      final dotIndex = file.name.lastIndexOf('.');
+      _nameController.text = dotIndex > 0
+          ? file.name.substring(0, dotIndex)
+          : file.name;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Loaded "${file.name}"')));
   }
 
   Future<void> _importFromEncryptedFile() async {

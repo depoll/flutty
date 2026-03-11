@@ -75,6 +75,51 @@ void main() {
     });
 
     test(
+      'includes referenced key data when requested for host export',
+      () async {
+        final keyId = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Deploy Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAA',
+            privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----xyz',
+          ),
+        );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Production',
+                hostname: 'prod.example.com',
+                username: 'root',
+                keyId: Value(keyId),
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
+
+        final encodedPayload = await transferService.createHostPayload(
+          host: host,
+          transferPassphrase: '1234',
+          includeReferencedKey: true,
+        );
+        final decrypted = await transferService.decryptPayload(
+          encodedPayload: encodedPayload,
+          transferPassphrase: '1234',
+        );
+
+        final hostData = Map<String, dynamic>.from(
+          decrypted.data['host'] as Map,
+        );
+        final referencedKey = decrypted.data['referencedKey'];
+        expect(hostData['keyId'], keyId);
+        expect(referencedKey, isA<Map>());
+        expect((referencedKey as Map)['name'], 'Deploy Key');
+      },
+    );
+
+    test(
       'importKeyPayload encrypts imported private material at rest',
       () async {
         final payload = TransferPayload(
