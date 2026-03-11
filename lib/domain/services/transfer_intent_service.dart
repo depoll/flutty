@@ -41,8 +41,19 @@ class TransferIntentService {
       final payload = call.arguments;
       if (payload is String && payload.trim().isNotEmpty) {
         _incomingController.add(payload.trim());
+        unawaited(_ackIncomingTransferPayload());
       }
     });
+  }
+
+  Future<void> _ackIncomingTransferPayload() async {
+    try {
+      await _channel.invokeMethod<String>('consumeIncomingTransferPayload');
+    } on PlatformException {
+      return;
+    } on MissingPluginException {
+      return;
+    }
   }
 
   /// Releases resources held by the service.

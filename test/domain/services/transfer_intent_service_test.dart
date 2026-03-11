@@ -46,5 +46,30 @@ void main() {
         await service.dispose();
       },
     );
+
+    test('acknowledges native pending payload after event delivery', () async {
+      var consumeCallCount = 0;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(transferChannel, (call) async {
+            if (call.method == 'consumeIncomingTransferPayload') {
+              consumeCallCount += 1;
+            }
+            return null;
+          });
+
+      final service = TransferIntentService();
+      final firstPayload = service.incomingPayloads.first;
+
+      final payloadMessage = const StandardMethodCodec().encodeMethodCall(
+        const MethodCall('onIncomingTransferPayload', 'event-payload'),
+      );
+      await TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .handlePlatformMessage(transferChannel.name, payloadMessage, (_) {});
+
+      expect(await firstPayload, 'event-payload');
+      await Future<void>.delayed(Duration.zero);
+      expect(consumeCallCount, 1);
+      await service.dispose();
+    });
   });
 }

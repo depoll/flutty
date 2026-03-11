@@ -300,7 +300,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: _importFromQrTransfer,
+                        onPressed: _isImporting ? null : _importFromQrTransfer,
                         icon: const Icon(Icons.qr_code_scanner),
                         label: const Text('Scan QR'),
                       ),
@@ -308,7 +308,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                     const SizedBox(width: 8),
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: _importFromEncryptedFile,
+                        onPressed: _isImporting
+                            ? null
+                            : _importFromEncryptedFile,
                         icon: const Icon(Icons.file_open),
                         label: const Text('Import Encrypted File'),
                       ),
@@ -396,7 +398,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
         // Import from file button
         OutlinedButton.icon(
-          onPressed: _importFromFile,
+          onPressed: _isImporting ? null : _importFromFile,
           icon: const Icon(Icons.file_open),
           label: const Text('Import from File'),
         ),
@@ -450,11 +452,17 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   }
 
   Future<void> _importFromQrTransfer() async {
+    if (_isImporting) {
+      return;
+    }
     final encodedPayload = await scanTransferPayload(context);
     await _importFromTransferPayload(encodedPayload);
   }
 
   Future<void> _importFromFile() async {
+    if (_isImporting) {
+      return;
+    }
     final result = await FilePicker.platform.pickFiles(withData: true);
 
     if (!mounted || result == null || result.files.isEmpty) {
@@ -483,6 +491,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   }
 
   Future<void> _importFromEncryptedFile() async {
+    if (_isImporting) {
+      return;
+    }
     final encodedPayload = await pickTransferPayloadFromFile(context);
     await _importFromTransferPayload(encodedPayload);
   }
