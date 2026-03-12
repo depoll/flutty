@@ -10,7 +10,7 @@ class AppDelegate: FlutterAppDelegate {
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
-    if let controller = NSApplication.shared.windows.first?.contentViewController as? FlutterViewController {
+    if let controller = mainFlutterWindow?.contentViewController as? FlutterViewController {
       setupTransferChannel(with: controller)
     }
   }

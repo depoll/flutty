@@ -60,6 +60,7 @@ class TransferIntentService {
         _pruneRecentLivePayloads();
         _recentLivePayloads[payload] = DateTime.now();
         _incomingController.add(payload);
+        unawaited(consumeIncomingTransferPayload());
       }
     });
   }

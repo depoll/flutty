@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
@@ -36,6 +37,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _selectedIndex = 0;
   StreamSubscription<String>? _incomingTransferSubscription;
+  final Queue<String> _incomingTransferQueue = Queue<String>();
+  String? _activeIncomingTransferPayload;
   bool _isHandlingIncomingTransfer = false;
 
   // Breakpoint for switching between mobile and desktop layout
@@ -49,7 +52,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     _incomingTransferSubscription = transferIntentService.incomingPayloads
         .listen((payload) {
           if (payload.isNotEmpty && mounted) {
-            unawaited(_handleIncomingTransferPayload(payload));
+            _enqueueIncomingTransferPayload(payload);
           }
         });
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -62,7 +65,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _incomingTransferSubscription?.cancel();
+    unawaited(_incomingTransferSubscription?.cancel());
     super.dispose();
   }
 
@@ -80,14 +83,38 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (!mounted || payload == null || payload.isEmpty) {
       return;
     }
-    await _handleIncomingTransferPayload(payload);
+    _enqueueIncomingTransferPayload(payload);
   }
 
-  Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
+  void _enqueueIncomingTransferPayload(String encodedPayload) {
+    final normalizedPayload = encodedPayload.trim();
+    if (normalizedPayload.isEmpty ||
+        normalizedPayload == _activeIncomingTransferPayload ||
+        _incomingTransferQueue.contains(normalizedPayload)) {
+      return;
+    }
+    _incomingTransferQueue.add(normalizedPayload);
+    unawaited(_processIncomingTransferQueue());
+  }
+
+  Future<void> _processIncomingTransferQueue() async {
     if (_isHandlingIncomingTransfer) {
       return;
     }
-    _isHandlingIncomingTransfer = true;
+    while (mounted && _incomingTransferQueue.isNotEmpty) {
+      _isHandlingIncomingTransfer = true;
+      final encodedPayload = _incomingTransferQueue.removeFirst();
+      _activeIncomingTransferPayload = encodedPayload;
+      try {
+        await _handleIncomingTransferPayload(encodedPayload);
+      } finally {
+        _activeIncomingTransferPayload = null;
+        _isHandlingIncomingTransfer = false;
+      }
+    }
+  }
+
+  Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
     try {
       final transferPassphrase = await showTransferPassphraseDialog(
         context: context,
@@ -173,8 +200,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
-    } finally {
-      _isHandlingIncomingTransfer = false;
     }
   }
 
@@ -849,11 +874,12 @@ class _HostRow extends ConsumerWidget {
   }
 
   void _showMenu(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     final colorScheme = Theme.of(context).colorScheme;
 
     showModalBottomSheet<void>(
-      context: context,
-      builder: (context) => SafeArea(
+      context: parentContext,
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -861,32 +887,32 @@ class _HostRow extends ConsumerWidget {
               leading: const Icon(Icons.copy),
               title: const Text('Duplicate'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_duplicateHost(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_duplicateHost(parentContext, ref));
               },
             ),
             ListTile(
               leading: const Icon(Icons.qr_code_2),
               title: const Text('Show Transfer QR'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_showTransferQr(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_showTransferQr(parentContext, ref));
               },
             ),
             ListTile(
               leading: const Icon(Icons.save_alt),
               title: const Text('Export Encrypted File'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_exportEncryptedFile(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_exportEncryptedFile(parentContext, ref));
               },
             ),
             ListTile(
               leading: Icon(Icons.delete_outline, color: colorScheme.error),
               title: Text('Delete', style: TextStyle(color: colorScheme.error)),
               onTap: () {
-                Navigator.pop(context);
-                _confirmDelete(context, ref);
+                Navigator.pop(sheetContext);
+                _confirmDelete(parentContext, ref);
               },
             ),
           ],
@@ -925,19 +951,26 @@ class _HostRow extends ConsumerWidget {
 
     final payload = await ref
         .read(secureTransferServiceProvider)
-        .createHostPayload(host: host, transferPassphrase: transferPassphrase);
+        .createHostPayload(
+          host: host,
+          transferPassphrase: transferPassphrase,
+          includeReferencedKey: host.keyId != null,
+        );
 
     if (!context.mounted) {
       return;
     }
+
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+    );
 
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => TransferQrScreen(
           title: 'Host Transfer QR',
           payload: payload,
-          defaultFileName:
-              'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+          defaultFileName: defaultFileName,
         ),
       ),
     );
@@ -973,16 +1006,24 @@ class _HostRow extends ConsumerWidget {
 
     final payload = await ref
         .read(secureTransferServiceProvider)
-        .createHostPayload(host: host, transferPassphrase: transferPassphrase);
+        .createHostPayload(
+          host: host,
+          transferPassphrase: transferPassphrase,
+          includeReferencedKey: host.keyId != null,
+        );
 
     if (!context.mounted) {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await saveTransferPayloadToFile(
       context: context,
       payload: payload,
-      defaultFileName: 'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+      defaultFileName: defaultFileName,
     );
   }
 
@@ -1578,13 +1619,16 @@ class _KeyRow extends ConsumerWidget {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await Navigator.of(context).push<void>(
       MaterialPageRoute(
         builder: (_) => TransferQrScreen(
           title: 'Key Transfer QR',
           payload: payload,
-          defaultFileName:
-              'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+          defaultFileName: defaultFileName,
         ),
       ),
     );
@@ -1622,10 +1666,14 @@ class _KeyRow extends ConsumerWidget {
       return;
     }
 
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+    );
+
     await saveTransferPayloadToFile(
       context: context,
       payload: payload,
-      defaultFileName: 'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+      defaultFileName: defaultFileName,
     );
   }
 

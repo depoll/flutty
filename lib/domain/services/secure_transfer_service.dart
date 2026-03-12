@@ -578,7 +578,6 @@ class SecureTransferService {
     await _db.customStatement('DELETE FROM ssh_keys');
     await _db.customStatement('DELETE FROM groups');
     await _db.customStatement('DELETE FROM known_hosts');
-    await _db.customStatement('DELETE FROM settings');
   }
 
   Future<Map<int, int>> _importGroups(

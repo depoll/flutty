@@ -175,6 +175,12 @@ import UIKit
     guard url.pathExtension.lowercased() == "monkeysshx" else {
       return false
     }
+    let accessedSecurityScopedResource = url.startAccessingSecurityScopedResource()
+    defer {
+      if accessedSecurityScopedResource {
+        url.stopAccessingSecurityScopedResource()
+      }
+    }
     do {
       pendingTransferPayload = try readTransferPayload(from: url)
       notifyIncomingTransferPayload()

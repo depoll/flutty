@@ -13,6 +13,20 @@ import '../../domain/services/secure_transfer_service.dart';
 
 /// File extension used for encrypted MonkeySSH transfer packages.
 const monkeySshTransferFileExtension = 'monkeysshx';
+const _maxTransferPayloadBytes = 10 * 1024 * 1024;
+const _defaultTransferFileBaseName = 'monkeyssh-transfer';
+
+/// Normalizes a suggested transfer export filename into a filesystem-safe base.
+String sanitizeTransferFileBaseName(String input) {
+  final normalized = input
+      .trim()
+      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '-')
+      .replaceAll(RegExp(r'\s+'), '-')
+      .replaceAll(RegExp('-+'), '-')
+      .replaceAll(RegExp(r'^\.+|\.+$'), '')
+      .replaceAll(RegExp(r'^-+|-+$'), '');
+  return normalized.isEmpty ? _defaultTransferFileBaseName : normalized;
+}
 
 /// Source options for transfer imports.
 enum TransferImportSource {
@@ -139,9 +153,10 @@ Future<void> saveTransferPayloadToFile({
   required String defaultFileName,
 }) async {
   final bytes = Uint8List.fromList(utf8.encode(payload));
+  final sanitizedBaseName = sanitizeTransferFileBaseName(defaultFileName);
   final targetPath = await FilePicker.platform.saveFile(
     dialogTitle: 'Export encrypted MonkeySSH transfer file',
-    fileName: '$defaultFileName.$monkeySshTransferFileExtension',
+    fileName: '$sanitizedBaseName.$monkeySshTransferFileExtension',
     type: FileType.custom,
     allowedExtensions: const [monkeySshTransferFileExtension],
     bytes: bytes,
@@ -218,7 +233,7 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     dialogTitle: 'Select encrypted MonkeySSH transfer file',
     type: FileType.custom,
     allowedExtensions: const [monkeySshTransferFileExtension],
-    withData: true,
+    withData: kIsWeb,
   );
 
   if (result == null || result.files.isEmpty) {
@@ -227,6 +242,14 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
 
   final bytes = result.files.single.bytes;
   if (bytes != null && bytes.isNotEmpty) {
+    if (bytes.length > _maxTransferPayloadBytes) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Transfer file is too large')),
+        );
+      }
+      return null;
+    }
     try {
       return utf8.decode(bytes);
     } on FormatException {
@@ -249,8 +272,18 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
+  final file = File(path);
   try {
-    return await File(path).readAsString();
+    final length = await file.length();
+    if (length > _maxTransferPayloadBytes) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Transfer file is too large')),
+        );
+      }
+      return null;
+    }
+    return await file.readAsString();
   } on FileSystemException {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

@@ -58,6 +58,10 @@
 		<dict>
 			<key>CFBundleTypeName</key>
 			<string>MonkeySSH Transfer Package</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>xyz.depollsoft.monkeyssh.transfer</string>
