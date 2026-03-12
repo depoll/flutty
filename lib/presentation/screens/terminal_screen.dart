@@ -27,6 +27,7 @@ import '../widgets/terminal_theme_picker.dart';
 
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
+final _trailingTerminalPaddingPattern = RegExp(r' +$');
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
@@ -56,6 +57,34 @@ double resolveTerminalFontSize({
   double? sessionFontSize,
   double? pinchFontSize,
 }) => pinchFontSize ?? sessionFontSize ?? globalFontSize;
+
+/// Trims terminal cell padding from the end of a rendered line.
+@visibleForTesting
+String trimTerminalLinePadding(String line) =>
+    line.replaceFirst(_trailingTerminalPaddingPattern, '');
+
+/// Trims per-line terminal padding from copied or overlaid terminal text.
+@visibleForTesting
+String trimTerminalSelectionText(String text) =>
+    text.split('\n').map(trimTerminalLinePadding).join('\n');
+
+/// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
+///
+/// We prefer explicit mouse-wheel reporting from terminal applications like
+/// tmux. That keeps wheel scrolling working when the remote app opts in, while
+/// avoiding surprise history navigation when it does not.
+@visibleForTesting
+bool shouldUseSyntheticAltBufferScrollFallback({
+  required bool isMobile,
+  required bool isUsingAltBuffer,
+  required bool preferExplicitMouseReporting,
+}) {
+  if (isMobile || !isUsingAltBuffer) {
+    return false;
+  }
+
+  return !preferExplicitMouseReporting;
+}
 
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
@@ -330,6 +359,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
         });
+        _restoreTerminalFocus();
         return;
       }
 
@@ -356,6 +386,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;
       });
+      _restoreTerminalFocus();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -712,9 +743,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
       _terminalFocusNode.unfocus();
     } else {
-      _terminalFocusNode.requestFocus();
-      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.show'));
+      _restoreTerminalFocus(showSystemKeyboard: true);
     }
+  }
+
+  void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      _terminalFocusNode.requestFocus();
+      if (showSystemKeyboard && _isMobilePlatform) {
+        unawaited(
+          SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
+        );
+      }
+    });
   }
 
   void _handleTerminalScaleStart(double currentFontSize) {
@@ -917,9 +961,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      // On touch devices, simulating wheel scroll with Up/Down keys in alt
-      // buffer makes swipe scroll behave like rapid history navigation.
-      simulateScroll: !isMobile && _isUsingAltBuffer,
+      // xterm already forwards wheel input as mouse events before consulting
+      // this fallback. Keep the synthetic Up/Down fallback disabled so tmux
+      // does not turn scroll gestures into history navigation.
+      simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
+        isMobile: isMobile,
+        isUsingAltBuffer: _isUsingAltBuffer,
+        preferExplicitMouseReporting: true,
+      ),
     );
 
     if (!isMobile) return terminalView;
@@ -1089,6 +1138,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'clear':
         _terminal.buffer.clear();
         _terminalController.clearSelection();
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         break;
       case 'disconnect':
         await _disconnect();
@@ -1230,7 +1280,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       col += step;
     }
 
-    return (text: builder.toString(), columnOffsets: columnOffsets);
+    final trimmedText = trimTerminalLinePadding(builder.toString());
+    if (trimmedText.length == builder.length) {
+      return (text: trimmedText, columnOffsets: columnOffsets);
+    }
+
+    for (var i = 0; i < columnOffsets.length; i++) {
+      if (columnOffsets[i] > trimmedText.length) {
+        columnOffsets[i] = trimmedText.length;
+      }
+    }
+    return (text: trimmedText, columnOffsets: columnOffsets);
   }
 
   TextSelection _bufferRangeToTextSelection(
@@ -1282,7 +1342,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             Expanded(
               child: TextButton.icon(
-                onPressed: _terminalController.clearSelection,
+                onPressed: () {
+                  _terminalController.clearSelection();
+                  _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+                },
                 icon: const Icon(Icons.close),
                 label: const Text('Clear'),
               ),
@@ -1299,13 +1362,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final text = _terminal.buffer.getText(selection);
+    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
     if (text.isEmpty) {
+      _restoreTerminalFocus();
       return;
     }
 
     await Clipboard.setData(ClipboardData(text: text));
     _terminalController.clearSelection();
+    _restoreTerminalFocus();
 
     if (!mounted) {
       return;
@@ -1319,11 +1384,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
     if (text == null || text.isEmpty) {
+      _restoreTerminalFocus();
       return;
     }
 
     _terminal.paste(text);
     _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
@@ -1427,6 +1494,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
 
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
       // Insert the command into terminal
       _terminal.paste(result.command);
