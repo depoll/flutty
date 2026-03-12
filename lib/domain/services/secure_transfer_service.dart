@@ -459,7 +459,7 @@ class SecureTransferService {
         await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
         await _importSettings(
           _settingsFromData(payload.data),
-          clearExisting: false,
+          clearExisting: mode == MigrationImportMode.replace,
         );
       } finally {
         if (deferForeignKeysEnabled) {
@@ -578,7 +578,6 @@ class SecureTransferService {
     await _db.customStatement('DELETE FROM ssh_keys');
     await _db.customStatement('DELETE FROM groups');
     await _db.customStatement('DELETE FROM known_hosts');
-    await _db.customStatement('DELETE FROM settings');
   }
 
   Future<Map<int, int>> _importGroups(
