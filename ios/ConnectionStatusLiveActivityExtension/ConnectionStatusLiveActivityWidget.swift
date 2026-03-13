@@ -75,6 +75,40 @@ struct ConnectionStatusLiveActivityWidget: Widget {
     case dynamicIsland
   }
 
+  private enum MonkeyLogoAssetAvailability {
+    static let lock = NSLock()
+    static var availabilityByName: [String: Bool] = [:]
+    static var loggedMissingAssetNames: Set<String> = []
+
+    static func assetNameIfAvailable(_ assetName: String) -> String? {
+      lock.lock()
+      if let isAvailable = availabilityByName[assetName] {
+        lock.unlock()
+        return isAvailable ? assetName : nil
+      }
+      lock.unlock()
+
+      let isAvailable = UIImage(
+        named: assetName,
+        in: .main,
+        compatibleWith: nil
+      ) != nil
+
+      var shouldLogMissing = false
+      lock.lock()
+      availabilityByName[assetName] = isAvailable
+      if !isAvailable {
+        shouldLogMissing = loggedMissingAssetNames.insert(assetName).inserted
+      }
+      lock.unlock()
+
+      if shouldLogMissing {
+        NSLog("Missing \(assetName) asset in live activity bundle.")
+      }
+      return isAvailable ? assetName : nil
+    }
+  }
+
   @ViewBuilder
   private func monkeyLogo(
     size: CGFloat,
@@ -97,51 +131,62 @@ struct ConnectionStatusLiveActivityWidget: Widget {
   ) -> some View {
     switch style {
       case .fullColor:
-        monkeyLogoImage(
-          named: "MonkeySSHDynamicIslandIcon",
-          renderingMode: .alwaysOriginal
-        )
-          .resizable()
-          .interpolation(.high)
-          .scaledToFit()
-          .frame(width: size, height: size)
+        if let assetName = fullColorMonkeyLogoAssetName() {
+          Image(assetName)
+            .resizable()
+            .interpolation(.high)
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(width: size, height: size)
+        } else {
+          fallbackMonkeyLogo(size: size, style: style)
+        }
       case .dynamicIsland:
-        Image(dynamicIslandMonkeyLogoAssetName())
+        if let assetName = dynamicIslandMonkeyLogoAssetName() {
+          Image(assetName)
+            .resizable()
+            .interpolation(.high)
+            .renderingMode(.original)
+            .scaledToFit()
+            .frame(width: size, height: size)
+        } else {
+          fallbackMonkeyLogo(size: size, style: style)
+        }
+    }
+  }
+
+  @ViewBuilder
+  private func fallbackMonkeyLogo(
+    size: CGFloat,
+    style: MonkeyLogoStyle
+  ) -> some View {
+    switch style {
+      case .fullColor:
+        Image(systemName: "terminal.fill")
           .resizable()
-          .interpolation(.high)
-          .renderingMode(.original)
           .scaledToFit()
           .frame(width: size, height: size)
+          .foregroundStyle(.white)
+      case .dynamicIsland:
+        Image(systemName: "network")
+          .resizable()
+          .scaledToFit()
+          .frame(width: size, height: size)
+          .foregroundStyle(.white)
     }
   }
 
-  private func dynamicIslandMonkeyLogoAssetName() -> String {
+  private func fullColorMonkeyLogoAssetName() -> String? {
+    MonkeyLogoAssetAvailability.assetNameIfAvailable("MonkeySSHDynamicIslandIcon")
+  }
+
+  private func dynamicIslandMonkeyLogoAssetName() -> String? {
     let bundleIdentifier = Bundle.main.bundleIdentifier ?? ""
-    if bundleIdentifier.contains(".private.") {
-      return "DynamicIslandMonkeyMonochromePrivate"
-    }
-    return "DynamicIslandMonkeyMonochrome"
-  }
-
-  private func monkeyLogoImage(
-    named imageName: String,
-    renderingMode: UIImage.RenderingMode
-  ) -> Image {
-    guard
-      let imagePath = Bundle.main.path(
-        forResource: imageName,
-        ofType: "png"
-      ),
-      let image = UIImage(contentsOfFile: imagePath)?
-        .withRenderingMode(renderingMode)
-    else {
-      assertionFailure(
-        "\(imageName).png is missing from the Live Activity extension bundle."
-      )
-      return Image(systemName: "network")
-    }
-
-    return Image(uiImage: image)
+    let assetName =
+      bundleIdentifier.contains(".private.")
+      ? "DynamicIslandMonkeyMonochromePrivate"
+      : "DynamicIslandMonkeyMonochrome"
+    return MonkeyLogoAssetAvailability.assetNameIfAvailable(assetName)
   }
 
   private func connectionStatusSummary(

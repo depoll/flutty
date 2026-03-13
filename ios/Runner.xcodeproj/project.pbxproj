@@ -11,7 +11,6 @@
 		0D148A56B5D9DF36A2760A83 /* ConnectionStatusLiveActivityBundle.swift in Sources */ = {isa = PBXBuildFile; fileRef = 3D2BCA6DCB8D9820FBD06A21 /* ConnectionStatusLiveActivityBundle.swift */; };
 		10F236A3A094B53411236F3F /* ConnectionStatusLiveActivityManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = EE6E480B21DAC7FC2B72ED72 /* ConnectionStatusLiveActivityManager.swift */; };
 		11A5A1B98F1D4C6EA1B2C301 /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 11A5A1B88F1D4C6EA1B2C300 /* Assets.xcassets */; };
-		12C5A9B88F1D4C6EA1B2C3D4 /* MonkeySSHDynamicIslandIcon.png in Resources */ = {isa = PBXBuildFile; fileRef = 8D7C6B5A4E3F2D1C0B9A8877 /* MonkeySSHDynamicIslandIcon.png */; };
 		1498D2341E8E89220040F4C2 /* GeneratedPluginRegistrant.m in Sources */ = {isa = PBXBuildFile; fileRef = 1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */; };
 		331C808B294A63AB00263BE5 /* RunnerTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 331C807B294A618700263BE5 /* RunnerTests.swift */; };
 		368C996A2EC5C1820960D9D8 /* ConnectionStatusAttributes.swift in Sources */ = {isa = PBXBuildFile; fileRef = C26A805B242F5546A209DB80 /* ConnectionStatusAttributes.swift */; };
@@ -89,7 +88,6 @@
 		74858FAE1ED2DC5600515810 /* AppDelegate.swift */ = {isa = PBXFileReference; fileEncoding = 4; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
 		7528B8649BA5046E7AB6D7E2 /* Pods-RunnerTests.profile.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.profile.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.profile.xcconfig"; sourceTree = "<group>"; };
 		7AFA3C8E1D35360C0083082E /* Release.xcconfig */ = {isa = PBXFileReference; lastKnownFileType = text.xcconfig; name = Release.xcconfig; path = Flutter/Release.xcconfig; sourceTree = "<group>"; };
-		8D7C6B5A4E3F2D1C0B9A8877 /* MonkeySSHDynamicIslandIcon.png */ = {isa = PBXFileReference; lastKnownFileType = image.png; path = MonkeySSHDynamicIslandIcon.png; sourceTree = "<group>"; };
 		11A5A1B88F1D4C6EA1B2C300 /* Assets.xcassets */ = {isa = PBXFileReference; lastKnownFileType = folder.assetcatalog; path = Assets.xcassets; sourceTree = "<group>"; };
 		9476D1F8792EFC31903B5B95 /* Pods_Runner.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_Runner.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		94F8AFE2C57A238F01F38EB0 /* Pods-Runner.profile-private.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.profile-private.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.profile-private.xcconfig"; sourceTree = "<group>"; };
@@ -221,7 +219,6 @@
 				3D2BCA6DCB8D9820FBD06A21 /* ConnectionStatusLiveActivityBundle.swift */,
 				EA8C22083AFB91079DC3816C /* ConnectionStatusLiveActivityWidget.swift */,
 				11A5A1B88F1D4C6EA1B2C300 /* Assets.xcassets */,
-				8D7C6B5A4E3F2D1C0B9A8877 /* MonkeySSHDynamicIslandIcon.png */,
 				EB229B402BD78D4035BBADEA /* Info.plist */,
 			);
 			name = ConnectionStatusLiveActivityExtension;
@@ -391,7 +388,6 @@
 			buildActionMask = 2147483647;
 			files = (
 				11A5A1B98F1D4C6EA1B2C301 /* Assets.xcassets in Resources */,
-				12C5A9B88F1D4C6EA1B2C3D4 /* MonkeySSHDynamicIslandIcon.png in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
