@@ -1,5 +1,6 @@
 import ActivityKit
 import SwiftUI
+import UIKit
 import WidgetKit
 
 @available(iOS 16.1, *)
@@ -55,13 +56,13 @@ struct ConnectionStatusLiveActivityWidget: Widget {
             .frame(maxWidth: .infinity, alignment: .leading)
         }
       } compactLeading: {
-        monkeyLogo(size: 20, style: .dynamicIsland)
+        monkeyLogo(size: 32, style: .dynamicIsland)
       } compactTrailing: {
         Text("\(context.state.connectionCount)")
           .font(.caption2.bold())
       } minimal: {
         monkeyLogo(
-          size: 18,
+          size: 32,
           style: .dynamicIsland,
           accessibilityLabel: "MonkeySSH"
         )
@@ -96,20 +97,51 @@ struct ConnectionStatusLiveActivityWidget: Widget {
   ) -> some View {
     switch style {
       case .fullColor:
-        Image("MonkeySSHDynamicIslandIcon")
+        monkeyLogoImage(
+          named: "MonkeySSHDynamicIslandIcon",
+          renderingMode: .alwaysOriginal
+        )
           .resizable()
           .interpolation(.high)
-          .renderingMode(.original)
           .scaledToFit()
           .frame(width: size, height: size)
       case .dynamicIsland:
-        Image("MonkeySSHDynamicIslandIcon")
+        Image(dynamicIslandMonkeyLogoAssetName())
           .resizable()
           .interpolation(.high)
           .renderingMode(.original)
           .scaledToFit()
           .frame(width: size, height: size)
     }
+  }
+
+  private func dynamicIslandMonkeyLogoAssetName() -> String {
+    let bundleIdentifier = Bundle.main.bundleIdentifier ?? ""
+    if bundleIdentifier.contains(".private.") {
+      return "DynamicIslandMonkeyMonochromePrivate"
+    }
+    return "DynamicIslandMonkeyMonochrome"
+  }
+
+  private func monkeyLogoImage(
+    named imageName: String,
+    renderingMode: UIImage.RenderingMode
+  ) -> Image {
+    guard
+      let imagePath = Bundle.main.path(
+        forResource: imageName,
+        ofType: "png"
+      ),
+      let image = UIImage(contentsOfFile: imagePath)?
+        .withRenderingMode(renderingMode)
+    else {
+      assertionFailure(
+        "\(imageName).png is missing from the Live Activity extension bundle."
+      )
+      return Image(systemName: "network")
+    }
+
+    return Image(uiImage: image)
   }
 
   private func connectionStatusSummary(
