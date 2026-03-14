@@ -27,6 +27,12 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     signingConfigs {
         if (keystorePropertiesFile.exists()) {
             create("release") {
@@ -73,4 +79,8 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
 }
