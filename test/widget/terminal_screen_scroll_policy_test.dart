@@ -109,4 +109,42 @@ void main() {
       },
     );
   });
+
+  group('terminal scroll policy change helper', () {
+    test('rebuilds when alt-buffer usage changes', () {
+      expect(
+        didTerminalScrollPolicyChange(
+          previousIsUsingAltBuffer: false,
+          nextIsUsingAltBuffer: true,
+          previousReportsMouseWheel: false,
+          nextReportsMouseWheel: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('rebuilds when mouse-wheel reporting changes', () {
+      expect(
+        didTerminalScrollPolicyChange(
+          previousIsUsingAltBuffer: true,
+          nextIsUsingAltBuffer: true,
+          previousReportsMouseWheel: false,
+          nextReportsMouseWheel: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not rebuild when scroll policy inputs are unchanged', () {
+      expect(
+        didTerminalScrollPolicyChange(
+          previousIsUsingAltBuffer: true,
+          nextIsUsingAltBuffer: true,
+          previousReportsMouseWheel: true,
+          nextReportsMouseWheel: true,
+        ),
+        isFalse,
+      );
+    });
+  });
 }

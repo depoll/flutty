@@ -107,6 +107,17 @@ bool shouldFollowTerminalOutput({
   return currentOffset >= maxScrollExtent - tolerance;
 }
 
+/// Whether terminal scroll policy state changed enough to require a rebuild.
+@visibleForTesting
+bool didTerminalScrollPolicyChange({
+  required bool previousIsUsingAltBuffer,
+  required bool nextIsUsingAltBuffer,
+  required bool previousReportsMouseWheel,
+  required bool nextReportsMouseWheel,
+}) =>
+    previousIsUsingAltBuffer != nextIsUsingAltBuffer ||
+    previousReportsMouseWheel != nextReportsMouseWheel;
+
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
@@ -139,6 +150,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _error;
   bool _showKeyboard = true;
   bool _isUsingAltBuffer = false;
+  bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
@@ -183,6 +195,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: false);
     }
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
@@ -200,12 +213,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
-    if (!mounted || _isUsingAltBuffer == isUsingAltBuffer) {
+    final terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+    if (!mounted ||
+        !didTerminalScrollPolicyChange(
+          previousIsUsingAltBuffer: _isUsingAltBuffer,
+          nextIsUsingAltBuffer: isUsingAltBuffer,
+          previousReportsMouseWheel: _terminalReportsMouseWheel,
+          nextReportsMouseWheel: terminalReportsMouseWheel,
+        )) {
       return;
     }
 
     setState(() {
       _isUsingAltBuffer = isUsingAltBuffer;
+      _terminalReportsMouseWheel = terminalReportsMouseWheel;
     });
   }
 
@@ -423,6 +444,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
@@ -440,6 +462,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+      _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
 
       _shell = await session.getShell(
@@ -802,6 +825,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             KeyboardToolbar(
               key: _toolbarKey,
               terminal: _terminal,
+              onKeyPressed: _followLiveOutput,
               terminalFocusNode: _terminalFocusNode,
             ),
         ],
@@ -1039,7 +1063,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         isMobile: isMobile,
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
-        terminalReportsMouseWheel: _terminal.mouseMode.reportScroll,
+        terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
     );
 
