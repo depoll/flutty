@@ -11,6 +11,7 @@ void main() {
           isMobile: true,
           isUsingAltBuffer: true,
           preferExplicitMouseReporting: false,
+          terminalReportsMouseWheel: false,
         ),
         isFalse,
       );
@@ -22,21 +23,41 @@ void main() {
           isMobile: false,
           isUsingAltBuffer: false,
           preferExplicitMouseReporting: false,
+          terminalReportsMouseWheel: false,
         ),
         isFalse,
       );
     });
 
-    test('prefers explicit mouse reporting for tmux-safe scrolling', () {
-      expect(
-        shouldUseSyntheticAltBufferScrollFallback(
-          isMobile: false,
-          isUsingAltBuffer: true,
-          preferExplicitMouseReporting: true,
-        ),
-        isFalse,
-      );
-    });
+    test(
+      'prefers explicit mouse reporting when the terminal reports wheel input',
+      () {
+        expect(
+          shouldUseSyntheticAltBufferScrollFallback(
+            isMobile: false,
+            isUsingAltBuffer: true,
+            preferExplicitMouseReporting: true,
+            terminalReportsMouseWheel: true,
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'falls back when explicit reporting is preferred but not active yet',
+      () {
+        expect(
+          shouldUseSyntheticAltBufferScrollFallback(
+            isMobile: false,
+            isUsingAltBuffer: true,
+            preferExplicitMouseReporting: true,
+            terminalReportsMouseWheel: false,
+          ),
+          isTrue,
+        );
+      },
+    );
 
     test('can still opt into the synthetic fallback when desired', () {
       expect(
@@ -44,9 +65,48 @@ void main() {
           isMobile: false,
           isUsingAltBuffer: true,
           preferExplicitMouseReporting: false,
+          terminalReportsMouseWheel: true,
         ),
         isTrue,
       );
     });
+  });
+
+  group('terminal output follow helpers', () {
+    test('follows output when no scroll clients are attached yet', () {
+      expect(
+        shouldFollowTerminalOutput(
+          hasScrollClients: false,
+          currentOffset: 0,
+          maxScrollExtent: 0,
+        ),
+        isTrue,
+      );
+    });
+
+    test('keeps following when already at the bottom', () {
+      expect(
+        shouldFollowTerminalOutput(
+          hasScrollClients: true,
+          currentOffset: 99.5,
+          maxScrollExtent: 100,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+      'stops following when the viewport is scrolled away from the bottom',
+      () {
+        expect(
+          shouldFollowTerminalOutput(
+            hasScrollClients: true,
+            currentOffset: 72,
+            maxScrollExtent: 100,
+          ),
+          isFalse,
+        );
+      },
+    );
   });
 }
