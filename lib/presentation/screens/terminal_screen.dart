@@ -22,6 +22,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
+import '../widgets/monkey_terminal_view.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
@@ -1046,7 +1047,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminalTextStyle,
     );
 
-    final terminalView = TerminalView(
+    final terminalView = MonkeyTerminalView(
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
