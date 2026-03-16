@@ -130,7 +130,7 @@ jobs:
             core.setOutput('android-link', androidLink);
 
       - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: preview-build
           recreate: true
@@ -217,7 +217,7 @@ jobs:
             core.setOutput('android-link', androidLink);
 
       - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@v2
+        uses: marocchino/sticky-pull-request-comment@v3
         with:
           header: preview-build
           message: |
