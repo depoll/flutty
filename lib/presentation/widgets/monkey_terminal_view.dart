@@ -8,8 +8,10 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
-
 import 'package:xterm/src/core/input/keys.dart';
+import 'package:xterm/src/core/mouse/button.dart';
+import 'package:xterm/src/core/mouse/button_state.dart';
+import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -55,6 +57,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.readOnly = false,
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
+    this.touchScrollToTerminal = false,
   });
 
   /// The underlying terminal that this widget renders.
@@ -148,6 +151,10 @@ class MonkeyTerminalView extends StatefulWidget {
   /// emulators. True by default.
   final bool simulateScroll;
 
+  /// If true, vertical touch drags are converted into terminal scroll input
+  /// instead of scrolling the Flutter viewport.
+  final bool touchScrollToTerminal;
+
   @override
   State<MonkeyTerminalView> createState() => MonkeyTerminalViewState();
 }
@@ -164,6 +171,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   final _viewportKey = GlobalKey();
 
   String? _composingText;
+  Offset _lastTouchScrollPosition = Offset.zero;
+  double _touchScrollRemainder = 0;
 
   late TerminalController _controller;
 
@@ -227,6 +236,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
     Widget child = Scrollable(
       key: _scrollableKey,
       controller: _scrollController,
+      physics: widget.touchScrollToTerminal
+          ? const NeverScrollableScrollPhysics()
+          : null,
       viewportBuilder: (context, offset) {
         return _TerminalView(
           key: _viewportKey,
@@ -247,13 +259,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
       },
     );
 
-    child = MonkeyTerminalScrollGestureHandler(
-      terminal: widget.terminal,
-      simulateScroll: widget.simulateScroll,
-      getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
-      getLineHeight: () => renderTerminal.lineHeight,
-      child: child,
-    );
+    if (!widget.touchScrollToTerminal) {
+      child = MonkeyTerminalScrollGestureHandler(
+        terminal: widget.terminal,
+        simulateScroll: widget.simulateScroll,
+        getCellOffset: (offset) => renderTerminal.getCellOffset(offset),
+        getLineHeight: () => renderTerminal.lineHeight,
+        child: child,
+      );
+    }
 
     if (!widget.hardwareKeyboardOnly) {
       child = CustomTextEdit(
@@ -309,6 +323,12 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           : null,
       onSecondaryTapUp: widget.onSecondaryTapUp != null
           ? _onSecondaryTapUp
+          : null,
+      onTouchScrollStart: widget.touchScrollToTerminal
+          ? _onTouchScrollStart
+          : null,
+      onTouchScrollUpdate: widget.touchScrollToTerminal
+          ? _onTouchScrollUpdate
           : null,
       readOnly: widget.readOnly,
       child: child,
@@ -369,6 +389,76 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   void _onSecondaryTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onSecondaryTapUp?.call(details, offset);
+  }
+
+  void _onTouchScrollStart(DragStartDetails details) {
+    _lastTouchScrollPosition = details.localPosition;
+    _touchScrollRemainder = 0;
+  }
+
+  void _onTouchScrollUpdate(DragUpdateDetails details) {
+    _lastTouchScrollPosition = details.localPosition;
+    _touchScrollRemainder += details.delta.dy;
+
+    final lineHeight = renderTerminal.lineHeight;
+    if (lineHeight <= 0) {
+      return;
+    }
+
+    while (_touchScrollRemainder.abs() >= lineHeight) {
+      final scrollUp = _touchScrollRemainder > 0;
+      final handled = _sendTouchScrollMouseInput(
+        scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
+        _resolveViewportMousePosition(_lastTouchScrollPosition),
+      );
+
+      if (!handled && widget.simulateScroll) {
+        widget.terminal.keyInput(
+          scrollUp ? TerminalKey.arrowUp : TerminalKey.arrowDown,
+        );
+      }
+
+      _touchScrollRemainder += scrollUp ? -lineHeight : lineHeight;
+    }
+  }
+
+  bool _sendTouchScrollMouseInput(
+    TerminalMouseButton button,
+    CellOffset position,
+  ) {
+    if (widget.terminal.mouseMode.reportScroll &&
+        widget.terminal.mouseReportMode == MouseReportMode.sgr) {
+      final sgrButtonId = switch (button) {
+        TerminalMouseButton.wheelUp => 64,
+        TerminalMouseButton.wheelDown => 65,
+        TerminalMouseButton.wheelLeft => 66,
+        TerminalMouseButton.wheelRight => 67,
+        _ => button.id,
+      };
+      widget.terminal.onOutput?.call(
+        '\x1b[<$sgrButtonId;${position.x + 1};${position.y + 1}M',
+      );
+      return true;
+    }
+
+    return widget.terminal.mouseInput(
+      button,
+      TerminalMouseButtonState.down,
+      position,
+    );
+  }
+
+  CellOffset _resolveViewportMousePosition(Offset localPosition) {
+    final cellSize = renderTerminal.cellSize;
+    final cellWidth = cellSize.width <= 0 ? 1.0 : cellSize.width;
+    final cellHeight = cellSize.height <= 0 ? 1.0 : cellSize.height;
+    final maxColumn = widget.terminal.viewWidth - 1;
+    final maxRow = widget.terminal.viewHeight - 1;
+
+    return CellOffset(
+      (localPosition.dx / cellWidth).floor().clamp(0, maxColumn),
+      (localPosition.dy / cellHeight).floor().clamp(0, maxRow),
+    );
   }
 
   bool get hasInputConnection {

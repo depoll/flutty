@@ -6,11 +6,12 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/widgets.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
-import 'monkey_terminal_view.dart';
 import 'package:xterm/src/ui/controller.dart';
-import 'package:xterm/src/ui/gesture/gesture_detector.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
+
+import 'monkey_terminal_gesture_detector.dart';
+import 'monkey_terminal_view.dart';
 
 /// Adapted xterm gesture handler for [MonkeyTerminalView].
 class MonkeyTerminalGestureHandler extends StatefulWidget {
@@ -26,6 +27,8 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onSecondaryTapUp,
     this.onTertiaryTapDown,
     this.onTertiaryTapUp,
+    this.onTouchScrollStart,
+    this.onTouchScrollUpdate,
     this.readOnly = false,
   });
 
@@ -49,6 +52,10 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
 
   final GestureTapUpCallback? onTertiaryTapUp;
 
+  final GestureDragStartCallback? onTouchScrollStart;
+
+  final GestureDragUpdateCallback? onTouchScrollUpdate;
+
   final bool readOnly;
 
   @override
@@ -67,7 +74,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
 
   @override
   Widget build(BuildContext context) {
-    return TerminalGestureDetector(
+    return MonkeyTerminalGestureDetector(
       child: widget.child,
       onTapUp: widget.onTapUp,
       onSingleTapUp: onSingleTapUp,
@@ -76,6 +83,8 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onSecondaryTapUp: onSecondaryTapUp,
       onTertiaryTapDown: onTertiaryTapDown,
       onTertiaryTapUp: onTertiaryTapUp,
+      onTouchScrollStart: widget.onTouchScrollStart,
+      onTouchScrollUpdate: widget.onTouchScrollUpdate,
       onLongPressStart: onLongPressStart,
       onLongPressMoveUpdate: onLongPressMoveUpdate,
       // onLongPressUp: onLongPressUp,

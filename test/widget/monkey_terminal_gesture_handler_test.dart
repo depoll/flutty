@@ -2,9 +2,9 @@ import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_handler.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/src/ui/gesture/gesture_detector.dart';
 import 'package:xterm/xterm.dart';
 
 void main() {
@@ -50,8 +50,8 @@ void main() {
       ),
     );
 
-    final detector = tester.widget<TerminalGestureDetector>(
-      find.byType(TerminalGestureDetector),
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
     );
     detector.onTertiaryTapDown!(
       TapDownDetails(localPosition: const Offset(10, 10)),

@@ -77,12 +77,11 @@ String trimTerminalSelectionText(String text) =>
 /// app has not enabled wheel reporting yet.
 @visibleForTesting
 bool shouldUseSyntheticAltBufferScrollFallback({
-  required bool isMobile,
   required bool isUsingAltBuffer,
   required bool preferExplicitMouseReporting,
   required bool terminalReportsMouseWheel,
 }) {
-  if (isMobile || !isUsingAltBuffer) {
+  if (!isUsingAltBuffer) {
     return false;
   }
 
@@ -92,6 +91,17 @@ bool shouldUseSyntheticAltBufferScrollFallback({
 
   return !terminalReportsMouseWheel;
 }
+
+/// Whether mobile touch drags should be routed into terminal scroll input.
+///
+/// Full-screen apps like tmux or Copilot CLI need direct wheel or synthetic
+/// arrow events instead of letting the Flutter viewport absorb the gesture.
+@visibleForTesting
+bool shouldRouteTouchScrollToTerminal({
+  required bool isMobile,
+  required bool isUsingAltBuffer,
+  required bool terminalReportsMouseWheel,
+}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
 
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
@@ -179,6 +189,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
+
+  bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
+    isMobile: _isMobilePlatform,
+    isUsingAltBuffer: _isUsingAltBuffer,
+    terminalReportsMouseWheel: _terminalReportsMouseWheel,
+  );
+
+  bool get _showsNativeSelectionOverlay =>
+      _isNativeSelectionMode && !_routesTouchScrollToTerminal;
 
   @override
   void initState() {
@@ -298,7 +317,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncNativeScrollFromTerminal() {
-    if (!_isNativeSelectionMode ||
+    if (!_showsNativeSelectionOverlay ||
         _isSyncingNativeScroll ||
         !_terminalScrollController.hasClients ||
         !_nativeSelectionScrollController.hasClients) {
@@ -315,7 +334,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncTerminalScrollFromNative() {
-    if (!_isNativeSelectionMode ||
+    if (!_showsNativeSelectionOverlay ||
         _isSyncingNativeScroll ||
         !_nativeSelectionScrollController.hasClients ||
         !_terminalScrollController.hasClients) {
@@ -1039,6 +1058,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
     );
+    final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
 
     final terminalView = MonkeyTerminalView(
       _terminal,
@@ -1054,11 +1074,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // Let alt-buffer apps keep raw wheel events when they explicitly enable
       // mouse reporting, but fall back to synthetic arrows when they do not.
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
-        isMobile: isMobile,
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
+      touchScrollToTerminal: routeTouchScrollToTerminal,
     );
 
     if (!isMobile) return terminalView;
@@ -1067,7 +1087,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
-    if (_isNativeSelectionMode) {
+    if (_showsNativeSelectionOverlay) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [

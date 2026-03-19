@@ -5,22 +5,23 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
   group('terminal scroll policy helpers', () {
-    test('never simulates alt-buffer scroll on mobile', () {
-      expect(
-        shouldUseSyntheticAltBufferScrollFallback(
-          isMobile: true,
-          isUsingAltBuffer: true,
-          preferExplicitMouseReporting: false,
-          terminalReportsMouseWheel: false,
-        ),
-        isFalse,
-      );
-    });
+    test(
+      'simulates alt-buffer scroll on mobile when wheel reporting is off',
+      () {
+        expect(
+          shouldUseSyntheticAltBufferScrollFallback(
+            isUsingAltBuffer: true,
+            preferExplicitMouseReporting: true,
+            terminalReportsMouseWheel: false,
+          ),
+          isTrue,
+        );
+      },
+    );
 
     test('never simulates scroll outside the alt buffer', () {
       expect(
         shouldUseSyntheticAltBufferScrollFallback(
-          isMobile: false,
           isUsingAltBuffer: false,
           preferExplicitMouseReporting: false,
           terminalReportsMouseWheel: false,
@@ -34,7 +35,6 @@ void main() {
       () {
         expect(
           shouldUseSyntheticAltBufferScrollFallback(
-            isMobile: false,
             isUsingAltBuffer: true,
             preferExplicitMouseReporting: true,
             terminalReportsMouseWheel: true,
@@ -49,7 +49,6 @@ void main() {
       () {
         expect(
           shouldUseSyntheticAltBufferScrollFallback(
-            isMobile: false,
             isUsingAltBuffer: true,
             preferExplicitMouseReporting: true,
             terminalReportsMouseWheel: false,
@@ -62,12 +61,46 @@ void main() {
     test('can still opt into the synthetic fallback when desired', () {
       expect(
         shouldUseSyntheticAltBufferScrollFallback(
-          isMobile: false,
           isUsingAltBuffer: true,
           preferExplicitMouseReporting: false,
           terminalReportsMouseWheel: true,
         ),
         isTrue,
+      );
+    });
+  });
+
+  group('terminal touch scroll routing helper', () {
+    test('routes mobile alt-buffer drags into terminal scroll input', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: true,
+          terminalReportsMouseWheel: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('routes mobile mouse-reporting apps into terminal scroll input', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: false,
+          terminalReportsMouseWheel: true,
+        ),
+        isTrue,
+      );
+    });
+
+    test('keeps plain mobile shell output scrollable in the viewport', () {
+      expect(
+        shouldRouteTouchScrollToTerminal(
+          isMobile: true,
+          isUsingAltBuffer: false,
+          terminalReportsMouseWheel: false,
+        ),
+        isFalse,
       );
     });
   });
