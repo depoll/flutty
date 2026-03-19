@@ -20,6 +20,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
+import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import 'transfer_screen.dart';
@@ -133,7 +134,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       switch (payload.type) {
         case TransferPayloadType.host:
           final host = await transferService.importHostPayload(payload);
-          ref.invalidate(_allHostsStreamProvider);
+          ref.invalidate(allHostsProvider);
           if (!mounted) {
             return;
           }
@@ -143,7 +144,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           break;
         case TransferPayloadType.key:
           final key = await transferService.importKeyPayload(payload);
-          ref.invalidate(_allKeysStreamProvider);
+          ref.invalidate(allKeysProvider);
           if (!mounted) {
             return;
           }
@@ -176,8 +177,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ..invalidate(cursorStyleNotifierProvider)
             ..invalidate(bellSoundNotifierProvider)
             ..invalidate(terminalThemeSettingsProvider)
-            ..invalidate(_allHostsStreamProvider)
-            ..invalidate(_allKeysStreamProvider);
+            ..invalidate(allHostsProvider)
+            ..invalidate(allKeysProvider);
           if (!mounted) {
             return;
           }
@@ -449,7 +450,7 @@ class _HostsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1150,7 +1151,7 @@ class _ConnectionsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
@@ -1367,18 +1368,6 @@ class _SmallIconButton extends StatelessWidget {
   }
 }
 
-/// Provider for all hosts as stream.
-final _allHostsStreamProvider = StreamProvider<List<Host>>((ref) {
-  final repo = ref.watch(hostRepositoryProvider);
-  return repo.watchAll();
-});
-
-/// Provider for all keys as stream.
-final _allKeysStreamProvider = StreamProvider<List<SshKey>>((ref) {
-  final repo = ref.watch(keyRepositoryProvider);
-  return repo.watchAll();
-});
-
 class _KeysPanel extends ConsumerWidget {
   const _KeysPanel();
 
@@ -1386,7 +1375,7 @@ class _KeysPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final keysAsync = ref.watch(_allKeysStreamProvider);
+    final keysAsync = ref.watch(allKeysProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
