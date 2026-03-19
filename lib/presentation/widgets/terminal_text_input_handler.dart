@@ -1,6 +1,5 @@
-import 'dart:ui' show PointerDeviceKind;
-
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter/widgets.dart';
 // xterm 4.0.0 does not expose keyToTerminalKey via a public API.
@@ -12,21 +11,26 @@ import 'package:xterm/xterm.dart';
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
 
-/// Whether a pointer-down event should request the terminal soft keyboard.
+/// Whether a pointer-up event should request the terminal soft keyboard.
 ///
-/// Touch input only opens the keyboard for the first active finger so pinch
-/// gestures do not re-open or disturb the IME on Android and iOS.
+/// Touch input should only open the keyboard after a tap-like gesture. Scrolls
+/// and pinches must not reopen the IME after it has been dismissed.
 @visibleForTesting
-bool shouldRequestKeyboardForTerminalPointerDown({
+bool shouldRequestKeyboardForTerminalPointerUp({
   required PointerDeviceKind pointerKind,
   required int activeTouchPointers,
+  required bool movedBeyondTapSlop,
   required bool readOnly,
 }) {
   if (readOnly) {
     return false;
   }
 
-  return pointerKind != PointerDeviceKind.touch || activeTouchPointers <= 1;
+  if (pointerKind != PointerDeviceKind.touch) {
+    return true;
+  }
+
+  return activeTouchPointers == 1 && !movedBeyondTapSlop;
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -82,6 +86,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     with TextInputClient {
   TextInputConnection? _connection;
   final Set<int> _activeTouchPointers = <int>{};
+  final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
+  final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
 
@@ -109,6 +115,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void dispose() {
     widget.focusNode.removeListener(_onFocusChange);
     _activeTouchPointers.clear();
+    _touchPointerDownPositions.clear();
+    _touchPointersMovedBeyondTapSlop.clear();
     _closeInputConnectionIfNeeded();
     super.dispose();
   }
@@ -117,8 +125,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   Widget build(BuildContext context) => Listener(
     behavior: HitTestBehavior.translucent,
     onPointerDown: _handlePointerDown,
-    onPointerUp: _handlePointerFinished,
-    onPointerCancel: _handlePointerFinished,
+    onPointerMove: _handlePointerMove,
+    onPointerUp: _handlePointerUp,
+    onPointerCancel: _handlePointerCancel,
     child: Focus(
       focusNode: widget.focusNode,
       autofocus: true,
@@ -130,21 +139,54 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _handlePointerDown(PointerDownEvent event) {
     if (event.kind == PointerDeviceKind.touch) {
       _activeTouchPointers.add(event.pointer);
+      _touchPointerDownPositions[event.pointer] = event.position;
+    }
+  }
+
+  void _handlePointerMove(PointerMoveEvent event) {
+    if (event.kind != PointerDeviceKind.touch ||
+        _touchPointersMovedBeyondTapSlop.contains(event.pointer)) {
+      return;
     }
 
-    if (shouldRequestKeyboardForTerminalPointerDown(
+    final startPosition = _touchPointerDownPositions[event.pointer];
+    if (startPosition == null) {
+      return;
+    }
+
+    final delta = event.position - startPosition;
+    if (delta.distance > kTouchSlop) {
+      _touchPointersMovedBeyondTapSlop.add(event.pointer);
+    }
+  }
+
+  void _handlePointerUp(PointerUpEvent event) {
+    final shouldRequestKeyboard = shouldRequestKeyboardForTerminalPointerUp(
       pointerKind: event.kind,
       activeTouchPointers: _activeTouchPointers.length,
+      movedBeyondTapSlop: _touchPointersMovedBeyondTapSlop.contains(
+        event.pointer,
+      ),
       readOnly: widget.readOnly,
-    )) {
+    );
+    _clearPointerTracking(event);
+    if (shouldRequestKeyboard) {
       requestKeyboard();
     }
   }
 
-  void _handlePointerFinished(PointerEvent event) {
-    if (event.kind == PointerDeviceKind.touch) {
-      _activeTouchPointers.remove(event.pointer);
+  void _handlePointerCancel(PointerCancelEvent event) {
+    _clearPointerTracking(event);
+  }
+
+  void _clearPointerTracking(PointerEvent event) {
+    if (event.kind != PointerDeviceKind.touch) {
+      return;
     }
+
+    _activeTouchPointers.remove(event.pointer);
+    _touchPointerDownPositions.remove(event.pointer);
+    _touchPointersMovedBeyondTapSlop.remove(event.pointer);
   }
 
   void _notifyUserInput() {
