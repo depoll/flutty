@@ -185,6 +185,43 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets('notifies when soft-keyboard input is sent to the terminal', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+      var callbackCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onUserInput: () => callbackCount++,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Bhello',
+          selection: TextSelection.collapsed(offset: 7),
+        ),
+      );
+      await tester.pump();
+
+      expect(callbackCount, 1);
+
+      focusNode.dispose();
+    });
   });
 
   group('shouldRequestKeyboardForTerminalPointerDown', () {

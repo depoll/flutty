@@ -47,6 +47,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     required this.child,
     this.deleteDetection = false,
     this.keyboardAppearance = Brightness.dark,
+    this.onUserInput,
     this.readOnly = false,
     super.key,
   });
@@ -65,6 +66,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// The appearance of the keyboard (iOS only).
   final Brightness keyboardAppearance;
+
+  /// Called when user input has been accepted for sending to the terminal.
+  final VoidCallback? onUserInput;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -143,6 +147,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
   }
 
+  void _notifyUserInput() {
+    widget.onUserInput?.call();
+  }
+
   // -- Hardware key event handling --
 
   KeyEventResult _onKeyEvent(FocusNode focusNode, KeyEvent event) {
@@ -173,6 +181,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       alt: HardwareKeyboard.instance.isAltPressed,
       shift: HardwareKeyboard.instance.isShiftPressed,
     );
+
+    if (handled) {
+      _notifyUserInput();
+    }
 
     return handled ? KeyEventResult.handled : KeyEventResult.ignored;
   }
@@ -342,6 +354,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     if (_currentEditingState.text.length < _initEditingState.text.length) {
+      _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.backspace);
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
@@ -350,6 +363,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final currentText = _extractInputText(_currentEditingState.text);
+    if (currentText != _lastSentText) {
+      _notifyUserInput();
+    }
     _pendingEnterActionSuppressions += _sendInputDelta(currentText);
     _syncEditingStateWithUserText(currentText);
   }
@@ -363,6 +379,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _pendingEnterActionSuppressions--;
         return;
       }
+      _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.enter);
     }
   }

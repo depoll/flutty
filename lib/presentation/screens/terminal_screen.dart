@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,11 +21,14 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
+import '../widgets/monkey_terminal_view.dart';
+import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
+const _terminalFollowOutputTolerance = 1.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 
 /// Clamps a terminal font size into the supported zoom range.
@@ -71,20 +73,61 @@ String trimTerminalSelectionText(String text) =>
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
-/// tmux. That keeps wheel scrolling working when the remote app opts in, while
-/// avoiding surprise history navigation when it does not.
+/// tmux, but still need the synthetic fallback whenever the active alt-buffer
+/// app has not enabled wheel reporting yet.
 @visibleForTesting
 bool shouldUseSyntheticAltBufferScrollFallback({
-  required bool isMobile,
   required bool isUsingAltBuffer,
   required bool preferExplicitMouseReporting,
+  required bool terminalReportsMouseWheel,
 }) {
-  if (isMobile || !isUsingAltBuffer) {
+  if (!isUsingAltBuffer) {
     return false;
   }
 
-  return !preferExplicitMouseReporting;
+  if (!preferExplicitMouseReporting) {
+    return true;
+  }
+
+  return !terminalReportsMouseWheel;
 }
+
+/// Whether mobile touch drags should be routed into terminal scroll input.
+///
+/// Full-screen apps like tmux or Copilot CLI need direct wheel or synthetic
+/// arrow events instead of letting the Flutter viewport absorb the gesture.
+@visibleForTesting
+bool shouldRouteTouchScrollToTerminal({
+  required bool isMobile,
+  required bool isUsingAltBuffer,
+  required bool terminalReportsMouseWheel,
+}) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether live terminal output should keep following the current viewport.
+@visibleForTesting
+bool shouldFollowTerminalOutput({
+  required bool hasScrollClients,
+  required double currentOffset,
+  required double maxScrollExtent,
+  double tolerance = _terminalFollowOutputTolerance,
+}) {
+  if (!hasScrollClients) {
+    return true;
+  }
+
+  return currentOffset >= maxScrollExtent - tolerance;
+}
+
+/// Whether terminal scroll policy state changed enough to require a rebuild.
+@visibleForTesting
+bool didTerminalScrollPolicyChange({
+  required bool previousIsUsingAltBuffer,
+  required bool nextIsUsingAltBuffer,
+  required bool previousReportsMouseWheel,
+  required bool nextReportsMouseWheel,
+}) =>
+    previousIsUsingAltBuffer != nextIsUsingAltBuffer ||
+    previousReportsMouseWheel != nextReportsMouseWheel;
 
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
@@ -118,6 +161,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _error;
   bool _showKeyboard = true;
   bool _isUsingAltBuffer = false;
+  bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
   bool _isSyncingNativeScroll = false;
@@ -126,6 +170,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double? _lastPinchScale;
   double? _sessionFontSizeOverride;
   bool _isPinchZooming = false;
+  bool _shouldFollowLiveOutput = true;
+  bool _isTerminalScrollToBottomQueued = false;
 
   // Theme state
   Host? _host;
@@ -144,6 +190,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
 
+  bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
+    isMobile: _isMobilePlatform,
+    isUsingAltBuffer: _isUsingAltBuffer,
+    terminalReportsMouseWheel: _terminalReportsMouseWheel,
+  );
+
+  bool get _showsNativeSelectionOverlay =>
+      _isNativeSelectionMode && !_routesTouchScrollToTerminal;
+
   @override
   void initState() {
     super.initState();
@@ -151,7 +206,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
-      ..addListener(_syncNativeScrollFromTerminal);
+      ..addListener(_handleTerminalScroll);
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
     _nativeSelectionController = TextEditingController();
@@ -160,6 +215,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: false);
     }
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
     _terminalController.addListener(_onSelectionChanged);
     _terminalFocusNode = FocusNode();
@@ -172,13 +228,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
+    if (_shouldFollowLiveOutput) {
+      _queueTerminalScrollToBottom();
+    }
+
     final isUsingAltBuffer = _terminal.isUsingAltBuffer;
-    if (!mounted || _isUsingAltBuffer == isUsingAltBuffer) {
+    final terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+    if (!mounted ||
+        !didTerminalScrollPolicyChange(
+          previousIsUsingAltBuffer: _isUsingAltBuffer,
+          nextIsUsingAltBuffer: isUsingAltBuffer,
+          previousReportsMouseWheel: _terminalReportsMouseWheel,
+          nextReportsMouseWheel: terminalReportsMouseWheel,
+        )) {
       return;
     }
 
     setState(() {
       _isUsingAltBuffer = isUsingAltBuffer;
+      _terminalReportsMouseWheel = terminalReportsMouseWheel;
+    });
+  }
+
+  void _handleTerminalScroll() {
+    _shouldFollowLiveOutput = shouldFollowTerminalOutput(
+      hasScrollClients: _terminalScrollController.hasClients,
+      currentOffset: _terminalScrollController.hasClients
+          ? _terminalScrollController.offset
+          : 0,
+      maxScrollExtent: _terminalScrollController.hasClients
+          ? _terminalScrollController.position.maxScrollExtent
+          : 0,
+    );
+    _syncNativeScrollFromTerminal();
+  }
+
+  void _followLiveOutput() {
+    _shouldFollowLiveOutput = true;
+    _queueTerminalScrollToBottom();
+  }
+
+  void _queueTerminalScrollToBottom() {
+    if (_isTerminalScrollToBottomQueued) {
+      return;
+    }
+
+    _isTerminalScrollToBottomQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalScrollToBottomQueued = false;
+      if (!mounted ||
+          !_shouldFollowLiveOutput ||
+          !_terminalScrollController.hasClients) {
+        return;
+      }
+
+      final position = _terminalScrollController.position;
+      if (shouldFollowTerminalOutput(
+        hasScrollClients: true,
+        currentOffset: _terminalScrollController.offset,
+        maxScrollExtent: position.maxScrollExtent,
+      )) {
+        return;
+      }
+
+      _terminalScrollController.jumpTo(position.maxScrollExtent);
     });
   }
 
@@ -204,7 +317,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncNativeScrollFromTerminal() {
-    if (!_isNativeSelectionMode ||
+    if (!_showsNativeSelectionOverlay ||
         _isSyncingNativeScroll ||
         !_terminalScrollController.hasClients ||
         !_nativeSelectionScrollController.hasClients) {
@@ -221,7 +334,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncTerminalScrollFromNative() {
-    if (!_isNativeSelectionMode ||
+    if (!_showsNativeSelectionOverlay ||
         _isSyncingNativeScroll ||
         !_nativeSelectionScrollController.hasClients ||
         !_terminalScrollController.hasClients) {
@@ -351,6 +464,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
@@ -368,6 +482,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+      _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
 
       _shell = await session.getShell(
@@ -601,7 +716,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..removeListener(_onSelectionChanged)
       ..dispose();
     _terminalScrollController
-      ..removeListener(_syncNativeScrollFromTerminal)
+      ..removeListener(_handleTerminalScroll)
       ..dispose();
     _nativeSelectionScrollController
       ..removeListener(_syncTerminalScrollFromNative)
@@ -730,6 +845,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             KeyboardToolbar(
               key: _toolbarKey,
               terminal: _terminal,
+              onKeyPressed: _followLiveOutput,
               terminalFocusNode: _terminalFocusNode,
             ),
         ],
@@ -767,20 +883,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isPinchZooming = false;
   }
 
-  void _handleTerminalScaleUpdate(
-    ScaleUpdateDetails details,
-    double currentFontSize,
-  ) {
-    if (details.pointerCount < 2) {
-      return;
-    }
-
+  void _handleTerminalScaleUpdate(double scale, double currentFontSize) {
     final displayedFontSize = _pinchFontSize ?? currentFontSize;
     final previousScale = _lastPinchScale ?? 1;
     final nextFontSize = applyTerminalScaleDelta(
       displayedFontSize,
       previousScale,
-      details.scale,
+      scale,
     );
     if (_isPinchZooming && _pinchFontSize == nextFontSize) {
       return;
@@ -789,7 +898,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isPinchZooming = true;
       _pinchFontSize = nextFontSize;
-      _lastPinchScale = details.scale;
+      _lastPinchScale = scale;
     });
   }
 
@@ -949,8 +1058,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
     );
+    final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
 
-    final terminalView = TerminalView(
+    final terminalView = MonkeyTerminalView(
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
@@ -961,37 +1071,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
-      // xterm already forwards wheel input as mouse events before consulting
-      // this fallback. Keep the synthetic Up/Down fallback disabled so tmux
-      // does not turn scroll gestures into history navigation.
+      // Let alt-buffer apps keep raw wheel events when they explicitly enable
+      // mouse reporting, but fall back to synthetic arrows when they do not.
       simulateScroll: shouldUseSyntheticAltBufferScrollFallback(
-        isMobile: isMobile,
         isUsingAltBuffer: _isUsingAltBuffer,
         preferExplicitMouseReporting: true,
+        terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
+      touchScrollToTerminal: routeTouchScrollToTerminal,
     );
 
     if (!isMobile) return terminalView;
 
     Widget mobileTerminalView = terminalView;
-    if (_isUsingAltBuffer) {
-      // xterm's alt-buffer scroll handler can convert touch scroll into input
-      // events for some TUIs. On mobile, consume vertical drags at this layer
-      // so swipe scrolling never becomes terminal key/mouse input.
-      mobileTerminalView = GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onVerticalDragDown: (_) {},
-        onVerticalDragStart: (_) {},
-        onVerticalDragUpdate: (_) {},
-        onVerticalDragEnd: (_) {},
-        onVerticalDragCancel: () {},
-        child: mobileTerminalView,
-      );
-    }
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
-    if (_isNativeSelectionMode) {
+    if (_showsNativeSelectionOverlay) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [
@@ -1045,17 +1141,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       deleteDetection: true,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        dragStartBehavior: DragStartBehavior.down,
-        onScaleStart: (_) => _handleTerminalScaleStart(storedFontSize),
-        onScaleUpdate: (details) =>
-            _handleTerminalScaleUpdate(details, storedFontSize),
-        onScaleEnd: (_) => _handleTerminalScaleEnd(),
-        child: AbsorbPointer(
-          absorbing: _isPinchZooming,
-          child: mobileTerminalView,
-        ),
+      onUserInput: _followLiveOutput,
+      child: TerminalPinchZoomGestureHandler(
+        onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
+        onPinchUpdate: (scale) =>
+            _handleTerminalScaleUpdate(scale, storedFontSize),
+        onPinchEnd: _handleTerminalScaleEnd,
+        child: mobileTerminalView,
       ),
     );
   }
@@ -1388,6 +1480,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _followLiveOutput();
     _terminal.paste(text);
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
@@ -1496,6 +1589,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
+      _followLiveOutput();
       // Insert the command into terminal
       _terminal.paste(result.command);
       // Track usage
