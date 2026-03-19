@@ -67,7 +67,7 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// The appearance of the keyboard (iOS only).
   final Brightness keyboardAppearance;
 
-  /// Called right before user input is sent to the terminal.
+  /// Called when user input has been accepted for sending to the terminal.
   final VoidCallback? onUserInput;
 
   /// Whether input should be suppressed.

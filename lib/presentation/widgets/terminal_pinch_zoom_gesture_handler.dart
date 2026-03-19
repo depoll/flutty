@@ -38,9 +38,14 @@ class TerminalPinchZoomGestureHandler extends StatefulWidget {
 class _TerminalPinchZoomGestureHandlerState
     extends State<TerminalPinchZoomGestureHandler> {
   final Map<int, Offset> _trackedTouchPointers = <int, Offset>{};
+  final GlobalKey _childKey = GlobalKey();
+  final Map<ScrollPosition, double> _frozenScrollOffsets =
+      <ScrollPosition, double>{};
+  final List<ScrollableState> _pendingStates = <ScrollableState>[];
 
   double? _initialDistance;
   bool _isPinching = false;
+  bool _isRestoringScrollOffset = false;
 
   @override
   Widget build(BuildContext context) => Listener(
@@ -49,7 +54,13 @@ class _TerminalPinchZoomGestureHandlerState
     onPointerMove: _handlePointerMove,
     onPointerUp: _handlePointerFinished,
     onPointerCancel: _handlePointerFinished,
-    child: AbsorbPointer(absorbing: _isPinching, child: widget.child),
+    child: NotificationListener<ScrollNotification>(
+      onNotification: _handleScrollNotification,
+      child: AbsorbPointer(
+        absorbing: _isPinching,
+        child: KeyedSubtree(key: _childKey, child: widget.child),
+      ),
+    ),
   );
 
   void _handlePointerDown(PointerDownEvent event) {
@@ -69,6 +80,7 @@ class _TerminalPinchZoomGestureHandlerState
     }
 
     _initialDistance = initialDistance;
+    _freezeDescendantScrollPositions();
     setState(() {
       _isPinching = true;
     });
@@ -103,10 +115,68 @@ class _TerminalPinchZoomGestureHandlerState
     }
 
     _initialDistance = null;
+    _frozenScrollOffsets.clear();
     setState(() {
       _isPinching = false;
     });
     widget.onPinchEnd?.call();
+  }
+
+  bool _handleScrollNotification(ScrollNotification notification) {
+    if (!_isPinching ||
+        _isRestoringScrollOffset ||
+        notification.context == null) {
+      return false;
+    }
+
+    final scrollableState = Scrollable.maybeOf(notification.context!);
+    final position = scrollableState?.position;
+    final frozenOffset = position == null
+        ? null
+        : _frozenScrollOffsets[position];
+    if (position == null ||
+        frozenOffset == null ||
+        (position.pixels - frozenOffset).abs() <= 0.5) {
+      return false;
+    }
+
+    _isRestoringScrollOffset = true;
+    position.jumpTo(
+      frozenOffset.clamp(position.minScrollExtent, position.maxScrollExtent),
+    );
+    _isRestoringScrollOffset = false;
+    return false;
+  }
+
+  void _freezeDescendantScrollPositions() {
+    _frozenScrollOffsets
+      ..clear()
+      ..addEntries(
+        _descendantScrollableStates.map(
+          (scrollableState) => MapEntry(
+            scrollableState.position,
+            scrollableState.position.pixels,
+          ),
+        ),
+      );
+  }
+
+  Iterable<ScrollableState> get _descendantScrollableStates sync* {
+    final rootContext = _childKey.currentContext;
+    if (rootContext == null) {
+      return;
+    }
+
+    void visit(Element element) {
+      if (element is StatefulElement && element.state is ScrollableState) {
+        _pendingStates.add(element.state as ScrollableState);
+      }
+      element.visitChildren(visit);
+    }
+
+    _pendingStates.clear();
+    rootContext.visitChildElements(visit);
+    yield* _pendingStates;
   }
 
   double? get _currentTrackedDistance {

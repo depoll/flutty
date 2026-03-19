@@ -1,3 +1,6 @@
+// Adapted from package:xterm 4.0.0 TerminalView internals to keep a local
+// trackpad/mobile gesture fix. Keep this aligned with the pinned xterm
+// dependency when upgrading.
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions
 
 import 'package:flutter/cupertino.dart';
@@ -119,7 +122,7 @@ class MonkeyTerminalView extends StatefulWidget {
   final bool alwaysShowCursor;
 
   /// Workaround to detect delete key for platforms and IMEs that does not
-  /// emit hardware delete event. Prefered on mobile platforms. [false] by
+  /// emit hardware delete event. Preferred on mobile platforms. [false] by
   /// default.
   final bool deleteDetection;
 

@@ -1,3 +1,5 @@
+// Adapted from package:xterm 4.0.0 gesture internals used by TerminalView.
+// Keep this aligned with the pinned xterm dependency when upgrading.
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, use_late_for_private_fields_and_variables, prefer_expression_function_bodies, sort_child_properties_last, invalid_use_of_internal_member
 
 import 'package:flutter/gestures.dart';
@@ -72,8 +74,8 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onTapDown: onTapDown,
       onSecondaryTapDown: onSecondaryTapDown,
       onSecondaryTapUp: onSecondaryTapUp,
-      onTertiaryTapDown: onSecondaryTapDown,
-      onTertiaryTapUp: onSecondaryTapUp,
+      onTertiaryTapDown: onTertiaryTapDown,
+      onTertiaryTapUp: onTertiaryTapUp,
       onLongPressStart: onLongPressStart,
       onLongPressMoveUpdate: onLongPressMoveUpdate,
       // onLongPressUp: onLongPressUp,
@@ -157,7 +159,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   }
 
   void onTertiaryTapUp(TapUpDetails details) {
-    _tapUp(widget.onTertiaryTapUp, details, TerminalMouseButton.right);
+    _tapUp(widget.onTertiaryTapUp, details, TerminalMouseButton.middle);
   }
 
   void onDoubleTapDown(TapDownDetails details) {

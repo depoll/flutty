@@ -68,4 +68,51 @@ void main() {
     expect(scales.last, greaterThan(1));
     expect(pinchEnds, 1);
   });
+
+  testWidgets('adding a second finger freezes an active scroll drag', (
+    tester,
+  ) async {
+    final scrollController = ScrollController();
+    final scales = <double>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox.expand(
+          child: TerminalPinchZoomGestureHandler(
+            onPinchUpdate: scales.add,
+            child: ListView.builder(
+              controller: scrollController,
+              itemCount: 40,
+              itemExtent: 48,
+              itemBuilder: (context, index) => Text('Row $index'),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final target = find.byType(ListView);
+    final center = tester.getCenter(target);
+    final firstGesture = await tester.startGesture(center);
+    await firstGesture.moveBy(const Offset(0, -160));
+    await tester.pump();
+
+    final offsetBeforePinch = scrollController.offset;
+    expect(offsetBeforePinch, greaterThan(0));
+
+    final secondGesture = await tester.createGesture(pointer: 11);
+    await secondGesture.down(center + const Offset(30, 0));
+    await tester.pump();
+
+    await firstGesture.moveBy(const Offset(0, 20));
+    await secondGesture.moveBy(const Offset(0, -20));
+    await tester.pump();
+
+    expect(scrollController.offset, closeTo(offsetBeforePinch, 0.5));
+    expect(scales, isNotEmpty);
+
+    await firstGesture.up();
+    await secondGesture.up();
+    await tester.pump();
+  });
 }
