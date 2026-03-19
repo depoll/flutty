@@ -19,6 +19,7 @@ final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
 bool shouldRequestKeyboardForTerminalPointerUp({
   required PointerDeviceKind pointerKind,
   required int activeTouchPointers,
+  required bool hadMultipleTouchPointers,
   required bool movedBeyondTapSlop,
   required bool readOnly,
 }) {
@@ -30,7 +31,9 @@ bool shouldRequestKeyboardForTerminalPointerUp({
     return true;
   }
 
-  return activeTouchPointers == 1 && !movedBeyondTapSlop;
+  return activeTouchPointers == 1 &&
+      !hadMultipleTouchPointers &&
+      !movedBeyondTapSlop;
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -88,6 +91,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   final Set<int> _activeTouchPointers = <int>{};
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
+  bool _touchSequenceHadMultiplePointers = false;
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
 
@@ -140,6 +144,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (event.kind == PointerDeviceKind.touch) {
       _activeTouchPointers.add(event.pointer);
       _touchPointerDownPositions[event.pointer] = event.position;
+      if (_activeTouchPointers.length > 1) {
+        _touchSequenceHadMultiplePointers = true;
+      }
     }
   }
 
@@ -164,6 +171,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final shouldRequestKeyboard = shouldRequestKeyboardForTerminalPointerUp(
       pointerKind: event.kind,
       activeTouchPointers: _activeTouchPointers.length,
+      hadMultipleTouchPointers: _touchSequenceHadMultiplePointers,
       movedBeyondTapSlop: _touchPointersMovedBeyondTapSlop.contains(
         event.pointer,
       ),
@@ -187,6 +195,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _activeTouchPointers.remove(event.pointer);
     _touchPointerDownPositions.remove(event.pointer);
     _touchPointersMovedBeyondTapSlop.remove(event.pointer);
+    if (_activeTouchPointers.isEmpty) {
+      _touchSequenceHadMultiplePointers = false;
+    }
   }
 
   void _notifyUserInput() {

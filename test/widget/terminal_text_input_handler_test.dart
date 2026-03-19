@@ -308,6 +308,60 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'does not open the keyboard after a multitouch gesture when the last finger stays still',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        tester.testTextInput.hide();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        final origin =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        final firstGesture = await tester.createGesture(pointer: 1);
+        await firstGesture.down(origin);
+        await tester.pump();
+
+        final secondGesture = await tester.createGesture(pointer: 2);
+        await secondGesture.down(origin + const Offset(20, 0));
+        await tester.pump();
+        await secondGesture.moveBy(const Offset(0, 80));
+        await tester.pump();
+        await secondGesture.up();
+        await tester.pump();
+        await firstGesture.up();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        focusNode.dispose();
+      },
+    );
   });
 
   group('shouldRequestKeyboardForTerminalPointerUp', () {
@@ -316,6 +370,7 @@ void main() {
         shouldRequestKeyboardForTerminalPointerUp(
           pointerKind: PointerDeviceKind.touch,
           activeTouchPointers: 1,
+          hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
           readOnly: false,
         ),
@@ -328,6 +383,7 @@ void main() {
         shouldRequestKeyboardForTerminalPointerUp(
           pointerKind: PointerDeviceKind.touch,
           activeTouchPointers: 1,
+          hadMultipleTouchPointers: false,
           movedBeyondTapSlop: true,
           readOnly: false,
         ),
@@ -340,6 +396,20 @@ void main() {
         shouldRequestKeyboardForTerminalPointerUp(
           pointerKind: PointerDeviceKind.touch,
           activeTouchPointers: 2,
+          hadMultipleTouchPointers: true,
+          movedBeyondTapSlop: false,
+          readOnly: false,
+        ),
+        isFalse,
+      );
+    });
+
+    test('suppresses the keyboard after a multitouch gesture sequence', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerUp(
+          pointerKind: PointerDeviceKind.touch,
+          activeTouchPointers: 1,
+          hadMultipleTouchPointers: true,
           movedBeyondTapSlop: false,
           readOnly: false,
         ),
@@ -352,6 +422,7 @@ void main() {
         shouldRequestKeyboardForTerminalPointerUp(
           pointerKind: PointerDeviceKind.mouse,
           activeTouchPointers: 0,
+          hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
           readOnly: false,
         ),
@@ -364,6 +435,7 @@ void main() {
         shouldRequestKeyboardForTerminalPointerUp(
           pointerKind: PointerDeviceKind.touch,
           activeTouchPointers: 1,
+          hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
           readOnly: true,
         ),
