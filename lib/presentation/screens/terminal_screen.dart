@@ -4,7 +4,6 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/foundation.dart';
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -23,6 +22,7 @@ import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
+import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_theme_picker.dart';
 
@@ -864,20 +864,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isPinchZooming = false;
   }
 
-  void _handleTerminalScaleUpdate(
-    ScaleUpdateDetails details,
-    double currentFontSize,
-  ) {
-    if (details.pointerCount < 2) {
-      return;
-    }
-
+  void _handleTerminalScaleUpdate(double scale, double currentFontSize) {
     final displayedFontSize = _pinchFontSize ?? currentFontSize;
     final previousScale = _lastPinchScale ?? 1;
     final nextFontSize = applyTerminalScaleDelta(
       displayedFontSize,
       previousScale,
-      details.scale,
+      scale,
     );
     if (_isPinchZooming && _pinchFontSize == nextFontSize) {
       return;
@@ -886,7 +879,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isPinchZooming = true;
       _pinchFontSize = nextFontSize;
-      _lastPinchScale = details.scale;
+      _lastPinchScale = scale;
     });
   }
 
@@ -1071,20 +1064,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!isMobile) return terminalView;
 
     Widget mobileTerminalView = terminalView;
-    if (_isUsingAltBuffer) {
-      // xterm's alt-buffer scroll handler can convert touch scroll into input
-      // events for some TUIs. On mobile, consume vertical drags at this layer
-      // so swipe scrolling never becomes terminal key/mouse input.
-      mobileTerminalView = GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onVerticalDragDown: (_) {},
-        onVerticalDragStart: (_) {},
-        onVerticalDragUpdate: (_) {},
-        onVerticalDragEnd: (_) {},
-        onVerticalDragCancel: () {},
-        child: mobileTerminalView,
-      );
-    }
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
@@ -1143,17 +1122,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        dragStartBehavior: DragStartBehavior.down,
-        onScaleStart: (_) => _handleTerminalScaleStart(storedFontSize),
-        onScaleUpdate: (details) =>
-            _handleTerminalScaleUpdate(details, storedFontSize),
-        onScaleEnd: (_) => _handleTerminalScaleEnd(),
-        child: AbsorbPointer(
-          absorbing: _isPinchZooming,
-          child: mobileTerminalView,
-        ),
+      child: TerminalPinchZoomGestureHandler(
+        onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
+        onPinchUpdate: (scale) =>
+            _handleTerminalScaleUpdate(scale, storedFontSize),
+        onPinchEnd: _handleTerminalScaleEnd,
+        child: mobileTerminalView,
       ),
     );
   }
