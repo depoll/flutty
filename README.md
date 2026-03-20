@@ -18,7 +18,7 @@ A cross-platform SSH client built with Flutter, inspired by [Termius](https://te
 - ⌨️ **Rich Keyboard** - Modifier keys, function keys, macros, gestures
 - 📁 **SFTP** - Browse, upload, download, edit remote files
 - 🔑 **Key Management** - Generate, import, export Ed25519/RSA keys
-- 🔄 **Offline Device Transfer** - Encrypted QR and `.monkeysshx` packages for host/key/device migration
+- 🔄 **Offline Device Transfer** - Encrypted `.monkeysshx` packages for host/key/device migration
 - 📂 **Organization** - Groups, folders, tags, favorites, search
 - 🚇 **Port Forwarding** - Local & remote tunnels
 - 📝 **Snippets** - Save and execute common commands
@@ -159,7 +159,7 @@ Recent hardening changes:
   - Android disables app backup and excludes app data from backup/device-transfer rules.
   - iOS disables `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`.
 
-Transfer packages are encrypted with a user-provided passphrase and are intended for direct device-to-device transfer (QR / encrypted file import). No cloud sync is required.
+Transfer packages are encrypted with a user-provided passphrase and are intended for direct device-to-device transfer through encrypted file import. No cloud sync is required.
 
 If you discover a security vulnerability, please open an issue.
 

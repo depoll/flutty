@@ -747,17 +747,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _importFromTransfer() async {
-    final source = await showTransferImportSourceSheet(context);
-    if (!mounted || source == null) {
-      return;
-    }
-
-    String? encodedPayload;
-    if (source == TransferImportSource.qr) {
-      encodedPayload = await scanTransferPayload(context);
-    } else {
-      encodedPayload = await pickTransferPayloadFromFile(context);
-    }
+    final encodedPayload = await pickTransferPayloadFromFile(context);
     if (!mounted || encodedPayload == null) {
       return;
     }

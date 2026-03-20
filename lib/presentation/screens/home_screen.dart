@@ -893,14 +893,6 @@ class _HostRow extends ConsumerWidget {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.qr_code_2),
-              title: const Text('Show Transfer QR'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_showTransferQr(parentContext, ref));
-              },
-            ),
-            ListTile(
               leading: const Icon(Icons.save_alt),
               title: const Text('Export Encrypted File'),
               onTap: () {
@@ -917,61 +909,6 @@ class _HostRow extends ConsumerWidget {
               },
             ),
           ],
-        ),
-      ),
-    );
-  }
-
-  Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
-    if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
-      final isAuthorized = await authorizeSensitiveTransferExport(
-        context: context,
-        authService: ref.read(authServiceProvider),
-        reason: 'Authenticate to export host credentials',
-      );
-      if (!context.mounted) {
-        return;
-      }
-      if (!isAuthorized) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Authentication required for host export'),
-          ),
-        );
-        return;
-      }
-    }
-
-    final transferPassphrase = await showTransferPassphraseDialog(
-      context: context,
-      title: 'Host transfer passphrase',
-    );
-    if (!context.mounted || transferPassphrase == null) {
-      return;
-    }
-
-    final payload = await ref
-        .read(secureTransferServiceProvider)
-        .createHostPayload(
-          host: host,
-          transferPassphrase: transferPassphrase,
-          includeReferencedKey: host.keyId != null,
-        );
-
-    if (!context.mounted) {
-      return;
-    }
-
-    final defaultFileName = sanitizeTransferFileBaseName(
-      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
-    );
-
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => TransferQrScreen(
-          title: 'Host Transfer QR',
-          payload: payload,
-          defaultFileName: defaultFileName,
         ),
       ),
     );
@@ -1538,10 +1475,6 @@ class _KeyRow extends ConsumerWidget {
 
               // Transfer and key actions
               _SmallIconButton(
-                icon: Icons.qr_code_2,
-                onTap: () => unawaited(_showTransferQr(context, ref)),
-              ),
-              _SmallIconButton(
                 icon: Icons.save_alt,
                 onTap: () => unawaited(_exportEncryptedFile(context, ref)),
               ),
@@ -1574,53 +1507,6 @@ class _KeyRow extends ConsumerWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Public key copied')));
-  }
-
-  Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await authorizeSensitiveTransferExport(
-      context: context,
-      authService: ref.read(authServiceProvider),
-      reason: 'Authenticate to export private key',
-    );
-    if (!context.mounted) {
-      return;
-    }
-    if (!isAuthorized) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Authentication required for key export')),
-      );
-      return;
-    }
-
-    final transferPassphrase = await showTransferPassphraseDialog(
-      context: context,
-      title: 'Key transfer passphrase',
-    );
-    if (!context.mounted || transferPassphrase == null) {
-      return;
-    }
-
-    final payload = await ref
-        .read(secureTransferServiceProvider)
-        .createKeyPayload(key: sshKey, transferPassphrase: transferPassphrase);
-
-    if (!context.mounted) {
-      return;
-    }
-
-    final defaultFileName = sanitizeTransferFileBaseName(
-      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
-    );
-
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => TransferQrScreen(
-          title: 'Key Transfer QR',
-          payload: payload,
-          defaultFileName: defaultFileName,
-        ),
-      ),
-    );
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
