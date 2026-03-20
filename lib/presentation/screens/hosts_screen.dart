@@ -29,14 +29,27 @@ class HostsScreen extends ConsumerStatefulWidget {
 class _HostsScreenState extends ConsumerState<HostsScreen> {
   String _searchQuery = '';
   int? _selectedGroupId;
+  late final ProviderSubscription<AsyncValue<List<Group>>> _groupsSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _groupsSubscription = ref.listenManual<AsyncValue<List<Group>>>(
+      allGroupsProvider,
+      (previous, next) => _clearSelectedGroupIfMissing(next.asData?.value),
+    );
+  }
+
+  @override
+  void dispose() {
+    _groupsSubscription.close();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final hostsAsync = ref.watch(allHostsProvider);
-    final groups = ref.watch(allGroupsProvider).asData?.value;
     final theme = Theme.of(context);
-
-    _clearSelectedGroupIfMissing(groups);
 
     return Scaffold(
       appBar: AppBar(
@@ -97,13 +110,10 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     if (normalizedGroupId == selectedGroupId) {
       return;
     }
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || _selectedGroupId != selectedGroupId) {
-        return;
-      }
-      setState(() => _selectedGroupId = normalizedGroupId);
-    });
+    if (!mounted || _selectedGroupId != selectedGroupId) {
+      return;
+    }
+    setState(() => _selectedGroupId = normalizedGroupId);
   }
 
   Widget _buildHostList(List<Host> hosts) {
