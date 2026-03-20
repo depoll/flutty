@@ -13,8 +13,8 @@ import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../providers/entity_list_providers.dart';
 import '../widgets/terminal_theme_picker.dart';
-import 'hosts_screen.dart';
 import 'transfer_screen.dart';
 
 /// Screen for adding or editing a host.
@@ -124,7 +124,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.hostId != null;
-    final keysAsync = ref.watch(_allKeysProvider);
+    final keysAsync = ref.watch(allKeysProvider);
     final hostsAsync = ref.watch(allHostsProvider);
     final snippetsAsync = ref.watch(_allSnippetsProvider);
 
@@ -1525,12 +1525,6 @@ class _PortForwardTile extends StatelessWidget {
     );
   }
 }
-
-/// Provider for all SSH keys as stream.
-final _allKeysProvider = StreamProvider<List<SshKey>>((ref) {
-  final repo = ref.watch(keyRepositoryProvider);
-  return repo.watchAll();
-});
 
 final _allSnippetsProvider = StreamProvider<List<Snippet>>((ref) {
   final repo = ref.watch(snippetRepositoryProvider);

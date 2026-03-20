@@ -13,6 +13,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 
@@ -28,6 +29,22 @@ class HostsScreen extends ConsumerStatefulWidget {
 class _HostsScreenState extends ConsumerState<HostsScreen> {
   String _searchQuery = '';
   int? _selectedGroupId;
+  late final ProviderSubscription<AsyncValue<List<Group>>> _groupsSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _groupsSubscription = ref.listenManual<AsyncValue<List<Group>>>(
+      allGroupsProvider,
+      (previous, next) => _clearSelectedGroupIfMissing(next.asData?.value),
+    );
+  }
+
+  @override
+  void dispose() {
+    _groupsSubscription.close();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -79,6 +96,24 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         label: const Text('Add Host'),
       ),
     );
+  }
+
+  void _clearSelectedGroupIfMissing(List<Group>? groups) {
+    final selectedGroupId = _selectedGroupId;
+    if (selectedGroupId == null || groups == null) {
+      return;
+    }
+    final normalizedGroupId = normalizeSelectedGroupId(
+      selectedGroupId: selectedGroupId,
+      groups: groups,
+    );
+    if (normalizedGroupId == selectedGroupId) {
+      return;
+    }
+    if (!mounted || _selectedGroupId != selectedGroupId) {
+      return;
+    }
+    setState(() => _selectedGroupId = normalizedGroupId);
   }
 
   Widget _buildHostList(List<Host> hosts) {
@@ -491,6 +526,19 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 }
 
+/// Keeps a selected group filter only while that group still exists.
+int? normalizeSelectedGroupId({
+  required int? selectedGroupId,
+  required List<Group>? groups,
+}) {
+  if (selectedGroupId == null || groups == null) {
+    return selectedGroupId;
+  }
+  return groups.any((group) => group.id == selectedGroupId)
+      ? selectedGroupId
+      : null;
+}
+
 class _HostListTile extends ConsumerWidget {
   const _HostListTile({
     required this.host,
@@ -724,9 +772,3 @@ class _HostListTile extends ConsumerWidget {
     }
   }
 }
-
-/// Provider for all hosts - uses stream for auto-refresh on changes.
-final allHostsProvider = StreamProvider<List<Host>>((ref) {
-  final repo = ref.watch(hostRepositoryProvider);
-  return repo.watchAll();
-});
