@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -7,7 +8,10 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:pasteboard/pasteboard.dart';
+import 'package:path/path.dart' as path;
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../data/database/database.dart';
@@ -17,6 +21,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
@@ -789,6 +794,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         title: Text(_host?.label ?? 'Terminal'),
         actions: [
           IconButton(
+            icon: const Icon(Icons.folder_outlined),
+            onPressed: _connectionId == null
+                ? null
+                : _openConnectionFileBrowser,
+            tooltip: 'Browse files',
+          ),
+          IconButton(
             icon: const Icon(Icons.palette_outlined),
             onPressed: _showThemePicker,
             tooltip: 'Change theme',
@@ -1213,6 +1225,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _ => null,
       };
 
+  void _openConnectionFileBrowser() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    context.pushNamed(
+      'sftp',
+      pathParameters: {'hostId': widget.hostId.toString()},
+      queryParameters: {'connectionId': connectionId.toString()},
+    );
+  }
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
@@ -1472,18 +1496,150 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(const SnackBar(content: Text('Copied')));
   }
 
+  void _showClipboardMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  SshSession? _activeSession() {
+    final connectionId = _connectionId;
+    final sessionsNotifier = _sessionsNotifier;
+    if (connectionId == null || sessionsNotifier == null) {
+      return null;
+    }
+    return sessionsNotifier.getSession(connectionId);
+  }
+
   Future<void> _pasteClipboard() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text;
-    if (text == null || text.isEmpty) {
-      _restoreTerminalFocus();
+    try {
+      final clipboardFiles = await Pasteboard.files();
+      if (clipboardFiles.isNotEmpty) {
+        await _pasteClipboardFiles(clipboardFiles);
+        return;
+      }
+
+      final imageBytes = await Pasteboard.image;
+      if (imageBytes != null && imageBytes.isNotEmpty) {
+        await _pasteClipboardImage(imageBytes);
+        return;
+      }
+
+      final text = await Pasteboard.text;
+      if (text == null || text.isEmpty) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage('Clipboard is empty');
+        return;
+      }
+
+      _followLiveOutput();
+      _terminal.paste(text);
+      _terminalController.clearSelection();
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    } on PlatformException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        'Clipboard access failed: ${error.message ?? error.code}',
+      );
+    } on FileSystemException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        error.message.isEmpty
+            ? 'Clipboard file upload failed'
+            : 'Clipboard file upload failed: ${error.message}',
+      );
+    } on SftpError catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Remote upload failed: ${error.message}');
+    }
+  }
+
+  Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
+    final session = _activeSession();
+    if (session == null) {
+      _showClipboardMessage('Connection is not ready yet');
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       return;
     }
 
+    final unsupportedFiles = clipboardFiles.where(
+      (path) => path.startsWith('content://'),
+    );
+    if (unsupportedFiles.isNotEmpty) {
+      _showClipboardMessage(
+        'Clipboard file URIs are not supported on this platform yet',
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    final remoteFileService = ref.read(remoteFileServiceProvider);
+    final sftp = await session.sftp();
+    await remoteFileService.ensureDirectoryExists(
+      sftp,
+      remoteClipboardUploadDirectory,
+    );
+
+    final timestamp = DateTime.now();
+    final remotePaths = <String>[];
+    for (final localPath in clipboardFiles) {
+      final fileName = buildClipboardUploadFileName(
+        path.basename(localPath),
+        timestamp,
+      );
+      final remotePath = joinRemotePath(
+        remoteClipboardUploadDirectory,
+        fileName,
+      );
+      await remoteFileService.uploadStream(
+        sftp: sftp,
+        remotePath: remotePath,
+        stream: File(localPath).openRead(),
+      );
+      remotePaths.add(remotePath);
+    }
+
     _followLiveOutput();
-    _terminal.paste(text);
+    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage(
+      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory',
+    );
+  }
+
+  Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
+    final session = _activeSession();
+    if (session == null) {
+      _showClipboardMessage('Connection is not ready yet');
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    final remoteFileService = ref.read(remoteFileServiceProvider);
+    final sftp = await session.sftp();
+    await remoteFileService.ensureDirectoryExists(
+      sftp,
+      remoteClipboardUploadDirectory,
+    );
+    final remotePath = joinRemotePath(
+      remoteClipboardUploadDirectory,
+      buildClipboardImageFileName(DateTime.now()),
+    );
+    await remoteFileService.uploadBytes(
+      sftp: sftp,
+      remotePath: remotePath,
+      bytes: imageBytes,
+    );
+
+    _followLiveOutput();
+    _terminal.paste('${shellEscapePosix(remotePath)} ');
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage('Uploaded clipboard image to $remotePath');
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.

@@ -8,15 +8,19 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
-  const SftpScreen({required this.hostId, super.key});
+  const SftpScreen({required this.hostId, this.connectionId, super.key});
 
   /// The host ID to connect to.
   final int hostId;
+
+  /// Optional existing connection ID to reuse.
+  final int? connectionId;
 
   @override
   ConsumerState<SftpScreen> createState() => _SftpScreenState();
@@ -29,6 +33,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   bool _isLoading = true;
   String? _error;
   final List<String> _pathHistory = ['/'];
+  String? _hostLabel;
 
   @override
   void initState() {
@@ -43,10 +48,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     });
 
     try {
+      final remoteFileService = ref.read(remoteFileServiceProvider);
       final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-      var connectionId = sessionsNotifier.getPreferredConnectionForHost(
-        widget.hostId,
-      );
+      var connectionId =
+          widget.connectionId ??
+          sessionsNotifier.getPreferredConnectionForHost(widget.hostId);
       var session = connectionId == null
           ? null
           : sessionsNotifier.getSession(connectionId);
@@ -77,7 +83,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
       await sessionsNotifier.syncBackgroundStatus();
       _sftp = await session.sftp();
-      await _loadDirectory(_currentPath);
+      _hostLabel = session.config.hostname;
+      final initialPath = await remoteFileService.resolveInitialDirectory(
+        _sftp!,
+      );
+      _pathHistory
+        ..clear()
+        ..add(initialPath);
+      await _loadDirectory(initialPath);
     } on Exception catch (e) {
       setState(() {
         _isLoading = false;
@@ -139,7 +152,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('SFTP Browser'),
+      title: Text(_hostLabel == null ? 'Files' : 'Files - $_hostLabel'),
       actions: [
         IconButton(
           icon: const Icon(Icons.refresh),
@@ -385,7 +398,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             _InfoRow('Type', file.attr.isDirectory ? 'Directory' : 'File'),
-            _InfoRow('Size', _formatSize(file.attr.size ?? 0)),
+            _InfoRow('Size', formatRemoteFileSize(file.attr.size ?? 0)),
             if (file.attr.modifyTime != null)
               _InfoRow(
                 'Modified',
@@ -557,16 +570,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     try {
       final remotePath = _joinRemotePath(_currentPath, file.filename);
-      final remoteFile = await _sftp!.open(remotePath);
-      final sink = File(savePath).openWrite();
-      try {
-        await for (final chunk in remoteFile.read()) {
-          sink.add(chunk);
-        }
-      } finally {
-        await sink.close();
-        await remoteFile.close();
-      }
+      await ref
+          .read(remoteFileServiceProvider)
+          .downloadFile(
+            sftp: _sftp!,
+            remotePath: remotePath,
+            localPath: savePath,
+          );
 
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
@@ -607,25 +617,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     try {
       final remotePath = _joinRemotePath(_currentPath, file.name);
-      final remoteFile = await _sftp!.open(
-        remotePath,
-        mode:
-            SftpFileOpenMode.write |
-            SftpFileOpenMode.create |
-            SftpFileOpenMode.truncate,
-      );
-      try {
-        await remoteFile
-            .write(
-              readStream.map(
-                (chunk) =>
-                    chunk is Uint8List ? chunk : Uint8List.fromList(chunk),
-              ),
-            )
-            .done;
-      } finally {
-        await remoteFile.close();
-      }
+      await ref
+          .read(remoteFileServiceProvider)
+          .uploadStream(
+            sftp: _sftp!,
+            remotePath: remotePath,
+            stream: readStream,
+          );
       await _loadDirectory(_currentPath);
       if (mounted) {
         ScaffoldMessenger.of(
@@ -679,7 +677,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
 
-      if (_looksBinary(bytes)) {
+      if (looksLikeBinaryContent(bytes)) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(content: Text('Binary files cannot be edited here')),
@@ -753,26 +751,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  String _joinRemotePath(String directory, String name) {
-    if (directory == '/') {
-      return '/$name';
-    }
-    return '$directory/$name';
-  }
-
-  bool _looksBinary(Uint8List bytes) {
-    final sample = bytes.length > 1024 ? bytes.sublist(0, 1024) : bytes;
-    return sample.contains(0);
-  }
-
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
-  }
+  String _joinRemotePath(String directory, String name) =>
+      joinRemotePath(directory, name);
 }
 
 class _FileListTile extends StatelessWidget {
@@ -802,7 +782,7 @@ class _FileListTile extends StatelessWidget {
       subtitle: isDirectory
           ? null
           : Text(
-              _formatSize(file.attr.size ?? 0),
+              formatRemoteFileSize(file.attr.size ?? 0),
               style: theme.textTheme.bodySmall,
             ),
       trailing: isDirectory ? const Icon(Icons.chevron_right, size: 20) : null,
@@ -825,15 +805,6 @@ class _FileListTile extends StatelessWidget {
       'json' || 'yaml' || 'yml' || 'xml' => Icons.data_object,
       _ => Icons.insert_drive_file,
     };
-  }
-
-  String _formatSize(int bytes) {
-    if (bytes < 1024) return '$bytes B';
-    if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
-    if (bytes < 1024 * 1024 * 1024) {
-      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
-    }
-    return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
   }
 }
 
