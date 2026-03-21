@@ -13,21 +13,49 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  validate-pr:
+    name: Validate PR source
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: read
+    outputs:
+      pr-head-sha: ${{ steps.validate.outputs.pr-head-sha }}
+    steps:
+      - name: Validate PR is safe to deploy
+        id: validate
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pull_number = Number('${{ inputs.pr-number }}');
+            const {data: pr} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number,
+            });
+
+            if (pr.head.repo.full_name !== `${owner}/${repo}`) {
+              core.setFailed(
+                `Refusing to deploy PR #${pull_number} from fork ${pr.head.repo.full_name}. ` +
+                `Manual PR preview deploys require a branch in ${owner}/${repo}.`,
+              );
+              return;
+            }
+
+            core.setOutput('pr-head-sha', pr.head.sha);
+
   compute-version:
     name: Compute Version
+    needs: validate-pr
     runs-on: ubuntu-latest
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
-      pr-head-sha: ${{ steps.pr-head.outputs.sha }}
     steps:
       - uses: actions/checkout@v6
         with:
-          ref: refs/pull/${{ inputs.pr-number }}/head
-
-      - name: Resolve PR head SHA
-        id: pr-head
-        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          ref: ${{ needs.validate-pr.outputs.pr-head-sha }}
 
       - name: Compute version
         id: version
@@ -40,38 +68,52 @@ jobs:
 
   deploy:
     name: Deploy to TestFlight & Play Internal
-    needs: compute-version
+    needs: [validate-pr, compute-version]
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       flavor: private
-      source-ref: refs/pull/${{ inputs.pr-number }}/head
+      source-ref: ${{ needs.validate-pr.outputs.pr-head-sha }}
       deploy-ios-to: testflight
       deploy-android-to: internal
     secrets: inherit
 
   verify-pr-source:
     name: Verify PR source ref
-    needs: [compute-version, deploy]
+    needs: [validate-pr, deploy]
     runs-on: ubuntu-latest
     steps:
-      - name: Ensure deployed iOS build used PR head
+      - name: Ensure deployed mobile builds used PR head
         env:
-          EXPECTED_SHA: ${{ needs.compute-version.outputs.pr-head-sha }}
-          ACTUAL_SHA: ${{ needs.deploy.outputs.ios-source-sha }}
+          EXPECTED_SHA: ${{ needs.validate-pr.outputs.pr-head-sha }}
+          ACTUAL_IOS_SHA: ${{ needs.deploy.outputs.ios-source-sha }}
+          ACTUAL_ANDROID_SHA: ${{ needs.deploy.outputs.android-source-sha }}
         run: |
-          if [ -z "$ACTUAL_SHA" ]; then
+          if [ -z "$ACTUAL_IOS_SHA" ]; then
             echo "Missing iOS source SHA output from build-deploy workflow."
             echo "Use the workflow definition from a ref that includes source-ref + ios-source-sha support."
             exit 1
           fi
 
-          if [ "$EXPECTED_SHA" != "$ACTUAL_SHA" ]; then
-            echo "Expected PR head SHA: $EXPECTED_SHA"
-            echo "Actual deployed SHA:  $ACTUAL_SHA"
-            echo "TestFlight deploy did not build from refs/pull/${{ inputs.pr-number }}/head."
+          if [ -z "$ACTUAL_ANDROID_SHA" ]; then
+            echo "Missing Android source SHA output from build-deploy workflow."
+            echo "Use the workflow definition from a ref that includes source-ref + android-source-sha support."
             exit 1
           fi
 
-          echo "Verified deploy source SHA matches PR head: $ACTUAL_SHA"
+          if [ "$EXPECTED_SHA" != "$ACTUAL_ANDROID_SHA" ]; then
+            echo "Expected PR head SHA:     $EXPECTED_SHA"
+            echo "Actual Android deploy SHA: $ACTUAL_ANDROID_SHA"
+            echo "Play internal deploy did not build from PR #${{ inputs.pr-number }}."
+            exit 1
+          fi
+
+          if [ "$EXPECTED_SHA" != "$ACTUAL_IOS_SHA" ]; then
+            echo "Expected PR head SHA: $EXPECTED_SHA"
+            echo "Actual iOS deploy SHA: $ACTUAL_IOS_SHA"
+            echo "TestFlight deploy did not build from PR #${{ inputs.pr-number }}."
+            exit 1
+          fi
+
+          echo "Verified Android and iOS deploy source SHA matches PR head: $EXPECTED_SHA"
