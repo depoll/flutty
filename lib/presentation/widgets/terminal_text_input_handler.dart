@@ -7,6 +7,9 @@ import 'package:flutter/widgets.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
+const _deleteDetectionMarker = '\u200B\u200B';
+final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
+
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
 /// proper IME configuration for swipe typing.
 ///
@@ -209,8 +212,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   TextEditingValue get _initEditingState => widget.deleteDetection
       ? const TextEditingValue(
-          text: '  ',
-          selection: TextSelection.collapsed(offset: 2),
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(
+            offset: _deleteDetectionMarker.length,
+          ),
         )
       : TextEditingValue.empty;
 
@@ -227,10 +232,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   String _extractInputText(String text) {
     final initText = _initEditingState.text;
-    if (text.startsWith(initText)) {
-      return text.substring(initText.length);
+    final extractedText = text.startsWith(initText)
+        ? text.substring(initText.length)
+        : text;
+    if (_lastSentText.isNotEmpty) {
+      return extractedText;
     }
-    return text;
+    return extractedText.replaceFirst(_leadingSwipeNewlinePattern, '');
   }
 
   int _sendInputDelta(String currentText) {
@@ -248,6 +256,24 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     _lastSentText = currentText;
     return '\n'.allMatches(appendedText).length;
+  }
+
+  void _syncEditingStateWithUserText(String userText) {
+    final nextState = widget.deleteDetection
+        ? TextEditingValue(
+            text: '${_initEditingState.text}$userText',
+            selection: TextSelection.collapsed(
+              offset: _initEditingState.text.length + userText.length,
+            ),
+          )
+        : TextEditingValue(
+            text: userText,
+            selection: TextSelection.collapsed(offset: userText.length),
+          );
+    _currentEditingState = nextState;
+    if (hasInputConnection) {
+      _connection!.setEditingState(nextState);
+    }
   }
 
   // -- TextInputClient implementation --
@@ -273,11 +299,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       widget.terminal.keyInput(TerminalKey.backspace);
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
-    } else {
-      _pendingEnterActionSuppressions += _sendInputDelta(
-        _extractInputText(_currentEditingState.text),
-      );
+      _syncEditingStateWithUserText('');
+      return;
     }
+
+    final currentText = _extractInputText(_currentEditingState.text);
+    _pendingEnterActionSuppressions += _sendInputDelta(currentText);
+    _syncEditingStateWithUserText(currentText);
   }
 
   @override
