@@ -8,7 +8,14 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
+import '../../domain/models/terminal_theme.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
+import '../providers/entity_list_providers.dart';
+import '../widgets/connection_attempt_dialog.dart';
+import '../widgets/connection_preview_snippet.dart';
 
 /// Screen displaying list of saved hosts.
 class HostsScreen extends ConsumerStatefulWidget {
@@ -22,6 +29,22 @@ class HostsScreen extends ConsumerStatefulWidget {
 class _HostsScreenState extends ConsumerState<HostsScreen> {
   String _searchQuery = '';
   int? _selectedGroupId;
+  late final ProviderSubscription<AsyncValue<List<Group>>> _groupsSubscription;
+
+  @override
+  void initState() {
+    super.initState();
+    _groupsSubscription = ref.listenManual<AsyncValue<List<Group>>>(
+      allGroupsProvider,
+      (previous, next) => _clearSelectedGroupIfMissing(next.asData?.value),
+    );
+  }
+
+  @override
+  void dispose() {
+    _groupsSubscription.close();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -73,6 +96,24 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         label: const Text('Add Host'),
       ),
     );
+  }
+
+  void _clearSelectedGroupIfMissing(List<Group>? groups) {
+    final selectedGroupId = _selectedGroupId;
+    if (selectedGroupId == null || groups == null) {
+      return;
+    }
+    final normalizedGroupId = normalizeSelectedGroupId(
+      selectedGroupId: selectedGroupId,
+      groups: groups,
+    );
+    if (normalizedGroupId == selectedGroupId) {
+      return;
+    }
+    if (!mounted || _selectedGroupId != selectedGroupId) {
+      return;
+    }
+    setState(() => _selectedGroupId = normalizedGroupId);
   }
 
   Widget _buildHostList(List<Host> hosts) {
@@ -144,14 +185,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 
   Future<void> _openNewConnection(Host host) async {
-    final result = await ref
-        .read(activeSessionsProvider.notifier)
-        .connect(host.id, forceNew: true);
+    final result = await connectToHostWithProgressDialog(context, ref, host);
     if (!mounted) return;
     if (!result.success || result.connectionId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.error ?? 'Connection failed')),
-      );
       return;
     }
     unawaited(
@@ -164,12 +200,9 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
 
     if (connectionIds.isEmpty) {
-      final result = await sessionsNotifier.connect(host.id, forceNew: true);
+      final result = await connectToHostWithProgressDialog(context, ref, host);
       if (!mounted) return;
       if (!result.success || result.connectionId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.error ?? 'Connection failed')),
-        );
         return;
       }
       unawaited(
@@ -191,43 +224,46 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
 
     final selected = await showModalBottomSheet<String>(
       context: context,
-      builder: (context) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              title: Text(host.label),
-              subtitle: Text('${connectionIds.length} active connections'),
-            ),
-            for (final connectionId in connectionIds.reversed)
+      builder: (context) {
+        final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
+        final terminalThemes =
+            ref.read(allTerminalThemesProvider).asData?.value ??
+            TerminalThemes.all;
+        return SafeArea(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
               ListTile(
-                leading: const Icon(Icons.terminal),
-                title: Text('Connection #$connectionId'),
-                subtitle: Text(
-                  '${host.username}@${host.hostname}:${host.port}',
-                ),
-                onTap: () => Navigator.pop(context, '$connectionId'),
+                title: Text(host.label),
+                subtitle: Text('${connectionIds.length} active connections'),
               ),
-            ListTile(
-              leading: const Icon(Icons.add),
-              title: const Text('New connection'),
-              onTap: () => Navigator.pop(context, 'new'),
-            ),
-          ],
-        ),
-      ),
+              for (final connectionId in connectionIds.reversed)
+                _buildConnectionTile(
+                  context,
+                  sessionsNotifier,
+                  terminalThemeSettings,
+                  terminalThemes,
+                  host,
+                  connectionId,
+                ),
+              ListTile(
+                leading: const Icon(Icons.add),
+                title: const Text('New connection'),
+                onTap: () => Navigator.pop(context, 'new'),
+              ),
+            ],
+          ),
+        );
+      },
     );
 
     if (!mounted || selected == null) {
       return;
     }
     if (selected == 'new') {
-      final result = await sessionsNotifier.connect(host.id, forceNew: true);
+      final result = await connectToHostWithProgressDialog(context, ref, host);
       if (!mounted) return;
       if (!result.success || result.connectionId == null) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text(result.error ?? 'Connection failed')),
-        );
         return;
       }
       unawaited(
@@ -277,6 +313,39 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         ).showSnackBar(SnackBar(content: Text('Deleted "${host.label}"')));
       }
     }
+  }
+
+  Widget _buildConnectionTile(
+    BuildContext context,
+    ActiveSessionsNotifier sessionsNotifier,
+    TerminalThemeSettings terminalThemeSettings,
+    List<TerminalThemeData> terminalThemes,
+    Host host,
+    int connectionId,
+  ) {
+    final connection = sessionsNotifier.getActiveConnection(connectionId);
+    final preview = connection?.preview;
+
+    return ListTile(
+      leading: const Icon(Icons.terminal),
+      title: Text('Connection #$connectionId'),
+      subtitle: ConnectionPreviewSnippet(
+        endpoint: '${host.username}@${host.hostname}:${host.port}',
+        preview: preview,
+        windowTitle: connection?.windowTitle,
+        terminalTheme: resolveConnectionPreviewTheme(
+          brightness: Theme.of(context).brightness,
+          themeSettings: terminalThemeSettings,
+          availableThemes: terminalThemes,
+          lightThemeId:
+              connection?.terminalThemeLightId ?? host.terminalThemeLightId,
+          darkThemeId:
+              connection?.terminalThemeDarkId ?? host.terminalThemeDarkId,
+        ),
+      ),
+      isThreeLine: preview?.trim().isNotEmpty ?? false,
+      onTap: () => Navigator.pop(context, '$connectionId'),
+    );
   }
 
   void _showSearchDialog() {
@@ -457,6 +526,19 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
   }
 }
 
+/// Keeps a selected group filter only while that group still exists.
+int? normalizeSelectedGroupId({
+  required int? selectedGroupId,
+  required List<Group>? groups,
+}) {
+  if (selectedGroupId == null || groups == null) {
+    return selectedGroupId;
+  }
+  return groups.any((group) => group.id == selectedGroupId)
+      ? selectedGroupId
+      : null;
+}
+
 class _HostListTile extends ConsumerWidget {
   const _HostListTile({
     required this.host,
@@ -490,67 +572,180 @@ class _HostListTile extends ConsumerWidget {
           state == SshConnectionState.connecting ||
           state == SshConnectionState.authenticating,
     );
+    final connectionAttempt = sessionsNotifier.getConnectionAttempt(host.id);
+    final isConnectionStarting =
+        isConnecting || (connectionAttempt?.isInProgress ?? false);
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final previewEntries = connectionIds
+        .map((connectionId) {
+          final connection = sessionsNotifier.getActiveConnection(connectionId);
+          final connectionState =
+              connectionStates[connectionId] ?? SshConnectionState.connected;
+          return buildConnectionPreviewStackEntry(
+            connectionId: connectionId,
+            state: connectionState,
+            preview: connection?.preview,
+            windowTitle: connection?.windowTitle,
+            brightness: theme.brightness,
+            themeSettings: terminalThemeSettings,
+            availableThemes: terminalThemes,
+            hostLightThemeId: host.terminalThemeLightId,
+            hostDarkThemeId: host.terminalThemeDarkId,
+            connectionLightThemeId: connection?.terminalThemeLightId,
+            connectionDarkThemeId: connection?.terminalThemeDarkId,
+          );
+        })
+        .toList(growable: false);
 
-    return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: isConnected
-            ? Colors.green.withAlpha(50)
-            : theme.colorScheme.surfaceContainerHighest,
-        child: Icon(
-          isConnected ? Icons.link : Icons.dns,
-          color: isConnected ? Colors.green : theme.colorScheme.primary,
-        ),
-      ),
-      title: Text(host.label),
-      subtitle: Text(
-        connectionIds.isEmpty
-            ? '${host.username}@${host.hostname}:${host.port}'
-            : '${host.username}@${host.hostname}:${host.port}  •  '
-                  '${connectionIds.length} connection(s)',
-        style: theme.textTheme.bodySmall,
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (host.isFavorite)
-            const Icon(Icons.star, color: Colors.amber, size: 20),
-          if (isConnecting)
-            const SizedBox(
-              width: 20,
-              height: 20,
-              child: CircularProgressIndicator(strokeWidth: 2),
-            ),
-          IconButton(
-            icon: const Icon(Icons.add),
-            tooltip: 'New connection',
-            onPressed: onNewConnection,
-          ),
-          PopupMenuButton<String>(
-            onSelected: (action) {
-              switch (action) {
-                case 'edit':
-                  onEdit();
-                case 'delete':
-                  onDelete();
-                case 'duplicate':
-                  _duplicateHost(context, ref);
-              }
-            },
-            itemBuilder: (context) => [
-              const PopupMenuItem(value: 'edit', child: Text('Edit')),
-              const PopupMenuItem(value: 'duplicate', child: Text('Duplicate')),
-              PopupMenuItem(
-                value: 'delete',
-                child: Text(
-                  'Delete',
-                  style: TextStyle(color: theme.colorScheme.error),
-                ),
+    return Material(
+      color: Colors.transparent,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsetsDirectional.fromSTEB(16, 12, 8, 12),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: CircleAvatar(
+                      backgroundColor: isConnected
+                          ? theme.colorScheme.primary.withAlpha(18)
+                          : theme.colorScheme.surfaceContainerHighest,
+                      child: Icon(
+                        isConnected ? Icons.link : Icons.dns,
+                        color: isConnected
+                            ? theme.colorScheme.primary
+                            : theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Expanded(
+                              child: Text(
+                                host.label,
+                                style: theme.textTheme.titleMedium?.copyWith(
+                                  fontWeight: FontWeight.w600,
+                                ),
+                              ),
+                            ),
+                            if (host.isFavorite)
+                              const Padding(
+                                padding: EdgeInsetsDirectional.only(
+                                  top: 8,
+                                  start: 8,
+                                  end: 4,
+                                ),
+                                child: Icon(
+                                  Icons.star,
+                                  color: Colors.amber,
+                                  size: 20,
+                                ),
+                              ),
+                            if (isConnectionStarting)
+                              const Padding(
+                                padding: EdgeInsetsDirectional.only(
+                                  top: 8,
+                                  start: 8,
+                                  end: 4,
+                                ),
+                                child: SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                ),
+                              ),
+                            IconButton(
+                              icon: const Icon(Icons.add),
+                              tooltip: 'New connection',
+                              onPressed: onNewConnection,
+                              visualDensity: VisualDensity.compact,
+                            ),
+                            PopupMenuButton<String>(
+                              onSelected: (action) {
+                                switch (action) {
+                                  case 'edit':
+                                    onEdit();
+                                  case 'delete':
+                                    onDelete();
+                                  case 'duplicate':
+                                    _duplicateHost(context, ref);
+                                }
+                              },
+                              itemBuilder: (context) => [
+                                const PopupMenuItem(
+                                  value: 'edit',
+                                  child: Text('Edit'),
+                                ),
+                                const PopupMenuItem(
+                                  value: 'duplicate',
+                                  child: Text('Duplicate'),
+                                ),
+                                PopupMenuItem(
+                                  value: 'delete',
+                                  child: Text(
+                                    'Delete',
+                                    style: TextStyle(
+                                      color: theme.colorScheme.error,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 4),
+                        Text(
+                          connectionIds.isEmpty
+                              ? '${host.username}@${host.hostname}:${host.port}'
+                              : '${host.username}@${host.hostname}:${host.port}  •  '
+                                    '${connectionIds.length} connection(s)',
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: theme.colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                        if (connectionAttempt?.isInProgress ?? false) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            connectionAttempt!.latestMessage,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: theme.colorScheme.primary,
+                              fontWeight: FontWeight.w500,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
               ),
+              if (previewEntries.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsetsDirectional.only(start: 56),
+                  child: ConnectionPreviewStack(entries: previewEntries),
+                ),
+              ],
             ],
           ),
-        ],
+        ),
       ),
-      onTap: onTap,
     );
   }
 
@@ -577,9 +772,3 @@ class _HostListTile extends ConsumerWidget {
     }
   }
 }
-
-/// Provider for all hosts - uses stream for auto-refresh on changes.
-final allHostsProvider = StreamProvider<List<Host>>((ref) {
-  final repo = ref.watch(hostRepositoryProvider);
-  return repo.watchAll();
-});

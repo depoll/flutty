@@ -991,1134 +991,6 @@ class GroupsCompanion extends UpdateCompanion<Group> {
   }
 }
 
-class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
-  @override
-  final GeneratedDatabase attachedDatabase;
-  final String? _alias;
-  $HostsTable(this.attachedDatabase, [this._alias]);
-  static const VerificationMeta _idMeta = const VerificationMeta('id');
-  @override
-  late final GeneratedColumn<int> id = GeneratedColumn<int>(
-    'id',
-    aliasedName,
-    false,
-    hasAutoIncrement: true,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'PRIMARY KEY AUTOINCREMENT',
-    ),
-  );
-  static const VerificationMeta _labelMeta = const VerificationMeta('label');
-  @override
-  late final GeneratedColumn<String> label = GeneratedColumn<String>(
-    'label',
-    aliasedName,
-    false,
-    additionalChecks: GeneratedColumn.checkTextLength(
-      minTextLength: 1,
-      maxTextLength: 255,
-    ),
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _hostnameMeta = const VerificationMeta(
-    'hostname',
-  );
-  @override
-  late final GeneratedColumn<String> hostname = GeneratedColumn<String>(
-    'hostname',
-    aliasedName,
-    false,
-    additionalChecks: GeneratedColumn.checkTextLength(
-      minTextLength: 1,
-      maxTextLength: 255,
-    ),
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _portMeta = const VerificationMeta('port');
-  @override
-  late final GeneratedColumn<int> port = GeneratedColumn<int>(
-    'port',
-    aliasedName,
-    false,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-    defaultValue: const Constant(22),
-  );
-  static const VerificationMeta _usernameMeta = const VerificationMeta(
-    'username',
-  );
-  @override
-  late final GeneratedColumn<String> username = GeneratedColumn<String>(
-    'username',
-    aliasedName,
-    false,
-    additionalChecks: GeneratedColumn.checkTextLength(
-      minTextLength: 1,
-      maxTextLength: 255,
-    ),
-    type: DriftSqlType.string,
-    requiredDuringInsert: true,
-  );
-  static const VerificationMeta _passwordMeta = const VerificationMeta(
-    'password',
-  );
-  @override
-  late final GeneratedColumn<String> password = GeneratedColumn<String>(
-    'password',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _keyIdMeta = const VerificationMeta('keyId');
-  @override
-  late final GeneratedColumn<int> keyId = GeneratedColumn<int>(
-    'key_id',
-    aliasedName,
-    true,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES ssh_keys (id)',
-    ),
-  );
-  static const VerificationMeta _groupIdMeta = const VerificationMeta(
-    'groupId',
-  );
-  @override
-  late final GeneratedColumn<int> groupId = GeneratedColumn<int>(
-    'group_id',
-    aliasedName,
-    true,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES "groups" (id)',
-    ),
-  );
-  static const VerificationMeta _jumpHostIdMeta = const VerificationMeta(
-    'jumpHostId',
-  );
-  @override
-  late final GeneratedColumn<int> jumpHostId = GeneratedColumn<int>(
-    'jump_host_id',
-    aliasedName,
-    true,
-    type: DriftSqlType.int,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'REFERENCES hosts (id)',
-    ),
-  );
-  static const VerificationMeta _isFavoriteMeta = const VerificationMeta(
-    'isFavorite',
-  );
-  @override
-  late final GeneratedColumn<bool> isFavorite = GeneratedColumn<bool>(
-    'is_favorite',
-    aliasedName,
-    false,
-    type: DriftSqlType.bool,
-    requiredDuringInsert: false,
-    defaultConstraints: GeneratedColumn.constraintIsAlways(
-      'CHECK ("is_favorite" IN (0, 1))',
-    ),
-    defaultValue: const Constant(false),
-  );
-  static const VerificationMeta _colorMeta = const VerificationMeta('color');
-  @override
-  late final GeneratedColumn<String> color = GeneratedColumn<String>(
-    'color',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _notesMeta = const VerificationMeta('notes');
-  @override
-  late final GeneratedColumn<String> notes = GeneratedColumn<String>(
-    'notes',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _tagsMeta = const VerificationMeta('tags');
-  @override
-  late final GeneratedColumn<String> tags = GeneratedColumn<String>(
-    'tags',
-    aliasedName,
-    true,
-    type: DriftSqlType.string,
-    requiredDuringInsert: false,
-  );
-  static const VerificationMeta _createdAtMeta = const VerificationMeta(
-    'createdAt',
-  );
-  @override
-  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
-    'created_at',
-    aliasedName,
-    false,
-    type: DriftSqlType.dateTime,
-    requiredDuringInsert: false,
-    defaultValue: currentDateAndTime,
-  );
-  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
-    'updatedAt',
-  );
-  @override
-  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
-    'updated_at',
-    aliasedName,
-    false,
-    type: DriftSqlType.dateTime,
-    requiredDuringInsert: false,
-    defaultValue: currentDateAndTime,
-  );
-  static const VerificationMeta _lastConnectedAtMeta = const VerificationMeta(
-    'lastConnectedAt',
-  );
-  @override
-  late final GeneratedColumn<DateTime> lastConnectedAt =
-      GeneratedColumn<DateTime>(
-        'last_connected_at',
-        aliasedName,
-        true,
-        type: DriftSqlType.dateTime,
-        requiredDuringInsert: false,
-      );
-  static const VerificationMeta _terminalThemeLightIdMeta =
-      const VerificationMeta('terminalThemeLightId');
-  @override
-  late final GeneratedColumn<String> terminalThemeLightId =
-      GeneratedColumn<String>(
-        'terminal_theme_light_id',
-        aliasedName,
-        true,
-        type: DriftSqlType.string,
-        requiredDuringInsert: false,
-      );
-  static const VerificationMeta _terminalThemeDarkIdMeta =
-      const VerificationMeta('terminalThemeDarkId');
-  @override
-  late final GeneratedColumn<String> terminalThemeDarkId =
-      GeneratedColumn<String>(
-        'terminal_theme_dark_id',
-        aliasedName,
-        true,
-        type: DriftSqlType.string,
-        requiredDuringInsert: false,
-      );
-  static const VerificationMeta _terminalFontFamilyMeta =
-      const VerificationMeta('terminalFontFamily');
-  @override
-  late final GeneratedColumn<String> terminalFontFamily =
-      GeneratedColumn<String>(
-        'terminal_font_family',
-        aliasedName,
-        true,
-        type: DriftSqlType.string,
-        requiredDuringInsert: false,
-      );
-  @override
-  List<GeneratedColumn> get $columns => [
-    id,
-    label,
-    hostname,
-    port,
-    username,
-    password,
-    keyId,
-    groupId,
-    jumpHostId,
-    isFavorite,
-    color,
-    notes,
-    tags,
-    createdAt,
-    updatedAt,
-    lastConnectedAt,
-    terminalThemeLightId,
-    terminalThemeDarkId,
-    terminalFontFamily,
-  ];
-  @override
-  String get aliasedName => _alias ?? actualTableName;
-  @override
-  String get actualTableName => $name;
-  static const String $name = 'hosts';
-  @override
-  VerificationContext validateIntegrity(
-    Insertable<Host> instance, {
-    bool isInserting = false,
-  }) {
-    final context = VerificationContext();
-    final data = instance.toColumns(true);
-    if (data.containsKey('id')) {
-      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
-    }
-    if (data.containsKey('label')) {
-      context.handle(
-        _labelMeta,
-        label.isAcceptableOrUnknown(data['label']!, _labelMeta),
-      );
-    } else if (isInserting) {
-      context.missing(_labelMeta);
-    }
-    if (data.containsKey('hostname')) {
-      context.handle(
-        _hostnameMeta,
-        hostname.isAcceptableOrUnknown(data['hostname']!, _hostnameMeta),
-      );
-    } else if (isInserting) {
-      context.missing(_hostnameMeta);
-    }
-    if (data.containsKey('port')) {
-      context.handle(
-        _portMeta,
-        port.isAcceptableOrUnknown(data['port']!, _portMeta),
-      );
-    }
-    if (data.containsKey('username')) {
-      context.handle(
-        _usernameMeta,
-        username.isAcceptableOrUnknown(data['username']!, _usernameMeta),
-      );
-    } else if (isInserting) {
-      context.missing(_usernameMeta);
-    }
-    if (data.containsKey('password')) {
-      context.handle(
-        _passwordMeta,
-        password.isAcceptableOrUnknown(data['password']!, _passwordMeta),
-      );
-    }
-    if (data.containsKey('key_id')) {
-      context.handle(
-        _keyIdMeta,
-        keyId.isAcceptableOrUnknown(data['key_id']!, _keyIdMeta),
-      );
-    }
-    if (data.containsKey('group_id')) {
-      context.handle(
-        _groupIdMeta,
-        groupId.isAcceptableOrUnknown(data['group_id']!, _groupIdMeta),
-      );
-    }
-    if (data.containsKey('jump_host_id')) {
-      context.handle(
-        _jumpHostIdMeta,
-        jumpHostId.isAcceptableOrUnknown(
-          data['jump_host_id']!,
-          _jumpHostIdMeta,
-        ),
-      );
-    }
-    if (data.containsKey('is_favorite')) {
-      context.handle(
-        _isFavoriteMeta,
-        isFavorite.isAcceptableOrUnknown(data['is_favorite']!, _isFavoriteMeta),
-      );
-    }
-    if (data.containsKey('color')) {
-      context.handle(
-        _colorMeta,
-        color.isAcceptableOrUnknown(data['color']!, _colorMeta),
-      );
-    }
-    if (data.containsKey('notes')) {
-      context.handle(
-        _notesMeta,
-        notes.isAcceptableOrUnknown(data['notes']!, _notesMeta),
-      );
-    }
-    if (data.containsKey('tags')) {
-      context.handle(
-        _tagsMeta,
-        tags.isAcceptableOrUnknown(data['tags']!, _tagsMeta),
-      );
-    }
-    if (data.containsKey('created_at')) {
-      context.handle(
-        _createdAtMeta,
-        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
-      );
-    }
-    if (data.containsKey('updated_at')) {
-      context.handle(
-        _updatedAtMeta,
-        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
-      );
-    }
-    if (data.containsKey('last_connected_at')) {
-      context.handle(
-        _lastConnectedAtMeta,
-        lastConnectedAt.isAcceptableOrUnknown(
-          data['last_connected_at']!,
-          _lastConnectedAtMeta,
-        ),
-      );
-    }
-    if (data.containsKey('terminal_theme_light_id')) {
-      context.handle(
-        _terminalThemeLightIdMeta,
-        terminalThemeLightId.isAcceptableOrUnknown(
-          data['terminal_theme_light_id']!,
-          _terminalThemeLightIdMeta,
-        ),
-      );
-    }
-    if (data.containsKey('terminal_theme_dark_id')) {
-      context.handle(
-        _terminalThemeDarkIdMeta,
-        terminalThemeDarkId.isAcceptableOrUnknown(
-          data['terminal_theme_dark_id']!,
-          _terminalThemeDarkIdMeta,
-        ),
-      );
-    }
-    if (data.containsKey('terminal_font_family')) {
-      context.handle(
-        _terminalFontFamilyMeta,
-        terminalFontFamily.isAcceptableOrUnknown(
-          data['terminal_font_family']!,
-          _terminalFontFamilyMeta,
-        ),
-      );
-    }
-    return context;
-  }
-
-  @override
-  Set<GeneratedColumn> get $primaryKey => {id};
-  @override
-  Host map(Map<String, dynamic> data, {String? tablePrefix}) {
-    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
-    return Host(
-      id: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}id'],
-      )!,
-      label: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}label'],
-      )!,
-      hostname: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}hostname'],
-      )!,
-      port: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}port'],
-      )!,
-      username: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}username'],
-      )!,
-      password: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}password'],
-      ),
-      keyId: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}key_id'],
-      ),
-      groupId: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}group_id'],
-      ),
-      jumpHostId: attachedDatabase.typeMapping.read(
-        DriftSqlType.int,
-        data['${effectivePrefix}jump_host_id'],
-      ),
-      isFavorite: attachedDatabase.typeMapping.read(
-        DriftSqlType.bool,
-        data['${effectivePrefix}is_favorite'],
-      )!,
-      color: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}color'],
-      ),
-      notes: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}notes'],
-      ),
-      tags: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}tags'],
-      ),
-      createdAt: attachedDatabase.typeMapping.read(
-        DriftSqlType.dateTime,
-        data['${effectivePrefix}created_at'],
-      )!,
-      updatedAt: attachedDatabase.typeMapping.read(
-        DriftSqlType.dateTime,
-        data['${effectivePrefix}updated_at'],
-      )!,
-      lastConnectedAt: attachedDatabase.typeMapping.read(
-        DriftSqlType.dateTime,
-        data['${effectivePrefix}last_connected_at'],
-      ),
-      terminalThemeLightId: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}terminal_theme_light_id'],
-      ),
-      terminalThemeDarkId: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}terminal_theme_dark_id'],
-      ),
-      terminalFontFamily: attachedDatabase.typeMapping.read(
-        DriftSqlType.string,
-        data['${effectivePrefix}terminal_font_family'],
-      ),
-    );
-  }
-
-  @override
-  $HostsTable createAlias(String alias) {
-    return $HostsTable(attachedDatabase, alias);
-  }
-}
-
-class Host extends DataClass implements Insertable<Host> {
-  /// Unique identifier.
-  final int id;
-
-  /// Display label for the host.
-  final String label;
-
-  /// Hostname or IP address.
-  final String hostname;
-
-  /// SSH port (default 22).
-  final int port;
-
-  /// Username for authentication.
-  final String username;
-
-  /// Optional password (stored encrypted).
-  final String? password;
-
-  /// Reference to SSH key for authentication.
-  final int? keyId;
-
-  /// Reference to parent group.
-  final int? groupId;
-
-  /// Reference to jump host for proxy connections.
-  final int? jumpHostId;
-
-  /// Whether this host is marked as favorite.
-  final bool isFavorite;
-
-  /// Custom color for the host (hex string).
-  final String? color;
-
-  /// Additional notes.
-  final String? notes;
-
-  /// Comma-separated tags.
-  final String? tags;
-
-  /// Creation timestamp.
-  final DateTime createdAt;
-
-  /// Last modified timestamp.
-  final DateTime updatedAt;
-
-  /// Last connection timestamp.
-  final DateTime? lastConnectedAt;
-
-  /// Terminal theme ID for light mode (null = use global default).
-  final String? terminalThemeLightId;
-
-  /// Terminal theme ID for dark mode (null = use global default).
-  final String? terminalThemeDarkId;
-
-  /// Terminal font family (null = use global default).
-  final String? terminalFontFamily;
-  const Host({
-    required this.id,
-    required this.label,
-    required this.hostname,
-    required this.port,
-    required this.username,
-    this.password,
-    this.keyId,
-    this.groupId,
-    this.jumpHostId,
-    required this.isFavorite,
-    this.color,
-    this.notes,
-    this.tags,
-    required this.createdAt,
-    required this.updatedAt,
-    this.lastConnectedAt,
-    this.terminalThemeLightId,
-    this.terminalThemeDarkId,
-    this.terminalFontFamily,
-  });
-  @override
-  Map<String, Expression> toColumns(bool nullToAbsent) {
-    final map = <String, Expression>{};
-    map['id'] = Variable<int>(id);
-    map['label'] = Variable<String>(label);
-    map['hostname'] = Variable<String>(hostname);
-    map['port'] = Variable<int>(port);
-    map['username'] = Variable<String>(username);
-    if (!nullToAbsent || password != null) {
-      map['password'] = Variable<String>(password);
-    }
-    if (!nullToAbsent || keyId != null) {
-      map['key_id'] = Variable<int>(keyId);
-    }
-    if (!nullToAbsent || groupId != null) {
-      map['group_id'] = Variable<int>(groupId);
-    }
-    if (!nullToAbsent || jumpHostId != null) {
-      map['jump_host_id'] = Variable<int>(jumpHostId);
-    }
-    map['is_favorite'] = Variable<bool>(isFavorite);
-    if (!nullToAbsent || color != null) {
-      map['color'] = Variable<String>(color);
-    }
-    if (!nullToAbsent || notes != null) {
-      map['notes'] = Variable<String>(notes);
-    }
-    if (!nullToAbsent || tags != null) {
-      map['tags'] = Variable<String>(tags);
-    }
-    map['created_at'] = Variable<DateTime>(createdAt);
-    map['updated_at'] = Variable<DateTime>(updatedAt);
-    if (!nullToAbsent || lastConnectedAt != null) {
-      map['last_connected_at'] = Variable<DateTime>(lastConnectedAt);
-    }
-    if (!nullToAbsent || terminalThemeLightId != null) {
-      map['terminal_theme_light_id'] = Variable<String>(terminalThemeLightId);
-    }
-    if (!nullToAbsent || terminalThemeDarkId != null) {
-      map['terminal_theme_dark_id'] = Variable<String>(terminalThemeDarkId);
-    }
-    if (!nullToAbsent || terminalFontFamily != null) {
-      map['terminal_font_family'] = Variable<String>(terminalFontFamily);
-    }
-    return map;
-  }
-
-  HostsCompanion toCompanion(bool nullToAbsent) {
-    return HostsCompanion(
-      id: Value(id),
-      label: Value(label),
-      hostname: Value(hostname),
-      port: Value(port),
-      username: Value(username),
-      password: password == null && nullToAbsent
-          ? const Value.absent()
-          : Value(password),
-      keyId: keyId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(keyId),
-      groupId: groupId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(groupId),
-      jumpHostId: jumpHostId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(jumpHostId),
-      isFavorite: Value(isFavorite),
-      color: color == null && nullToAbsent
-          ? const Value.absent()
-          : Value(color),
-      notes: notes == null && nullToAbsent
-          ? const Value.absent()
-          : Value(notes),
-      tags: tags == null && nullToAbsent ? const Value.absent() : Value(tags),
-      createdAt: Value(createdAt),
-      updatedAt: Value(updatedAt),
-      lastConnectedAt: lastConnectedAt == null && nullToAbsent
-          ? const Value.absent()
-          : Value(lastConnectedAt),
-      terminalThemeLightId: terminalThemeLightId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(terminalThemeLightId),
-      terminalThemeDarkId: terminalThemeDarkId == null && nullToAbsent
-          ? const Value.absent()
-          : Value(terminalThemeDarkId),
-      terminalFontFamily: terminalFontFamily == null && nullToAbsent
-          ? const Value.absent()
-          : Value(terminalFontFamily),
-    );
-  }
-
-  factory Host.fromJson(
-    Map<String, dynamic> json, {
-    ValueSerializer? serializer,
-  }) {
-    serializer ??= driftRuntimeOptions.defaultSerializer;
-    return Host(
-      id: serializer.fromJson<int>(json['id']),
-      label: serializer.fromJson<String>(json['label']),
-      hostname: serializer.fromJson<String>(json['hostname']),
-      port: serializer.fromJson<int>(json['port']),
-      username: serializer.fromJson<String>(json['username']),
-      password: serializer.fromJson<String?>(json['password']),
-      keyId: serializer.fromJson<int?>(json['keyId']),
-      groupId: serializer.fromJson<int?>(json['groupId']),
-      jumpHostId: serializer.fromJson<int?>(json['jumpHostId']),
-      isFavorite: serializer.fromJson<bool>(json['isFavorite']),
-      color: serializer.fromJson<String?>(json['color']),
-      notes: serializer.fromJson<String?>(json['notes']),
-      tags: serializer.fromJson<String?>(json['tags']),
-      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
-      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
-      lastConnectedAt: serializer.fromJson<DateTime?>(json['lastConnectedAt']),
-      terminalThemeLightId: serializer.fromJson<String?>(
-        json['terminalThemeLightId'],
-      ),
-      terminalThemeDarkId: serializer.fromJson<String?>(
-        json['terminalThemeDarkId'],
-      ),
-      terminalFontFamily: serializer.fromJson<String?>(
-        json['terminalFontFamily'],
-      ),
-    );
-  }
-  @override
-  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
-    serializer ??= driftRuntimeOptions.defaultSerializer;
-    return <String, dynamic>{
-      'id': serializer.toJson<int>(id),
-      'label': serializer.toJson<String>(label),
-      'hostname': serializer.toJson<String>(hostname),
-      'port': serializer.toJson<int>(port),
-      'username': serializer.toJson<String>(username),
-      'password': serializer.toJson<String?>(password),
-      'keyId': serializer.toJson<int?>(keyId),
-      'groupId': serializer.toJson<int?>(groupId),
-      'jumpHostId': serializer.toJson<int?>(jumpHostId),
-      'isFavorite': serializer.toJson<bool>(isFavorite),
-      'color': serializer.toJson<String?>(color),
-      'notes': serializer.toJson<String?>(notes),
-      'tags': serializer.toJson<String?>(tags),
-      'createdAt': serializer.toJson<DateTime>(createdAt),
-      'updatedAt': serializer.toJson<DateTime>(updatedAt),
-      'lastConnectedAt': serializer.toJson<DateTime?>(lastConnectedAt),
-      'terminalThemeLightId': serializer.toJson<String?>(terminalThemeLightId),
-      'terminalThemeDarkId': serializer.toJson<String?>(terminalThemeDarkId),
-      'terminalFontFamily': serializer.toJson<String?>(terminalFontFamily),
-    };
-  }
-
-  Host copyWith({
-    int? id,
-    String? label,
-    String? hostname,
-    int? port,
-    String? username,
-    Value<String?> password = const Value.absent(),
-    Value<int?> keyId = const Value.absent(),
-    Value<int?> groupId = const Value.absent(),
-    Value<int?> jumpHostId = const Value.absent(),
-    bool? isFavorite,
-    Value<String?> color = const Value.absent(),
-    Value<String?> notes = const Value.absent(),
-    Value<String?> tags = const Value.absent(),
-    DateTime? createdAt,
-    DateTime? updatedAt,
-    Value<DateTime?> lastConnectedAt = const Value.absent(),
-    Value<String?> terminalThemeLightId = const Value.absent(),
-    Value<String?> terminalThemeDarkId = const Value.absent(),
-    Value<String?> terminalFontFamily = const Value.absent(),
-  }) => Host(
-    id: id ?? this.id,
-    label: label ?? this.label,
-    hostname: hostname ?? this.hostname,
-    port: port ?? this.port,
-    username: username ?? this.username,
-    password: password.present ? password.value : this.password,
-    keyId: keyId.present ? keyId.value : this.keyId,
-    groupId: groupId.present ? groupId.value : this.groupId,
-    jumpHostId: jumpHostId.present ? jumpHostId.value : this.jumpHostId,
-    isFavorite: isFavorite ?? this.isFavorite,
-    color: color.present ? color.value : this.color,
-    notes: notes.present ? notes.value : this.notes,
-    tags: tags.present ? tags.value : this.tags,
-    createdAt: createdAt ?? this.createdAt,
-    updatedAt: updatedAt ?? this.updatedAt,
-    lastConnectedAt: lastConnectedAt.present
-        ? lastConnectedAt.value
-        : this.lastConnectedAt,
-    terminalThemeLightId: terminalThemeLightId.present
-        ? terminalThemeLightId.value
-        : this.terminalThemeLightId,
-    terminalThemeDarkId: terminalThemeDarkId.present
-        ? terminalThemeDarkId.value
-        : this.terminalThemeDarkId,
-    terminalFontFamily: terminalFontFamily.present
-        ? terminalFontFamily.value
-        : this.terminalFontFamily,
-  );
-  Host copyWithCompanion(HostsCompanion data) {
-    return Host(
-      id: data.id.present ? data.id.value : this.id,
-      label: data.label.present ? data.label.value : this.label,
-      hostname: data.hostname.present ? data.hostname.value : this.hostname,
-      port: data.port.present ? data.port.value : this.port,
-      username: data.username.present ? data.username.value : this.username,
-      password: data.password.present ? data.password.value : this.password,
-      keyId: data.keyId.present ? data.keyId.value : this.keyId,
-      groupId: data.groupId.present ? data.groupId.value : this.groupId,
-      jumpHostId: data.jumpHostId.present
-          ? data.jumpHostId.value
-          : this.jumpHostId,
-      isFavorite: data.isFavorite.present
-          ? data.isFavorite.value
-          : this.isFavorite,
-      color: data.color.present ? data.color.value : this.color,
-      notes: data.notes.present ? data.notes.value : this.notes,
-      tags: data.tags.present ? data.tags.value : this.tags,
-      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
-      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
-      lastConnectedAt: data.lastConnectedAt.present
-          ? data.lastConnectedAt.value
-          : this.lastConnectedAt,
-      terminalThemeLightId: data.terminalThemeLightId.present
-          ? data.terminalThemeLightId.value
-          : this.terminalThemeLightId,
-      terminalThemeDarkId: data.terminalThemeDarkId.present
-          ? data.terminalThemeDarkId.value
-          : this.terminalThemeDarkId,
-      terminalFontFamily: data.terminalFontFamily.present
-          ? data.terminalFontFamily.value
-          : this.terminalFontFamily,
-    );
-  }
-
-  @override
-  String toString() {
-    return (StringBuffer('Host(')
-          ..write('id: $id, ')
-          ..write('label: $label, ')
-          ..write('hostname: $hostname, ')
-          ..write('port: $port, ')
-          ..write('username: $username, ')
-          ..write('password: $password, ')
-          ..write('keyId: $keyId, ')
-          ..write('groupId: $groupId, ')
-          ..write('jumpHostId: $jumpHostId, ')
-          ..write('isFavorite: $isFavorite, ')
-          ..write('color: $color, ')
-          ..write('notes: $notes, ')
-          ..write('tags: $tags, ')
-          ..write('createdAt: $createdAt, ')
-          ..write('updatedAt: $updatedAt, ')
-          ..write('lastConnectedAt: $lastConnectedAt, ')
-          ..write('terminalThemeLightId: $terminalThemeLightId, ')
-          ..write('terminalThemeDarkId: $terminalThemeDarkId, ')
-          ..write('terminalFontFamily: $terminalFontFamily')
-          ..write(')'))
-        .toString();
-  }
-
-  @override
-  int get hashCode => Object.hash(
-    id,
-    label,
-    hostname,
-    port,
-    username,
-    password,
-    keyId,
-    groupId,
-    jumpHostId,
-    isFavorite,
-    color,
-    notes,
-    tags,
-    createdAt,
-    updatedAt,
-    lastConnectedAt,
-    terminalThemeLightId,
-    terminalThemeDarkId,
-    terminalFontFamily,
-  );
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      (other is Host &&
-          other.id == this.id &&
-          other.label == this.label &&
-          other.hostname == this.hostname &&
-          other.port == this.port &&
-          other.username == this.username &&
-          other.password == this.password &&
-          other.keyId == this.keyId &&
-          other.groupId == this.groupId &&
-          other.jumpHostId == this.jumpHostId &&
-          other.isFavorite == this.isFavorite &&
-          other.color == this.color &&
-          other.notes == this.notes &&
-          other.tags == this.tags &&
-          other.createdAt == this.createdAt &&
-          other.updatedAt == this.updatedAt &&
-          other.lastConnectedAt == this.lastConnectedAt &&
-          other.terminalThemeLightId == this.terminalThemeLightId &&
-          other.terminalThemeDarkId == this.terminalThemeDarkId &&
-          other.terminalFontFamily == this.terminalFontFamily);
-}
-
-class HostsCompanion extends UpdateCompanion<Host> {
-  final Value<int> id;
-  final Value<String> label;
-  final Value<String> hostname;
-  final Value<int> port;
-  final Value<String> username;
-  final Value<String?> password;
-  final Value<int?> keyId;
-  final Value<int?> groupId;
-  final Value<int?> jumpHostId;
-  final Value<bool> isFavorite;
-  final Value<String?> color;
-  final Value<String?> notes;
-  final Value<String?> tags;
-  final Value<DateTime> createdAt;
-  final Value<DateTime> updatedAt;
-  final Value<DateTime?> lastConnectedAt;
-  final Value<String?> terminalThemeLightId;
-  final Value<String?> terminalThemeDarkId;
-  final Value<String?> terminalFontFamily;
-  const HostsCompanion({
-    this.id = const Value.absent(),
-    this.label = const Value.absent(),
-    this.hostname = const Value.absent(),
-    this.port = const Value.absent(),
-    this.username = const Value.absent(),
-    this.password = const Value.absent(),
-    this.keyId = const Value.absent(),
-    this.groupId = const Value.absent(),
-    this.jumpHostId = const Value.absent(),
-    this.isFavorite = const Value.absent(),
-    this.color = const Value.absent(),
-    this.notes = const Value.absent(),
-    this.tags = const Value.absent(),
-    this.createdAt = const Value.absent(),
-    this.updatedAt = const Value.absent(),
-    this.lastConnectedAt = const Value.absent(),
-    this.terminalThemeLightId = const Value.absent(),
-    this.terminalThemeDarkId = const Value.absent(),
-    this.terminalFontFamily = const Value.absent(),
-  });
-  HostsCompanion.insert({
-    this.id = const Value.absent(),
-    required String label,
-    required String hostname,
-    this.port = const Value.absent(),
-    required String username,
-    this.password = const Value.absent(),
-    this.keyId = const Value.absent(),
-    this.groupId = const Value.absent(),
-    this.jumpHostId = const Value.absent(),
-    this.isFavorite = const Value.absent(),
-    this.color = const Value.absent(),
-    this.notes = const Value.absent(),
-    this.tags = const Value.absent(),
-    this.createdAt = const Value.absent(),
-    this.updatedAt = const Value.absent(),
-    this.lastConnectedAt = const Value.absent(),
-    this.terminalThemeLightId = const Value.absent(),
-    this.terminalThemeDarkId = const Value.absent(),
-    this.terminalFontFamily = const Value.absent(),
-  }) : label = Value(label),
-       hostname = Value(hostname),
-       username = Value(username);
-  static Insertable<Host> custom({
-    Expression<int>? id,
-    Expression<String>? label,
-    Expression<String>? hostname,
-    Expression<int>? port,
-    Expression<String>? username,
-    Expression<String>? password,
-    Expression<int>? keyId,
-    Expression<int>? groupId,
-    Expression<int>? jumpHostId,
-    Expression<bool>? isFavorite,
-    Expression<String>? color,
-    Expression<String>? notes,
-    Expression<String>? tags,
-    Expression<DateTime>? createdAt,
-    Expression<DateTime>? updatedAt,
-    Expression<DateTime>? lastConnectedAt,
-    Expression<String>? terminalThemeLightId,
-    Expression<String>? terminalThemeDarkId,
-    Expression<String>? terminalFontFamily,
-  }) {
-    return RawValuesInsertable({
-      if (id != null) 'id': id,
-      if (label != null) 'label': label,
-      if (hostname != null) 'hostname': hostname,
-      if (port != null) 'port': port,
-      if (username != null) 'username': username,
-      if (password != null) 'password': password,
-      if (keyId != null) 'key_id': keyId,
-      if (groupId != null) 'group_id': groupId,
-      if (jumpHostId != null) 'jump_host_id': jumpHostId,
-      if (isFavorite != null) 'is_favorite': isFavorite,
-      if (color != null) 'color': color,
-      if (notes != null) 'notes': notes,
-      if (tags != null) 'tags': tags,
-      if (createdAt != null) 'created_at': createdAt,
-      if (updatedAt != null) 'updated_at': updatedAt,
-      if (lastConnectedAt != null) 'last_connected_at': lastConnectedAt,
-      if (terminalThemeLightId != null)
-        'terminal_theme_light_id': terminalThemeLightId,
-      if (terminalThemeDarkId != null)
-        'terminal_theme_dark_id': terminalThemeDarkId,
-      if (terminalFontFamily != null)
-        'terminal_font_family': terminalFontFamily,
-    });
-  }
-
-  HostsCompanion copyWith({
-    Value<int>? id,
-    Value<String>? label,
-    Value<String>? hostname,
-    Value<int>? port,
-    Value<String>? username,
-    Value<String?>? password,
-    Value<int?>? keyId,
-    Value<int?>? groupId,
-    Value<int?>? jumpHostId,
-    Value<bool>? isFavorite,
-    Value<String?>? color,
-    Value<String?>? notes,
-    Value<String?>? tags,
-    Value<DateTime>? createdAt,
-    Value<DateTime>? updatedAt,
-    Value<DateTime?>? lastConnectedAt,
-    Value<String?>? terminalThemeLightId,
-    Value<String?>? terminalThemeDarkId,
-    Value<String?>? terminalFontFamily,
-  }) {
-    return HostsCompanion(
-      id: id ?? this.id,
-      label: label ?? this.label,
-      hostname: hostname ?? this.hostname,
-      port: port ?? this.port,
-      username: username ?? this.username,
-      password: password ?? this.password,
-      keyId: keyId ?? this.keyId,
-      groupId: groupId ?? this.groupId,
-      jumpHostId: jumpHostId ?? this.jumpHostId,
-      isFavorite: isFavorite ?? this.isFavorite,
-      color: color ?? this.color,
-      notes: notes ?? this.notes,
-      tags: tags ?? this.tags,
-      createdAt: createdAt ?? this.createdAt,
-      updatedAt: updatedAt ?? this.updatedAt,
-      lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
-      terminalThemeLightId: terminalThemeLightId ?? this.terminalThemeLightId,
-      terminalThemeDarkId: terminalThemeDarkId ?? this.terminalThemeDarkId,
-      terminalFontFamily: terminalFontFamily ?? this.terminalFontFamily,
-    );
-  }
-
-  @override
-  Map<String, Expression> toColumns(bool nullToAbsent) {
-    final map = <String, Expression>{};
-    if (id.present) {
-      map['id'] = Variable<int>(id.value);
-    }
-    if (label.present) {
-      map['label'] = Variable<String>(label.value);
-    }
-    if (hostname.present) {
-      map['hostname'] = Variable<String>(hostname.value);
-    }
-    if (port.present) {
-      map['port'] = Variable<int>(port.value);
-    }
-    if (username.present) {
-      map['username'] = Variable<String>(username.value);
-    }
-    if (password.present) {
-      map['password'] = Variable<String>(password.value);
-    }
-    if (keyId.present) {
-      map['key_id'] = Variable<int>(keyId.value);
-    }
-    if (groupId.present) {
-      map['group_id'] = Variable<int>(groupId.value);
-    }
-    if (jumpHostId.present) {
-      map['jump_host_id'] = Variable<int>(jumpHostId.value);
-    }
-    if (isFavorite.present) {
-      map['is_favorite'] = Variable<bool>(isFavorite.value);
-    }
-    if (color.present) {
-      map['color'] = Variable<String>(color.value);
-    }
-    if (notes.present) {
-      map['notes'] = Variable<String>(notes.value);
-    }
-    if (tags.present) {
-      map['tags'] = Variable<String>(tags.value);
-    }
-    if (createdAt.present) {
-      map['created_at'] = Variable<DateTime>(createdAt.value);
-    }
-    if (updatedAt.present) {
-      map['updated_at'] = Variable<DateTime>(updatedAt.value);
-    }
-    if (lastConnectedAt.present) {
-      map['last_connected_at'] = Variable<DateTime>(lastConnectedAt.value);
-    }
-    if (terminalThemeLightId.present) {
-      map['terminal_theme_light_id'] = Variable<String>(
-        terminalThemeLightId.value,
-      );
-    }
-    if (terminalThemeDarkId.present) {
-      map['terminal_theme_dark_id'] = Variable<String>(
-        terminalThemeDarkId.value,
-      );
-    }
-    if (terminalFontFamily.present) {
-      map['terminal_font_family'] = Variable<String>(terminalFontFamily.value);
-    }
-    return map;
-  }
-
-  @override
-  String toString() {
-    return (StringBuffer('HostsCompanion(')
-          ..write('id: $id, ')
-          ..write('label: $label, ')
-          ..write('hostname: $hostname, ')
-          ..write('port: $port, ')
-          ..write('username: $username, ')
-          ..write('password: $password, ')
-          ..write('keyId: $keyId, ')
-          ..write('groupId: $groupId, ')
-          ..write('jumpHostId: $jumpHostId, ')
-          ..write('isFavorite: $isFavorite, ')
-          ..write('color: $color, ')
-          ..write('notes: $notes, ')
-          ..write('tags: $tags, ')
-          ..write('createdAt: $createdAt, ')
-          ..write('updatedAt: $updatedAt, ')
-          ..write('lastConnectedAt: $lastConnectedAt, ')
-          ..write('terminalThemeLightId: $terminalThemeLightId, ')
-          ..write('terminalThemeDarkId: $terminalThemeDarkId, ')
-          ..write('terminalFontFamily: $terminalFontFamily')
-          ..write(')'))
-        .toString();
-  }
-}
-
 class $SnippetFoldersTable extends SnippetFolders
     with TableInfo<$SnippetFoldersTable, SnippetFolder> {
   @override
@@ -3065,6 +1937,1260 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
           ..write('createdAt: $createdAt, ')
           ..write('lastUsedAt: $lastUsedAt, ')
           ..write('usageCount: $usageCount')
+          ..write(')'))
+        .toString();
+  }
+}
+
+class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $HostsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _labelMeta = const VerificationMeta('label');
+  @override
+  late final GeneratedColumn<String> label = GeneratedColumn<String>(
+    'label',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 255,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _hostnameMeta = const VerificationMeta(
+    'hostname',
+  );
+  @override
+  late final GeneratedColumn<String> hostname = GeneratedColumn<String>(
+    'hostname',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 255,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _portMeta = const VerificationMeta('port');
+  @override
+  late final GeneratedColumn<int> port = GeneratedColumn<int>(
+    'port',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(22),
+  );
+  static const VerificationMeta _usernameMeta = const VerificationMeta(
+    'username',
+  );
+  @override
+  late final GeneratedColumn<String> username = GeneratedColumn<String>(
+    'username',
+    aliasedName,
+    false,
+    additionalChecks: GeneratedColumn.checkTextLength(
+      minTextLength: 1,
+      maxTextLength: 255,
+    ),
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _passwordMeta = const VerificationMeta(
+    'password',
+  );
+  @override
+  late final GeneratedColumn<String> password = GeneratedColumn<String>(
+    'password',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _keyIdMeta = const VerificationMeta('keyId');
+  @override
+  late final GeneratedColumn<int> keyId = GeneratedColumn<int>(
+    'key_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES ssh_keys (id)',
+    ),
+  );
+  static const VerificationMeta _groupIdMeta = const VerificationMeta(
+    'groupId',
+  );
+  @override
+  late final GeneratedColumn<int> groupId = GeneratedColumn<int>(
+    'group_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES "groups" (id)',
+    ),
+  );
+  static const VerificationMeta _jumpHostIdMeta = const VerificationMeta(
+    'jumpHostId',
+  );
+  @override
+  late final GeneratedColumn<int> jumpHostId = GeneratedColumn<int>(
+    'jump_host_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES hosts (id)',
+    ),
+  );
+  static const VerificationMeta _isFavoriteMeta = const VerificationMeta(
+    'isFavorite',
+  );
+  @override
+  late final GeneratedColumn<bool> isFavorite = GeneratedColumn<bool>(
+    'is_favorite',
+    aliasedName,
+    false,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("is_favorite" IN (0, 1))',
+    ),
+    defaultValue: const Constant(false),
+  );
+  static const VerificationMeta _colorMeta = const VerificationMeta('color');
+  @override
+  late final GeneratedColumn<String> color = GeneratedColumn<String>(
+    'color',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _notesMeta = const VerificationMeta('notes');
+  @override
+  late final GeneratedColumn<String> notes = GeneratedColumn<String>(
+    'notes',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _tagsMeta = const VerificationMeta('tags');
+  @override
+  late final GeneratedColumn<String> tags = GeneratedColumn<String>(
+    'tags',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _createdAtMeta = const VerificationMeta(
+    'createdAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> createdAt = GeneratedColumn<DateTime>(
+    'created_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  static const VerificationMeta _updatedAtMeta = const VerificationMeta(
+    'updatedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> updatedAt = GeneratedColumn<DateTime>(
+    'updated_at',
+    aliasedName,
+    false,
+    type: DriftSqlType.dateTime,
+    requiredDuringInsert: false,
+    defaultValue: currentDateAndTime,
+  );
+  static const VerificationMeta _lastConnectedAtMeta = const VerificationMeta(
+    'lastConnectedAt',
+  );
+  @override
+  late final GeneratedColumn<DateTime> lastConnectedAt =
+      GeneratedColumn<DateTime>(
+        'last_connected_at',
+        aliasedName,
+        true,
+        type: DriftSqlType.dateTime,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _terminalThemeLightIdMeta =
+      const VerificationMeta('terminalThemeLightId');
+  @override
+  late final GeneratedColumn<String> terminalThemeLightId =
+      GeneratedColumn<String>(
+        'terminal_theme_light_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _terminalThemeDarkIdMeta =
+      const VerificationMeta('terminalThemeDarkId');
+  @override
+  late final GeneratedColumn<String> terminalThemeDarkId =
+      GeneratedColumn<String>(
+        'terminal_theme_dark_id',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _terminalFontFamilyMeta =
+      const VerificationMeta('terminalFontFamily');
+  @override
+  late final GeneratedColumn<String> terminalFontFamily =
+      GeneratedColumn<String>(
+        'terminal_font_family',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _autoConnectCommandMeta =
+      const VerificationMeta('autoConnectCommand');
+  @override
+  late final GeneratedColumn<String> autoConnectCommand =
+      GeneratedColumn<String>(
+        'auto_connect_command',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _autoConnectSnippetIdMeta =
+      const VerificationMeta('autoConnectSnippetId');
+  @override
+  late final GeneratedColumn<int> autoConnectSnippetId = GeneratedColumn<int>(
+    'auto_connect_snippet_id',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES snippets (id)',
+    ),
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    label,
+    hostname,
+    port,
+    username,
+    password,
+    keyId,
+    groupId,
+    jumpHostId,
+    isFavorite,
+    color,
+    notes,
+    tags,
+    createdAt,
+    updatedAt,
+    lastConnectedAt,
+    terminalThemeLightId,
+    terminalThemeDarkId,
+    terminalFontFamily,
+    autoConnectCommand,
+    autoConnectSnippetId,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'hosts';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<Host> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('label')) {
+      context.handle(
+        _labelMeta,
+        label.isAcceptableOrUnknown(data['label']!, _labelMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_labelMeta);
+    }
+    if (data.containsKey('hostname')) {
+      context.handle(
+        _hostnameMeta,
+        hostname.isAcceptableOrUnknown(data['hostname']!, _hostnameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_hostnameMeta);
+    }
+    if (data.containsKey('port')) {
+      context.handle(
+        _portMeta,
+        port.isAcceptableOrUnknown(data['port']!, _portMeta),
+      );
+    }
+    if (data.containsKey('username')) {
+      context.handle(
+        _usernameMeta,
+        username.isAcceptableOrUnknown(data['username']!, _usernameMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_usernameMeta);
+    }
+    if (data.containsKey('password')) {
+      context.handle(
+        _passwordMeta,
+        password.isAcceptableOrUnknown(data['password']!, _passwordMeta),
+      );
+    }
+    if (data.containsKey('key_id')) {
+      context.handle(
+        _keyIdMeta,
+        keyId.isAcceptableOrUnknown(data['key_id']!, _keyIdMeta),
+      );
+    }
+    if (data.containsKey('group_id')) {
+      context.handle(
+        _groupIdMeta,
+        groupId.isAcceptableOrUnknown(data['group_id']!, _groupIdMeta),
+      );
+    }
+    if (data.containsKey('jump_host_id')) {
+      context.handle(
+        _jumpHostIdMeta,
+        jumpHostId.isAcceptableOrUnknown(
+          data['jump_host_id']!,
+          _jumpHostIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('is_favorite')) {
+      context.handle(
+        _isFavoriteMeta,
+        isFavorite.isAcceptableOrUnknown(data['is_favorite']!, _isFavoriteMeta),
+      );
+    }
+    if (data.containsKey('color')) {
+      context.handle(
+        _colorMeta,
+        color.isAcceptableOrUnknown(data['color']!, _colorMeta),
+      );
+    }
+    if (data.containsKey('notes')) {
+      context.handle(
+        _notesMeta,
+        notes.isAcceptableOrUnknown(data['notes']!, _notesMeta),
+      );
+    }
+    if (data.containsKey('tags')) {
+      context.handle(
+        _tagsMeta,
+        tags.isAcceptableOrUnknown(data['tags']!, _tagsMeta),
+      );
+    }
+    if (data.containsKey('created_at')) {
+      context.handle(
+        _createdAtMeta,
+        createdAt.isAcceptableOrUnknown(data['created_at']!, _createdAtMeta),
+      );
+    }
+    if (data.containsKey('updated_at')) {
+      context.handle(
+        _updatedAtMeta,
+        updatedAt.isAcceptableOrUnknown(data['updated_at']!, _updatedAtMeta),
+      );
+    }
+    if (data.containsKey('last_connected_at')) {
+      context.handle(
+        _lastConnectedAtMeta,
+        lastConnectedAt.isAcceptableOrUnknown(
+          data['last_connected_at']!,
+          _lastConnectedAtMeta,
+        ),
+      );
+    }
+    if (data.containsKey('terminal_theme_light_id')) {
+      context.handle(
+        _terminalThemeLightIdMeta,
+        terminalThemeLightId.isAcceptableOrUnknown(
+          data['terminal_theme_light_id']!,
+          _terminalThemeLightIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('terminal_theme_dark_id')) {
+      context.handle(
+        _terminalThemeDarkIdMeta,
+        terminalThemeDarkId.isAcceptableOrUnknown(
+          data['terminal_theme_dark_id']!,
+          _terminalThemeDarkIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('terminal_font_family')) {
+      context.handle(
+        _terminalFontFamilyMeta,
+        terminalFontFamily.isAcceptableOrUnknown(
+          data['terminal_font_family']!,
+          _terminalFontFamilyMeta,
+        ),
+      );
+    }
+    if (data.containsKey('auto_connect_command')) {
+      context.handle(
+        _autoConnectCommandMeta,
+        autoConnectCommand.isAcceptableOrUnknown(
+          data['auto_connect_command']!,
+          _autoConnectCommandMeta,
+        ),
+      );
+    }
+    if (data.containsKey('auto_connect_snippet_id')) {
+      context.handle(
+        _autoConnectSnippetIdMeta,
+        autoConnectSnippetId.isAcceptableOrUnknown(
+          data['auto_connect_snippet_id']!,
+          _autoConnectSnippetIdMeta,
+        ),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  Host map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return Host(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      label: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}label'],
+      )!,
+      hostname: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}hostname'],
+      )!,
+      port: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}port'],
+      )!,
+      username: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}username'],
+      )!,
+      password: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}password'],
+      ),
+      keyId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}key_id'],
+      ),
+      groupId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}group_id'],
+      ),
+      jumpHostId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}jump_host_id'],
+      ),
+      isFavorite: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}is_favorite'],
+      )!,
+      color: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}color'],
+      ),
+      notes: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}notes'],
+      ),
+      tags: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}tags'],
+      ),
+      createdAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}created_at'],
+      )!,
+      updatedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}updated_at'],
+      )!,
+      lastConnectedAt: attachedDatabase.typeMapping.read(
+        DriftSqlType.dateTime,
+        data['${effectivePrefix}last_connected_at'],
+      ),
+      terminalThemeLightId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}terminal_theme_light_id'],
+      ),
+      terminalThemeDarkId: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}terminal_theme_dark_id'],
+      ),
+      terminalFontFamily: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}terminal_font_family'],
+      ),
+      autoConnectCommand: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}auto_connect_command'],
+      ),
+      autoConnectSnippetId: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}auto_connect_snippet_id'],
+      ),
+    );
+  }
+
+  @override
+  $HostsTable createAlias(String alias) {
+    return $HostsTable(attachedDatabase, alias);
+  }
+}
+
+class Host extends DataClass implements Insertable<Host> {
+  /// Unique identifier.
+  final int id;
+
+  /// Display label for the host.
+  final String label;
+
+  /// Hostname or IP address.
+  final String hostname;
+
+  /// SSH port (default 22).
+  final int port;
+
+  /// Username for authentication.
+  final String username;
+
+  /// Optional password (stored encrypted).
+  final String? password;
+
+  /// Reference to SSH key for authentication.
+  final int? keyId;
+
+  /// Reference to parent group.
+  final int? groupId;
+
+  /// Reference to jump host for proxy connections.
+  final int? jumpHostId;
+
+  /// Whether this host is marked as favorite.
+  final bool isFavorite;
+
+  /// Custom color for the host (hex string).
+  final String? color;
+
+  /// Additional notes.
+  final String? notes;
+
+  /// Comma-separated tags.
+  final String? tags;
+
+  /// Creation timestamp.
+  final DateTime createdAt;
+
+  /// Last modified timestamp.
+  final DateTime updatedAt;
+
+  /// Last connection timestamp.
+  final DateTime? lastConnectedAt;
+
+  /// Terminal theme ID for light mode (null = use global default).
+  final String? terminalThemeLightId;
+
+  /// Terminal theme ID for dark mode (null = use global default).
+  final String? terminalThemeDarkId;
+
+  /// Terminal font family (null = use global default).
+  final String? terminalFontFamily;
+
+  /// Cached command to run automatically after connecting/reconnecting.
+  final String? autoConnectCommand;
+
+  /// Referenced snippet to run automatically after connecting/reconnecting.
+  final int? autoConnectSnippetId;
+  const Host({
+    required this.id,
+    required this.label,
+    required this.hostname,
+    required this.port,
+    required this.username,
+    this.password,
+    this.keyId,
+    this.groupId,
+    this.jumpHostId,
+    required this.isFavorite,
+    this.color,
+    this.notes,
+    this.tags,
+    required this.createdAt,
+    required this.updatedAt,
+    this.lastConnectedAt,
+    this.terminalThemeLightId,
+    this.terminalThemeDarkId,
+    this.terminalFontFamily,
+    this.autoConnectCommand,
+    this.autoConnectSnippetId,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['label'] = Variable<String>(label);
+    map['hostname'] = Variable<String>(hostname);
+    map['port'] = Variable<int>(port);
+    map['username'] = Variable<String>(username);
+    if (!nullToAbsent || password != null) {
+      map['password'] = Variable<String>(password);
+    }
+    if (!nullToAbsent || keyId != null) {
+      map['key_id'] = Variable<int>(keyId);
+    }
+    if (!nullToAbsent || groupId != null) {
+      map['group_id'] = Variable<int>(groupId);
+    }
+    if (!nullToAbsent || jumpHostId != null) {
+      map['jump_host_id'] = Variable<int>(jumpHostId);
+    }
+    map['is_favorite'] = Variable<bool>(isFavorite);
+    if (!nullToAbsent || color != null) {
+      map['color'] = Variable<String>(color);
+    }
+    if (!nullToAbsent || notes != null) {
+      map['notes'] = Variable<String>(notes);
+    }
+    if (!nullToAbsent || tags != null) {
+      map['tags'] = Variable<String>(tags);
+    }
+    map['created_at'] = Variable<DateTime>(createdAt);
+    map['updated_at'] = Variable<DateTime>(updatedAt);
+    if (!nullToAbsent || lastConnectedAt != null) {
+      map['last_connected_at'] = Variable<DateTime>(lastConnectedAt);
+    }
+    if (!nullToAbsent || terminalThemeLightId != null) {
+      map['terminal_theme_light_id'] = Variable<String>(terminalThemeLightId);
+    }
+    if (!nullToAbsent || terminalThemeDarkId != null) {
+      map['terminal_theme_dark_id'] = Variable<String>(terminalThemeDarkId);
+    }
+    if (!nullToAbsent || terminalFontFamily != null) {
+      map['terminal_font_family'] = Variable<String>(terminalFontFamily);
+    }
+    if (!nullToAbsent || autoConnectCommand != null) {
+      map['auto_connect_command'] = Variable<String>(autoConnectCommand);
+    }
+    if (!nullToAbsent || autoConnectSnippetId != null) {
+      map['auto_connect_snippet_id'] = Variable<int>(autoConnectSnippetId);
+    }
+    return map;
+  }
+
+  HostsCompanion toCompanion(bool nullToAbsent) {
+    return HostsCompanion(
+      id: Value(id),
+      label: Value(label),
+      hostname: Value(hostname),
+      port: Value(port),
+      username: Value(username),
+      password: password == null && nullToAbsent
+          ? const Value.absent()
+          : Value(password),
+      keyId: keyId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(keyId),
+      groupId: groupId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(groupId),
+      jumpHostId: jumpHostId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(jumpHostId),
+      isFavorite: Value(isFavorite),
+      color: color == null && nullToAbsent
+          ? const Value.absent()
+          : Value(color),
+      notes: notes == null && nullToAbsent
+          ? const Value.absent()
+          : Value(notes),
+      tags: tags == null && nullToAbsent ? const Value.absent() : Value(tags),
+      createdAt: Value(createdAt),
+      updatedAt: Value(updatedAt),
+      lastConnectedAt: lastConnectedAt == null && nullToAbsent
+          ? const Value.absent()
+          : Value(lastConnectedAt),
+      terminalThemeLightId: terminalThemeLightId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(terminalThemeLightId),
+      terminalThemeDarkId: terminalThemeDarkId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(terminalThemeDarkId),
+      terminalFontFamily: terminalFontFamily == null && nullToAbsent
+          ? const Value.absent()
+          : Value(terminalFontFamily),
+      autoConnectCommand: autoConnectCommand == null && nullToAbsent
+          ? const Value.absent()
+          : Value(autoConnectCommand),
+      autoConnectSnippetId: autoConnectSnippetId == null && nullToAbsent
+          ? const Value.absent()
+          : Value(autoConnectSnippetId),
+    );
+  }
+
+  factory Host.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return Host(
+      id: serializer.fromJson<int>(json['id']),
+      label: serializer.fromJson<String>(json['label']),
+      hostname: serializer.fromJson<String>(json['hostname']),
+      port: serializer.fromJson<int>(json['port']),
+      username: serializer.fromJson<String>(json['username']),
+      password: serializer.fromJson<String?>(json['password']),
+      keyId: serializer.fromJson<int?>(json['keyId']),
+      groupId: serializer.fromJson<int?>(json['groupId']),
+      jumpHostId: serializer.fromJson<int?>(json['jumpHostId']),
+      isFavorite: serializer.fromJson<bool>(json['isFavorite']),
+      color: serializer.fromJson<String?>(json['color']),
+      notes: serializer.fromJson<String?>(json['notes']),
+      tags: serializer.fromJson<String?>(json['tags']),
+      createdAt: serializer.fromJson<DateTime>(json['createdAt']),
+      updatedAt: serializer.fromJson<DateTime>(json['updatedAt']),
+      lastConnectedAt: serializer.fromJson<DateTime?>(json['lastConnectedAt']),
+      terminalThemeLightId: serializer.fromJson<String?>(
+        json['terminalThemeLightId'],
+      ),
+      terminalThemeDarkId: serializer.fromJson<String?>(
+        json['terminalThemeDarkId'],
+      ),
+      terminalFontFamily: serializer.fromJson<String?>(
+        json['terminalFontFamily'],
+      ),
+      autoConnectCommand: serializer.fromJson<String?>(
+        json['autoConnectCommand'],
+      ),
+      autoConnectSnippetId: serializer.fromJson<int?>(
+        json['autoConnectSnippetId'],
+      ),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'label': serializer.toJson<String>(label),
+      'hostname': serializer.toJson<String>(hostname),
+      'port': serializer.toJson<int>(port),
+      'username': serializer.toJson<String>(username),
+      'password': serializer.toJson<String?>(password),
+      'keyId': serializer.toJson<int?>(keyId),
+      'groupId': serializer.toJson<int?>(groupId),
+      'jumpHostId': serializer.toJson<int?>(jumpHostId),
+      'isFavorite': serializer.toJson<bool>(isFavorite),
+      'color': serializer.toJson<String?>(color),
+      'notes': serializer.toJson<String?>(notes),
+      'tags': serializer.toJson<String?>(tags),
+      'createdAt': serializer.toJson<DateTime>(createdAt),
+      'updatedAt': serializer.toJson<DateTime>(updatedAt),
+      'lastConnectedAt': serializer.toJson<DateTime?>(lastConnectedAt),
+      'terminalThemeLightId': serializer.toJson<String?>(terminalThemeLightId),
+      'terminalThemeDarkId': serializer.toJson<String?>(terminalThemeDarkId),
+      'terminalFontFamily': serializer.toJson<String?>(terminalFontFamily),
+      'autoConnectCommand': serializer.toJson<String?>(autoConnectCommand),
+      'autoConnectSnippetId': serializer.toJson<int?>(autoConnectSnippetId),
+    };
+  }
+
+  Host copyWith({
+    int? id,
+    String? label,
+    String? hostname,
+    int? port,
+    String? username,
+    Value<String?> password = const Value.absent(),
+    Value<int?> keyId = const Value.absent(),
+    Value<int?> groupId = const Value.absent(),
+    Value<int?> jumpHostId = const Value.absent(),
+    bool? isFavorite,
+    Value<String?> color = const Value.absent(),
+    Value<String?> notes = const Value.absent(),
+    Value<String?> tags = const Value.absent(),
+    DateTime? createdAt,
+    DateTime? updatedAt,
+    Value<DateTime?> lastConnectedAt = const Value.absent(),
+    Value<String?> terminalThemeLightId = const Value.absent(),
+    Value<String?> terminalThemeDarkId = const Value.absent(),
+    Value<String?> terminalFontFamily = const Value.absent(),
+    Value<String?> autoConnectCommand = const Value.absent(),
+    Value<int?> autoConnectSnippetId = const Value.absent(),
+  }) => Host(
+    id: id ?? this.id,
+    label: label ?? this.label,
+    hostname: hostname ?? this.hostname,
+    port: port ?? this.port,
+    username: username ?? this.username,
+    password: password.present ? password.value : this.password,
+    keyId: keyId.present ? keyId.value : this.keyId,
+    groupId: groupId.present ? groupId.value : this.groupId,
+    jumpHostId: jumpHostId.present ? jumpHostId.value : this.jumpHostId,
+    isFavorite: isFavorite ?? this.isFavorite,
+    color: color.present ? color.value : this.color,
+    notes: notes.present ? notes.value : this.notes,
+    tags: tags.present ? tags.value : this.tags,
+    createdAt: createdAt ?? this.createdAt,
+    updatedAt: updatedAt ?? this.updatedAt,
+    lastConnectedAt: lastConnectedAt.present
+        ? lastConnectedAt.value
+        : this.lastConnectedAt,
+    terminalThemeLightId: terminalThemeLightId.present
+        ? terminalThemeLightId.value
+        : this.terminalThemeLightId,
+    terminalThemeDarkId: terminalThemeDarkId.present
+        ? terminalThemeDarkId.value
+        : this.terminalThemeDarkId,
+    terminalFontFamily: terminalFontFamily.present
+        ? terminalFontFamily.value
+        : this.terminalFontFamily,
+    autoConnectCommand: autoConnectCommand.present
+        ? autoConnectCommand.value
+        : this.autoConnectCommand,
+    autoConnectSnippetId: autoConnectSnippetId.present
+        ? autoConnectSnippetId.value
+        : this.autoConnectSnippetId,
+  );
+  Host copyWithCompanion(HostsCompanion data) {
+    return Host(
+      id: data.id.present ? data.id.value : this.id,
+      label: data.label.present ? data.label.value : this.label,
+      hostname: data.hostname.present ? data.hostname.value : this.hostname,
+      port: data.port.present ? data.port.value : this.port,
+      username: data.username.present ? data.username.value : this.username,
+      password: data.password.present ? data.password.value : this.password,
+      keyId: data.keyId.present ? data.keyId.value : this.keyId,
+      groupId: data.groupId.present ? data.groupId.value : this.groupId,
+      jumpHostId: data.jumpHostId.present
+          ? data.jumpHostId.value
+          : this.jumpHostId,
+      isFavorite: data.isFavorite.present
+          ? data.isFavorite.value
+          : this.isFavorite,
+      color: data.color.present ? data.color.value : this.color,
+      notes: data.notes.present ? data.notes.value : this.notes,
+      tags: data.tags.present ? data.tags.value : this.tags,
+      createdAt: data.createdAt.present ? data.createdAt.value : this.createdAt,
+      updatedAt: data.updatedAt.present ? data.updatedAt.value : this.updatedAt,
+      lastConnectedAt: data.lastConnectedAt.present
+          ? data.lastConnectedAt.value
+          : this.lastConnectedAt,
+      terminalThemeLightId: data.terminalThemeLightId.present
+          ? data.terminalThemeLightId.value
+          : this.terminalThemeLightId,
+      terminalThemeDarkId: data.terminalThemeDarkId.present
+          ? data.terminalThemeDarkId.value
+          : this.terminalThemeDarkId,
+      terminalFontFamily: data.terminalFontFamily.present
+          ? data.terminalFontFamily.value
+          : this.terminalFontFamily,
+      autoConnectCommand: data.autoConnectCommand.present
+          ? data.autoConnectCommand.value
+          : this.autoConnectCommand,
+      autoConnectSnippetId: data.autoConnectSnippetId.present
+          ? data.autoConnectSnippetId.value
+          : this.autoConnectSnippetId,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('Host(')
+          ..write('id: $id, ')
+          ..write('label: $label, ')
+          ..write('hostname: $hostname, ')
+          ..write('port: $port, ')
+          ..write('username: $username, ')
+          ..write('password: $password, ')
+          ..write('keyId: $keyId, ')
+          ..write('groupId: $groupId, ')
+          ..write('jumpHostId: $jumpHostId, ')
+          ..write('isFavorite: $isFavorite, ')
+          ..write('color: $color, ')
+          ..write('notes: $notes, ')
+          ..write('tags: $tags, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('lastConnectedAt: $lastConnectedAt, ')
+          ..write('terminalThemeLightId: $terminalThemeLightId, ')
+          ..write('terminalThemeDarkId: $terminalThemeDarkId, ')
+          ..write('terminalFontFamily: $terminalFontFamily, ')
+          ..write('autoConnectCommand: $autoConnectCommand, ')
+          ..write('autoConnectSnippetId: $autoConnectSnippetId')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hashAll([
+    id,
+    label,
+    hostname,
+    port,
+    username,
+    password,
+    keyId,
+    groupId,
+    jumpHostId,
+    isFavorite,
+    color,
+    notes,
+    tags,
+    createdAt,
+    updatedAt,
+    lastConnectedAt,
+    terminalThemeLightId,
+    terminalThemeDarkId,
+    terminalFontFamily,
+    autoConnectCommand,
+    autoConnectSnippetId,
+  ]);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is Host &&
+          other.id == this.id &&
+          other.label == this.label &&
+          other.hostname == this.hostname &&
+          other.port == this.port &&
+          other.username == this.username &&
+          other.password == this.password &&
+          other.keyId == this.keyId &&
+          other.groupId == this.groupId &&
+          other.jumpHostId == this.jumpHostId &&
+          other.isFavorite == this.isFavorite &&
+          other.color == this.color &&
+          other.notes == this.notes &&
+          other.tags == this.tags &&
+          other.createdAt == this.createdAt &&
+          other.updatedAt == this.updatedAt &&
+          other.lastConnectedAt == this.lastConnectedAt &&
+          other.terminalThemeLightId == this.terminalThemeLightId &&
+          other.terminalThemeDarkId == this.terminalThemeDarkId &&
+          other.terminalFontFamily == this.terminalFontFamily &&
+          other.autoConnectCommand == this.autoConnectCommand &&
+          other.autoConnectSnippetId == this.autoConnectSnippetId);
+}
+
+class HostsCompanion extends UpdateCompanion<Host> {
+  final Value<int> id;
+  final Value<String> label;
+  final Value<String> hostname;
+  final Value<int> port;
+  final Value<String> username;
+  final Value<String?> password;
+  final Value<int?> keyId;
+  final Value<int?> groupId;
+  final Value<int?> jumpHostId;
+  final Value<bool> isFavorite;
+  final Value<String?> color;
+  final Value<String?> notes;
+  final Value<String?> tags;
+  final Value<DateTime> createdAt;
+  final Value<DateTime> updatedAt;
+  final Value<DateTime?> lastConnectedAt;
+  final Value<String?> terminalThemeLightId;
+  final Value<String?> terminalThemeDarkId;
+  final Value<String?> terminalFontFamily;
+  final Value<String?> autoConnectCommand;
+  final Value<int?> autoConnectSnippetId;
+  const HostsCompanion({
+    this.id = const Value.absent(),
+    this.label = const Value.absent(),
+    this.hostname = const Value.absent(),
+    this.port = const Value.absent(),
+    this.username = const Value.absent(),
+    this.password = const Value.absent(),
+    this.keyId = const Value.absent(),
+    this.groupId = const Value.absent(),
+    this.jumpHostId = const Value.absent(),
+    this.isFavorite = const Value.absent(),
+    this.color = const Value.absent(),
+    this.notes = const Value.absent(),
+    this.tags = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.lastConnectedAt = const Value.absent(),
+    this.terminalThemeLightId = const Value.absent(),
+    this.terminalThemeDarkId = const Value.absent(),
+    this.terminalFontFamily = const Value.absent(),
+    this.autoConnectCommand = const Value.absent(),
+    this.autoConnectSnippetId = const Value.absent(),
+  });
+  HostsCompanion.insert({
+    this.id = const Value.absent(),
+    required String label,
+    required String hostname,
+    this.port = const Value.absent(),
+    required String username,
+    this.password = const Value.absent(),
+    this.keyId = const Value.absent(),
+    this.groupId = const Value.absent(),
+    this.jumpHostId = const Value.absent(),
+    this.isFavorite = const Value.absent(),
+    this.color = const Value.absent(),
+    this.notes = const Value.absent(),
+    this.tags = const Value.absent(),
+    this.createdAt = const Value.absent(),
+    this.updatedAt = const Value.absent(),
+    this.lastConnectedAt = const Value.absent(),
+    this.terminalThemeLightId = const Value.absent(),
+    this.terminalThemeDarkId = const Value.absent(),
+    this.terminalFontFamily = const Value.absent(),
+    this.autoConnectCommand = const Value.absent(),
+    this.autoConnectSnippetId = const Value.absent(),
+  }) : label = Value(label),
+       hostname = Value(hostname),
+       username = Value(username);
+  static Insertable<Host> custom({
+    Expression<int>? id,
+    Expression<String>? label,
+    Expression<String>? hostname,
+    Expression<int>? port,
+    Expression<String>? username,
+    Expression<String>? password,
+    Expression<int>? keyId,
+    Expression<int>? groupId,
+    Expression<int>? jumpHostId,
+    Expression<bool>? isFavorite,
+    Expression<String>? color,
+    Expression<String>? notes,
+    Expression<String>? tags,
+    Expression<DateTime>? createdAt,
+    Expression<DateTime>? updatedAt,
+    Expression<DateTime>? lastConnectedAt,
+    Expression<String>? terminalThemeLightId,
+    Expression<String>? terminalThemeDarkId,
+    Expression<String>? terminalFontFamily,
+    Expression<String>? autoConnectCommand,
+    Expression<int>? autoConnectSnippetId,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (label != null) 'label': label,
+      if (hostname != null) 'hostname': hostname,
+      if (port != null) 'port': port,
+      if (username != null) 'username': username,
+      if (password != null) 'password': password,
+      if (keyId != null) 'key_id': keyId,
+      if (groupId != null) 'group_id': groupId,
+      if (jumpHostId != null) 'jump_host_id': jumpHostId,
+      if (isFavorite != null) 'is_favorite': isFavorite,
+      if (color != null) 'color': color,
+      if (notes != null) 'notes': notes,
+      if (tags != null) 'tags': tags,
+      if (createdAt != null) 'created_at': createdAt,
+      if (updatedAt != null) 'updated_at': updatedAt,
+      if (lastConnectedAt != null) 'last_connected_at': lastConnectedAt,
+      if (terminalThemeLightId != null)
+        'terminal_theme_light_id': terminalThemeLightId,
+      if (terminalThemeDarkId != null)
+        'terminal_theme_dark_id': terminalThemeDarkId,
+      if (terminalFontFamily != null)
+        'terminal_font_family': terminalFontFamily,
+      if (autoConnectCommand != null)
+        'auto_connect_command': autoConnectCommand,
+      if (autoConnectSnippetId != null)
+        'auto_connect_snippet_id': autoConnectSnippetId,
+    });
+  }
+
+  HostsCompanion copyWith({
+    Value<int>? id,
+    Value<String>? label,
+    Value<String>? hostname,
+    Value<int>? port,
+    Value<String>? username,
+    Value<String?>? password,
+    Value<int?>? keyId,
+    Value<int?>? groupId,
+    Value<int?>? jumpHostId,
+    Value<bool>? isFavorite,
+    Value<String?>? color,
+    Value<String?>? notes,
+    Value<String?>? tags,
+    Value<DateTime>? createdAt,
+    Value<DateTime>? updatedAt,
+    Value<DateTime?>? lastConnectedAt,
+    Value<String?>? terminalThemeLightId,
+    Value<String?>? terminalThemeDarkId,
+    Value<String?>? terminalFontFamily,
+    Value<String?>? autoConnectCommand,
+    Value<int?>? autoConnectSnippetId,
+  }) {
+    return HostsCompanion(
+      id: id ?? this.id,
+      label: label ?? this.label,
+      hostname: hostname ?? this.hostname,
+      port: port ?? this.port,
+      username: username ?? this.username,
+      password: password ?? this.password,
+      keyId: keyId ?? this.keyId,
+      groupId: groupId ?? this.groupId,
+      jumpHostId: jumpHostId ?? this.jumpHostId,
+      isFavorite: isFavorite ?? this.isFavorite,
+      color: color ?? this.color,
+      notes: notes ?? this.notes,
+      tags: tags ?? this.tags,
+      createdAt: createdAt ?? this.createdAt,
+      updatedAt: updatedAt ?? this.updatedAt,
+      lastConnectedAt: lastConnectedAt ?? this.lastConnectedAt,
+      terminalThemeLightId: terminalThemeLightId ?? this.terminalThemeLightId,
+      terminalThemeDarkId: terminalThemeDarkId ?? this.terminalThemeDarkId,
+      terminalFontFamily: terminalFontFamily ?? this.terminalFontFamily,
+      autoConnectCommand: autoConnectCommand ?? this.autoConnectCommand,
+      autoConnectSnippetId: autoConnectSnippetId ?? this.autoConnectSnippetId,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (label.present) {
+      map['label'] = Variable<String>(label.value);
+    }
+    if (hostname.present) {
+      map['hostname'] = Variable<String>(hostname.value);
+    }
+    if (port.present) {
+      map['port'] = Variable<int>(port.value);
+    }
+    if (username.present) {
+      map['username'] = Variable<String>(username.value);
+    }
+    if (password.present) {
+      map['password'] = Variable<String>(password.value);
+    }
+    if (keyId.present) {
+      map['key_id'] = Variable<int>(keyId.value);
+    }
+    if (groupId.present) {
+      map['group_id'] = Variable<int>(groupId.value);
+    }
+    if (jumpHostId.present) {
+      map['jump_host_id'] = Variable<int>(jumpHostId.value);
+    }
+    if (isFavorite.present) {
+      map['is_favorite'] = Variable<bool>(isFavorite.value);
+    }
+    if (color.present) {
+      map['color'] = Variable<String>(color.value);
+    }
+    if (notes.present) {
+      map['notes'] = Variable<String>(notes.value);
+    }
+    if (tags.present) {
+      map['tags'] = Variable<String>(tags.value);
+    }
+    if (createdAt.present) {
+      map['created_at'] = Variable<DateTime>(createdAt.value);
+    }
+    if (updatedAt.present) {
+      map['updated_at'] = Variable<DateTime>(updatedAt.value);
+    }
+    if (lastConnectedAt.present) {
+      map['last_connected_at'] = Variable<DateTime>(lastConnectedAt.value);
+    }
+    if (terminalThemeLightId.present) {
+      map['terminal_theme_light_id'] = Variable<String>(
+        terminalThemeLightId.value,
+      );
+    }
+    if (terminalThemeDarkId.present) {
+      map['terminal_theme_dark_id'] = Variable<String>(
+        terminalThemeDarkId.value,
+      );
+    }
+    if (terminalFontFamily.present) {
+      map['terminal_font_family'] = Variable<String>(terminalFontFamily.value);
+    }
+    if (autoConnectCommand.present) {
+      map['auto_connect_command'] = Variable<String>(autoConnectCommand.value);
+    }
+    if (autoConnectSnippetId.present) {
+      map['auto_connect_snippet_id'] = Variable<int>(
+        autoConnectSnippetId.value,
+      );
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('HostsCompanion(')
+          ..write('id: $id, ')
+          ..write('label: $label, ')
+          ..write('hostname: $hostname, ')
+          ..write('port: $port, ')
+          ..write('username: $username, ')
+          ..write('password: $password, ')
+          ..write('keyId: $keyId, ')
+          ..write('groupId: $groupId, ')
+          ..write('jumpHostId: $jumpHostId, ')
+          ..write('isFavorite: $isFavorite, ')
+          ..write('color: $color, ')
+          ..write('notes: $notes, ')
+          ..write('tags: $tags, ')
+          ..write('createdAt: $createdAt, ')
+          ..write('updatedAt: $updatedAt, ')
+          ..write('lastConnectedAt: $lastConnectedAt, ')
+          ..write('terminalThemeLightId: $terminalThemeLightId, ')
+          ..write('terminalThemeDarkId: $terminalThemeDarkId, ')
+          ..write('terminalFontFamily: $terminalFontFamily, ')
+          ..write('autoConnectCommand: $autoConnectCommand, ')
+          ..write('autoConnectSnippetId: $autoConnectSnippetId')
           ..write(')'))
         .toString();
   }
@@ -4433,9 +4559,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   $AppDatabaseManager get managers => $AppDatabaseManager(this);
   late final $SshKeysTable sshKeys = $SshKeysTable(this);
   late final $GroupsTable groups = $GroupsTable(this);
-  late final $HostsTable hosts = $HostsTable(this);
   late final $SnippetFoldersTable snippetFolders = $SnippetFoldersTable(this);
   late final $SnippetsTable snippets = $SnippetsTable(this);
+  late final $HostsTable hosts = $HostsTable(this);
   late final $PortForwardsTable portForwards = $PortForwardsTable(this);
   late final $KnownHostsTable knownHosts = $KnownHostsTable(this);
   late final $SettingsTable settings = $SettingsTable(this);
@@ -4446,9 +4572,9 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   List<DatabaseSchemaEntity> get allSchemaEntities => [
     sshKeys,
     groups,
-    hosts,
     snippetFolders,
     snippets,
+    hosts,
     portForwards,
     knownHosts,
     settings,
@@ -5237,873 +5363,6 @@ typedef $$GroupsTableProcessedTableManager =
       Group,
       PrefetchHooks Function({bool parentId, bool hostsRefs})
     >;
-typedef $$HostsTableCreateCompanionBuilder =
-    HostsCompanion Function({
-      Value<int> id,
-      required String label,
-      required String hostname,
-      Value<int> port,
-      required String username,
-      Value<String?> password,
-      Value<int?> keyId,
-      Value<int?> groupId,
-      Value<int?> jumpHostId,
-      Value<bool> isFavorite,
-      Value<String?> color,
-      Value<String?> notes,
-      Value<String?> tags,
-      Value<DateTime> createdAt,
-      Value<DateTime> updatedAt,
-      Value<DateTime?> lastConnectedAt,
-      Value<String?> terminalThemeLightId,
-      Value<String?> terminalThemeDarkId,
-      Value<String?> terminalFontFamily,
-    });
-typedef $$HostsTableUpdateCompanionBuilder =
-    HostsCompanion Function({
-      Value<int> id,
-      Value<String> label,
-      Value<String> hostname,
-      Value<int> port,
-      Value<String> username,
-      Value<String?> password,
-      Value<int?> keyId,
-      Value<int?> groupId,
-      Value<int?> jumpHostId,
-      Value<bool> isFavorite,
-      Value<String?> color,
-      Value<String?> notes,
-      Value<String?> tags,
-      Value<DateTime> createdAt,
-      Value<DateTime> updatedAt,
-      Value<DateTime?> lastConnectedAt,
-      Value<String?> terminalThemeLightId,
-      Value<String?> terminalThemeDarkId,
-      Value<String?> terminalFontFamily,
-    });
-
-final class $$HostsTableReferences
-    extends BaseReferences<_$AppDatabase, $HostsTable, Host> {
-  $$HostsTableReferences(super.$_db, super.$_table, super.$_typedResult);
-
-  static $SshKeysTable _keyIdTable(_$AppDatabase db) => db.sshKeys.createAlias(
-    $_aliasNameGenerator(db.hosts.keyId, db.sshKeys.id),
-  );
-
-  $$SshKeysTableProcessedTableManager? get keyId {
-    final $_column = $_itemColumn<int>('key_id');
-    if ($_column == null) return null;
-    final manager = $$SshKeysTableTableManager(
-      $_db,
-      $_db.sshKeys,
-    ).filter((f) => f.id.sqlEquals($_column));
-    final item = $_typedResult.readTableOrNull(_keyIdTable($_db));
-    if (item == null) return manager;
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: [item]),
-    );
-  }
-
-  static $GroupsTable _groupIdTable(_$AppDatabase db) => db.groups.createAlias(
-    $_aliasNameGenerator(db.hosts.groupId, db.groups.id),
-  );
-
-  $$GroupsTableProcessedTableManager? get groupId {
-    final $_column = $_itemColumn<int>('group_id');
-    if ($_column == null) return null;
-    final manager = $$GroupsTableTableManager(
-      $_db,
-      $_db.groups,
-    ).filter((f) => f.id.sqlEquals($_column));
-    final item = $_typedResult.readTableOrNull(_groupIdTable($_db));
-    if (item == null) return manager;
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: [item]),
-    );
-  }
-
-  static $HostsTable _jumpHostIdTable(_$AppDatabase db) => db.hosts.createAlias(
-    $_aliasNameGenerator(db.hosts.jumpHostId, db.hosts.id),
-  );
-
-  $$HostsTableProcessedTableManager? get jumpHostId {
-    final $_column = $_itemColumn<int>('jump_host_id');
-    if ($_column == null) return null;
-    final manager = $$HostsTableTableManager(
-      $_db,
-      $_db.hosts,
-    ).filter((f) => f.id.sqlEquals($_column));
-    final item = $_typedResult.readTableOrNull(_jumpHostIdTable($_db));
-    if (item == null) return manager;
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: [item]),
-    );
-  }
-
-  static MultiTypedResultKey<$PortForwardsTable, List<PortForward>>
-  _portForwardsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
-    db.portForwards,
-    aliasName: $_aliasNameGenerator(db.hosts.id, db.portForwards.hostId),
-  );
-
-  $$PortForwardsTableProcessedTableManager get portForwardsRefs {
-    final manager = $$PortForwardsTableTableManager(
-      $_db,
-      $_db.portForwards,
-    ).filter((f) => f.hostId.id.sqlEquals($_itemColumn<int>('id')!));
-
-    final cache = $_typedResult.readTableOrNull(_portForwardsRefsTable($_db));
-    return ProcessedTableManager(
-      manager.$state.copyWith(prefetchedData: cache),
-    );
-  }
-}
-
-class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
-  $$HostsTableFilterComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  ColumnFilters<int> get id => $composableBuilder(
-    column: $table.id,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get label => $composableBuilder(
-    column: $table.label,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get hostname => $composableBuilder(
-    column: $table.hostname,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<int> get port => $composableBuilder(
-    column: $table.port,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get username => $composableBuilder(
-    column: $table.username,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get password => $composableBuilder(
-    column: $table.password,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<bool> get isFavorite => $composableBuilder(
-    column: $table.isFavorite,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get color => $composableBuilder(
-    column: $table.color,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get notes => $composableBuilder(
-    column: $table.notes,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get tags => $composableBuilder(
-    column: $table.tags,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<DateTime> get createdAt => $composableBuilder(
-    column: $table.createdAt,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
-    column: $table.updatedAt,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<DateTime> get lastConnectedAt => $composableBuilder(
-    column: $table.lastConnectedAt,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get terminalThemeLightId => $composableBuilder(
-    column: $table.terminalThemeLightId,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get terminalThemeDarkId => $composableBuilder(
-    column: $table.terminalThemeDarkId,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  ColumnFilters<String> get terminalFontFamily => $composableBuilder(
-    column: $table.terminalFontFamily,
-    builder: (column) => ColumnFilters(column),
-  );
-
-  $$SshKeysTableFilterComposer get keyId {
-    final $$SshKeysTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.keyId,
-      referencedTable: $db.sshKeys,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SshKeysTableFilterComposer(
-            $db: $db,
-            $table: $db.sshKeys,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$GroupsTableFilterComposer get groupId {
-    final $$GroupsTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.groupId,
-      referencedTable: $db.groups,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$GroupsTableFilterComposer(
-            $db: $db,
-            $table: $db.groups,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$HostsTableFilterComposer get jumpHostId {
-    final $$HostsTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.jumpHostId,
-      referencedTable: $db.hosts,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$HostsTableFilterComposer(
-            $db: $db,
-            $table: $db.hosts,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  Expression<bool> portForwardsRefs(
-    Expression<bool> Function($$PortForwardsTableFilterComposer f) f,
-  ) {
-    final $$PortForwardsTableFilterComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.id,
-      referencedTable: $db.portForwards,
-      getReferencedColumn: (t) => t.hostId,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$PortForwardsTableFilterComposer(
-            $db: $db,
-            $table: $db.portForwards,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return f(composer);
-  }
-}
-
-class $$HostsTableOrderingComposer
-    extends Composer<_$AppDatabase, $HostsTable> {
-  $$HostsTableOrderingComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  ColumnOrderings<int> get id => $composableBuilder(
-    column: $table.id,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get label => $composableBuilder(
-    column: $table.label,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get hostname => $composableBuilder(
-    column: $table.hostname,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<int> get port => $composableBuilder(
-    column: $table.port,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get username => $composableBuilder(
-    column: $table.username,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get password => $composableBuilder(
-    column: $table.password,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<bool> get isFavorite => $composableBuilder(
-    column: $table.isFavorite,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get color => $composableBuilder(
-    column: $table.color,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get notes => $composableBuilder(
-    column: $table.notes,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get tags => $composableBuilder(
-    column: $table.tags,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
-    column: $table.createdAt,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
-    column: $table.updatedAt,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<DateTime> get lastConnectedAt => $composableBuilder(
-    column: $table.lastConnectedAt,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get terminalThemeLightId => $composableBuilder(
-    column: $table.terminalThemeLightId,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get terminalThemeDarkId => $composableBuilder(
-    column: $table.terminalThemeDarkId,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  ColumnOrderings<String> get terminalFontFamily => $composableBuilder(
-    column: $table.terminalFontFamily,
-    builder: (column) => ColumnOrderings(column),
-  );
-
-  $$SshKeysTableOrderingComposer get keyId {
-    final $$SshKeysTableOrderingComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.keyId,
-      referencedTable: $db.sshKeys,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SshKeysTableOrderingComposer(
-            $db: $db,
-            $table: $db.sshKeys,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$GroupsTableOrderingComposer get groupId {
-    final $$GroupsTableOrderingComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.groupId,
-      referencedTable: $db.groups,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$GroupsTableOrderingComposer(
-            $db: $db,
-            $table: $db.groups,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$HostsTableOrderingComposer get jumpHostId {
-    final $$HostsTableOrderingComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.jumpHostId,
-      referencedTable: $db.hosts,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$HostsTableOrderingComposer(
-            $db: $db,
-            $table: $db.hosts,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-}
-
-class $$HostsTableAnnotationComposer
-    extends Composer<_$AppDatabase, $HostsTable> {
-  $$HostsTableAnnotationComposer({
-    required super.$db,
-    required super.$table,
-    super.joinBuilder,
-    super.$addJoinBuilderToRootComposer,
-    super.$removeJoinBuilderFromRootComposer,
-  });
-  GeneratedColumn<int> get id =>
-      $composableBuilder(column: $table.id, builder: (column) => column);
-
-  GeneratedColumn<String> get label =>
-      $composableBuilder(column: $table.label, builder: (column) => column);
-
-  GeneratedColumn<String> get hostname =>
-      $composableBuilder(column: $table.hostname, builder: (column) => column);
-
-  GeneratedColumn<int> get port =>
-      $composableBuilder(column: $table.port, builder: (column) => column);
-
-  GeneratedColumn<String> get username =>
-      $composableBuilder(column: $table.username, builder: (column) => column);
-
-  GeneratedColumn<String> get password =>
-      $composableBuilder(column: $table.password, builder: (column) => column);
-
-  GeneratedColumn<bool> get isFavorite => $composableBuilder(
-    column: $table.isFavorite,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<String> get color =>
-      $composableBuilder(column: $table.color, builder: (column) => column);
-
-  GeneratedColumn<String> get notes =>
-      $composableBuilder(column: $table.notes, builder: (column) => column);
-
-  GeneratedColumn<String> get tags =>
-      $composableBuilder(column: $table.tags, builder: (column) => column);
-
-  GeneratedColumn<DateTime> get createdAt =>
-      $composableBuilder(column: $table.createdAt, builder: (column) => column);
-
-  GeneratedColumn<DateTime> get updatedAt =>
-      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
-
-  GeneratedColumn<DateTime> get lastConnectedAt => $composableBuilder(
-    column: $table.lastConnectedAt,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<String> get terminalThemeLightId => $composableBuilder(
-    column: $table.terminalThemeLightId,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<String> get terminalThemeDarkId => $composableBuilder(
-    column: $table.terminalThemeDarkId,
-    builder: (column) => column,
-  );
-
-  GeneratedColumn<String> get terminalFontFamily => $composableBuilder(
-    column: $table.terminalFontFamily,
-    builder: (column) => column,
-  );
-
-  $$SshKeysTableAnnotationComposer get keyId {
-    final $$SshKeysTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.keyId,
-      referencedTable: $db.sshKeys,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$SshKeysTableAnnotationComposer(
-            $db: $db,
-            $table: $db.sshKeys,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$GroupsTableAnnotationComposer get groupId {
-    final $$GroupsTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.groupId,
-      referencedTable: $db.groups,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$GroupsTableAnnotationComposer(
-            $db: $db,
-            $table: $db.groups,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  $$HostsTableAnnotationComposer get jumpHostId {
-    final $$HostsTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.jumpHostId,
-      referencedTable: $db.hosts,
-      getReferencedColumn: (t) => t.id,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$HostsTableAnnotationComposer(
-            $db: $db,
-            $table: $db.hosts,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return composer;
-  }
-
-  Expression<T> portForwardsRefs<T extends Object>(
-    Expression<T> Function($$PortForwardsTableAnnotationComposer a) f,
-  ) {
-    final $$PortForwardsTableAnnotationComposer composer = $composerBuilder(
-      composer: this,
-      getCurrentColumn: (t) => t.id,
-      referencedTable: $db.portForwards,
-      getReferencedColumn: (t) => t.hostId,
-      builder:
-          (
-            joinBuilder, {
-            $addJoinBuilderToRootComposer,
-            $removeJoinBuilderFromRootComposer,
-          }) => $$PortForwardsTableAnnotationComposer(
-            $db: $db,
-            $table: $db.portForwards,
-            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
-            joinBuilder: joinBuilder,
-            $removeJoinBuilderFromRootComposer:
-                $removeJoinBuilderFromRootComposer,
-          ),
-    );
-    return f(composer);
-  }
-}
-
-class $$HostsTableTableManager
-    extends
-        RootTableManager<
-          _$AppDatabase,
-          $HostsTable,
-          Host,
-          $$HostsTableFilterComposer,
-          $$HostsTableOrderingComposer,
-          $$HostsTableAnnotationComposer,
-          $$HostsTableCreateCompanionBuilder,
-          $$HostsTableUpdateCompanionBuilder,
-          (Host, $$HostsTableReferences),
-          Host,
-          PrefetchHooks Function({
-            bool keyId,
-            bool groupId,
-            bool jumpHostId,
-            bool portForwardsRefs,
-          })
-        > {
-  $$HostsTableTableManager(_$AppDatabase db, $HostsTable table)
-    : super(
-        TableManagerState(
-          db: db,
-          table: table,
-          createFilteringComposer: () =>
-              $$HostsTableFilterComposer($db: db, $table: table),
-          createOrderingComposer: () =>
-              $$HostsTableOrderingComposer($db: db, $table: table),
-          createComputedFieldComposer: () =>
-              $$HostsTableAnnotationComposer($db: db, $table: table),
-          updateCompanionCallback:
-              ({
-                Value<int> id = const Value.absent(),
-                Value<String> label = const Value.absent(),
-                Value<String> hostname = const Value.absent(),
-                Value<int> port = const Value.absent(),
-                Value<String> username = const Value.absent(),
-                Value<String?> password = const Value.absent(),
-                Value<int?> keyId = const Value.absent(),
-                Value<int?> groupId = const Value.absent(),
-                Value<int?> jumpHostId = const Value.absent(),
-                Value<bool> isFavorite = const Value.absent(),
-                Value<String?> color = const Value.absent(),
-                Value<String?> notes = const Value.absent(),
-                Value<String?> tags = const Value.absent(),
-                Value<DateTime> createdAt = const Value.absent(),
-                Value<DateTime> updatedAt = const Value.absent(),
-                Value<DateTime?> lastConnectedAt = const Value.absent(),
-                Value<String?> terminalThemeLightId = const Value.absent(),
-                Value<String?> terminalThemeDarkId = const Value.absent(),
-                Value<String?> terminalFontFamily = const Value.absent(),
-              }) => HostsCompanion(
-                id: id,
-                label: label,
-                hostname: hostname,
-                port: port,
-                username: username,
-                password: password,
-                keyId: keyId,
-                groupId: groupId,
-                jumpHostId: jumpHostId,
-                isFavorite: isFavorite,
-                color: color,
-                notes: notes,
-                tags: tags,
-                createdAt: createdAt,
-                updatedAt: updatedAt,
-                lastConnectedAt: lastConnectedAt,
-                terminalThemeLightId: terminalThemeLightId,
-                terminalThemeDarkId: terminalThemeDarkId,
-                terminalFontFamily: terminalFontFamily,
-              ),
-          createCompanionCallback:
-              ({
-                Value<int> id = const Value.absent(),
-                required String label,
-                required String hostname,
-                Value<int> port = const Value.absent(),
-                required String username,
-                Value<String?> password = const Value.absent(),
-                Value<int?> keyId = const Value.absent(),
-                Value<int?> groupId = const Value.absent(),
-                Value<int?> jumpHostId = const Value.absent(),
-                Value<bool> isFavorite = const Value.absent(),
-                Value<String?> color = const Value.absent(),
-                Value<String?> notes = const Value.absent(),
-                Value<String?> tags = const Value.absent(),
-                Value<DateTime> createdAt = const Value.absent(),
-                Value<DateTime> updatedAt = const Value.absent(),
-                Value<DateTime?> lastConnectedAt = const Value.absent(),
-                Value<String?> terminalThemeLightId = const Value.absent(),
-                Value<String?> terminalThemeDarkId = const Value.absent(),
-                Value<String?> terminalFontFamily = const Value.absent(),
-              }) => HostsCompanion.insert(
-                id: id,
-                label: label,
-                hostname: hostname,
-                port: port,
-                username: username,
-                password: password,
-                keyId: keyId,
-                groupId: groupId,
-                jumpHostId: jumpHostId,
-                isFavorite: isFavorite,
-                color: color,
-                notes: notes,
-                tags: tags,
-                createdAt: createdAt,
-                updatedAt: updatedAt,
-                lastConnectedAt: lastConnectedAt,
-                terminalThemeLightId: terminalThemeLightId,
-                terminalThemeDarkId: terminalThemeDarkId,
-                terminalFontFamily: terminalFontFamily,
-              ),
-          withReferenceMapper: (p0) => p0
-              .map(
-                (e) =>
-                    (e.readTable(table), $$HostsTableReferences(db, table, e)),
-              )
-              .toList(),
-          prefetchHooksCallback:
-              ({
-                keyId = false,
-                groupId = false,
-                jumpHostId = false,
-                portForwardsRefs = false,
-              }) {
-                return PrefetchHooks(
-                  db: db,
-                  explicitlyWatchedTables: [
-                    if (portForwardsRefs) db.portForwards,
-                  ],
-                  addJoins:
-                      <
-                        T extends TableManagerState<
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic,
-                          dynamic
-                        >
-                      >(state) {
-                        if (keyId) {
-                          state =
-                              state.withJoin(
-                                    currentTable: table,
-                                    currentColumn: table.keyId,
-                                    referencedTable: $$HostsTableReferences
-                                        ._keyIdTable(db),
-                                    referencedColumn: $$HostsTableReferences
-                                        ._keyIdTable(db)
-                                        .id,
-                                  )
-                                  as T;
-                        }
-                        if (groupId) {
-                          state =
-                              state.withJoin(
-                                    currentTable: table,
-                                    currentColumn: table.groupId,
-                                    referencedTable: $$HostsTableReferences
-                                        ._groupIdTable(db),
-                                    referencedColumn: $$HostsTableReferences
-                                        ._groupIdTable(db)
-                                        .id,
-                                  )
-                                  as T;
-                        }
-                        if (jumpHostId) {
-                          state =
-                              state.withJoin(
-                                    currentTable: table,
-                                    currentColumn: table.jumpHostId,
-                                    referencedTable: $$HostsTableReferences
-                                        ._jumpHostIdTable(db),
-                                    referencedColumn: $$HostsTableReferences
-                                        ._jumpHostIdTable(db)
-                                        .id,
-                                  )
-                                  as T;
-                        }
-
-                        return state;
-                      },
-                  getPrefetchedDataCallback: (items) async {
-                    return [
-                      if (portForwardsRefs)
-                        await $_getPrefetchedData<
-                          Host,
-                          $HostsTable,
-                          PortForward
-                        >(
-                          currentTable: table,
-                          referencedTable: $$HostsTableReferences
-                              ._portForwardsRefsTable(db),
-                          managerFromTypedResult: (p0) =>
-                              $$HostsTableReferences(
-                                db,
-                                table,
-                                p0,
-                              ).portForwardsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.hostId == item.id,
-                              ),
-                          typedResults: items,
-                        ),
-                    ];
-                  },
-                );
-              },
-        ),
-      );
-}
-
-typedef $$HostsTableProcessedTableManager =
-    ProcessedTableManager<
-      _$AppDatabase,
-      $HostsTable,
-      Host,
-      $$HostsTableFilterComposer,
-      $$HostsTableOrderingComposer,
-      $$HostsTableAnnotationComposer,
-      $$HostsTableCreateCompanionBuilder,
-      $$HostsTableUpdateCompanionBuilder,
-      (Host, $$HostsTableReferences),
-      Host,
-      PrefetchHooks Function({
-        bool keyId,
-        bool groupId,
-        bool jumpHostId,
-        bool portForwardsRefs,
-      })
-    >;
 typedef $$SnippetFoldersTableCreateCompanionBuilder =
     SnippetFoldersCompanion Function({
       Value<int> id,
@@ -6560,6 +5819,27 @@ final class $$SnippetsTableReferences
       manager.$state.copyWith(prefetchedData: [item]),
     );
   }
+
+  static MultiTypedResultKey<$HostsTable, List<Host>> _hostsRefsTable(
+    _$AppDatabase db,
+  ) => MultiTypedResultKey.fromTable(
+    db.hosts,
+    aliasName: $_aliasNameGenerator(
+      db.snippets.id,
+      db.hosts.autoConnectSnippetId,
+    ),
+  );
+
+  $$HostsTableProcessedTableManager get hostsRefs {
+    final manager = $$HostsTableTableManager($_db, $_db.hosts).filter(
+      (f) => f.autoConnectSnippetId.id.sqlEquals($_itemColumn<int>('id')!),
+    );
+
+    final cache = $_typedResult.readTableOrNull(_hostsRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
 }
 
 class $$SnippetsTableFilterComposer
@@ -6632,6 +5912,31 @@ class $$SnippetsTableFilterComposer
           ),
     );
     return composer;
+  }
+
+  Expression<bool> hostsRefs(
+    Expression<bool> Function($$HostsTableFilterComposer f) f,
+  ) {
+    final $$HostsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.hosts,
+      getReferencedColumn: (t) => t.autoConnectSnippetId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HostsTableFilterComposer(
+            $db: $db,
+            $table: $db.hosts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
   }
 }
 
@@ -6771,6 +6076,31 @@ class $$SnippetsTableAnnotationComposer
     );
     return composer;
   }
+
+  Expression<T> hostsRefs<T extends Object>(
+    Expression<T> Function($$HostsTableAnnotationComposer a) f,
+  ) {
+    final $$HostsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.hosts,
+      getReferencedColumn: (t) => t.autoConnectSnippetId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HostsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.hosts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
 }
 
 class $$SnippetsTableTableManager
@@ -6786,7 +6116,7 @@ class $$SnippetsTableTableManager
           $$SnippetsTableUpdateCompanionBuilder,
           (Snippet, $$SnippetsTableReferences),
           Snippet,
-          PrefetchHooks Function({bool folderId})
+          PrefetchHooks Function({bool folderId, bool hostsRefs})
         > {
   $$SnippetsTableTableManager(_$AppDatabase db, $SnippetsTable table)
     : super(
@@ -6851,10 +6181,10 @@ class $$SnippetsTableTableManager
                 ),
               )
               .toList(),
-          prefetchHooksCallback: ({folderId = false}) {
+          prefetchHooksCallback: ({folderId = false, hostsRefs = false}) {
             return PrefetchHooks(
               db: db,
-              explicitlyWatchedTables: [],
+              explicitlyWatchedTables: [if (hostsRefs) db.hosts],
               addJoins:
                   <
                     T extends TableManagerState<
@@ -6888,7 +6218,21 @@ class $$SnippetsTableTableManager
                     return state;
                   },
               getPrefetchedDataCallback: (items) async {
-                return [];
+                return [
+                  if (hostsRefs)
+                    await $_getPrefetchedData<Snippet, $SnippetsTable, Host>(
+                      currentTable: table,
+                      referencedTable: $$SnippetsTableReferences
+                          ._hostsRefsTable(db),
+                      managerFromTypedResult: (p0) =>
+                          $$SnippetsTableReferences(db, table, p0).hostsRefs,
+                      referencedItemsForCurrentItem: (item, referencedItems) =>
+                          referencedItems.where(
+                            (e) => e.autoConnectSnippetId == item.id,
+                          ),
+                      typedResults: items,
+                    ),
+                ];
               },
             );
           },
@@ -6908,7 +6252,1007 @@ typedef $$SnippetsTableProcessedTableManager =
       $$SnippetsTableUpdateCompanionBuilder,
       (Snippet, $$SnippetsTableReferences),
       Snippet,
-      PrefetchHooks Function({bool folderId})
+      PrefetchHooks Function({bool folderId, bool hostsRefs})
+    >;
+typedef $$HostsTableCreateCompanionBuilder =
+    HostsCompanion Function({
+      Value<int> id,
+      required String label,
+      required String hostname,
+      Value<int> port,
+      required String username,
+      Value<String?> password,
+      Value<int?> keyId,
+      Value<int?> groupId,
+      Value<int?> jumpHostId,
+      Value<bool> isFavorite,
+      Value<String?> color,
+      Value<String?> notes,
+      Value<String?> tags,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<DateTime?> lastConnectedAt,
+      Value<String?> terminalThemeLightId,
+      Value<String?> terminalThemeDarkId,
+      Value<String?> terminalFontFamily,
+      Value<String?> autoConnectCommand,
+      Value<int?> autoConnectSnippetId,
+    });
+typedef $$HostsTableUpdateCompanionBuilder =
+    HostsCompanion Function({
+      Value<int> id,
+      Value<String> label,
+      Value<String> hostname,
+      Value<int> port,
+      Value<String> username,
+      Value<String?> password,
+      Value<int?> keyId,
+      Value<int?> groupId,
+      Value<int?> jumpHostId,
+      Value<bool> isFavorite,
+      Value<String?> color,
+      Value<String?> notes,
+      Value<String?> tags,
+      Value<DateTime> createdAt,
+      Value<DateTime> updatedAt,
+      Value<DateTime?> lastConnectedAt,
+      Value<String?> terminalThemeLightId,
+      Value<String?> terminalThemeDarkId,
+      Value<String?> terminalFontFamily,
+      Value<String?> autoConnectCommand,
+      Value<int?> autoConnectSnippetId,
+    });
+
+final class $$HostsTableReferences
+    extends BaseReferences<_$AppDatabase, $HostsTable, Host> {
+  $$HostsTableReferences(super.$_db, super.$_table, super.$_typedResult);
+
+  static $SshKeysTable _keyIdTable(_$AppDatabase db) => db.sshKeys.createAlias(
+    $_aliasNameGenerator(db.hosts.keyId, db.sshKeys.id),
+  );
+
+  $$SshKeysTableProcessedTableManager? get keyId {
+    final $_column = $_itemColumn<int>('key_id');
+    if ($_column == null) return null;
+    final manager = $$SshKeysTableTableManager(
+      $_db,
+      $_db.sshKeys,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_keyIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $GroupsTable _groupIdTable(_$AppDatabase db) => db.groups.createAlias(
+    $_aliasNameGenerator(db.hosts.groupId, db.groups.id),
+  );
+
+  $$GroupsTableProcessedTableManager? get groupId {
+    final $_column = $_itemColumn<int>('group_id');
+    if ($_column == null) return null;
+    final manager = $$GroupsTableTableManager(
+      $_db,
+      $_db.groups,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_groupIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $HostsTable _jumpHostIdTable(_$AppDatabase db) => db.hosts.createAlias(
+    $_aliasNameGenerator(db.hosts.jumpHostId, db.hosts.id),
+  );
+
+  $$HostsTableProcessedTableManager? get jumpHostId {
+    final $_column = $_itemColumn<int>('jump_host_id');
+    if ($_column == null) return null;
+    final manager = $$HostsTableTableManager(
+      $_db,
+      $_db.hosts,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_jumpHostIdTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $SnippetsTable _autoConnectSnippetIdTable(_$AppDatabase db) =>
+      db.snippets.createAlias(
+        $_aliasNameGenerator(db.hosts.autoConnectSnippetId, db.snippets.id),
+      );
+
+  $$SnippetsTableProcessedTableManager? get autoConnectSnippetId {
+    final $_column = $_itemColumn<int>('auto_connect_snippet_id');
+    if ($_column == null) return null;
+    final manager = $$SnippetsTableTableManager(
+      $_db,
+      $_db.snippets,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(
+      _autoConnectSnippetIdTable($_db),
+    );
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static MultiTypedResultKey<$PortForwardsTable, List<PortForward>>
+  _portForwardsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.portForwards,
+    aliasName: $_aliasNameGenerator(db.hosts.id, db.portForwards.hostId),
+  );
+
+  $$PortForwardsTableProcessedTableManager get portForwardsRefs {
+    final manager = $$PortForwardsTableTableManager(
+      $_db,
+      $_db.portForwards,
+    ).filter((f) => f.hostId.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(_portForwardsRefsTable($_db));
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
+class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
+  $$HostsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get label => $composableBuilder(
+    column: $table.label,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get hostname => $composableBuilder(
+    column: $table.hostname,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get port => $composableBuilder(
+    column: $table.port,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get username => $composableBuilder(
+    column: $table.username,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get password => $composableBuilder(
+    column: $table.password,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get isFavorite => $composableBuilder(
+    column: $table.isFavorite,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get color => $composableBuilder(
+    column: $table.color,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get notes => $composableBuilder(
+    column: $table.notes,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get tags => $composableBuilder(
+    column: $table.tags,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<DateTime> get lastConnectedAt => $composableBuilder(
+    column: $table.lastConnectedAt,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get terminalThemeLightId => $composableBuilder(
+    column: $table.terminalThemeLightId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get terminalThemeDarkId => $composableBuilder(
+    column: $table.terminalThemeDarkId,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get terminalFontFamily => $composableBuilder(
+    column: $table.terminalFontFamily,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get autoConnectCommand => $composableBuilder(
+    column: $table.autoConnectCommand,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$SshKeysTableFilterComposer get keyId {
+    final $$SshKeysTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.keyId,
+      referencedTable: $db.sshKeys,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SshKeysTableFilterComposer(
+            $db: $db,
+            $table: $db.sshKeys,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$GroupsTableFilterComposer get groupId {
+    final $$GroupsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.groupId,
+      referencedTable: $db.groups,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$GroupsTableFilterComposer(
+            $db: $db,
+            $table: $db.groups,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$HostsTableFilterComposer get jumpHostId {
+    final $$HostsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.jumpHostId,
+      referencedTable: $db.hosts,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HostsTableFilterComposer(
+            $db: $db,
+            $table: $db.hosts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$SnippetsTableFilterComposer get autoConnectSnippetId {
+    final $$SnippetsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.autoConnectSnippetId,
+      referencedTable: $db.snippets,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SnippetsTableFilterComposer(
+            $db: $db,
+            $table: $db.snippets,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  Expression<bool> portForwardsRefs(
+    Expression<bool> Function($$PortForwardsTableFilterComposer f) f,
+  ) {
+    final $$PortForwardsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.portForwards,
+      getReferencedColumn: (t) => t.hostId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$PortForwardsTableFilterComposer(
+            $db: $db,
+            $table: $db.portForwards,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$HostsTableOrderingComposer
+    extends Composer<_$AppDatabase, $HostsTable> {
+  $$HostsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get label => $composableBuilder(
+    column: $table.label,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get hostname => $composableBuilder(
+    column: $table.hostname,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get port => $composableBuilder(
+    column: $table.port,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get username => $composableBuilder(
+    column: $table.username,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get password => $composableBuilder(
+    column: $table.password,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get isFavorite => $composableBuilder(
+    column: $table.isFavorite,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get color => $composableBuilder(
+    column: $table.color,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get notes => $composableBuilder(
+    column: $table.notes,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get tags => $composableBuilder(
+    column: $table.tags,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get createdAt => $composableBuilder(
+    column: $table.createdAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get updatedAt => $composableBuilder(
+    column: $table.updatedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<DateTime> get lastConnectedAt => $composableBuilder(
+    column: $table.lastConnectedAt,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get terminalThemeLightId => $composableBuilder(
+    column: $table.terminalThemeLightId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get terminalThemeDarkId => $composableBuilder(
+    column: $table.terminalThemeDarkId,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get terminalFontFamily => $composableBuilder(
+    column: $table.terminalFontFamily,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get autoConnectCommand => $composableBuilder(
+    column: $table.autoConnectCommand,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$SshKeysTableOrderingComposer get keyId {
+    final $$SshKeysTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.keyId,
+      referencedTable: $db.sshKeys,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SshKeysTableOrderingComposer(
+            $db: $db,
+            $table: $db.sshKeys,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$GroupsTableOrderingComposer get groupId {
+    final $$GroupsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.groupId,
+      referencedTable: $db.groups,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$GroupsTableOrderingComposer(
+            $db: $db,
+            $table: $db.groups,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$HostsTableOrderingComposer get jumpHostId {
+    final $$HostsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.jumpHostId,
+      referencedTable: $db.hosts,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HostsTableOrderingComposer(
+            $db: $db,
+            $table: $db.hosts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$SnippetsTableOrderingComposer get autoConnectSnippetId {
+    final $$SnippetsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.autoConnectSnippetId,
+      referencedTable: $db.snippets,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SnippetsTableOrderingComposer(
+            $db: $db,
+            $table: $db.snippets,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$HostsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $HostsTable> {
+  $$HostsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get label =>
+      $composableBuilder(column: $table.label, builder: (column) => column);
+
+  GeneratedColumn<String> get hostname =>
+      $composableBuilder(column: $table.hostname, builder: (column) => column);
+
+  GeneratedColumn<int> get port =>
+      $composableBuilder(column: $table.port, builder: (column) => column);
+
+  GeneratedColumn<String> get username =>
+      $composableBuilder(column: $table.username, builder: (column) => column);
+
+  GeneratedColumn<String> get password =>
+      $composableBuilder(column: $table.password, builder: (column) => column);
+
+  GeneratedColumn<bool> get isFavorite => $composableBuilder(
+    column: $table.isFavorite,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get color =>
+      $composableBuilder(column: $table.color, builder: (column) => column);
+
+  GeneratedColumn<String> get notes =>
+      $composableBuilder(column: $table.notes, builder: (column) => column);
+
+  GeneratedColumn<String> get tags =>
+      $composableBuilder(column: $table.tags, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get createdAt =>
+      $composableBuilder(column: $table.createdAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get updatedAt =>
+      $composableBuilder(column: $table.updatedAt, builder: (column) => column);
+
+  GeneratedColumn<DateTime> get lastConnectedAt => $composableBuilder(
+    column: $table.lastConnectedAt,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get terminalThemeLightId => $composableBuilder(
+    column: $table.terminalThemeLightId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get terminalThemeDarkId => $composableBuilder(
+    column: $table.terminalThemeDarkId,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get terminalFontFamily => $composableBuilder(
+    column: $table.terminalFontFamily,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get autoConnectCommand => $composableBuilder(
+    column: $table.autoConnectCommand,
+    builder: (column) => column,
+  );
+
+  $$SshKeysTableAnnotationComposer get keyId {
+    final $$SshKeysTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.keyId,
+      referencedTable: $db.sshKeys,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SshKeysTableAnnotationComposer(
+            $db: $db,
+            $table: $db.sshKeys,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$GroupsTableAnnotationComposer get groupId {
+    final $$GroupsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.groupId,
+      referencedTable: $db.groups,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$GroupsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.groups,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$HostsTableAnnotationComposer get jumpHostId {
+    final $$HostsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.jumpHostId,
+      referencedTable: $db.hosts,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$HostsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.hosts,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  $$SnippetsTableAnnotationComposer get autoConnectSnippetId {
+    final $$SnippetsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.autoConnectSnippetId,
+      referencedTable: $db.snippets,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$SnippetsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.snippets,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  Expression<T> portForwardsRefs<T extends Object>(
+    Expression<T> Function($$PortForwardsTableAnnotationComposer a) f,
+  ) {
+    final $$PortForwardsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.portForwards,
+      getReferencedColumn: (t) => t.hostId,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$PortForwardsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.portForwards,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$HostsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $HostsTable,
+          Host,
+          $$HostsTableFilterComposer,
+          $$HostsTableOrderingComposer,
+          $$HostsTableAnnotationComposer,
+          $$HostsTableCreateCompanionBuilder,
+          $$HostsTableUpdateCompanionBuilder,
+          (Host, $$HostsTableReferences),
+          Host,
+          PrefetchHooks Function({
+            bool keyId,
+            bool groupId,
+            bool jumpHostId,
+            bool autoConnectSnippetId,
+            bool portForwardsRefs,
+          })
+        > {
+  $$HostsTableTableManager(_$AppDatabase db, $HostsTable table)
+    : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$HostsTableFilterComposer($db: db, $table: table),
+          createOrderingComposer: () =>
+              $$HostsTableOrderingComposer($db: db, $table: table),
+          createComputedFieldComposer: () =>
+              $$HostsTableAnnotationComposer($db: db, $table: table),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<String> label = const Value.absent(),
+                Value<String> hostname = const Value.absent(),
+                Value<int> port = const Value.absent(),
+                Value<String> username = const Value.absent(),
+                Value<String?> password = const Value.absent(),
+                Value<int?> keyId = const Value.absent(),
+                Value<int?> groupId = const Value.absent(),
+                Value<int?> jumpHostId = const Value.absent(),
+                Value<bool> isFavorite = const Value.absent(),
+                Value<String?> color = const Value.absent(),
+                Value<String?> notes = const Value.absent(),
+                Value<String?> tags = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<DateTime?> lastConnectedAt = const Value.absent(),
+                Value<String?> terminalThemeLightId = const Value.absent(),
+                Value<String?> terminalThemeDarkId = const Value.absent(),
+                Value<String?> terminalFontFamily = const Value.absent(),
+                Value<String?> autoConnectCommand = const Value.absent(),
+                Value<int?> autoConnectSnippetId = const Value.absent(),
+              }) => HostsCompanion(
+                id: id,
+                label: label,
+                hostname: hostname,
+                port: port,
+                username: username,
+                password: password,
+                keyId: keyId,
+                groupId: groupId,
+                jumpHostId: jumpHostId,
+                isFavorite: isFavorite,
+                color: color,
+                notes: notes,
+                tags: tags,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                lastConnectedAt: lastConnectedAt,
+                terminalThemeLightId: terminalThemeLightId,
+                terminalThemeDarkId: terminalThemeDarkId,
+                terminalFontFamily: terminalFontFamily,
+                autoConnectCommand: autoConnectCommand,
+                autoConnectSnippetId: autoConnectSnippetId,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required String label,
+                required String hostname,
+                Value<int> port = const Value.absent(),
+                required String username,
+                Value<String?> password = const Value.absent(),
+                Value<int?> keyId = const Value.absent(),
+                Value<int?> groupId = const Value.absent(),
+                Value<int?> jumpHostId = const Value.absent(),
+                Value<bool> isFavorite = const Value.absent(),
+                Value<String?> color = const Value.absent(),
+                Value<String?> notes = const Value.absent(),
+                Value<String?> tags = const Value.absent(),
+                Value<DateTime> createdAt = const Value.absent(),
+                Value<DateTime> updatedAt = const Value.absent(),
+                Value<DateTime?> lastConnectedAt = const Value.absent(),
+                Value<String?> terminalThemeLightId = const Value.absent(),
+                Value<String?> terminalThemeDarkId = const Value.absent(),
+                Value<String?> terminalFontFamily = const Value.absent(),
+                Value<String?> autoConnectCommand = const Value.absent(),
+                Value<int?> autoConnectSnippetId = const Value.absent(),
+              }) => HostsCompanion.insert(
+                id: id,
+                label: label,
+                hostname: hostname,
+                port: port,
+                username: username,
+                password: password,
+                keyId: keyId,
+                groupId: groupId,
+                jumpHostId: jumpHostId,
+                isFavorite: isFavorite,
+                color: color,
+                notes: notes,
+                tags: tags,
+                createdAt: createdAt,
+                updatedAt: updatedAt,
+                lastConnectedAt: lastConnectedAt,
+                terminalThemeLightId: terminalThemeLightId,
+                terminalThemeDarkId: terminalThemeDarkId,
+                terminalFontFamily: terminalFontFamily,
+                autoConnectCommand: autoConnectCommand,
+                autoConnectSnippetId: autoConnectSnippetId,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) =>
+                    (e.readTable(table), $$HostsTableReferences(db, table, e)),
+              )
+              .toList(),
+          prefetchHooksCallback:
+              ({
+                keyId = false,
+                groupId = false,
+                jumpHostId = false,
+                autoConnectSnippetId = false,
+                portForwardsRefs = false,
+              }) {
+                return PrefetchHooks(
+                  db: db,
+                  explicitlyWatchedTables: [
+                    if (portForwardsRefs) db.portForwards,
+                  ],
+                  addJoins:
+                      <
+                        T extends TableManagerState<
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic
+                        >
+                      >(state) {
+                        if (keyId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.keyId,
+                                    referencedTable: $$HostsTableReferences
+                                        ._keyIdTable(db),
+                                    referencedColumn: $$HostsTableReferences
+                                        ._keyIdTable(db)
+                                        .id,
+                                  )
+                                  as T;
+                        }
+                        if (groupId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.groupId,
+                                    referencedTable: $$HostsTableReferences
+                                        ._groupIdTable(db),
+                                    referencedColumn: $$HostsTableReferences
+                                        ._groupIdTable(db)
+                                        .id,
+                                  )
+                                  as T;
+                        }
+                        if (jumpHostId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.jumpHostId,
+                                    referencedTable: $$HostsTableReferences
+                                        ._jumpHostIdTable(db),
+                                    referencedColumn: $$HostsTableReferences
+                                        ._jumpHostIdTable(db)
+                                        .id,
+                                  )
+                                  as T;
+                        }
+                        if (autoConnectSnippetId) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.autoConnectSnippetId,
+                                    referencedTable: $$HostsTableReferences
+                                        ._autoConnectSnippetIdTable(db),
+                                    referencedColumn: $$HostsTableReferences
+                                        ._autoConnectSnippetIdTable(db)
+                                        .id,
+                                  )
+                                  as T;
+                        }
+
+                        return state;
+                      },
+                  getPrefetchedDataCallback: (items) async {
+                    return [
+                      if (portForwardsRefs)
+                        await $_getPrefetchedData<
+                          Host,
+                          $HostsTable,
+                          PortForward
+                        >(
+                          currentTable: table,
+                          referencedTable: $$HostsTableReferences
+                              ._portForwardsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$HostsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).portForwardsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.hostId == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                    ];
+                  },
+                );
+              },
+        ),
+      );
+}
+
+typedef $$HostsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $HostsTable,
+      Host,
+      $$HostsTableFilterComposer,
+      $$HostsTableOrderingComposer,
+      $$HostsTableAnnotationComposer,
+      $$HostsTableCreateCompanionBuilder,
+      $$HostsTableUpdateCompanionBuilder,
+      (Host, $$HostsTableReferences),
+      Host,
+      PrefetchHooks Function({
+        bool keyId,
+        bool groupId,
+        bool jumpHostId,
+        bool autoConnectSnippetId,
+        bool portForwardsRefs,
+      })
     >;
 typedef $$PortForwardsTableCreateCompanionBuilder =
     PortForwardsCompanion Function({
@@ -7714,12 +8058,12 @@ class $AppDatabaseManager {
       $$SshKeysTableTableManager(_db, _db.sshKeys);
   $$GroupsTableTableManager get groups =>
       $$GroupsTableTableManager(_db, _db.groups);
-  $$HostsTableTableManager get hosts =>
-      $$HostsTableTableManager(_db, _db.hosts);
   $$SnippetFoldersTableTableManager get snippetFolders =>
       $$SnippetFoldersTableTableManager(_db, _db.snippetFolders);
   $$SnippetsTableTableManager get snippets =>
       $$SnippetsTableTableManager(_db, _db.snippets);
+  $$HostsTableTableManager get hosts =>
+      $$HostsTableTableManager(_db, _db.hosts);
   $$PortForwardsTableTableManager get portForwards =>
       $$PortForwardsTableTableManager(_db, _db.portForwards);
   $$KnownHostsTableTableManager get knownHosts =>

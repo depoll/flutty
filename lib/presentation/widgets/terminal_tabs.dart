@@ -122,7 +122,7 @@ class _TerminalTab extends StatelessWidget {
               height: 8,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: isConnected ? Colors.green : Colors.orange,
+                color: isConnected ? colorScheme.primary : colorScheme.tertiary,
               ),
             ),
             const SizedBox(width: 8),

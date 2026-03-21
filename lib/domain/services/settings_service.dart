@@ -197,6 +197,8 @@ final fontSizeProvider = FutureProvider<double>((ref) async {
 class FontSizeNotifier extends Notifier<double> {
   late final SettingsService _settings;
   bool _disposed = false;
+  Future<void> _writeChain = Future<void>.value();
+  int _latestWriteToken = 0;
 
   @override
   double build() {
@@ -214,8 +216,16 @@ class FontSizeNotifier extends Notifier<double> {
 
   /// Set the font size.
   Future<void> setFontSize(double size) async {
-    await _settings.setInt(SettingKeys.terminalFontSize, size.round());
     state = size;
+    final writeToken = ++_latestWriteToken;
+    final nextWrite = _writeChain.catchError((Object _) {}).then((_) async {
+      if (_disposed || writeToken != _latestWriteToken) {
+        return;
+      }
+      await _settings.setInt(SettingKeys.terminalFontSize, size.round());
+    });
+    _writeChain = nextWrite;
+    await nextWrite;
   }
 }
 

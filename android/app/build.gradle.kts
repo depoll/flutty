@@ -27,6 +27,12 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    packaging {
+        jniLibs {
+            useLegacyPackaging = true
+        }
+    }
+
     signingConfigs {
         if (keystorePropertiesFile.exists()) {
             create("release") {
@@ -52,7 +58,7 @@ android {
         create("private") {
             dimension = "environment"
             applicationIdSuffix = ".private"
-            resValue("string", "app_name", "MonkeySSH Private")
+            resValue("string", "app_name", "MonkeySSH β")
         }
         create("production") {
             dimension = "environment"
@@ -73,4 +79,8 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
 }

@@ -63,13 +63,13 @@ jobs:
       contents: write
     steps:
       - name: Download Android artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: android-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
           path: artifacts/android
 
       - name: Download iOS artifact
-        uses: actions/download-artifact@v6
+        uses: actions/download-artifact@v8
         with:
           name: ios-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
           path: artifacts/ios

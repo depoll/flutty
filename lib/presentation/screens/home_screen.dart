@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
@@ -11,8 +12,18 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
-import '../../domain/services/background_ssh_service.dart';
+import '../../domain/models/terminal_theme.dart';
+import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/auth_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/transfer_intent_service.dart';
+import '../providers/entity_list_providers.dart';
+import '../widgets/connection_attempt_dialog.dart';
+import '../widgets/connection_preview_snippet.dart';
+import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
@@ -23,11 +34,175 @@ class HomeScreen extends ConsumerStatefulWidget {
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
 }
 
-class _HomeScreenState extends ConsumerState<HomeScreen> {
+class _HomeScreenState extends ConsumerState<HomeScreen>
+    with WidgetsBindingObserver {
   int _selectedIndex = 0;
+  StreamSubscription<String>? _incomingTransferSubscription;
+  final Queue<String> _incomingTransferQueue = Queue<String>();
+  String? _activeIncomingTransferPayload;
+  bool _isHandlingIncomingTransfer = false;
 
   // Breakpoint for switching between mobile and desktop layout
   static const double _mobileBreakpoint = 600;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    final transferIntentService = ref.read(transferIntentServiceProvider);
+    _incomingTransferSubscription = transferIntentService.incomingPayloads
+        .listen((payload) {
+          if (payload.isNotEmpty && mounted) {
+            _enqueueIncomingTransferPayload(payload);
+          }
+        });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        unawaited(_checkIncomingTransferPayload());
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_incomingTransferSubscription?.cancel());
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed) {
+      unawaited(_checkIncomingTransferPayload());
+    }
+  }
+
+  Future<void> _checkIncomingTransferPayload() async {
+    final payload = await ref
+        .read(transferIntentServiceProvider)
+        .consumeIncomingTransferPayload();
+    if (!mounted || payload == null || payload.isEmpty) {
+      return;
+    }
+    _enqueueIncomingTransferPayload(payload);
+  }
+
+  void _enqueueIncomingTransferPayload(String encodedPayload) {
+    final normalizedPayload = encodedPayload.trim();
+    if (normalizedPayload.isEmpty ||
+        normalizedPayload == _activeIncomingTransferPayload ||
+        _incomingTransferQueue.contains(normalizedPayload)) {
+      return;
+    }
+    _incomingTransferQueue.add(normalizedPayload);
+    unawaited(_processIncomingTransferQueue());
+  }
+
+  Future<void> _processIncomingTransferQueue() async {
+    if (_isHandlingIncomingTransfer) {
+      return;
+    }
+    while (mounted && _incomingTransferQueue.isNotEmpty) {
+      _isHandlingIncomingTransfer = true;
+      final encodedPayload = _incomingTransferQueue.removeFirst();
+      _activeIncomingTransferPayload = encodedPayload;
+      try {
+        await _handleIncomingTransferPayload(encodedPayload);
+      } finally {
+        _activeIncomingTransferPayload = null;
+        _isHandlingIncomingTransfer = false;
+      }
+    }
+  }
+
+  Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
+    try {
+      final transferPassphrase = await showTransferPassphraseDialog(
+        context: context,
+        title: 'Incoming transfer passphrase',
+      );
+      if (!mounted || transferPassphrase == null) {
+        return;
+      }
+
+      final transferService = ref.read(secureTransferServiceProvider);
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
+      );
+
+      switch (payload.type) {
+        case TransferPayloadType.host:
+          final host = await transferService.importHostPayload(payload);
+          ref.invalidate(allHostsProvider);
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            SnackBar(content: Text('Imported host: ${host.label}')),
+          );
+          break;
+        case TransferPayloadType.key:
+          final key = await transferService.importKeyPayload(payload);
+          ref.invalidate(allKeysProvider);
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('Imported key: ${key.name}')));
+          break;
+        case TransferPayloadType.fullMigration:
+          final preview = transferService.previewMigrationPayload(payload);
+          if (!mounted) {
+            return;
+          }
+          final mode = await showMigrationImportModeDialog(
+            context: context,
+            preview: preview,
+            title: 'Incoming migration package',
+            message: 'Choose how to apply the incoming data.',
+          );
+          if (mode == null || !mounted) {
+            return;
+          }
+          await transferService.importFullMigrationPayload(
+            payload: payload,
+            mode: mode,
+          );
+          ref
+            ..invalidate(themeModeNotifierProvider)
+            ..invalidate(fontSizeNotifierProvider)
+            ..invalidate(fontFamilyNotifierProvider)
+            ..invalidate(cursorStyleNotifierProvider)
+            ..invalidate(bellSoundNotifierProvider)
+            ..invalidate(terminalThemeSettingsProvider)
+            ..invalidate(allHostsProvider)
+            ..invalidate(allKeysProvider);
+          if (!mounted) {
+            return;
+          }
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(content: Text('Imported full migration package')),
+          );
+          break;
+      }
+    } on FormatException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -275,7 +450,7 @@ class _HostsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -400,7 +575,34 @@ class _HostRow extends ConsumerWidget {
           state == SshConnectionState.connecting ||
           state == SshConnectionState.authenticating,
     );
+    final connectionAttempt = sessionsNotifier.getConnectionAttempt(host.id);
+    final isConnectionStarting =
+        isConnecting || (connectionAttempt?.isInProgress ?? false);
     final connectionCount = connectionIds.length;
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final previewEntries = connectionIds
+        .map((connectionId) {
+          final connection = sessionsNotifier.getActiveConnection(connectionId);
+          final state =
+              connectionStates[connectionId] ?? SshConnectionState.connected;
+          return buildConnectionPreviewStackEntry(
+            connectionId: connectionId,
+            state: state,
+            preview: connection?.preview,
+            windowTitle: connection?.windowTitle,
+            brightness: theme.brightness,
+            themeSettings: terminalThemeSettings,
+            availableThemes: terminalThemes,
+            hostLightThemeId: host.terminalThemeLightId,
+            hostDarkThemeId: host.terminalThemeDarkId,
+            connectionLightThemeId: connection?.terminalThemeLightId,
+            connectionDarkThemeId: connection?.terminalThemeDarkId,
+          );
+        })
+        .toList(growable: false);
 
     return Material(
       color: Colors.transparent,
@@ -413,116 +615,149 @@ class _HostRow extends ConsumerWidget {
               bottom: BorderSide(color: colorScheme.outline.withAlpha(30)),
             ),
           ),
-          child: Row(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              // Status indicator
-              Container(
-                width: 8,
-                height: 8,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: isConnected
-                      ? colorScheme.primary
-                      : isConnecting
-                      ? Colors.orange
-                      : colorScheme.onSurface.withAlpha(40),
-                  boxShadow: isConnected && isDark
-                      ? [
-                          BoxShadow(
-                            color: colorScheme.primary.withAlpha(100),
-                            blurRadius: 6,
-                          ),
-                        ]
-                      : null,
-                ),
-              ),
-              const SizedBox(width: 12),
-
-              // Host info
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Row(
-                      children: [
-                        Text(
-                          host.label,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w500,
-                          ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  // Status indicator
+                  SizedBox(
+                    height: 28,
+                    child: Center(
+                      child: Container(
+                        width: 8,
+                        height: 8,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: isConnected
+                              ? colorScheme.primary
+                              : isConnectionStarting
+                              ? Colors.orange
+                              : colorScheme.onSurface.withAlpha(40),
+                          boxShadow: isConnected && isDark
+                              ? [
+                                  BoxShadow(
+                                    color: colorScheme.primary.withAlpha(100),
+                                    blurRadius: 6,
+                                  ),
+                                ]
+                              : null,
                         ),
-                        if (connectionCount > 0) ...[
-                          const SizedBox(width: 8),
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 6,
-                              vertical: 1,
-                            ),
-                            decoration: BoxDecoration(
-                              color: colorScheme.primary.withAlpha(20),
-                              borderRadius: BorderRadius.circular(10),
-                            ),
-                            child: Text(
-                              '$connectionCount',
-                              style: theme.textTheme.labelSmall?.copyWith(
-                                color: colorScheme.primary,
-                                fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 12),
+
+                  // Host info
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Row(
+                          children: [
+                            Text(
+                              host.label,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w500,
                               ),
                             ),
+                            if (connectionCount > 0) ...[
+                              const SizedBox(width: 8),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 6,
+                                  vertical: 1,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: colorScheme.primary.withAlpha(20),
+                                  borderRadius: BorderRadius.circular(10),
+                                ),
+                                child: Text(
+                                  '$connectionCount',
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    color: colorScheme.primary,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ],
+                            if (host.isFavorite) ...[
+                              const SizedBox(width: 6),
+                              Icon(
+                                Icons.star_rounded,
+                                size: 14,
+                                color: Colors.amber.shade600,
+                              ),
+                            ],
+                          ],
+                        ),
+                        const SizedBox(height: 2),
+                        Text(
+                          '${host.username}@${host.hostname}',
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 11,
+                            color: colorScheme.onSurface.withAlpha(100),
                           ),
-                        ],
-                        if (host.isFavorite) ...[
-                          const SizedBox(width: 6),
-                          Icon(
-                            Icons.star_rounded,
-                            size: 14,
-                            color: Colors.amber.shade600,
+                        ),
+                        if (connectionAttempt?.isInProgress ?? false) ...[
+                          const SizedBox(height: 4),
+                          Text(
+                            connectionAttempt!.latestMessage,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colorScheme.primary,
+                              fontWeight: FontWeight.w500,
+                            ),
                           ),
                         ],
                       ],
                     ),
-                    const SizedBox(height: 2),
-                    Text(
-                      '${host.username}@${host.hostname}',
-                      style: FluttyTheme.monoStyle.copyWith(
-                        fontSize: 11,
-                        color: colorScheme.onSurface.withAlpha(100),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-
-              // Port badge
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: colorScheme.outline.withAlpha(40),
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  ':${host.port}',
-                  style: FluttyTheme.monoStyle.copyWith(
-                    fontSize: 10,
-                    color: colorScheme.onSurface.withAlpha(120),
                   ),
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colorScheme.outline.withAlpha(40),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          ':${host.port}',
+                          style: FluttyTheme.monoStyle.copyWith(
+                            fontSize: 10,
+                            color: colorScheme.onSurface.withAlpha(120),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      _SmallIconButton(
+                        icon: Icons.add,
+                        onTap: () =>
+                            unawaited(_openNewConnection(context, ref)),
+                      ),
+                      _SmallIconButton(
+                        icon: Icons.edit_outlined,
+                        onTap: () => context.push('/hosts/edit/${host.id}'),
+                      ),
+                      _SmallIconButton(
+                        icon: Icons.more_vert,
+                        onTap: () => _showMenu(context, ref),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+              if (previewEntries.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Padding(
+                  padding: const EdgeInsets.only(left: 20),
+                  child: ConnectionPreviewStack(entries: previewEntries),
                 ),
-              ),
-              const SizedBox(width: 8),
-
-              // Actions
-              _SmallIconButton(
-                icon: Icons.add,
-                onTap: () => unawaited(_openNewConnection(context, ref)),
-              ),
-              _SmallIconButton(
-                icon: Icons.edit_outlined,
-                onTap: () => context.push('/hosts/edit/${host.id}'),
-              ),
-              _SmallIconButton(
-                icon: Icons.more_vert,
-                onTap: () => _showMenu(context, ref),
-              ),
+              ],
             ],
           ),
         ),
@@ -554,6 +789,10 @@ class _HostRow extends ConsumerWidget {
       context: context,
       builder: (context) {
         final connectionStates = ref.read(activeSessionsProvider);
+        final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
+        final terminalThemes =
+            ref.read(allTerminalThemesProvider).asData?.value ??
+            TerminalThemes.all;
         return SafeArea(
           child: Column(
             mainAxisSize: MainAxisSize.min,
@@ -563,18 +802,36 @@ class _HostRow extends ConsumerWidget {
                 subtitle: Text('${connectionIds.length} active connections'),
               ),
               for (final connectionId in connectionIds.reversed)
-                _ConnectionSelectionTile(
-                  connectionId: connectionId,
-                  state:
-                      connectionStates[connectionId] ??
-                      SshConnectionState.disconnected,
-                  endpoint: '${host.username}@${host.hostname}:${host.port}',
-                  createdAt: sessionsNotifier
-                      .getSession(connectionId)
-                      ?.createdAt,
-                  onTap: () =>
-                      Navigator.pop(context, 'connection:$connectionId'),
-                ),
+                () {
+                  final connection = sessionsNotifier.getActiveConnection(
+                    connectionId,
+                  );
+                  return _ConnectionSelectionTile(
+                    connectionId: connectionId,
+                    state:
+                        connectionStates[connectionId] ??
+                        SshConnectionState.disconnected,
+                    endpoint: '${host.username}@${host.hostname}:${host.port}',
+                    preview: connection?.preview,
+                    windowTitle: connection?.windowTitle,
+                    terminalTheme: resolveConnectionPreviewTheme(
+                      brightness: Theme.of(context).brightness,
+                      themeSettings: terminalThemeSettings,
+                      availableThemes: terminalThemes,
+                      lightThemeId:
+                          connection?.terminalThemeLightId ??
+                          host.terminalThemeLightId,
+                      darkThemeId:
+                          connection?.terminalThemeDarkId ??
+                          host.terminalThemeDarkId,
+                    ),
+                    createdAt: sessionsNotifier
+                        .getSession(connectionId)
+                        ?.createdAt,
+                    onTap: () =>
+                        Navigator.pop(context, 'connection:$connectionId'),
+                  );
+                }(),
               ListTile(
                 leading: const Icon(Icons.add),
                 title: const Text('New connection'),
@@ -602,18 +859,13 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _openNewConnection(BuildContext context, WidgetRef ref) async {
-    final result = await ref
-        .read(activeSessionsProvider.notifier)
-        .connect(host.id, forceNew: true);
+    final result = await connectToHostWithProgressDialog(context, ref, host);
 
     if (!context.mounted) {
       return;
     }
 
     if (!result.success || result.connectionId == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(result.error ?? 'Connection failed')),
-      );
       return;
     }
 
@@ -623,11 +875,12 @@ class _HostRow extends ConsumerWidget {
   }
 
   void _showMenu(BuildContext context, WidgetRef ref) {
+    final parentContext = context;
     final colorScheme = Theme.of(context).colorScheme;
 
     showModalBottomSheet<void>(
-      context: context,
-      builder: (context) => SafeArea(
+      context: parentContext,
+      builder: (sheetContext) => SafeArea(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
@@ -635,21 +888,80 @@ class _HostRow extends ConsumerWidget {
               leading: const Icon(Icons.copy),
               title: const Text('Duplicate'),
               onTap: () {
-                Navigator.pop(context);
-                unawaited(_duplicateHost(context, ref));
+                Navigator.pop(sheetContext);
+                unawaited(_duplicateHost(parentContext, ref));
+              },
+            ),
+            ListTile(
+              leading: const Icon(Icons.save_alt),
+              title: const Text('Export Encrypted File'),
+              onTap: () {
+                Navigator.pop(sheetContext);
+                unawaited(_exportEncryptedFile(parentContext, ref));
               },
             ),
             ListTile(
               leading: Icon(Icons.delete_outline, color: colorScheme.error),
               title: Text('Delete', style: TextStyle(color: colorScheme.error)),
               onTap: () {
-                Navigator.pop(context);
-                _confirmDelete(context, ref);
+                Navigator.pop(sheetContext);
+                _confirmDelete(parentContext, ref);
               },
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
+      final isAuthorized = await authorizeSensitiveTransferExport(
+        context: context,
+        authService: ref.read(authServiceProvider),
+        reason: 'Authenticate to export host credentials',
+      );
+      if (!context.mounted) {
+        return;
+      }
+      if (!isAuthorized) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Authentication required for host export'),
+          ),
+        );
+        return;
+      }
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Host transfer passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final payload = await ref
+        .read(secureTransferServiceProvider)
+        .createHostPayload(
+          host: host,
+          transferPassphrase: transferPassphrase,
+          includeReferencedKey: host.keyId != null,
+        );
+
+    if (!context.mounted) {
+      return;
+    }
+
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
+    );
+
+    await saveTransferPayloadToFile(
+      context: context,
+      payload: payload,
+      defaultFileName: defaultFileName,
     );
   }
 
@@ -715,12 +1027,18 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.state,
     required this.endpoint,
     required this.onTap,
+    this.preview,
+    this.windowTitle,
+    this.terminalTheme,
     this.createdAt,
   });
 
   final int connectionId;
   final SshConnectionState state;
   final String endpoint;
+  final String? preview;
+  final String? windowTitle;
+  final TerminalThemeData? terminalTheme;
   final DateTime? createdAt;
   final VoidCallback onTap;
 
@@ -732,7 +1050,13 @@ class _ConnectionSelectionTile extends StatelessWidget {
     return ListTile(
       leading: const Icon(Icons.terminal),
       title: Text('Connection #$connectionId'),
-      subtitle: Text(subtitle),
+      subtitle: _ConnectionPreviewText(
+        endpoint: subtitle,
+        preview: preview,
+        windowTitle: windowTitle,
+        terminalTheme: terminalTheme,
+      ),
+      isThreeLine: preview?.trim().isNotEmpty ?? false,
       trailing: Text(
         _stateLabel(state),
         style: Theme.of(context).textTheme.labelMedium,
@@ -764,9 +1088,13 @@ class _ConnectionsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
     final connections = sessionsNotifier.getActiveConnections();
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
@@ -803,6 +1131,18 @@ class _ConnectionsPanel extends ConsumerWidget {
                     final endpoint =
                         '${connection.config.username}@'
                         '${connection.config.hostname}:${connection.config.port}';
+                    final preview = connection.preview;
+                    final previewTheme = resolveConnectionPreviewTheme(
+                      brightness: theme.brightness,
+                      themeSettings: terminalThemeSettings,
+                      availableThemes: terminalThemes,
+                      lightThemeId:
+                          connection.terminalThemeLightId ??
+                          host?.terminalThemeLightId,
+                      darkThemeId:
+                          connection.terminalThemeDarkId ??
+                          host?.terminalThemeDarkId,
+                    );
 
                     return ListTile(
                       leading: Icon(
@@ -812,10 +1152,14 @@ class _ConnectionsPanel extends ConsumerWidget {
                             : colorScheme.onSurfaceVariant,
                       ),
                       title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: Text(
-                        '$endpoint\nConnection #${connection.connectionId}',
+                      subtitle: _ConnectionPreviewText(
+                        endpoint:
+                            '$endpoint  •  Connection #${connection.connectionId}',
+                        preview: preview,
+                        windowTitle: connection.windowTitle,
+                        terminalTheme: previewTheme,
                       ),
-                      isThreeLine: true,
+                      isThreeLine: preview?.trim().isNotEmpty ?? false,
                       trailing: IconButton(
                         icon: const Icon(Icons.close),
                         tooltip: 'Disconnect',
@@ -823,9 +1167,6 @@ class _ConnectionsPanel extends ConsumerWidget {
                           await ref
                               .read(activeSessionsProvider.notifier)
                               .disconnect(connection.connectionId);
-                          if (ref.read(activeSessionsProvider).isEmpty) {
-                            unawaited(BackgroundSshService.stop());
-                          }
                         },
                       ),
                       onTap: () => unawaited(
@@ -872,6 +1213,28 @@ class _ConnectionsPanel extends ConsumerWidget {
       ),
     );
   }
+}
+
+class _ConnectionPreviewText extends StatelessWidget {
+  const _ConnectionPreviewText({
+    required this.endpoint,
+    this.preview,
+    this.windowTitle,
+    this.terminalTheme,
+  });
+
+  final String endpoint;
+  final String? preview;
+  final String? windowTitle;
+  final TerminalThemeData? terminalTheme;
+
+  @override
+  Widget build(BuildContext context) => ConnectionPreviewSnippet(
+    endpoint: endpoint,
+    preview: preview,
+    windowTitle: windowTitle,
+    terminalTheme: terminalTheme,
+  );
 }
 
 class _ActionButton extends StatelessWidget {
@@ -942,18 +1305,6 @@ class _SmallIconButton extends StatelessWidget {
   }
 }
 
-/// Provider for all hosts as stream.
-final _allHostsStreamProvider = StreamProvider<List<Host>>((ref) {
-  final repo = ref.watch(hostRepositoryProvider);
-  return repo.watchAll();
-});
-
-/// Provider for all keys as stream.
-final _allKeysStreamProvider = StreamProvider<List<SshKey>>((ref) {
-  final repo = ref.watch(keyRepositoryProvider);
-  return repo.watchAll();
-});
-
 class _KeysPanel extends ConsumerWidget {
   const _KeysPanel();
 
@@ -961,7 +1312,7 @@ class _KeysPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final keysAsync = ref.watch(_allKeysStreamProvider);
+    final keysAsync = ref.watch(allKeysProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1122,7 +1473,11 @@ class _KeyRow extends ConsumerWidget {
                 ),
               ),
 
-              // Copy public key button
+              // Transfer and key actions
+              _SmallIconButton(
+                icon: Icons.save_alt,
+                onTap: () => unawaited(_exportEncryptedFile(context, ref)),
+              ),
               _SmallIconButton(
                 icon: Icons.copy,
                 onTap: () => _copyPublicKey(context),
@@ -1152,6 +1507,49 @@ class _KeyRow extends ConsumerWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Public key copied')));
+  }
+
+  Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final isAuthorized = await authorizeSensitiveTransferExport(
+      context: context,
+      authService: ref.read(authServiceProvider),
+      reason: 'Authenticate to export private key',
+    );
+    if (!context.mounted) {
+      return;
+    }
+    if (!isAuthorized) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Authentication required for key export')),
+      );
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Key transfer passphrase',
+    );
+    if (!context.mounted || transferPassphrase == null) {
+      return;
+    }
+
+    final payload = await ref
+        .read(secureTransferServiceProvider)
+        .createKeyPayload(key: sshKey, transferPassphrase: transferPassphrase);
+
+    if (!context.mounted) {
+      return;
+    }
+
+    final defaultFileName = sanitizeTransferFileBaseName(
+      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
+    );
+
+    await saveTransferPayloadToFile(
+      context: context,
+      payload: payload,
+      defaultFileName: defaultFileName,
+    );
   }
 
   void _showKeyDetails(BuildContext context) {

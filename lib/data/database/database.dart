@@ -66,6 +66,13 @@ class Hosts extends Table {
 
   /// Terminal font family (null = use global default).
   TextColumn get terminalFontFamily => text().nullable()();
+
+  /// Cached command to run automatically after connecting/reconnecting.
+  TextColumn get autoConnectCommand => text().nullable()();
+
+  /// Referenced snippet to run automatically after connecting/reconnecting.
+  IntColumn get autoConnectSnippetId =>
+      integer().nullable().references(Snippets, #id)();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -267,7 +274,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 3;
+  int get schemaVersion => 4;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -279,6 +286,15 @@ class AppDatabase extends _$AppDatabase {
       }
       if (from < 3) {
         await m.addColumn(hosts, hosts.terminalFontFamily);
+      }
+      if (from < 4) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.autoConnectCommand.$name)) {
+          await m.addColumn(hosts, hosts.autoConnectCommand);
+        }
+        if (!hostColumnNames.contains(hosts.autoConnectSnippetId.$name)) {
+          await m.addColumn(hosts, hosts.autoConnectSnippetId);
+        }
       }
     },
     beforeOpen: (details) async {
@@ -318,6 +334,11 @@ class AppDatabase extends _$AppDatabase {
     },
   );
 
+  Future<Set<String>> _readColumnNames(String tableName) async {
+    final columns = await customSelect('PRAGMA table_info($tableName)').get();
+    return columns.map((row) => row.read<String>('name')).toSet();
+  }
+
   String _detectKeyTypeFromPublicKey(String publicKey) {
     final trimmed = publicKey.trim();
     if (trimmed.startsWith('ssh-ed25519')) {
@@ -343,9 +364,92 @@ class AppDatabase extends _$AppDatabase {
   }
 }
 
+const _databaseFileName = 'flutty.db';
+const _migrationMarkerSuffix = '.legacy-migration-incomplete';
+
+/// Resolves the database file path and migrates legacy storage if needed.
+Future<File> resolveDatabaseFile({
+  Future<Directory> Function()? getSupportDirectory,
+  Future<Directory> Function()? getDocumentsDirectory,
+}) async {
+  final supportDirectoryProvider =
+      getSupportDirectory ?? getApplicationSupportDirectory;
+  final documentsDirectoryProvider =
+      getDocumentsDirectory ?? getApplicationDocumentsDirectory;
+
+  final supportDirectory = await supportDirectoryProvider();
+  await supportDirectory.create(recursive: true);
+  final supportFile = File(p.join(supportDirectory.path, _databaseFileName));
+  final migrationMarker = File(
+    p.join(supportDirectory.path, '$_databaseFileName$_migrationMarkerSuffix'),
+  );
+  final documentsDirectory = await documentsDirectoryProvider();
+  final legacyFile = File(p.join(documentsDirectory.path, _databaseFileName));
+
+  if (supportFile.existsSync()) {
+    if (migrationMarker.existsSync()) {
+      if (legacyFile.existsSync()) {
+        await _moveFileWithFallback(legacyFile, supportFile);
+      }
+      await _moveLegacyCompanionFiles(legacyFile, supportFile);
+      await migrationMarker.delete();
+    } else {
+      await _deleteLegacyCompanionFiles(legacyFile);
+    }
+    return supportFile;
+  }
+
+  if (legacyFile.existsSync()) {
+    await migrationMarker.writeAsString('pending');
+    await _moveFileWithFallback(legacyFile, supportFile);
+    await _moveLegacyCompanionFiles(legacyFile, supportFile);
+    await migrationMarker.delete();
+  }
+
+  return supportFile;
+}
+
+Future<void> _moveLegacyCompanionFiles(
+  File legacyFile,
+  File supportFile,
+) async {
+  for (final suffix in ['-journal', '-wal', '-shm']) {
+    final legacyCompanion = File('${legacyFile.path}$suffix');
+    final supportCompanion = File('${supportFile.path}$suffix');
+    if (!legacyCompanion.existsSync()) {
+      continue;
+    }
+    if (supportCompanion.existsSync()) {
+      await legacyCompanion.delete();
+      continue;
+    }
+    await _moveFileWithFallback(legacyCompanion, supportCompanion);
+  }
+}
+
+Future<void> _deleteLegacyCompanionFiles(File legacyFile) async {
+  for (final suffix in ['-journal', '-wal', '-shm']) {
+    final legacyCompanion = File('${legacyFile.path}$suffix');
+    if (legacyCompanion.existsSync()) {
+      await legacyCompanion.delete();
+    }
+  }
+}
+
+Future<void> _moveFileWithFallback(File source, File destination) async {
+  if (!source.existsSync()) {
+    return;
+  }
+  try {
+    await source.rename(destination.path);
+  } on FileSystemException {
+    await source.copy(destination.path);
+    await source.delete();
+  }
+}
+
 LazyDatabase _openConnection() => LazyDatabase(() async {
-  final dbFolder = await getApplicationDocumentsDirectory();
-  final file = File(p.join(dbFolder.path, 'flutty.db'));
+  final file = await resolveDatabaseFile();
   return NativeDatabase.createInBackground(file);
 });
 

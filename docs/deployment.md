@@ -6,7 +6,7 @@ This guide covers setting up automated deployment to TestFlight, Play Store inte
 
 | Variant | Android Package | iOS Bundle ID | Display Name | Purpose |
 |---------|----------------|---------------|--------------|---------|
-| **private** | `xyz.depollsoft.monkeyssh.private` | `xyz.depollsoft.monkeyssh.private` | MonkeySSH Private | PR previews, internal testing |
+| **private** | `xyz.depollsoft.monkeyssh.private` | `xyz.depollsoft.monkeyssh.private` | MonkeySSH β | PR previews, internal testing |
 | **production** | `xyz.depollsoft.monkeyssh` | `xyz.depollsoft.monkeyssh` | MonkeySSH | App Store / Play Store releases |
 
 Both variants install side-by-side on the same device.
@@ -46,11 +46,13 @@ Both variants install side-by-side on the same device.
    cd ios
    bundle exec fastlane match init
    ```
-3. Generate certificates for both bundle IDs:
-   ```bash
-   bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh
-   bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private
-   ```
+3. Generate certificates for every shipped iOS bundle ID, including the Live Activity extension:
+    ```bash
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.ConnectionStatusLiveActivity
+    bundle exec fastlane match appstore --app_identifier xyz.depollsoft.monkeyssh.private.ConnectionStatusLiveActivity
+    ```
 
 ### Android Upload Keystore
 
@@ -96,7 +98,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
-- **iOS**: Run the **Deploy PR to TestFlight** workflow manually from the Actions tab
+- **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
 - **Android**: Builds APK for direct download (linked in PR comment)
 
 ### Deploy Private (`develop.yml`)

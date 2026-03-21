@@ -4,7 +4,7 @@ description: >
   SFTP file transfer, key management, and port forwarding. Inspired by Termius.
 publish_to: 'none'
 
-version: 0.1.0+1
+version: 0.1.1+1
 
 environment:
   sdk: ^3.10.7
@@ -14,14 +14,14 @@ dependencies:
     sdk: flutter
   
   # State management
-  flutter_riverpod: ^3.1.0
+  flutter_riverpod: ^3.3.1
   riverpod_annotation: ^4.0.0
   
   # Navigation
   go_router: ^17.0.1
   
   # Database
-  drift: ^2.25.0
+  drift: ^2.31.0
   sqlite3_flutter_libs: ^0.6.0+eol
   path_provider: ^2.1.5
   path: ^1.9.1
@@ -36,24 +36,25 @@ dependencies:
   flutter_secure_storage: ^10.0.0
   
   # Biometrics
-  local_auth: ^3.0.0
+  local_auth: ^3.0.1
   
   # File handling
   file_picker: ^10.3.10
   share_plus: ^12.0.1
+  cryptography: ^2.9.0
   
   # UI
   cupertino_icons: ^1.0.8
-  flutter_svg: ^2.0.17
-  google_fonts: ^8.0.0
+  flutter_svg: ^2.2.4
+  google_fonts: ^8.0.2
   
   # Utilities
-  uuid: ^4.5.1
+  uuid: ^4.5.3
   intl: ^0.20.2
   collection: ^1.19.1
   equatable: ^2.0.7
   freezed_annotation: ^3.1.0
-  json_annotation: ^4.9.0
+  json_annotation: ^4.11.0
 
 dev_dependencies:
   flutter_test:
@@ -61,11 +62,11 @@ dev_dependencies:
   flutter_lints: ^6.0.0
   
   # Code generation
-  build_runner: ^2.4.15
+  build_runner: ^2.12.2
   riverpod_generator: ^4.0.0+1
   freezed: ^3.2.3
-  json_serializable: ^6.9.5
-  drift_dev: ^2.25.0
+  json_serializable: ^6.13.0
+  drift_dev: ^2.31.0
   
   # Testing
   mocktail: ^1.0.4

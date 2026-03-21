@@ -10,6 +10,7 @@ import 'package:xterm/xterm.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import 'background_ssh_service.dart';
 
 /// Connection state for an SSH session.
 enum SshConnectionState {
@@ -135,6 +136,51 @@ class SshConnectionResult {
   }
 }
 
+/// Progress callback for long-running SSH connection attempts.
+typedef ConnectionProgressCallback =
+    void Function(ConnectionProgressUpdate update);
+
+/// A single progress update emitted while an SSH connection is being created.
+class ConnectionProgressUpdate {
+  /// Creates a [ConnectionProgressUpdate].
+  const ConnectionProgressUpdate({required this.state, required this.message});
+
+  /// The current connection phase.
+  final SshConnectionState state;
+
+  /// Human-readable status text for the current phase.
+  final String message;
+}
+
+/// Host-level connection attempt state for live progress UI.
+class ConnectionAttemptStatus {
+  /// Creates a [ConnectionAttemptStatus].
+  const ConnectionAttemptStatus({
+    required this.hostId,
+    required this.state,
+    required this.latestMessage,
+    required this.logLines,
+  });
+
+  /// The host currently being connected.
+  final int hostId;
+
+  /// The latest known connection state.
+  final SshConnectionState state;
+
+  /// The newest status message shown to the user.
+  final String latestMessage;
+
+  /// Rolling log of recent connection progress messages.
+  final List<String> logLines;
+
+  /// Whether the connection attempt is still actively progressing.
+  bool get isInProgress =>
+      state == SshConnectionState.connecting ||
+      state == SshConnectionState.authenticating ||
+      state == SshConnectionState.reconnecting;
+}
+
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
@@ -159,7 +205,10 @@ class SshService {
   Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
 
   /// Connect to a host by ID.
-  Future<SshConnectionResult> connectToHost(int hostId) async {
+  Future<SshConnectionResult> connectToHost(
+    int hostId, {
+    ConnectionProgressCallback? onProgress,
+  }) async {
     if (hostRepository == null) {
       return const SshConnectionResult(
         success: false,
@@ -235,7 +284,7 @@ class SshService {
       jumpHostConfig: jumpHostConfig,
     );
 
-    final result = await connect(config);
+    final result = await connect(config, onProgress: onProgress);
 
     if (result.success && result.client != null) {
       final connectionId = _nextConnectionId++;
@@ -245,6 +294,8 @@ class SshService {
         client: result.client!,
         config: config,
         dependentClients: result.dependentClients,
+        terminalThemeLightId: host.terminalThemeLightId,
+        terminalThemeDarkId: host.terminalThemeDarkId,
       );
 
       // Update last connected timestamp
@@ -261,15 +312,30 @@ class SshService {
   }
 
   /// Connect with a configuration.
-  Future<SshConnectionResult> connect(SshConnectionConfig config) async {
+  Future<SshConnectionResult> connect(
+    SshConnectionConfig config, {
+    ConnectionProgressCallback? onProgress,
+    bool isJumpHost = false,
+  }) async {
     SSHClient? client;
     final dependentClients = <SSHClient>[];
+    void report(SshConnectionState state, String message) {
+      onProgress?.call(
+        ConnectionProgressUpdate(state: state, message: message),
+      );
+    }
+
     try {
       SSHSocket socket;
 
       // Handle jump host
       if (config.jumpHost != null) {
-        final jumpResult = await connect(config.jumpHost!);
+        report(SshConnectionState.connecting, 'Connecting to jump host…');
+        final jumpResult = await connect(
+          config.jumpHost!,
+          onProgress: onProgress,
+          isJumpHost: true,
+        );
         if (!jumpResult.success || jumpResult.client == null) {
           return SshConnectionResult(
             success: false,
@@ -282,11 +348,18 @@ class SshService {
 
         // Create forwarded connection through jump host
         // SSHForwardChannel implements SSHSocket
+        report(SshConnectionState.connecting, 'Opening tunnel to destination…');
         socket = await jumpResult.client!.forwardLocal(
           config.hostname,
           config.port,
         );
       } else {
+        report(
+          SshConnectionState.connecting,
+          isJumpHost
+              ? 'Opening jump host connection…'
+              : 'Opening network connection…',
+        );
         socket = await _connectWithKeepAlive(
           config.hostname,
           config.port,
@@ -294,6 +367,10 @@ class SshService {
         );
       }
 
+      report(
+        SshConnectionState.authenticating,
+        isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
+      );
       client = SSHClient(
         socket,
         username: config.username,
@@ -304,8 +381,20 @@ class SshService {
         keepAliveInterval: config.keepAliveInterval,
       );
 
-      // Wait for authentication to complete
-      await client.authenticated;
+      // Bound authentication waits so the progress dialog can surface a
+      // recoverable error instead of hanging indefinitely.
+      await client.authenticated.timeout(
+        config.connectionTimeout,
+        onTimeout: () => throw TimeoutException(
+          isJumpHost
+              ? 'Jump host authentication timed out'
+              : 'Authentication timed out',
+        ),
+      );
+      report(
+        SshConnectionState.connected,
+        isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
+      );
 
       return SshConnectionResult(
         success: true,
@@ -326,12 +415,12 @@ class SshService {
         success: false,
         error: 'Connection failed: ${e.message}',
       );
-    } on TimeoutException {
+    } on TimeoutException catch (e) {
       client?.close();
       _closeClients(dependentClients);
-      return const SshConnectionResult(
+      return SshConnectionResult(
         success: false,
-        error: 'Connection timed out',
+        error: e.message ?? 'Connection timed out',
       );
     } on Exception catch (e) {
       client?.close();
@@ -485,7 +574,16 @@ class SshSession {
     required this.client,
     required this.config,
     this.dependentClients = const <SSHClient>[],
+    this.terminalThemeLightId,
+    this.terminalThemeDarkId,
+    this.terminalFontSize,
   }) : createdAt = DateTime.now();
+
+  static const _previewRefreshInterval = Duration(milliseconds: 150);
+  static const _previewLineCount = 3;
+  static const _previewMaxChars = 220;
+  static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
+  static final _windowTitleSanitizerPattern = RegExp(r'[\x00-\x1F\x7F]');
 
   /// The connection ID for this active session.
   final int connectionId;
@@ -502,6 +600,15 @@ class SshSession {
   /// Additional clients that should be closed with the session client.
   final List<SSHClient> dependentClients;
 
+  /// Session-specific light theme override.
+  String? terminalThemeLightId;
+
+  /// Session-specific dark theme override.
+  String? terminalThemeDarkId;
+
+  /// Session-specific terminal font size override.
+  double? terminalFontSize;
+
   /// When the session was created.
   final DateTime createdAt;
 
@@ -512,16 +619,39 @@ class SshSession {
   StreamSubscription<String>? _shellStdoutSubscription;
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
+  Timer? _previewRefreshTimer;
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
 
+  /// Callback invoked whenever the terminal preview changes.
+  VoidCallback? onPreviewChanged;
+  String? _terminalPreview;
+  String? _windowTitle;
+
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _terminal;
+
+  /// A plain-text preview of the latest terminal content.
+  String? get terminalPreview => _terminalPreview;
+
+  /// The latest terminal window title emitted by the remote session.
+  String? get windowTitle => _windowTitle;
+
+  /// Persist a per-session terminal theme override.
+  void setTerminalThemeId(String themeId, {required bool isDark}) {
+    if (isDark) {
+      terminalThemeDarkId = themeId;
+      return;
+    }
+    terminalThemeLightId = themeId;
+  }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
     _terminal ??= Terminal(maxLines: maxLines);
+    _terminal!.onTitleChange = _handleWindowTitleChange;
+    _refreshTerminalPreview();
     return _terminal!;
   }
 
@@ -568,6 +698,8 @@ class SshSession {
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell() async {
+    _previewRefreshTimer?.cancel();
+    _previewRefreshTimer = null;
     await _shellStdoutSubscription?.cancel();
     await _shellStderrSubscription?.cancel();
     await _shellDoneSubscription?.cancel();
@@ -583,6 +715,8 @@ class SshSession {
     _shell?.close();
     _shell = null;
     _terminal = null;
+    _terminalPreview = null;
+    _windowTitle = null;
   }
 
   void _ensureShellStreamPipes() {
@@ -601,6 +735,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
+          _scheduleTerminalPreviewRefresh();
           _shellStdoutController!.add(data);
         }, onError: _shellStdoutController!.addError);
     _shellStderrSubscription = shell.stderr
@@ -608,6 +743,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen((data) {
           terminal.write(data);
+          _scheduleTerminalPreviewRefresh();
           _shellStderrController!.add(data);
         }, onError: _shellStderrController!.addError);
     _shellDoneSubscription = shell.done.asStream().listen(
@@ -619,6 +755,94 @@ class SshSession {
     terminal.onOutput = (data) {
       shell.write(utf8.encode(data));
     };
+    _refreshTerminalPreview();
+  }
+
+  void _scheduleTerminalPreviewRefresh() {
+    if (_previewRefreshTimer?.isActive ?? false) {
+      return;
+    }
+    _previewRefreshTimer = Timer(_previewRefreshInterval, () {
+      _previewRefreshTimer = null;
+      _refreshTerminalPreview();
+    });
+  }
+
+  void _refreshTerminalPreview() {
+    final nextPreview = _terminal == null
+        ? null
+        : buildTerminalPreview(_terminal!);
+    if (nextPreview == _terminalPreview) {
+      return;
+    }
+    _terminalPreview = nextPreview;
+    onPreviewChanged?.call();
+  }
+
+  void _handleWindowTitleChange(String title) {
+    final sanitizedTitle = _sanitizeWindowTitle(title);
+    if (sanitizedTitle == _windowTitle) {
+      return;
+    }
+    _windowTitle = sanitizedTitle;
+    onPreviewChanged?.call();
+  }
+
+  /// Builds a compact plain-text preview from the terminal scrollback.
+  static String? buildTerminalPreview(
+    Terminal terminal, {
+    int maxLines = _previewLineCount,
+    int maxChars = _previewMaxChars,
+  }) {
+    final effectiveMaxLines = maxLines < 1 ? 1 : maxLines;
+    final effectiveMaxChars = maxChars < 1 ? 1 : maxChars;
+    final previewLines = <String>[];
+    final currentSegments = <String>[];
+
+    for (
+      var index = terminal.lines.length - 1;
+      index >= 0 && previewLines.length < effectiveMaxLines;
+      index--
+    ) {
+      final rawLine = terminal.lines[index].getText();
+      final cleanedLine = _sanitizePreviewFragment(rawLine);
+
+      if (cleanedLine.isEmpty) {
+        if (currentSegments.isNotEmpty) {
+          previewLines.insert(0, currentSegments.reversed.join());
+          currentSegments.clear();
+        }
+        continue;
+      }
+
+      currentSegments.add(cleanedLine);
+      if (!terminal.lines[index].isWrapped) {
+        previewLines.insert(0, currentSegments.reversed.join());
+        currentSegments.clear();
+      }
+    }
+
+    if (currentSegments.isNotEmpty && previewLines.length < effectiveMaxLines) {
+      previewLines.insert(0, currentSegments.reversed.join());
+    }
+
+    if (previewLines.isEmpty) {
+      return null;
+    }
+
+    var preview = previewLines.join('\n');
+    if (preview.length > effectiveMaxChars) {
+      preview = '…${preview.substring(preview.length - effectiveMaxChars + 1)}';
+    }
+    return preview;
+  }
+
+  static String _sanitizePreviewFragment(String text) =>
+      text.replaceAll(_previewSanitizerPattern, '').trimRight();
+
+  static String? _sanitizeWindowTitle(String text) {
+    final sanitized = text.replaceAll(_windowTitleSanitizerPattern, '').trim();
+    return sanitized.isEmpty ? null : sanitized;
   }
 
   /// Execute a command.
@@ -793,6 +1017,10 @@ class ActiveConnection {
     required this.state,
     required this.createdAt,
     required this.config,
+    this.preview,
+    this.windowTitle,
+    this.terminalThemeLightId,
+    this.terminalThemeDarkId,
   });
 
   /// Connection identifier.
@@ -809,6 +1037,18 @@ class ActiveConnection {
 
   /// SSH endpoint details.
   final SshConnectionConfig config;
+
+  /// The latest terminal preview snippet, when available.
+  final String? preview;
+
+  /// The latest remote window title, when available.
+  final String? windowTitle;
+
+  /// Session-specific light theme override.
+  final String? terminalThemeLightId;
+
+  /// Session-specific dark theme override.
+  final String? terminalThemeDarkId;
 }
 
 /// Info about an active tunnel for UI display.
@@ -882,13 +1122,21 @@ final activeSessionsProvider =
 
 /// Notifier for active SSH sessions state.
 class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
+  static const _previewStateRefreshInterval = Duration(milliseconds: 150);
+
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
+  final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
+  Timer? _previewStateRefreshTimer;
+  bool _previewStateRefreshQueued = false;
+  Future<void> _backgroundStatusSyncQueue = Future<void>.value();
 
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
+    ref.onDispose(() => _previewStateRefreshTimer?.cancel());
     _connectionHostIds.clear();
+    _connectionAttempts.clear();
     return {};
   }
 
@@ -900,6 +1148,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (!forceNew) {
       final existingConnectionId = getPreferredConnectionForHost(hostId);
       if (existingConnectionId != null) {
+        unawaited(_queueBackgroundStatusSync());
         return SshConnectionResult(
           success: true,
           connectionId: existingConnectionId,
@@ -908,12 +1157,44 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       }
     }
 
-    final result = await _sshService.connectToHost(hostId);
+    _updateConnectionAttempt(
+      hostId,
+      const ConnectionProgressUpdate(
+        state: SshConnectionState.connecting,
+        message: 'Preparing connection…',
+      ),
+      resetLog: true,
+    );
+
+    final result = await _sshService.connectToHost(
+      hostId,
+      onProgress: (update) => _updateConnectionAttempt(hostId, update),
+    );
 
     if (result.success && result.connectionId != null) {
       final connectionId = result.connectionId!;
       _connectionHostIds[connectionId] = hostId;
+      final session = _sshService.getSession(connectionId);
+      if (session != null) {
+        _attachSessionPreviewListener(session);
+      }
       state = {...state, connectionId: SshConnectionState.connected};
+      _updateConnectionAttempt(
+        hostId,
+        const ConnectionProgressUpdate(
+          state: SshConnectionState.connected,
+          message: 'Connection established. Opening terminal…',
+        ),
+      );
+      unawaited(_queueBackgroundStatusSync());
+    } else {
+      _updateConnectionAttempt(
+        hostId,
+        ConnectionProgressUpdate(
+          state: SshConnectionState.error,
+          message: result.error ?? 'Connection failed',
+        ),
+      );
     }
 
     return result;
@@ -921,17 +1202,23 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
+    _sshService.getSession(connectionId)?.onPreviewChanged = null;
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
     state = next;
+    await _queueBackgroundStatusSync();
   }
 
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
+    for (final session in _sshService.sessions.values) {
+      session.onPreviewChanged = null;
+    }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
     state = {};
+    await _queueBackgroundStatusSync();
   }
 
   /// Get the state of a connection.
@@ -941,6 +1228,31 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Get a session.
   SshSession? getSession(int connectionId) =>
       _sshService.getSession(connectionId);
+
+  /// Get active connection metadata for a single connection.
+  ActiveConnection? getActiveConnection(int connectionId) {
+    final session = _sshService.getSession(connectionId);
+    final hostId = _connectionHostIds[connectionId];
+    final connectionState = state[connectionId];
+    if (session == null || hostId == null || connectionState == null) {
+      return null;
+    }
+    return ActiveConnection(
+      connectionId: connectionId,
+      hostId: hostId,
+      state: connectionState,
+      createdAt: session.createdAt,
+      config: session.config,
+      preview: session.terminalPreview,
+      windowTitle: session.windowTitle,
+      terminalThemeLightId: session.terminalThemeLightId,
+      terminalThemeDarkId: session.terminalThemeDarkId,
+    );
+  }
+
+  /// Get the current connection attempt state for a host.
+  ConnectionAttemptStatus? getConnectionAttempt(int hostId) =>
+      _connectionAttempts[hostId];
 
   /// Get all active connection IDs for a host.
   List<int> getConnectionsForHost(int hostId) {
@@ -994,10 +1306,127 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           state: entry.value,
           createdAt: session.createdAt,
           config: session.config,
+          preview: session.terminalPreview,
+          windowTitle: session.windowTitle,
+          terminalThemeLightId: session.terminalThemeLightId,
+          terminalThemeDarkId: session.terminalThemeDarkId,
         ),
       );
     }
     connections.sort((a, b) => b.createdAt.compareTo(a.createdAt));
     return connections;
+  }
+
+  /// Clear the current connection attempt state for a host.
+  void clearConnectionAttempt(int hostId) {
+    if (_connectionAttempts.remove(hostId) != null) {
+      state = {...state};
+    }
+  }
+
+  void _attachSessionPreviewListener(SshSession session) {
+    session.onPreviewChanged = _schedulePreviewStateRefresh;
+  }
+
+  void _schedulePreviewStateRefresh() {
+    if (_previewStateRefreshTimer?.isActive ?? false) {
+      _previewStateRefreshQueued = true;
+      return;
+    }
+    _previewStateRefreshTimer = Timer(_previewStateRefreshInterval, () {
+      _previewStateRefreshTimer = null;
+      final shouldReschedule = _previewStateRefreshQueued;
+      _previewStateRefreshQueued = false;
+      state = {...state};
+      if (shouldReschedule) {
+        _schedulePreviewStateRefresh();
+      }
+    });
+  }
+
+  void _updateConnectionAttempt(
+    int hostId,
+    ConnectionProgressUpdate update, {
+    bool resetLog = false,
+  }) {
+    final existing = resetLog ? null : _connectionAttempts[hostId];
+    final nextLogLines = <String>[if (existing != null) ...existing.logLines];
+    if (nextLogLines.isEmpty || nextLogLines.last != update.message) {
+      nextLogLines.add(update.message);
+    }
+    if (nextLogLines.length > 8) {
+      nextLogLines.removeRange(0, nextLogLines.length - 8);
+    }
+
+    _connectionAttempts[hostId] = ConnectionAttemptStatus(
+      hostId: hostId,
+      state: update.state,
+      latestMessage: update.message,
+      logLines: List.unmodifiable(nextLogLines),
+    );
+    state = {...state};
+  }
+
+  /// Surface an unexpected connection failure in the shared attempt state.
+  void reportConnectionAttemptError(int hostId, String message) {
+    _updateConnectionAttempt(
+      hostId,
+      ConnectionProgressUpdate(
+        state: SshConnectionState.error,
+        message: message,
+      ),
+    );
+  }
+
+  /// Update the session-specific terminal theme for an active connection.
+  void updateSessionTheme(
+    int connectionId,
+    String themeId, {
+    required bool isDark,
+  }) {
+    final session = _sshService.getSession(connectionId);
+    if (session == null) {
+      return;
+    }
+    session.setTerminalThemeId(themeId, isDark: isDark);
+    state = {...state};
+  }
+
+  /// Update the session-specific terminal font size for an active connection.
+  void updateSessionFontSize(int connectionId, double fontSize) {
+    final session = _sshService.getSession(connectionId);
+    if (session == null) {
+      return;
+    }
+    session.terminalFontSize = fontSize;
+    state = {...state};
+  }
+
+  Future<void> _syncBackgroundStatus() async {
+    final connections = getActiveConnections();
+    if (connections.isEmpty) {
+      await BackgroundSshService.stop();
+      return;
+    }
+
+    final connectedCount = connections
+        .where((connection) => connection.state == SshConnectionState.connected)
+        .length;
+
+    await BackgroundSshService.updateStatus(
+      connectionCount: connections.length,
+      connectedCount: connectedCount,
+    );
+  }
+
+  /// Publish the current active-connection status to native keepalive surfaces.
+  Future<void> syncBackgroundStatus() => _queueBackgroundStatusSync();
+
+  Future<void> _queueBackgroundStatusSync() {
+    final nextSync = _backgroundStatusSyncQueue
+        .catchError((Object _) {})
+        .then((_) => _syncBackgroundStatus());
+    _backgroundStatusSyncQueue = nextSync;
+    return nextSync;
   }
 }

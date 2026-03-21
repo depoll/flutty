@@ -1,18 +1,22 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 
 void main() {
   late AppDatabase db;
   late KeyRepository repository;
+  late SecretEncryptionService encryptionService;
 
   setUp(() {
     db = AppDatabase.forTesting(NativeDatabase.memory());
-    repository = KeyRepository(db);
+    encryptionService = SecretEncryptionService.forTesting();
+    repository = KeyRepository(db, encryptionService);
   });
 
   tearDown(() async {
@@ -41,6 +45,32 @@ void main() {
       expect(keys, hasLength(1));
       expect(keys.first.name, 'My Key');
       expect(keys.first.keyType, 'ed25519');
+    });
+
+    test('insert encrypts private key and passphrase at rest', () async {
+      const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----...';
+      const passphrase = 'my-passphrase';
+      final id = await repository.insert(
+        SshKeysCompanion.insert(
+          name: 'Encrypted Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAA...',
+          privateKey: privateKey,
+          passphrase: const Value(passphrase),
+        ),
+      );
+
+      final storedKey = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(id))).getSingle();
+      expect(storedKey.privateKey, isNot(privateKey));
+      expect(storedKey.privateKey, startsWith('ENCv1:'));
+      expect(storedKey.passphrase, isNot(passphrase));
+      expect(storedKey.passphrase, startsWith('ENCv1:'));
+
+      final key = await repository.getById(id);
+      expect(key!.privateKey, privateKey);
+      expect(key.passphrase, passphrase);
     });
 
     test('getById returns key when exists', () async {

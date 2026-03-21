@@ -6,6 +6,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../domain/services/key_service.dart';
+import '../../domain/services/secure_transfer_service.dart';
+import 'transfer_screen.dart';
 
 /// Screen for adding or importing SSH keys.
 class KeyAddScreen extends ConsumerStatefulWidget {
@@ -283,6 +285,36 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     child: ListView(
       padding: const EdgeInsets.all(16),
       children: [
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Secure device transfer',
+                  style: Theme.of(context).textTheme.titleSmall,
+                ),
+                const SizedBox(height: 8),
+                Row(
+                  children: [
+                    Expanded(
+                      child: OutlinedButton.icon(
+                        onPressed: _isImporting
+                            ? null
+                            : _importFromEncryptedFile,
+                        icon: const Icon(Icons.file_open),
+                        label: const Text('Import Encrypted File'),
+                      ),
+                    ),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
+
         // Name
         TextFormField(
           controller: _nameController,
@@ -358,7 +390,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
         // Import from file button
         OutlinedButton.icon(
-          onPressed: _importFromFile,
+          onPressed: _isImporting ? null : _importFromFile,
           icon: const Icon(Icons.file_open),
           label: const Text('Import from File'),
         ),
@@ -412,6 +444,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   }
 
   Future<void> _importFromFile() async {
+    if (_isImporting) {
+      return;
+    }
     final result = await FilePicker.platform.pickFiles(withData: true);
 
     if (!mounted || result == null || result.files.isEmpty) {
@@ -437,5 +472,67 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('Loaded "${file.name}"')));
+  }
+
+  Future<void> _importFromEncryptedFile() async {
+    if (_isImporting) {
+      return;
+    }
+    final encodedPayload = await pickTransferPayloadFromFile(context);
+    await _importFromTransferPayload(encodedPayload);
+  }
+
+  Future<void> _importFromTransferPayload(String? encodedPayload) async {
+    if (!mounted || encodedPayload == null || encodedPayload.isEmpty) {
+      return;
+    }
+
+    final transferPassphrase = await showTransferPassphraseDialog(
+      context: context,
+      title: 'Key transfer passphrase',
+    );
+    if (!mounted || transferPassphrase == null) {
+      return;
+    }
+
+    setState(() => _isImporting = true);
+    try {
+      final transferService = ref.read(secureTransferServiceProvider);
+      final payload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: transferPassphrase,
+      );
+      if (payload.type != TransferPayloadType.key) {
+        throw const FormatException(
+          'This transfer payload does not contain an SSH key',
+        );
+      }
+      final importedKey = await transferService.importKeyPayload(payload);
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Imported key: ${importedKey.name}')),
+      );
+    } on FormatException catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Import failed: ${error.message}')),
+      );
+    } on Exception catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+    } finally {
+      if (mounted) {
+        setState(() => _isImporting = false);
+      }
+    }
   }
 }

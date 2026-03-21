@@ -6,14 +6,17 @@ import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 
 void main() {
   late AppDatabase db;
   late HostRepository repository;
+  late SecretEncryptionService encryptionService;
 
   setUp(() {
     db = AppDatabase.forTesting(NativeDatabase.memory());
-    repository = HostRepository(db);
+    encryptionService = SecretEncryptionService.forTesting();
+    repository = HostRepository(db, encryptionService);
   });
 
   tearDown(() async {
@@ -42,6 +45,53 @@ void main() {
       expect(hosts.first.label, 'Test Server');
       expect(hosts.first.hostname, '192.168.1.1');
       expect(hosts.first.username, 'admin');
+    });
+
+    test('insert encrypts password at rest', () async {
+      const plaintextPassword = 'super-secret';
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Secure Host',
+          hostname: '192.168.1.10',
+          username: 'admin',
+          password: const Value(plaintextPassword),
+        ),
+      );
+
+      final storedHost = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(id))).getSingle();
+      expect(storedHost.password, isNot(plaintextPassword));
+      expect(storedHost.password, startsWith('ENCv1:'));
+
+      final host = await repository.getById(id);
+      expect(host!.password, plaintextPassword);
+    });
+
+    test('insert stores auto-connect command fields', () async {
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux attach',
+            ),
+          );
+
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Test Server',
+          hostname: '192.168.1.1',
+          username: 'admin',
+          autoConnectCommand: const Value('tmux attach'),
+          autoConnectSnippetId: Value(snippetId),
+        ),
+      );
+
+      final host = await repository.getById(id);
+      expect(host, isNotNull);
+      expect(host!.autoConnectCommand, 'tmux attach');
+      expect(host.autoConnectSnippetId, snippetId);
     });
 
     test('getById returns host when exists', () async {
@@ -84,6 +134,38 @@ void main() {
       final updated = await repository.getById(id);
       expect(updated!.label, 'Updated Server');
       expect(updated.port, 2222);
+    });
+
+    test('update persists auto-connect command changes', () async {
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux attach',
+            ),
+          );
+      final id = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Test Server',
+          hostname: '192.168.1.1',
+          username: 'admin',
+        ),
+      );
+
+      final host = await repository.getById(id);
+      final success = await repository.update(
+        host!.copyWith(
+          autoConnectCommand: const Value('tmux new -As MonkeySSH'),
+          autoConnectSnippetId: Value(snippetId),
+        ),
+      );
+
+      expect(success, isTrue);
+
+      final updated = await repository.getById(id);
+      expect(updated!.autoConnectCommand, 'tmux new -As MonkeySSH');
+      expect(updated.autoConnectSnippetId, snippetId);
     });
 
     test('delete removes host', () async {

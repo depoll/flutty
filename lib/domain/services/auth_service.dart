@@ -1,5 +1,7 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -46,8 +48,15 @@ class AuthService {
   final LocalAuthentication _localAuth;
 
   static const _pinKey = 'flutty_pin_hash';
+  static const _pinSaltKey = 'flutty_pin_salt';
+  static const _pinMetadataKey = 'flutty_pin_kdf_metadata';
   static const _authEnabledKey = 'flutty_auth_enabled';
   static const _biometricEnabledKey = 'flutty_biometric_enabled';
+  static const _pinKdfVersion = 1;
+  static const _pinKdfIterations = 120000;
+  static const _pinKdfBits = 256;
+  static const _pinSaltLength = 16;
+  Future<void> _pinWriteQueue = Future<void>.value();
 
   /// Check if authentication is enabled.
   Future<bool> isAuthEnabled() async {
@@ -101,9 +110,7 @@ class AuthService {
 
   /// Set up PIN authentication.
   Future<void> setupPin(String pin) async {
-    final hash = _hashPin(pin);
-    await _storage.write(key: _pinKey, value: hash);
-    await _storage.write(key: _authEnabledKey, value: 'true');
+    await _storePin(pin, enableAuth: true);
   }
 
   /// Enable or disable biometric authentication.
@@ -113,11 +120,29 @@ class AuthService {
 
   /// Verify PIN.
   Future<bool> verifyPin(String pin) async {
-    final storedHash = await _storage.read(key: _pinKey);
-    if (storedHash == null) return false;
+    final storedPinData = await _storage.read(key: _pinKey);
+    if (storedPinData == null) return false;
 
-    final inputHash = _hashPin(pin);
-    return storedHash == inputHash;
+    final pinRecord = _parsePinRecord(storedPinData);
+    if (pinRecord == null) {
+      return false;
+    }
+    if (pinRecord.version != _pinKdfVersion) {
+      return false;
+    }
+    if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
+      return false;
+    }
+
+    final salt = await _readSalt();
+    if (salt == null) return false;
+
+    final inputHash = await _derivePinHash(
+      pin: pin,
+      salt: salt,
+      iterations: pinRecord.iterations,
+    );
+    return _constantTimeEquals(pinRecord.hash, inputHash);
   }
 
   /// Authenticate with biometrics.
@@ -167,6 +192,8 @@ class AuthService {
   /// Disable authentication.
   Future<void> disableAuth() async {
     await _storage.delete(key: _pinKey);
+    await _storage.delete(key: _pinSaltKey);
+    await _storage.delete(key: _pinMetadataKey);
     await _storage.delete(key: _authEnabledKey);
     await _storage.delete(key: _biometricEnabledKey);
   }
@@ -180,16 +207,126 @@ class AuthService {
     return true;
   }
 
-  String _hashPin(String pin) {
-    // Simple hash for PIN - in production, use a proper KDF
-    final bytes = utf8.encode('${pin}flutty_salt');
-    var hash = 0;
-    for (final byte in bytes) {
-      hash = ((hash << 5) - hash) + byte;
-      hash = hash & 0xFFFFFFFF;
-    }
-    return hash.toRadixString(16);
+  Future<void> _storePin(String pin, {required bool enableAuth}) async {
+    await _withPinWriteLock(() async {
+      final salt = await _getOrCreateSalt();
+      final hash = await _derivePinHash(
+        pin: pin,
+        salt: salt,
+        iterations: _pinKdfIterations,
+      );
+      await _storage.write(
+        key: _pinKey,
+        value: jsonEncode({
+          'version': _pinKdfVersion,
+          'iterations': _pinKdfIterations,
+          'hash': hash,
+        }),
+      );
+      await _storage.write(
+        key: _pinMetadataKey,
+        value: jsonEncode({
+          'version': _pinKdfVersion,
+          'iterations': _pinKdfIterations,
+        }),
+      );
+      if (enableAuth) {
+        await _storage.write(key: _authEnabledKey, value: 'true');
+      }
+    });
   }
+
+  Future<List<int>> _getOrCreateSalt() async {
+    final existingSalt = await _readSalt();
+    if (existingSalt != null) return existingSalt;
+
+    final salt = SecretKeyData.random(length: _pinSaltLength).bytes;
+    await _storage.write(key: _pinSaltKey, value: base64Encode(salt));
+    return salt;
+  }
+
+  Future<List<int>?> _readSalt() async {
+    final saltData = await _storage.read(key: _pinSaltKey);
+    if (saltData == null) return null;
+
+    try {
+      return base64Decode(saltData);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  Future<String> _derivePinHash({
+    required String pin,
+    required List<int> salt,
+    required int iterations,
+  }) async {
+    final pbkdf2 = Pbkdf2(
+      macAlgorithm: Hmac.sha256(),
+      iterations: iterations,
+      bits: _pinKdfBits,
+    );
+    final secretKey = await pbkdf2.deriveKey(
+      secretKey: SecretKey(utf8.encode(pin)),
+      nonce: salt,
+    );
+    final hashBytes = await secretKey.extractBytes();
+    return base64Encode(hashBytes);
+  }
+
+  _PinHashRecord? _parsePinRecord(String value) {
+    dynamic decoded;
+    try {
+      decoded = jsonDecode(value);
+    } on FormatException {
+      return null;
+    }
+
+    if (decoded is! Map<String, dynamic>) return null;
+
+    final version = decoded['version'];
+    final iterations = decoded['iterations'];
+    final hash = decoded['hash'];
+
+    if (version is! int || iterations is! int || hash is! String) {
+      return null;
+    }
+
+    return _PinHashRecord(version: version, iterations: iterations, hash: hash);
+  }
+
+  bool _constantTimeEquals(String a, String b) {
+    final aBytes = utf8.encode(a);
+    final bBytes = utf8.encode(b);
+    var mismatch = aBytes.length ^ bBytes.length;
+    final maxLength = aBytes.length > bBytes.length
+        ? aBytes.length
+        : bBytes.length;
+    for (var i = 0; i < maxLength; i++) {
+      final aValue = i < aBytes.length ? aBytes[i] : 0;
+      final bValue = i < bBytes.length ? bBytes[i] : 0;
+      mismatch |= aValue ^ bValue;
+    }
+    return mismatch == 0;
+  }
+
+  Future<void> _withPinWriteLock(Future<void> Function() action) async {
+    final operation = _pinWriteQueue.then<void>((_) => action());
+    _pinWriteQueue = operation.catchError((_) {});
+    await operation;
+  }
+}
+
+class _PinHashRecord {
+  _PinHashRecord({
+    required this.version,
+    required this.iterations,
+    required this.hash,
+  });
+
+  final int version;
+  final int iterations;
+  final String hash;
 }
 
 /// Provider for [AuthService].

@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
@@ -120,26 +122,58 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         label: '↑',
         onTap: () => _sendArrow(_Arrow.up),
         onLongPressStart: () => _sendArrow(_Arrow.up),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
       ),
       _ToolbarButton(
         label: '↓',
         onTap: () => _sendArrow(_Arrow.down),
         onLongPressStart: () => _sendArrow(_Arrow.down),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
       ),
       _ToolbarButton(
         label: '←',
         onTap: () => _sendArrow(_Arrow.left),
         onLongPressStart: () => _sendArrow(_Arrow.left),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
       ),
       _ToolbarButton(
         label: '→',
         onTap: () => _sendArrow(_Arrow.right),
         onLongPressStart: () => _sendArrow(_Arrow.right),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
       ),
-      _ToolbarButton(label: 'Home', onTap: () => _sendSequence('\x1b[H')),
-      _ToolbarButton(label: 'End', onTap: () => _sendSequence('\x1b[F')),
-      _ToolbarButton(label: 'PgUp', onTap: () => _sendSequence('\x1b[5~')),
-      _ToolbarButton(label: 'PgDn', onTap: () => _sendSequence('\x1b[6~')),
+      _ToolbarButton(
+        label: 'Home',
+        onTap: () => _sendSequence('\x1b[H'),
+        onLongPressStart: () => _sendSequence('\x1b[H'),
+        onLongPressRepeat: () =>
+            _sendSequence('\x1b[H', withHaptic: false, consumeOneShot: false),
+      ),
+      _ToolbarButton(
+        label: 'End',
+        onTap: () => _sendSequence('\x1b[F'),
+        onLongPressStart: () => _sendSequence('\x1b[F'),
+        onLongPressRepeat: () =>
+            _sendSequence('\x1b[F', withHaptic: false, consumeOneShot: false),
+      ),
+      _ToolbarButton(
+        label: 'PgUp',
+        onTap: () => _sendSequence('\x1b[5~'),
+        onLongPressStart: () => _sendSequence('\x1b[5~'),
+        onLongPressRepeat: () =>
+            _sendSequence('\x1b[5~', withHaptic: false, consumeOneShot: false),
+      ),
+      _ToolbarButton(
+        label: 'PgDn',
+        onTap: () => _sendSequence('\x1b[6~'),
+        onLongPressStart: () => _sendSequence('\x1b[6~'),
+        onLongPressRepeat: () =>
+            _sendSequence('\x1b[6~', withHaptic: false, consumeOneShot: false),
+      ),
     ],
   );
 
@@ -254,15 +288,29 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _consumeOneShot();
   }
 
-  void _sendSequence(String sequence) {
-    HapticFeedback.lightImpact();
+  void _sendSequence(
+    String sequence, {
+    bool withHaptic = true,
+    bool consumeOneShot = true,
+  }) {
+    if (withHaptic) {
+      HapticFeedback.lightImpact();
+    }
     widget.terminal.textInput(sequence);
     widget.onKeyPressed?.call();
-    _consumeOneShot();
+    if (consumeOneShot) {
+      _consumeOneShot();
+    }
   }
 
-  void _sendArrow(_Arrow arrow) {
-    HapticFeedback.lightImpact();
+  void _sendArrow(
+    _Arrow arrow, {
+    bool withHaptic = true,
+    bool consumeOneShot = true,
+  }) {
+    if (withHaptic) {
+      HapticFeedback.lightImpact();
+    }
     final modifier = _getModifierPrefix();
     final suffix = switch (arrow) {
       _Arrow.up => 'A',
@@ -278,7 +326,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     }
 
     widget.onKeyPressed?.call();
-    _consumeOneShot();
+    if (consumeOneShot) {
+      _consumeOneShot();
+    }
   }
 
   String _getModifierPrefix() {
@@ -317,6 +367,7 @@ class _ToolbarButton extends StatefulWidget {
     required this.onTap,
     this.icon,
     this.onLongPressStart,
+    this.onLongPressRepeat,
     this.tooltip,
   });
 
@@ -324,6 +375,7 @@ class _ToolbarButton extends StatefulWidget {
   final IconData? icon;
   final VoidCallback onTap;
   final VoidCallback? onLongPressStart;
+  final VoidCallback? onLongPressRepeat;
   final String? tooltip;
 
   @override
@@ -331,20 +383,68 @@ class _ToolbarButton extends StatefulWidget {
 }
 
 class _ToolbarButtonState extends State<_ToolbarButton> {
+  static const _repeatInterval = Duration(milliseconds: 50);
+
   bool _isPressed = false;
+  Timer? _repeatTimer;
+
+  void _setPressed(bool isPressed) {
+    if (_isPressed == isPressed || !mounted) {
+      return;
+    }
+    setState(() => _isPressed = isPressed);
+  }
+
+  void _startRepeat() {
+    final repeatAction = widget.onLongPressRepeat;
+    if (repeatAction == null) {
+      return;
+    }
+
+    _repeatTimer?.cancel();
+    _setPressed(true);
+    _repeatTimer = Timer.periodic(_repeatInterval, (_) {
+      if (!mounted) {
+        return;
+      }
+      repeatAction();
+    });
+  }
+
+  void _stopRepeat() {
+    _repeatTimer?.cancel();
+    _repeatTimer = null;
+    _setPressed(false);
+  }
+
+  @override
+  void dispose() {
+    _repeatTimer?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
     Widget button = GestureDetector(
-      onTapDown: (_) => setState(() => _isPressed = true),
-      onTapUp: (_) => setState(() => _isPressed = false),
-      onTapCancel: () => setState(() => _isPressed = false),
+      onTapDown: (_) => _setPressed(true),
+      onTapUp: (_) => _setPressed(false),
+      onTapCancel: _stopRepeat,
       onTap: widget.onTap,
-      onLongPressStart: widget.onLongPressStart != null
-          ? (_) => widget.onLongPressStart?.call()
+      onLongPressStart:
+          widget.onLongPressStart != null || widget.onLongPressRepeat != null
+          ? (_) {
+              widget.onLongPressStart?.call();
+              if (widget.onLongPressRepeat != null) {
+                _startRepeat();
+              }
+            }
           : null,
+      onLongPressEnd: widget.onLongPressRepeat != null
+          ? (_) => _stopRepeat()
+          : null,
+      onLongPressCancel: widget.onLongPressRepeat != null ? _stopRepeat : null,
       child: Container(
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(
