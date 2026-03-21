@@ -384,7 +384,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return '\n'.allMatches(appendedText).length;
   }
 
-  int _clampTextOffset(int offset, int maxOffset) => offset.clamp(0, maxOffset);
+  int _clampTextOffset(int offset, int maxOffset) {
+    if (offset < 0) {
+      return 0;
+    }
+    if (offset > maxOffset) {
+      return maxOffset;
+    }
+    return offset;
+  }
 
   int _normalizeUserOffset({
     required int rawOffset,
