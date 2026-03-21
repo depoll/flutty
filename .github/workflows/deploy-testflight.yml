@@ -1,4 +1,4 @@
-name: Deploy PR to TestFlight
+name: Deploy PR Preview
 
 on:
   workflow_dispatch:
@@ -39,7 +39,7 @@ jobs:
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
   deploy:
-    name: Deploy to TestFlight
+    name: Deploy to TestFlight & Play Internal
     needs: compute-version
     uses: ./.github/workflows/build-deploy.yml
     with:
@@ -48,7 +48,7 @@ jobs:
       flavor: private
       source-ref: refs/pull/${{ inputs.pr-number }}/head
       deploy-ios-to: testflight
-      deploy-android-to: none
+      deploy-android-to: internal
     secrets: inherit
 
   verify-pr-source:
