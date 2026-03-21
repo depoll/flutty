@@ -29,14 +29,18 @@ String sanitizeRemoteUploadFileName(String name) {
 }
 
 /// Creates a unique remote filename for clipboard uploads.
-String buildClipboardUploadFileName(String originalName, DateTime timestamp) {
+String buildClipboardUploadFileName(
+  String originalName,
+  DateTime timestamp, {
+  int sequence = 0,
+}) {
   final safeName = sanitizeRemoteUploadFileName(originalName);
-  return 'clipboard-${timestamp.toUtc().millisecondsSinceEpoch}-$safeName';
+  return 'clipboard-${timestamp.toUtc().millisecondsSinceEpoch}-$sequence-$safeName';
 }
 
 /// Builds a remote filename for clipboard image uploads.
-String buildClipboardImageFileName(DateTime timestamp) =>
-    buildClipboardUploadFileName('image.png', timestamp);
+String buildClipboardImageFileName(DateTime timestamp, {int sequence = 0}) =>
+    buildClipboardUploadFileName('image.png', timestamp, sequence: sequence);
 
 /// Formats a byte count into a human-readable file size.
 String formatRemoteFileSize(int bytes) {

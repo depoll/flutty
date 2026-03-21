@@ -25,12 +25,12 @@ void main() {
       final timestamp = DateTime.utc(2026, 3, 21, 18, 12, 18, 297);
 
       expect(
-        buildClipboardUploadFileName('my image.png', timestamp),
-        'clipboard-1774116738297-my-image.png',
+        buildClipboardUploadFileName('my image.png', timestamp, sequence: 2),
+        'clipboard-1774116738297-2-my-image.png',
       );
       expect(
-        buildClipboardImageFileName(timestamp),
-        'clipboard-1774116738297-image.png',
+        buildClipboardImageFileName(timestamp, sequence: 3),
+        'clipboard-1774116738297-3-image.png',
       );
     });
 

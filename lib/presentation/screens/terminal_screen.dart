@@ -35,6 +35,9 @@ const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
+const _clipboardContentChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/clipboard_content',
+);
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
@@ -194,6 +197,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
+
+  bool get _isAndroidPlatform =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
@@ -1516,16 +1522,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _pasteClipboard() async {
     try {
+      if (_isAndroidPlatform) {
+        final imageBytes = await Pasteboard.image;
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          await _pasteClipboardImage(imageBytes);
+          return;
+        }
+      }
+
       final clipboardFiles = await Pasteboard.files();
       if (clipboardFiles.isNotEmpty) {
         await _pasteClipboardFiles(clipboardFiles);
         return;
       }
 
-      final imageBytes = await Pasteboard.image;
-      if (imageBytes != null && imageBytes.isNotEmpty) {
-        await _pasteClipboardImage(imageBytes);
-        return;
+      if (!_isAndroidPlatform) {
+        final imageBytes = await Pasteboard.image;
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          await _pasteClipboardImage(imageBytes);
+          return;
+        }
       }
 
       final text = await Pasteboard.text;
@@ -1554,53 +1570,116 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     } on SftpError catch (error) {
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       _showClipboardMessage('Remote upload failed: ${error.message}');
+    } on Object catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Clipboard upload failed: $error');
     }
   }
 
-  Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
+  Future<T> _withClipboardSftp<T>(
+    Future<T> Function(SftpClient sftp, RemoteFileService remoteFileService)
+    action,
+  ) async {
     final session = _activeSession();
     if (session == null) {
-      _showClipboardMessage('Connection is not ready yet');
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      return;
-    }
-
-    final unsupportedFiles = clipboardFiles.where(
-      (path) => path.startsWith('content://'),
-    );
-    if (unsupportedFiles.isNotEmpty) {
-      _showClipboardMessage(
-        'Clipboard file URIs are not supported on this platform yet',
-      );
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      return;
+      throw StateError('Connection is not ready yet');
     }
 
     final remoteFileService = ref.read(remoteFileServiceProvider);
     final sftp = await session.sftp();
-    await remoteFileService.ensureDirectoryExists(
-      sftp,
-      remoteClipboardUploadDirectory,
-    );
-
-    final timestamp = DateTime.now();
-    final remotePaths = <String>[];
-    for (final localPath in clipboardFiles) {
-      final fileName = buildClipboardUploadFileName(
-        path.basename(localPath),
-        timestamp,
-      );
-      final remotePath = joinRemotePath(
+    try {
+      await remoteFileService.ensureDirectoryExists(
+        sftp,
         remoteClipboardUploadDirectory,
-        fileName,
       );
-      await remoteFileService.uploadStream(
-        sftp: sftp,
-        remotePath: remotePath,
-        stream: File(localPath).openRead(),
-      );
-      remotePaths.add(remotePath);
+      return await action(sftp, remoteFileService);
+    } finally {
+      sftp.close();
     }
+  }
+
+  Future<({String name, Uint8List bytes})> _readAndroidClipboardContentUri(
+    String uri,
+  ) async {
+    final response = await _clipboardContentChannel.invokeMethod<Object>(
+      'readContentUri',
+      {'uri': uri},
+    );
+    if (response is! Map<Object?, Object?>) {
+      throw PlatformException(
+        code: 'invalid_clipboard_content',
+        message: 'Unexpected clipboard content response',
+      );
+    }
+
+    final name = response['name'];
+    final bytes = response['bytes'];
+    if (name is! String || bytes is! Uint8List) {
+      throw PlatformException(
+        code: 'invalid_clipboard_content',
+        message: 'Clipboard content response was incomplete',
+      );
+    }
+
+    return (name: name, bytes: bytes);
+  }
+
+  Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
+    final timestamp = DateTime.now();
+    final remotePaths = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePaths = <String>[];
+      for (var index = 0; index < clipboardFiles.length; index++) {
+        final localPath = clipboardFiles[index];
+        final isContentUri = localPath.startsWith('content://');
+        late final String sourceName;
+        late final String remotePath;
+
+        if (isContentUri) {
+          if (!_isAndroidPlatform) {
+            throw const FileSystemException(
+              'Clipboard file URIs are not supported on this platform yet',
+            );
+          }
+          final clipboardFile = await _readAndroidClipboardContentUri(
+            localPath,
+          );
+          sourceName = clipboardFile.name;
+          remotePath = joinRemotePath(
+            remoteClipboardUploadDirectory,
+            buildClipboardUploadFileName(
+              sourceName,
+              timestamp,
+              sequence: index,
+            ),
+          );
+          await remoteFileService.uploadBytes(
+            sftp: sftp,
+            remotePath: remotePath,
+            bytes: clipboardFile.bytes,
+          );
+        } else {
+          sourceName = path.basename(localPath);
+          remotePath = joinRemotePath(
+            remoteClipboardUploadDirectory,
+            buildClipboardUploadFileName(
+              sourceName,
+              timestamp,
+              sequence: index,
+            ),
+          );
+          await remoteFileService.uploadStream(
+            sftp: sftp,
+            remotePath: remotePath,
+            stream: File(localPath).openRead(),
+          );
+        }
+        remotePaths.add(remotePath);
+      }
+      return remotePaths;
+    });
 
     _followLiveOutput();
     _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
@@ -1612,29 +1691,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
-    final session = _activeSession();
-    if (session == null) {
-      _showClipboardMessage('Connection is not ready yet');
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      return;
-    }
-
-    final remoteFileService = ref.read(remoteFileServiceProvider);
-    final sftp = await session.sftp();
-    await remoteFileService.ensureDirectoryExists(
+    final remotePath = await _withClipboardSftp((
       sftp,
-      remoteClipboardUploadDirectory,
-    );
-    final remotePath = joinRemotePath(
-      remoteClipboardUploadDirectory,
-      buildClipboardImageFileName(DateTime.now()),
-    );
-    await remoteFileService.uploadBytes(
-      sftp: sftp,
-      remotePath: remotePath,
-      bytes: imageBytes,
-    );
-
+      remoteFileService,
+    ) async {
+      final remotePath = joinRemotePath(
+        remoteClipboardUploadDirectory,
+        buildClipboardImageFileName(DateTime.now()),
+      );
+      await remoteFileService.uploadBytes(
+        sftp: sftp,
+        remotePath: remotePath,
+        bytes: imageBytes,
+      );
+      return remotePath;
+    });
     _followLiveOutput();
     _terminal.paste('${shellEscapePosix(remotePath)} ');
     _terminalController.clearSelection();
