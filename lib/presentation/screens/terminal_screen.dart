@@ -1414,6 +1414,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Widget get _selectionActions => SafeArea(
     top: false,
+    bottom: false,
     child: Material(
       elevation: 2,
       borderRadius: BorderRadius.circular(12),

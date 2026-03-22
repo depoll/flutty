@@ -117,6 +117,20 @@ void main() {
       expect(output, contains('\r'));
     });
 
+    testWidgets('does not add bottom safe-area padding', (tester) async {
+      await tester.pumpWidget(
+        MediaQuery(
+          data: const MediaQueryData(padding: EdgeInsets.only(bottom: 34)),
+          child: MaterialApp(
+            home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        ),
+      );
+
+      final safeArea = tester.widget<SafeArea>(find.byType(SafeArea));
+      expect(safeArea.bottom, isFalse);
+    });
+
     testWidgets('arrow keys repeat while held', (tester) async {
       final output = <String>[];
       terminal.onOutput = output.add;

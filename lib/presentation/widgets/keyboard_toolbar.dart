@@ -71,6 +71,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       ),
       child: SafeArea(
         top: false,
+        bottom: false,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [_buildModifierRow(), _buildNavigationRow()],
