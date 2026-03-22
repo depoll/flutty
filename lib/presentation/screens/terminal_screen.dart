@@ -29,6 +29,7 @@ import '../widgets/terminal_theme_picker.dart';
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
+const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 
 /// Padding around the terminal viewport.
@@ -75,6 +76,11 @@ String trimTerminalLinePadding(String line) =>
 @visibleForTesting
 String trimTerminalSelectionText(String text) =>
     text.split('\n').map(trimTerminalLinePadding).join('\n');
+
+/// Keeps floating selection actions above the bottom safe area.
+@visibleForTesting
+double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
+    _selectionActionsBottomPadding + mediaQuery.padding.bottom;
 
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
@@ -1104,7 +1110,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          Positioned(left: 12, right: 12, bottom: 12, child: _selectionActions),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: selectionActionsBottomOffset(MediaQuery.of(context)),
+            child: _selectionActions,
+          ),
         ],
       );
     }
@@ -1412,43 +1423,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
-  Widget get _selectionActions => SafeArea(
-    top: false,
-    bottom: false,
-    child: Material(
-      elevation: 2,
-      borderRadius: BorderRadius.circular(12),
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextButton.icon(
-                onPressed: () => unawaited(_copySelection()),
-                icon: const Icon(Icons.copy_outlined),
-                label: const Text('Copy'),
-              ),
+  Widget get _selectionActions => Material(
+    elevation: 2,
+    borderRadius: BorderRadius.circular(12),
+    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextButton.icon(
+              onPressed: () => unawaited(_copySelection()),
+              icon: const Icon(Icons.copy_outlined),
+              label: const Text('Copy'),
             ),
-            Expanded(
-              child: TextButton.icon(
-                onPressed: () => unawaited(_pasteClipboard()),
-                icon: const Icon(Icons.paste_outlined),
-                label: const Text('Paste'),
-              ),
+          ),
+          Expanded(
+            child: TextButton.icon(
+              onPressed: () => unawaited(_pasteClipboard()),
+              icon: const Icon(Icons.paste_outlined),
+              label: const Text('Paste'),
             ),
-            Expanded(
-              child: TextButton.icon(
-                onPressed: () {
-                  _terminalController.clearSelection();
-                  _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-                },
-                icon: const Icon(Icons.close),
-                label: const Text('Clear'),
-              ),
+          ),
+          Expanded(
+            child: TextButton.icon(
+              onPressed: () {
+                _terminalController.clearSelection();
+                _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+              },
+              icon: const Icon(Icons.close),
+              label: const Text('Clear'),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     ),
   );

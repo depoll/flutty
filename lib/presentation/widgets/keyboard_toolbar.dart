@@ -4,6 +4,14 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
+/// Whether the toolbar should keep the bottom safe-area inset.
+///
+/// When the system keyboard is visible, the toolbar is already lifted above the
+/// obscured region by the viewport inset. In that state, keeping the bottom
+/// safe-area inset just adds unnecessary extra gap above the keyboard.
+bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
+    mediaQuery.viewInsets.bottom == 0;
+
 /// Compact keyboard toolbar for terminal input.
 ///
 /// Features:
@@ -63,6 +71,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final keepBottomSafeArea = shouldKeepToolbarBottomSafeArea(
+      MediaQuery.of(context),
+    );
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -71,7 +82,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       ),
       child: SafeArea(
         top: false,
-        bottom: false,
+        bottom: keepBottomSafeArea,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [_buildModifierRow(), _buildNavigationRow()],

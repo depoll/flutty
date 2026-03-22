@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
-  group('terminalViewportPadding', () {
+  group('terminal layout helpers', () {
     test(
       'keeps horizontal and top breathing room without wasting bottom rows',
       () {
@@ -11,5 +11,11 @@ void main() {
         expect(terminalViewportPadding.bottom, 0);
       },
     );
+
+    test('positions selection actions above the bottom safe area', () {
+      const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
+
+      expect(selectionActionsBottomOffset(mediaQuery), 46);
+    });
   });
 }
