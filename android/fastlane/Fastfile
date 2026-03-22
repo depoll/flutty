@@ -36,20 +36,37 @@ platform :android do
     client.abort_current_edit
   end
 
-  desc 'Upload private flavor AAB to Play Store internal testing'
+  desc 'Upload flavor AAB to Play Store internal testing'
   lane :internal do |options|
     skip_meta = options[:skip_metadata].to_s == 'true'
-    package = 'xyz.depollsoft.monkeyssh.private'
-    meta_path = METADATA_DIRS[package]
+    package = options[:package_name] || 'xyz.depollsoft.monkeyssh.private'
+    allowed_packages = METADATA_DIRS.keys.sort.join(', ')
+    default_aab =
+      case package
+      when 'xyz.depollsoft.monkeyssh'
+        '../build/app/outputs/bundle/productionRelease/app-production-release.aab'
+      when 'xyz.depollsoft.monkeyssh.private'
+        '../build/app/outputs/bundle/privateRelease/app-private-release.aab'
+      else
+        UI.user_error!("Unsupported package_name '#{package}'. Expected one of: #{allowed_packages}")
+      end
+    meta_path =
+      if skip_meta
+        nil
+      else
+        METADATA_DIRS[package] || UI.user_error!(
+          "Metadata sync requires a supported package_name. Expected one of: #{allowed_packages}",
+        )
+      end
 
     clear_draft_releases(package_name: package, track: 'internal')
 
     upload_to_play_store(
       package_name: package,
       track: 'internal',
-      aab: ENV['AAB_PATH'] || '../build/app/outputs/bundle/privateRelease/app-private-release.aab',
+      aab: ENV['AAB_PATH'] || default_aab,
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      metadata_path: skip_meta ? nil : meta_path,
+      metadata_path: meta_path,
       skip_upload_metadata: skip_meta,
       skip_upload_images: skip_meta,
       skip_upload_screenshots: true,

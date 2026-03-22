@@ -169,8 +169,9 @@ jobs:
         run: |
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
+          PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
           if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then
-            bundle exec fastlane internal skip_metadata:"$SKIP_META"
+            bundle exec fastlane internal package_name:"$PACKAGE_NAME" skip_metadata:"$SKIP_META"
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
             bundle exec fastlane release skip_metadata:"$SKIP_META"
           fi

@@ -1,0 +1,49 @@
+name: Release Internal
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release internally (e.g., 1.2.0)'
+        required: true
+        type: string
+
+concurrency:
+  group: release-internal
+  cancel-in-progress: false
+
+jobs:
+  compute-version:
+    name: Compute Version
+    runs-on: ubuntu-latest
+    outputs:
+      build-name: ${{ steps.version.outputs.build-name }}
+      build-number: ${{ steps.version.outputs.build-number }}
+    steps:
+      - name: Compute version
+        id: version
+        run: |
+          RAW_VERSION="${{ inputs.version }}"
+          BUILD_NAME="${RAW_VERSION#v}"
+          BUILD_NUMBER=$(( $(date +%s) / 10 ))
+
+          echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
+          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "## Internal Release Info" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${BUILD_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Build Number:** ${BUILD_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Flavor:** production" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Audience:** internal testers only" >> "$GITHUB_STEP_SUMMARY"
+
+  deploy:
+    name: Build & Deploy Internal Release
+    needs: compute-version
+    uses: ./.github/workflows/build-deploy.yml
+    with:
+      build-name: ${{ needs.compute-version.outputs.build-name }}
+      build-number: ${{ needs.compute-version.outputs.build-number }}
+      flavor: production
+      deploy-ios-to: testflight
+      deploy-android-to: internal
+      sync-metadata: true
+    secrets: inherit
