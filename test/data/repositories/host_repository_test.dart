@@ -94,6 +94,160 @@ void main() {
       expect(host.autoConnectSnippetId, snippetId);
     });
 
+    test('duplicate copies all host fields and port forwards', () async {
+      final keyId = await db
+          .into(db.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'Deploy Key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAITest',
+              privateKey: 'PRIVATE KEY',
+            ),
+          );
+      final groupId = await db
+          .into(db.groups)
+          .insert(GroupsCompanion.insert(name: 'Production'));
+      final snippetId = await db
+          .into(db.snippets)
+          .insert(
+            SnippetsCompanion.insert(
+              name: 'Attach tmux',
+              command: 'tmux attach',
+            ),
+          );
+      final jumpHostId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Jump Host',
+          hostname: 'jump.example.com',
+          username: 'jump',
+        ),
+      );
+
+      final sourceHostId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Primary Server',
+          hostname: 'prod.example.com',
+          port: const Value(2200),
+          username: 'deploy',
+          password: const Value('s3cr3t'),
+          keyId: Value(keyId),
+          groupId: Value(groupId),
+          jumpHostId: Value(jumpHostId),
+          isFavorite: const Value(true),
+          color: const Value('#112233'),
+          notes: const Value('Has extra metadata'),
+          tags: const Value('prod,critical'),
+          createdAt: Value(DateTime(2020, 1, 2, 3, 4, 5)),
+          updatedAt: Value(DateTime(2021, 2, 3, 4, 5, 6)),
+          lastConnectedAt: Value(DateTime(2022, 3, 4, 5, 6, 7)),
+          terminalThemeLightId: const Value('solarized-light'),
+          terminalThemeDarkId: const Value('solarized-dark'),
+          terminalFontFamily: const Value('Fira Code'),
+          autoConnectCommand: const Value('tmux attach'),
+          autoConnectSnippetId: Value(snippetId),
+        ),
+      );
+
+      await db
+          .into(db.portForwards)
+          .insert(
+            PortForwardsCompanion.insert(
+              hostId: sourceHostId,
+              name: 'Database Tunnel',
+              forwardType: 'local',
+              localHost: const Value('0.0.0.0'),
+              localPort: 5432,
+              remoteHost: 'db.internal',
+              remotePort: 5432,
+              autoStart: const Value(true),
+            ),
+          );
+      await db
+          .into(db.portForwards)
+          .insert(
+            PortForwardsCompanion.insert(
+              hostId: sourceHostId,
+              name: 'Redis Tunnel',
+              forwardType: 'remote',
+              localHost: const Value('127.0.0.1'),
+              localPort: 6379,
+              remoteHost: 'redis.internal',
+              remotePort: 6379,
+              autoStart: const Value(false),
+            ),
+          );
+
+      final sourceHost = await repository.getById(sourceHostId);
+      final duplicateHostId = await repository.duplicate(sourceHost!);
+
+      expect(duplicateHostId, isNot(sourceHostId));
+
+      final duplicateHost = await repository.getById(duplicateHostId);
+
+      expect(duplicateHost, isNotNull);
+      expect(duplicateHost!.label, 'Primary Server (copy)');
+      expect(duplicateHost.hostname, sourceHost.hostname);
+      expect(duplicateHost.port, sourceHost.port);
+      expect(duplicateHost.username, sourceHost.username);
+      expect(duplicateHost.password, sourceHost.password);
+      expect(duplicateHost.keyId, sourceHost.keyId);
+      expect(duplicateHost.groupId, sourceHost.groupId);
+      expect(duplicateHost.jumpHostId, sourceHost.jumpHostId);
+      expect(duplicateHost.isFavorite, sourceHost.isFavorite);
+      expect(duplicateHost.color, sourceHost.color);
+      expect(duplicateHost.notes, sourceHost.notes);
+      expect(duplicateHost.tags, sourceHost.tags);
+      expect(
+        duplicateHost.terminalThemeLightId,
+        sourceHost.terminalThemeLightId,
+      );
+      expect(duplicateHost.terminalThemeDarkId, sourceHost.terminalThemeDarkId);
+      expect(duplicateHost.terminalFontFamily, sourceHost.terminalFontFamily);
+      expect(duplicateHost.autoConnectCommand, sourceHost.autoConnectCommand);
+      expect(
+        duplicateHost.autoConnectSnippetId,
+        sourceHost.autoConnectSnippetId,
+      );
+      expect(duplicateHost.lastConnectedAt, isNull);
+      expect(duplicateHost.createdAt, isNot(sourceHost.createdAt));
+      expect(duplicateHost.updatedAt, isNot(sourceHost.updatedAt));
+
+      final duplicatePortForwards =
+          await (db.select(db.portForwards)..where(
+                (portForward) => portForward.hostId.equals(duplicateHostId),
+              ))
+              .get();
+
+      expect(duplicatePortForwards, hasLength(2));
+      expect(
+        duplicatePortForwards.map((portForward) => portForward.name),
+        unorderedEquals(['Database Tunnel', 'Redis Tunnel']),
+      );
+
+      final databaseTunnel = duplicatePortForwards.singleWhere(
+        (portForward) => portForward.name == 'Database Tunnel',
+      );
+      expect(databaseTunnel.hostId, duplicateHostId);
+      expect(databaseTunnel.forwardType, 'local');
+      expect(databaseTunnel.localHost, '0.0.0.0');
+      expect(databaseTunnel.localPort, 5432);
+      expect(databaseTunnel.remoteHost, 'db.internal');
+      expect(databaseTunnel.remotePort, 5432);
+      expect(databaseTunnel.autoStart, isTrue);
+
+      final redisTunnel = duplicatePortForwards.singleWhere(
+        (portForward) => portForward.name == 'Redis Tunnel',
+      );
+      expect(redisTunnel.hostId, duplicateHostId);
+      expect(redisTunnel.forwardType, 'remote');
+      expect(redisTunnel.localHost, '127.0.0.1');
+      expect(redisTunnel.localPort, 6379);
+      expect(redisTunnel.remoteHost, 'redis.internal');
+      expect(redisTunnel.remotePort, 6379);
+      expect(redisTunnel.autoStart, isFalse);
+    });
+
     test('getById returns host when exists', () async {
       final id = await repository.insert(
         HostsCompanion.insert(
