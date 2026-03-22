@@ -23,7 +23,8 @@ jobs:
       - name: Compute version
         id: version
         run: |
-          BUILD_NAME="${{ inputs.version }}"
+          RAW_VERSION="${{ inputs.version }}"
+          BUILD_NAME="${RAW_VERSION#v}"
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
