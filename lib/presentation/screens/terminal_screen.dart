@@ -31,6 +31,12 @@ const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 
+/// Padding around the terminal viewport.
+///
+/// Keep the terminal flush with the bottom edge so status lines from tools like
+/// tmux use the full available height in every keyboard and toolbar state.
+const terminalViewportPadding = EdgeInsets.fromLTRB(8, 8, 8, 0);
+
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
 double clampTerminalFontSize(num size) =>
@@ -146,8 +152,6 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
-  static const _terminalViewportPadding = EdgeInsets.all(8);
-
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
@@ -1067,7 +1071,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
-      padding: _terminalViewportPadding,
+      padding: terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
@@ -1154,7 +1158,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
-      padding: _terminalViewportPadding,
+      padding: terminalViewportPadding,
       child: SingleChildScrollView(
         controller: _nativeSelectionScrollController,
         physics: const ClampingScrollPhysics(),
