@@ -27,7 +27,7 @@ dependencies:
   path: ^1.9.1
   
   # SSH
-  dartssh2: ^2.11.2
+  dartssh2: ^2.15.0
   
   # Terminal
   xterm: ^4.0.0
