@@ -91,6 +91,122 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('drops a leading space before first swipe text', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200B hello',
+          selection: TextSelection.collapsed(offset: 8),
+        ),
+      );
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'hello');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('drops leading whitespace before first swipe text', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200B \nhello',
+          selection: TextSelection.collapsed(offset: 9),
+        ),
+      );
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'hello');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('preserves later swipe spaces after trimming first input', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200B hello ',
+          selection: TextSelection.collapsed(offset: 9),
+        ),
+      );
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Bhello world ',
+          selection: TextSelection.collapsed(offset: 14),
+        ),
+      );
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'hello world ');
+
+      focusNode.dispose();
+    });
+
     testWidgets('resyncs delete-detection marker after backspacing past it', (
       tester,
     ) async {

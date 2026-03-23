@@ -9,7 +9,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
+final _leadingSwipeWhitespacePattern = RegExp(r'^[\r\n ]+(?=\S)');
 
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
@@ -349,7 +349,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_lastSentText.isNotEmpty) {
       return extractedText;
     }
-    return extractedText.replaceFirst(_leadingSwipeNewlinePattern, '');
+    return extractedText.replaceFirst(_leadingSwipeWhitespacePattern, '');
   }
 
   int _sendInputDelta(String currentText) {
