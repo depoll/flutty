@@ -247,7 +247,10 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    if (_shiftState != null || HardwareKeyboard.instance.isShiftPressed) {
+    if (_shiftState != null) {
+      // Only the toolbar's explicit Shift modifier should turn Tab into
+      // reverse-tab. The system keyboard can keep Shift latched after typing an
+      // uppercase character, and that should not block shell completion.
       // Shift+Tab sends reverse-tab escape sequence
       widget.terminal.textInput('\x1b[Z');
     } else {
