@@ -2,8 +2,8 @@ default_platform(:android)
 
 platform :android do
   METADATA_DIRS = {
-    'xyz.depollsoft.monkeyssh.private' => File.expand_path('metadata-private', __dir__),
-    'xyz.depollsoft.monkeyssh' => File.expand_path('metadata-production', __dir__),
+    'xyz.depollsoft.monkeyssh.private' => File.expand_path('metadata-private/android', __dir__),
+    'xyz.depollsoft.monkeyssh' => File.expand_path('metadata-production/android', __dir__),
   }.freeze
 
   # Clear any stuck draft releases that would block a new upload
@@ -100,8 +100,8 @@ platform :android do
   desc 'Sync metadata to Play Store (no build required)'
   lane :sync_metadata do |options|
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
-    meta_path = METADATA_DIRS[package] || File.expand_path('metadata-production', __dir__)
-    lang_dir = File.join(meta_path, 'android', 'en-US')
+    meta_path = METADATA_DIRS[package] || File.expand_path('metadata-production/android', __dir__)
+    lang_dir = File.join(meta_path, 'en-US')
 
     require 'supply'
     Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, {
