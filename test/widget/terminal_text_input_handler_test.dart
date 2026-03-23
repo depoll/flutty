@@ -7,6 +7,28 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
+const _deleteDetectionMarker = '\u200B\u200B';
+
+Future<void> _commitSwipeText(WidgetTester tester, String text) async {
+  final selection = TextSelection.collapsed(offset: text.length);
+  tester.testTextInput.updateEditingValue(
+    TextEditingValue(
+      text: text,
+      selection: selection,
+      composing: TextRange(
+        start: _deleteDetectionMarker.length,
+        end: text.length,
+      ),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    TextEditingValue(text: text, selection: selection),
+  );
+  await tester.pump();
+}
+
 void main() {
   group('TerminalTextInputHandler', () {
     testWidgets('preserves swipe typing context across short pauses', (
@@ -78,13 +100,7 @@ void main() {
       focusNode.requestFocus();
       await tester.pump();
 
-      tester.testTextInput.updateEditingValue(
-        const TextEditingValue(
-          text: '\u200B\u200B\nhello',
-          selection: TextSelection.collapsed(offset: 8),
-        ),
-      );
-      await tester.pump();
+      await _commitSwipeText(tester, '$_deleteDetectionMarker\nhello');
 
       expect(terminalOutput.join(), 'hello');
 
@@ -114,20 +130,14 @@ void main() {
       focusNode.requestFocus();
       await tester.pump();
 
-      tester.testTextInput.updateEditingValue(
-        const TextEditingValue(
-          text: '\u200B\u200B hello',
-          selection: TextSelection.collapsed(offset: 8),
-        ),
-      );
-      await tester.pump();
+      await _commitSwipeText(tester, '$_deleteDetectionMarker hello');
 
       expect(terminalOutput.join(), 'hello');
 
       focusNode.dispose();
     });
 
-    testWidgets('drops leading whitespace before first swipe text', (
+    testWidgets('preserves leading spaces for first non-swipe commit', (
       tester,
     ) async {
       final terminalOutput = <String>[];
@@ -152,11 +162,41 @@ void main() {
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
-          text: '\u200B\u200B \nhello',
+          text: '\u200B\u200B  hello',
           selection: TextSelection.collapsed(offset: 9),
         ),
       );
       await tester.pump();
+
+      expect(terminalOutput.join(), '  hello');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('drops a swipe newline followed by a stray leading space', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      await _commitSwipeText(tester, '$_deleteDetectionMarker\n hello');
 
       expect(terminalOutput.join(), 'hello');
 
@@ -186,13 +226,7 @@ void main() {
       focusNode.requestFocus();
       await tester.pump();
 
-      tester.testTextInput.updateEditingValue(
-        const TextEditingValue(
-          text: '\u200B\u200B hello ',
-          selection: TextSelection.collapsed(offset: 9),
-        ),
-      );
-      await tester.pump();
+      await _commitSwipeText(tester, '$_deleteDetectionMarker hello ');
 
       tester.testTextInput.updateEditingValue(
         const TextEditingValue(
