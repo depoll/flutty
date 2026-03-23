@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide covers setting up automated deployment to TestFlight, Play Store internal testing, and production store releases.
+This guide covers setting up automated deployment to TestFlight, Play Store internal testing, internal-only production release candidates, and public store releases.
 
 ## App Variants
 
@@ -98,7 +98,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
-- **iOS**: Run the **Deploy PR to TestFlight** workflow manually from the Actions tab
+- **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
 - **Android**: Builds APK for direct download (linked in PR comment)
 
 ### Deploy Private (`develop.yml`)
@@ -108,6 +108,18 @@ Triggered on push to `main`. Builds the **private** flavor and deploys to:
 - **Android**: Play Store internal testing track
 
 This ensures TestFlight and Play Store internal testing always reflect the latest `main`.
+
+### Release Internal (`release-internal.yml`)
+
+Manually triggered from the Actions tab with a version input.
+
+Builds the **production** flavor and deploys it to internal-only channels:
+- **iOS**: TestFlight internal testers for the production `MonkeySSH` app
+- **Android**: Play Store internal testing track for the production `xyz.depollsoft.monkeyssh` app
+
+Metadata is synced as part of the deploy so the production store listing stays aligned while the binary remains limited to internal testers.
+
+Use this workflow to validate a release candidate on the non-private app before promoting a later build publicly.
 
 ### Release (`release.yml`)
 

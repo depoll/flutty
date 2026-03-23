@@ -796,17 +796,7 @@ class _MigrationSection extends ConsumerWidget {
       return;
     }
 
-    final source = await showTransferImportSourceSheet(context);
-    if (!context.mounted || source == null) {
-      return;
-    }
-
-    String? encodedPayload;
-    if (source == TransferImportSource.qr) {
-      encodedPayload = await scanTransferPayload(context);
-    } else {
-      encodedPayload = await pickTransferPayloadFromFile(context);
-    }
+    final encodedPayload = await pickTransferPayloadFromFile(context);
     if (!context.mounted || encodedPayload == null) {
       return;
     }

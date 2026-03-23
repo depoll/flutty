@@ -51,8 +51,6 @@
 	<false/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>MonkeySSH needs photo library access to select files for transfer.</string>
-	<key>NSCameraUsageDescription</key>
-	<string>MonkeySSH needs camera access to scan encrypted transfer QR codes.</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

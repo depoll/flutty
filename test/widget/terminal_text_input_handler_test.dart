@@ -29,6 +29,22 @@ Future<void> _commitSwipeText(WidgetTester tester, String text) async {
   await tester.pump();
 }
 
+String _terminalTextFromEvents(Iterable<String> events) {
+  final visibleCharacters = <String>[];
+  for (final event in events) {
+    for (final rune in event.runes) {
+      if (rune == 0x7f) {
+        if (visibleCharacters.isNotEmpty) {
+          visibleCharacters.removeLast();
+        }
+        continue;
+      }
+      visibleCharacters.add(String.fromCharCode(rune));
+    }
+  }
+  return visibleCharacters.join();
+}
+
 void main() {
   group('TerminalTextInputHandler', () {
     testWidgets('preserves swipe typing context across short pauses', (
@@ -289,6 +305,74 @@ void main() {
       await tester.pump();
 
       expect(terminalOutput.join(), 'ok\x7fre');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('keeps IME replacement selections intact', (tester) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Bteh ',
+          selection: TextSelection.collapsed(offset: 6),
+        ),
+      );
+      await tester.pump();
+
+      expect(_terminalTextFromEvents(terminalOutput), 'teh ');
+
+      tester.testTextInput.log.clear();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Bthe ',
+          selection: TextSelection(baseOffset: 2, extentOffset: 5),
+        ),
+      );
+      await tester.pump();
+
+      expect(_terminalTextFromEvents(terminalOutput), 'the ');
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.setEditingState',
+        ),
+        isEmpty,
+      );
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Bthe ',
+          selection: TextSelection.collapsed(offset: 6),
+        ),
+      );
+      await tester.pump();
+
+      expect(_terminalTextFromEvents(terminalOutput), 'the ');
+      expect(
+        tester.testTextInput.log.where(
+          (call) => call.method == 'TextInput.setEditingState',
+        ),
+        isEmpty,
+      );
 
       focusNode.dispose();
     });

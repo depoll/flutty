@@ -147,7 +147,7 @@ jobs:
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Run the **Deploy PR to TestFlight** workflow manually from the Actions tab |
+            | 🍎 **iOS** | Run the **Deploy PR Preview** workflow manually from the Actions tab |
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
@@ -233,7 +233,7 @@ jobs:
             ### Install
             | Platform | Link |
             |----------|------|
-            | 🍎 **iOS** | Run the **Deploy PR to TestFlight** workflow manually from the Actions tab |
+            | 🍎 **iOS** | Run the **Deploy PR Preview** workflow manually from the Actions tab |
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}

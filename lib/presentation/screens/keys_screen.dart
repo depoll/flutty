@@ -5,6 +5,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
+import '../providers/entity_list_providers.dart';
 
 /// Screen displaying list of SSH keys.
 class KeysScreen extends ConsumerWidget {
@@ -13,7 +14,7 @@ class KeysScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final keysAsync = ref.watch(_allKeysProvider);
+    final keysAsync = ref.watch(allKeysProvider);
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -33,7 +34,7 @@ class KeysScreen extends ConsumerWidget {
               Text('Error loading keys: $error'),
               const SizedBox(height: 16),
               ElevatedButton(
-                onPressed: () => ref.invalidate(_allKeysProvider),
+                onPressed: () => ref.invalidate(allKeysProvider),
                 child: const Text('Retry'),
               ),
             ],
@@ -136,7 +137,7 @@ class KeysScreen extends ConsumerWidget {
 
     if (confirmed ?? false) {
       await ref.read(keyRepositoryProvider).delete(key.id);
-      ref.invalidate(_allKeysProvider);
+      ref.invalidate(allKeysProvider);
       if (context.mounted) {
         ScaffoldMessenger.of(
           context,
@@ -399,9 +400,3 @@ class _KeyDetailsSheet extends StatelessWidget {
     return sshKey.keyType.toUpperCase();
   }
 }
-
-/// Provider for all SSH keys - uses stream for auto-refresh on changes.
-final _allKeysProvider = StreamProvider<List<SshKey>>((ref) {
-  final repo = ref.watch(keyRepositoryProvider);
-  return repo.watchAll();
-});

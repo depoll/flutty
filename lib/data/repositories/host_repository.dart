@@ -84,6 +84,54 @@ class HostRepository {
     return _db.into(_db.hosts).insert(encryptedHost);
   }
 
+  /// Duplicate an existing host and its port forwards.
+  Future<int> duplicate(Host host) => _db.transaction(() async {
+    final duplicateHostId = await insert(
+      HostsCompanion.insert(
+        label: '${host.label} (copy)',
+        hostname: host.hostname,
+        port: Value(host.port),
+        username: host.username,
+        password: Value(host.password),
+        keyId: Value(host.keyId),
+        groupId: Value(host.groupId),
+        jumpHostId: Value(host.jumpHostId),
+        isFavorite: Value(host.isFavorite),
+        color: Value(host.color),
+        notes: Value(host.notes),
+        tags: Value(host.tags),
+        terminalThemeLightId: Value(host.terminalThemeLightId),
+        terminalThemeDarkId: Value(host.terminalThemeDarkId),
+        terminalFontFamily: Value(host.terminalFontFamily),
+        autoConnectCommand: Value(host.autoConnectCommand),
+        autoConnectSnippetId: Value(host.autoConnectSnippetId),
+      ),
+    );
+
+    final portForwards = await (_db.select(
+      _db.portForwards,
+    )..where((portForward) => portForward.hostId.equals(host.id))).get();
+
+    for (final portForward in portForwards) {
+      await _db
+          .into(_db.portForwards)
+          .insert(
+            PortForwardsCompanion.insert(
+              name: portForward.name,
+              hostId: duplicateHostId,
+              forwardType: portForward.forwardType,
+              localHost: Value(portForward.localHost),
+              localPort: portForward.localPort,
+              remoteHost: portForward.remoteHost,
+              remotePort: portForward.remotePort,
+              autoStart: Value(portForward.autoStart),
+            ),
+          );
+    }
+
+    return duplicateHostId;
+  });
+
   /// Update an existing host.
   Future<bool> update(Host host) async {
     final encryptedPassword = await _secretEncryptionService.encryptNullable(

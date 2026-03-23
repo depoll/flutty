@@ -49,6 +49,9 @@ on:
       apk-artifact-id:
         description: 'Artifact ID of the uploaded APK'
         value: ${{ jobs.build-android.outputs.apk-artifact-id }}
+      android-source-sha:
+        description: 'Git SHA used for Android build checkout'
+        value: ${{ jobs.build-android.outputs.source-sha }}
       ios-source-sha:
         description: 'Git SHA used for iOS build checkout'
         value: ${{ jobs.build-ios.outputs.source-sha }}
@@ -60,10 +63,15 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
+      source-sha: ${{ steps.source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@v6
         with:
           ref: ${{ inputs.source-ref || github.ref }}
+
+      - name: Capture source SHA
+        id: source-sha
+        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
       - uses: actions/setup-java@v5
         with:
@@ -161,8 +169,9 @@ jobs:
         run: |
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
+          PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
           if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then
-            bundle exec fastlane internal skip_metadata:"$SKIP_META"
+            bundle exec fastlane internal package_name:"$PACKAGE_NAME" skip_metadata:"$SKIP_META"
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
             bundle exec fastlane release skip_metadata:"$SKIP_META"
           fi

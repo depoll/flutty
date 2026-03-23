@@ -335,6 +335,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   late TextEditingValue _currentEditingState = _initEditingState.copyWith();
 
+  int _editingPrefixLength(String text) {
+    if (!widget.deleteDetection) {
+      return 0;
+    }
+
+    var prefixLength = 0;
+    while (prefixLength < text.length &&
+        prefixLength < _deleteDetectionMarker.length &&
+        text.codeUnitAt(prefixLength) ==
+            _deleteDetectionMarker.codeUnitAt(prefixLength)) {
+      prefixLength++;
+    }
+    return prefixLength;
+  }
+
   int _commonPrefixLength(String a, String b) {
     final maxLength = a.length < b.length ? a.length : b.length;
     var index = 0;
@@ -344,11 +359,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return index;
   }
 
+  String _extractRawInputText(String text) =>
+      text.substring(_editingPrefixLength(text));
+
   String _extractInputText(String text) {
-    final initText = _initEditingState.text;
-    final extractedText = text.startsWith(initText)
-        ? text.substring(initText.length)
-        : text;
+    final extractedText = _extractRawInputText(text);
     if (_lastSentText.isNotEmpty) {
       return extractedText;
     }
@@ -382,20 +397,153 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return '\n'.allMatches(appendedText).length;
   }
 
-  void _syncEditingStateWithUserText(String userText) {
-    final nextState = widget.deleteDetection
-        ? TextEditingValue(
-            text: '${_initEditingState.text}$userText',
-            selection: TextSelection.collapsed(
-              offset: _initEditingState.text.length + userText.length,
-            ),
-          )
-        : TextEditingValue(
-            text: userText,
-            selection: TextSelection.collapsed(offset: userText.length),
+  int _clampTextOffset(int offset, int maxOffset) {
+    if (offset < 0) {
+      return 0;
+    }
+    if (offset > maxOffset) {
+      return maxOffset;
+    }
+    return offset;
+  }
+
+  int _normalizeUserOffset({
+    required int rawOffset,
+    required int rawPrefixLength,
+    required int trimmedLeadingCharacters,
+    required int userTextLength,
+  }) => _clampTextOffset(
+    rawOffset - rawPrefixLength - trimmedLeadingCharacters,
+    userTextLength,
+  );
+
+  TextSelection? _normalizeSelectionForUserText({
+    required TextSelection selection,
+    required int rawPrefixLength,
+    required int trimmedLeadingCharacters,
+    required int userTextLength,
+  }) {
+    if (!selection.isValid) {
+      return null;
+    }
+
+    return TextSelection(
+      baseOffset: _normalizeUserOffset(
+        rawOffset: selection.baseOffset,
+        rawPrefixLength: rawPrefixLength,
+        trimmedLeadingCharacters: trimmedLeadingCharacters,
+        userTextLength: userTextLength,
+      ),
+      extentOffset: _normalizeUserOffset(
+        rawOffset: selection.extentOffset,
+        rawPrefixLength: rawPrefixLength,
+        trimmedLeadingCharacters: trimmedLeadingCharacters,
+        userTextLength: userTextLength,
+      ),
+      affinity: selection.affinity,
+      isDirectional: selection.isDirectional,
+    );
+  }
+
+  TextRange _normalizeComposingForUserText({
+    required TextRange composing,
+    required int rawPrefixLength,
+    required int trimmedLeadingCharacters,
+    required int userTextLength,
+  }) {
+    if (!composing.isValid || composing.isCollapsed) {
+      return TextRange.empty;
+    }
+
+    final start = _normalizeUserOffset(
+      rawOffset: composing.start,
+      rawPrefixLength: rawPrefixLength,
+      trimmedLeadingCharacters: trimmedLeadingCharacters,
+      userTextLength: userTextLength,
+    );
+    final end = _normalizeUserOffset(
+      rawOffset: composing.end,
+      rawPrefixLength: rawPrefixLength,
+      trimmedLeadingCharacters: trimmedLeadingCharacters,
+      userTextLength: userTextLength,
+    );
+    if (start >= end) {
+      return TextRange.empty;
+    }
+    return TextRange(start: start, end: end);
+  }
+
+  TextEditingValue _editingStateForUserText({
+    required String userText,
+    TextSelection? userSelection,
+    TextRange userComposing = TextRange.empty,
+  }) {
+    final prefixLength = widget.deleteDetection
+        ? _initEditingState.text.length
+        : 0;
+    final text = widget.deleteDetection
+        ? '${_initEditingState.text}$userText'
+        : userText;
+    final selection = userSelection == null
+        ? TextSelection.collapsed(offset: prefixLength + userText.length)
+        : TextSelection(
+            baseOffset: prefixLength + userSelection.baseOffset,
+            extentOffset: prefixLength + userSelection.extentOffset,
+            affinity: userSelection.affinity,
+            isDirectional: userSelection.isDirectional,
           );
-    _currentEditingState = nextState;
-    if (hasInputConnection) {
+    final composing = userComposing.isValid && !userComposing.isCollapsed
+        ? TextRange(
+            start: prefixLength + userComposing.start,
+            end: prefixLength + userComposing.end,
+          )
+        : TextRange.empty;
+    return TextEditingValue(
+      text: text,
+      selection: selection,
+      composing: composing,
+    );
+  }
+
+  void _syncEditingStateWithUserText(
+    String userText, {
+    TextEditingValue? sourceValue,
+  }) {
+    final rawPrefixLength = sourceValue == null
+        ? _initEditingState.text.length
+        : _editingPrefixLength(sourceValue.text);
+    final rawUserText = sourceValue == null
+        ? userText
+        : _extractRawInputText(sourceValue.text);
+    final trimmedLeadingCharacters = rawUserText.length - userText.length;
+    final userSelection = sourceValue == null
+        ? null
+        : _normalizeSelectionForUserText(
+            selection: sourceValue.selection,
+            rawPrefixLength: rawPrefixLength,
+            trimmedLeadingCharacters: trimmedLeadingCharacters,
+            userTextLength: userText.length,
+          );
+    final userComposing = sourceValue == null
+        ? TextRange.empty
+        : _normalizeComposingForUserText(
+            composing: sourceValue.composing,
+            rawPrefixLength: rawPrefixLength,
+            trimmedLeadingCharacters: trimmedLeadingCharacters,
+            userTextLength: userText.length,
+          );
+    final nextState = _editingStateForUserText(
+      userText: userText,
+      userSelection: userSelection,
+      userComposing: userComposing,
+    );
+    final shouldResync =
+        sourceValue == null ||
+        sourceValue.text != nextState.text ||
+        sourceValue.selection != nextState.selection ||
+        sourceValue.composing != nextState.composing;
+    _currentEditingState = shouldResync ? nextState : sourceValue;
+    if (shouldResync && hasInputConnection) {
       _connection!.setEditingState(nextState);
     }
   }
@@ -435,7 +583,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _notifyUserInput();
     }
     _pendingEnterActionSuppressions += _sendInputDelta(currentText);
-    _syncEditingStateWithUserText(currentText);
+    _syncEditingStateWithUserText(currentText, sourceValue: value);
     _sawImeComposition = false;
   }
 
