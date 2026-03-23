@@ -474,7 +474,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   }
 
   void _onInsert(String text) {
-    final key = charToTerminalKey(text);
+    final key = charToTerminalKey(text.trim());
 
     // On mobile platforms there is no guarantee that virtual keyboard will
     // generate hardware key events. So we need first try to send the key
