@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -759,19 +758,7 @@ class _HostListTile extends ConsumerWidget {
 
   Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
     final repo = ref.read(hostRepositoryProvider);
-    await repo.insert(
-      HostsCompanion.insert(
-        label: '${host.label} (copy)',
-        hostname: host.hostname,
-        port: drift.Value(host.port),
-        username: host.username,
-        password: drift.Value(host.password),
-        keyId: drift.Value(host.keyId),
-        groupId: drift.Value(host.groupId),
-        jumpHostId: drift.Value(host.jumpHostId),
-        color: drift.Value(host.color),
-      ),
-    );
+    await repo.duplicate(host);
     ref.invalidate(allHostsProvider);
     if (context.mounted) {
       ScaffoldMessenger.of(

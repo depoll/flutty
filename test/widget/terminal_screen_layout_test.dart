@@ -3,7 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
-  group('terminalViewportPadding', () {
+  group('terminal layout helpers', () {
     test(
       'keeps horizontal and top breathing room without wasting bottom rows',
       () {

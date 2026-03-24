@@ -19,11 +19,15 @@ void main() {
 
     test('keeps keyboard-open bottom inset cleared', () {
       const mediaQuery = MediaQueryData(
-        viewPadding: EdgeInsets.fromLTRB(0, 0, 0, 34),
+        padding: EdgeInsets.fromLTRB(12, 18, 16, 0),
+        viewPadding: EdgeInsets.fromLTRB(12, 18, 16, 34),
         viewInsets: EdgeInsets.fromLTRB(0, 0, 0, 320),
       );
 
-      expect(resolveTerminalRenderPadding(mediaQuery).bottom, 0);
+      expect(
+        resolveTerminalRenderPadding(mediaQuery),
+        const EdgeInsets.fromLTRB(12, 18, 16, 0),
+      );
     });
   });
 }

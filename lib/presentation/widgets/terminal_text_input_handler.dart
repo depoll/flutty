@@ -9,7 +9,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
-final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
+final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
 
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
@@ -92,6 +92,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
   bool _touchSequenceHadMultiplePointers = false;
+  bool _sawImeComposition = false;
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
 
@@ -302,6 +303,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
       _connection = TextInput.attach(this, config);
       _connection!.show();
+      _sawImeComposition = false;
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
@@ -314,6 +316,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
+    _sawImeComposition = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
@@ -364,7 +367,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_lastSentText.isNotEmpty) {
       return extractedText;
     }
-    return extractedText.replaceFirst(_leadingSwipeNewlinePattern, '');
+    final sanitizedText = extractedText.replaceFirst(
+      _leadingSwipeNewlineArtifactPattern,
+      '',
+    );
+    if (_sawImeComposition &&
+        sanitizedText.startsWith(' ') &&
+        !sanitizedText.startsWith('  ') &&
+        sanitizedText.trimLeft().isNotEmpty) {
+      return sanitizedText.substring(1);
+    }
+    return sanitizedText;
   }
 
   int _sendInputDelta(String currentText) {
@@ -548,12 +561,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     // Handle composing (IME input in progress).
     if (!_currentEditingState.composing.isCollapsed) {
+      _sawImeComposition = true;
       return;
     }
 
     if (_currentEditingState.text.length < _initEditingState.text.length) {
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.backspace);
+      _sawImeComposition = false;
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
       _syncEditingStateWithUserText('');
@@ -566,6 +581,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _pendingEnterActionSuppressions += _sendInputDelta(currentText);
     _syncEditingStateWithUserText(currentText, sourceValue: value);
+    _sawImeComposition = false;
   }
 
   @override
@@ -594,6 +610,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _sawImeComposition = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
