@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -268,10 +270,24 @@ class Settings extends Table {
 )
 class AppDatabase extends _$AppDatabase {
   /// Creates a new database instance.
-  AppDatabase() : super(_openConnection());
+  AppDatabase() : this.withDatabaseFile(resolveDatabaseFile());
+
+  /// Creates a new database instance backed by [databaseFileFuture].
+  AppDatabase.withDatabaseFile(
+    Future<File> databaseFileFuture, {
+    AppleDatabaseFilePolicyApplier? applyAppleFilePolicy,
+  }) : _databaseFileFuture = databaseFileFuture,
+       _appleDatabaseFilePolicyApplier =
+           applyAppleFilePolicy ?? _applyAppleDatabaseFilePolicy,
+       super(_openConnection(databaseFileFuture));
 
   /// Creates a database for testing with an in-memory database.
-  AppDatabase.forTesting(super.e);
+  AppDatabase.forTesting(super.e)
+    : _databaseFileFuture = null,
+      _appleDatabaseFilePolicyApplier = _noOpAppleDatabaseFilePolicy;
+
+  final Future<File>? _databaseFileFuture;
+  final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
   int get schemaVersion => 4;
@@ -298,6 +314,14 @@ class AppDatabase extends _$AppDatabase {
       }
     },
     beforeOpen: (details) async {
+      final databaseFileFuture = _databaseFileFuture;
+      if (databaseFileFuture != null) {
+        await _applyDatabaseFilePolicy(
+          await databaseFileFuture,
+          applyFilePolicy: _appleDatabaseFilePolicyApplier,
+        );
+      }
+
       // Fix any keys with "unknown" type or malformed public keys
       // by re-extracting from the private key
       final unknownKeys = await (select(
@@ -366,16 +390,31 @@ class AppDatabase extends _$AppDatabase {
 
 const _databaseFileName = 'flutty.db';
 const _migrationMarkerSuffix = '.legacy-migration-incomplete';
+const _databaseCompanionSuffixes = ['-journal', '-wal', '-shm'];
+const _appleDatabaseFileProtectionChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/apple_file_protection',
+);
+
+/// Applies the Apple database storage policy to a database directory and file.
+typedef AppleDatabaseFilePolicyApplier =
+    Future<void> Function(Directory databaseDirectory, File databaseFile);
+
+Future<void> _noOpAppleDatabaseFilePolicy(
+  Directory databaseDirectory,
+  File databaseFile,
+) async {}
 
 /// Resolves the database file path and migrates legacy storage if needed.
 Future<File> resolveDatabaseFile({
   Future<Directory> Function()? getSupportDirectory,
   Future<Directory> Function()? getDocumentsDirectory,
+  AppleDatabaseFilePolicyApplier? applyFilePolicy,
 }) async {
   final supportDirectoryProvider =
       getSupportDirectory ?? getApplicationSupportDirectory;
   final documentsDirectoryProvider =
       getDocumentsDirectory ?? getApplicationDocumentsDirectory;
+  final filePolicyApplier = applyFilePolicy ?? _applyAppleDatabaseFilePolicy;
 
   final supportDirectory = await supportDirectoryProvider();
   await supportDirectory.create(recursive: true);
@@ -396,6 +435,7 @@ Future<File> resolveDatabaseFile({
     } else {
       await _deleteLegacyCompanionFiles(legacyFile);
     }
+    await filePolicyApplier(supportDirectory, supportFile);
     return supportFile;
   }
 
@@ -406,6 +446,7 @@ Future<File> resolveDatabaseFile({
     await migrationMarker.delete();
   }
 
+  await filePolicyApplier(supportDirectory, supportFile);
   return supportFile;
 }
 
@@ -413,7 +454,7 @@ Future<void> _moveLegacyCompanionFiles(
   File legacyFile,
   File supportFile,
 ) async {
-  for (final suffix in ['-journal', '-wal', '-shm']) {
+  for (final suffix in _databaseCompanionSuffixes) {
     final legacyCompanion = File('${legacyFile.path}$suffix');
     final supportCompanion = File('${supportFile.path}$suffix');
     if (!legacyCompanion.existsSync()) {
@@ -428,12 +469,34 @@ Future<void> _moveLegacyCompanionFiles(
 }
 
 Future<void> _deleteLegacyCompanionFiles(File legacyFile) async {
-  for (final suffix in ['-journal', '-wal', '-shm']) {
+  for (final suffix in _databaseCompanionSuffixes) {
     final legacyCompanion = File('${legacyFile.path}$suffix');
     if (legacyCompanion.existsSync()) {
       await legacyCompanion.delete();
     }
   }
+}
+
+Future<void> _applyAppleDatabaseFilePolicy(
+  Directory databaseDirectory,
+  File databaseFile,
+) async {
+  if (kIsWeb || !(Platform.isIOS || Platform.isMacOS)) {
+    return;
+  }
+
+  await _appleDatabaseFileProtectionChannel.invokeMethod<void>(
+    'applyDatabaseFilePolicy',
+    <String, Object?>{
+      'databaseDirectoryPath': databaseDirectory.path,
+      'databasePath': databaseFile.path,
+      'companionPaths': [
+        for (final suffix in _databaseCompanionSuffixes)
+          '${databaseFile.path}$suffix',
+      ],
+      'applyFileProtection': Platform.isIOS,
+    },
+  );
 }
 
 Future<void> _moveFileWithFallback(File source, File destination) async {
@@ -448,10 +511,34 @@ Future<void> _moveFileWithFallback(File source, File destination) async {
   }
 }
 
-LazyDatabase _openConnection() => LazyDatabase(() async {
-  final file = await resolveDatabaseFile();
-  return NativeDatabase.createInBackground(file);
-});
+Future<void> _applyDatabaseFilePolicy(
+  File databaseFile, {
+  AppleDatabaseFilePolicyApplier? applyFilePolicy,
+}) {
+  final filePolicyApplier = applyFilePolicy ?? _applyAppleDatabaseFilePolicy;
+  return filePolicyApplier(databaseFile.parent, databaseFile);
+}
+
+@visibleForTesting
+/// Whether the database may safely open in a background isolate.
+bool shouldOpenDatabaseInBackground({
+  required bool isWeb,
+  required bool isIOS,
+  required bool isMacOS,
+}) => !isWeb && !isIOS && !isMacOS;
+
+LazyDatabase _openConnection(Future<File> databaseFileFuture) =>
+    LazyDatabase(() async {
+      final file = await databaseFileFuture;
+      if (!shouldOpenDatabaseInBackground(
+        isWeb: kIsWeb,
+        isIOS: !kIsWeb && Platform.isIOS,
+        isMacOS: !kIsWeb && Platform.isMacOS,
+      )) {
+        return NativeDatabase(file);
+      }
+      return NativeDatabase.createInBackground(file);
+    });
 
 /// Provider for the app database.
 final databaseProvider = Provider<AppDatabase>((ref) => AppDatabase());
