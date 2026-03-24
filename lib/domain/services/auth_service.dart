@@ -257,7 +257,11 @@ class AuthService {
     if (saltData == null) return null;
 
     try {
-      return base64Decode(saltData);
+      final salt = base64Decode(saltData);
+      if (salt.length != _pinSaltLength) {
+        return null;
+      }
+      return salt;
     } on FormatException {
       return null;
     }

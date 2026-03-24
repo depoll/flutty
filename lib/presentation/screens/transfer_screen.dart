@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -208,6 +209,7 @@ Future<bool> authorizeSensitiveTransferExport({
   if (!isAuthEnabled || !context.mounted) {
     return true;
   }
+  final container = ProviderScope.containerOf(context, listen: false);
 
   AuthMethod method;
   try {
@@ -233,7 +235,13 @@ Future<bool> authorizeSensitiveTransferExport({
     case AuthMethod.none:
       return true;
     case AuthMethod.biometric:
-      return authService.authenticateWithBiometrics(reason: reason);
+      final biometricSuccess = await authService.authenticateWithBiometrics(
+        reason: reason,
+      );
+      if (!_isSensitiveTransferAuthSessionUnlocked(container)) {
+        return false;
+      }
+      return biometricSuccess;
     case AuthMethod.pin:
       final pin = await _showPinDialog(context);
       if (pin == null) {
@@ -244,6 +252,9 @@ Future<bool> authorizeSensitiveTransferExport({
       final biometricSuccess = await authService.authenticateWithBiometrics(
         reason: reason,
       );
+      if (!_isSensitiveTransferAuthSessionUnlocked(container)) {
+        return false;
+      }
       if (biometricSuccess) {
         return true;
       }
@@ -257,6 +268,9 @@ Future<bool> authorizeSensitiveTransferExport({
       return authService.verifyPin(pin);
   }
 }
+
+bool _isSensitiveTransferAuthSessionUnlocked(ProviderContainer container) =>
+    container.read(authStateProvider) == AuthState.unlocked;
 
 Future<String?> _showPinDialog(BuildContext context) async {
   final controller = TextEditingController();
