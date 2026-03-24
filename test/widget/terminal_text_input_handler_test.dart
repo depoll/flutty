@@ -393,6 +393,44 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('does not open the keyboard after a touch tap when read only', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              readOnly: true,
+              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      await tester.tapAt(target);
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+    });
+
     testWidgets(
       'does not open the keyboard after a multitouch gesture when the last finger stays still',
       (tester) async {

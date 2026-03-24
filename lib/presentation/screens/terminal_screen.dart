@@ -293,6 +293,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTerminalScrollToBottomQueued = false;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
+  bool _showsTerminalMetadata = false;
 
   // Theme state
   Host? _host;
@@ -1007,7 +1008,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ),
           ],
         ),
-        bottom: statusChips.isEmpty
+        bottom: !_showsTerminalMetadata || statusChips.isEmpty
             ? null
             : PreferredSize(
                 preferredSize: const Size.fromHeight(40),
@@ -1031,6 +1032,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
+          if (statusChips.isNotEmpty)
+            IconButton(
+              icon: Icon(
+                _showsTerminalMetadata ? Icons.info : Icons.info_outline,
+              ),
+              onPressed: () => setState(
+                () => _showsTerminalMetadata = !_showsTerminalMetadata,
+              ),
+              tooltip: _showsTerminalMetadata
+                  ? 'Hide terminal info'
+                  : 'Show terminal info',
+            ),
           IconButton(
             icon: const Icon(Icons.palette_outlined),
             onPressed: _showThemePicker,
@@ -1393,6 +1406,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
+      readOnly: _showsNativeSelectionOverlay,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
