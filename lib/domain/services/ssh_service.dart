@@ -11,6 +11,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import 'background_ssh_service.dart';
+import 'terminal_hyperlink_tracker.dart';
 
 /// Connection state for an SSH session.
 enum SshConnectionState {
@@ -624,6 +625,9 @@ class SshSession {
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
 
+  /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
+  final terminalHyperlinkTracker = TerminalHyperlinkTracker();
+
   /// Callback invoked whenever the terminal preview changes.
   VoidCallback? onPreviewChanged;
   String? _terminalPreview;
@@ -651,6 +655,8 @@ class SshSession {
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
     _terminal ??= Terminal(maxLines: maxLines);
     _terminal!.onTitleChange = _handleWindowTitleChange;
+    terminalHyperlinkTracker.attach(_terminal!);
+    _terminal!.onPrivateOSC = terminalHyperlinkTracker.handlePrivateOsc;
     _refreshTerminalPreview();
     return _terminal!;
   }
@@ -714,6 +720,7 @@ class SshSession {
     _shellDoneController = null;
     _shell?.close();
     _shell = null;
+    terminalHyperlinkTracker.reset(keepTerminalReference: false);
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;

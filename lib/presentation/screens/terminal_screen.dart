@@ -20,6 +20,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
@@ -264,6 +265,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isPinchZooming = false;
   bool _shouldFollowLiveOutput = true;
   bool _isTerminalScrollToBottomQueued = false;
+  TerminalHyperlinkTracker? _terminalHyperlinkTracker;
 
   // Theme state
   Host? _host;
@@ -562,6 +564,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (existingTerminal != null) {
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
+        _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
@@ -580,6 +583,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final sessionTerminal = session.getOrCreateTerminal();
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
+      _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
       _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
@@ -1553,6 +1557,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _resolveTerminalLinkTap(CellOffset offset) {
     if (!_routesTouchScrollToTerminal || _showsNativeSelectionOverlay) {
       return null;
+    }
+
+    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
+    if (trackedHyperlink != null) {
+      return trackedHyperlink;
     }
 
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);

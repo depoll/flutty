@@ -3,11 +3,14 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/domain/services/terminal_hyperlink_tracker.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart';
 
 const _terminalLink = 'https://github.com/features/copilot';
+const _hiddenTerminalLink = 'https://github.com/orgs/community/discussions/1';
+const _hiddenTerminalLabel = 'Community CLI docs';
 
 class _TerminalTouchInteractionsHarness extends StatefulWidget {
   const _TerminalTouchInteractionsHarness({super.key});
@@ -24,6 +27,7 @@ class _TerminalTouchInteractionsHarnessState
   late final TerminalController _terminalController;
   final _openedLinks = ValueNotifier<List<String>>(<String>[]);
   final _emittedOutput = <String>[];
+  final _hyperlinkTracker = TerminalHyperlinkTracker();
   bool _showsSelectionOverlay = false;
 
   List<String> get openedLinks => _openedLinks.value;
@@ -37,14 +41,27 @@ class _TerminalTouchInteractionsHarnessState
     return _cellCenter(const CellOffset(linkColumn, 0));
   }
 
+  Offset? get hiddenLinkTapOffset {
+    const linkColumn = 2;
+    return _cellCenter(const CellOffset(linkColumn, 1));
+  }
+
   @override
   void initState() {
     super.initState();
     _terminal = Terminal(maxLines: 200)
       ..setMouseMode(MouseMode.upDownScroll)
       ..setMouseReportMode(MouseReportMode.sgr)
-      ..onOutput = _emittedOutput.add
-      ..write('Copilot $_terminalLink');
+      ..onPrivateOSC = _hyperlinkTracker.handlePrivateOsc
+      ..onOutput = _emittedOutput.add;
+    _hyperlinkTracker.attach(_terminal);
+    _terminal
+      ..write('Copilot $_terminalLink\r\n')
+      ..write(
+        '\u001b]8;;$_hiddenTerminalLink\u0007'
+        '$_hiddenTerminalLabel'
+        '\u001b]8;;\u0007',
+      );
     _terminalController = TerminalController()..addListener(_handleSelection);
   }
 
@@ -68,6 +85,11 @@ class _TerminalTouchInteractionsHarnessState
   }
 
   String? _resolveLinkTap(CellOffset offset) {
+    final trackedHyperlink = _hyperlinkTracker.resolveLinkAt(offset);
+    if (trackedHyperlink != null) {
+      return trackedHyperlink;
+    }
+
     if (offset.y != 0) {
       return null;
     }
@@ -202,6 +224,23 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(harnessKey.currentState!.openedLinks, [_terminalLink]);
+      expect(harnessKey.currentState!.emittedOutput, isEmpty);
+    },
+  );
+
+  testWidgets(
+    'tapping a terminal hyperlink label opens its hidden destination',
+    (tester) async {
+      final harnessKey = GlobalKey<_TerminalTouchInteractionsHarnessState>();
+      await _pumpHarness(tester, harnessKey);
+
+      final tapOffset = harnessKey.currentState!.hiddenLinkTapOffset;
+      expect(tapOffset, isNotNull);
+
+      await tester.tapAt(tapOffset!);
+      await tester.pumpAndSettle();
+
+      expect(harnessKey.currentState!.openedLinks, [_hiddenTerminalLink]);
       expect(harnessKey.currentState!.emittedOutput, isEmpty);
     },
   );
