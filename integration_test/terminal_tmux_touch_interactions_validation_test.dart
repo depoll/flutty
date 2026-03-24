@@ -162,6 +162,18 @@ Future<void> _pumpHarness(
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
+  testWidgets('vertical drags still emit tmux-style wheel input', (
+    tester,
+  ) async {
+    final harnessKey = GlobalKey<_TerminalTouchInteractionsHarnessState>();
+    await _pumpHarness(tester, harnessKey);
+
+    await tester.drag(find.byType(MonkeyTerminalView), const Offset(0, -120));
+    await tester.pumpAndSettle();
+
+    expect(harnessKey.currentState!.emittedOutput, contains('\x1b[<65;'));
+  });
+
   testWidgets('long press reveals the selection overlay in touch-scroll mode', (
     tester,
   ) async {
