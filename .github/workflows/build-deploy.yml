@@ -95,6 +95,31 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Validate Android signing secrets
+        if: inputs.deploy-android-to != 'none'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_KEYSTORE_BASE64 is required for signed Android release builds."
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_KEY_ALIAS is required for signed Android release builds."
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_KEY_PASSWORD is required for signed Android release builds."
+            exit 1
+          fi
+          if [ -z "$ANDROID_STORE_PASSWORD" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_STORE_PASSWORD is required for signed Android release builds."
+            exit 1
+          fi
+
       - name: Decode keystore
         if: inputs.deploy-android-to != 'none'
         env:
@@ -125,11 +150,21 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }}
 
-      - name: Build APK
+      - name: Build release APK
+        if: inputs.deploy-android-to != 'none'
         run: |
           flutter build apk \
             --flavor ${{ inputs.flavor }} \
             --release \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
+      - name: Build debug APK
+        if: inputs.deploy-android-to == 'none'
+        run: |
+          flutter build apk \
+            --flavor ${{ inputs.flavor }} \
+            --debug \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }}
 
@@ -145,7 +180,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk
+          path: ${{ inputs.deploy-android-to != 'none' && format('build/app/outputs/flutter-apk/app-{0}-release.apk', inputs.flavor) || format('build/app/outputs/flutter-apk/app-{0}-debug.apk', inputs.flavor) }}
 
       - name: Deploy to Play Store
         if: inputs.deploy-android-to != 'none'
