@@ -55,6 +55,10 @@ jobs:
   osv-scan:
     name: OSV Dependency Scan
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+      security-events: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -64,13 +68,19 @@ jobs:
       - name: Run OSV scanner
         id: osv-scan
         uses: google/osv-scanner-action/osv-scanner-action@c5996e0193a3df57d695c1b8a1dec2a4c62e8730 # v2.3.3
-        continue-on-error: true
         with:
           scan-args: |-
             --recursive
             ./
             --format=sarif
             --output=results.sarif
+
+      - name: Upload OSV SARIF to code scanning
+        if: always() && hashFiles('results.sarif') != ''
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
+        with:
+          sarif_file: results.sarif
+          category: osv-scan
 
       - name: Upload OSV SARIF artifact
         if: always() && hashFiles('results.sarif') != ''
@@ -84,7 +94,7 @@ jobs:
         run: |
           echo "## OSV scan" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.osv-scan.outcome }}" = "failure" ]; then
-            echo "- Vulnerabilities were detected. Review the uploaded SARIF artifact for details." >> "$GITHUB_STEP_SUMMARY"
+            echo "- The OSV scan reported vulnerabilities or failed before completion. Review the job logs and any uploaded SARIF results for details." >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- No vulnerabilities were detected by the baseline OSV scan." >> "$GITHUB_STEP_SUMMARY"
           fi
