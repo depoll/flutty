@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../data/database/database.dart';
@@ -30,6 +31,10 @@ const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
+final _terminalLinkPattern = RegExp(
+  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:www\.))[^\s<>"']+''',
+  caseSensitive: false,
+);
 
 /// Padding around the terminal viewport.
 ///
@@ -76,6 +81,64 @@ String trimTerminalLinePadding(String line) =>
 String trimTerminalSelectionText(String text) =>
     text.split('\n').map(trimTerminalLinePadding).join('\n');
 
+/// Trims punctuation that terminals commonly render immediately after a link.
+@visibleForTesting
+String trimTerminalLinkCandidate(String text) {
+  var result = text;
+  while (result.isNotEmpty) {
+    if (result.endsWith(')')) {
+      final openCount = '('.allMatches(result).length;
+      final closeCount = ')'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    }
+
+    final lastCharacter = result[result.length - 1];
+    if ('.!,?:;]}'.contains(lastCharacter)) {
+      result = result.substring(0, result.length - 1);
+      continue;
+    }
+
+    break;
+  }
+  return result;
+}
+
+/// Resolves a tappable terminal link at the given text offset, if present.
+@visibleForTesting
+({Uri uri, int start, int end})? detectTerminalLinkAtTextOffset(
+  String text,
+  int offset,
+) {
+  for (final match in _terminalLinkPattern.allMatches(text)) {
+    final candidate = trimTerminalLinkCandidate(match.group(0)!);
+    if (candidate.isEmpty) {
+      continue;
+    }
+
+    final normalizedCandidate = candidate.startsWith('www.')
+        ? 'https://$candidate'
+        : candidate;
+    final uri = Uri.tryParse(normalizedCandidate);
+    if (uri == null || !_isLaunchableTerminalUri(uri)) {
+      continue;
+    }
+
+    final end = match.start + candidate.length;
+    if (offset >= match.start && offset < end) {
+      return (uri: uri, start: match.start, end: end);
+    }
+  }
+
+  return null;
+}
+
+bool _isLaunchableTerminalUri(Uri uri) =>
+    uri.hasScheme &&
+    <String>{'http', 'https', 'mailto'}.contains(uri.scheme.toLowerCase());
+
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
@@ -108,6 +171,16 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
 }) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether the native selection overlay should be visible for terminal content.
+@visibleForTesting
+bool shouldShowNativeSelectionOverlay({
+  required bool isNativeSelectionMode,
+  required bool routesTouchScrollToTerminal,
+  required bool revealOverlayInTouchScrollMode,
+}) =>
+    isNativeSelectionMode &&
+    (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
 
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
@@ -168,6 +241,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
+  bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
   double? _pinchFontSize;
@@ -200,8 +274,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
   );
 
-  bool get _showsNativeSelectionOverlay =>
-      _isNativeSelectionMode && !_routesTouchScrollToTerminal;
+  bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
+    isNativeSelectionMode: _isNativeSelectionMode,
+    routesTouchScrollToTerminal: _routesTouchScrollToTerminal,
+    revealOverlayInTouchScrollMode:
+        _revealsNativeSelectionOverlayInTouchScrollMode,
+  );
 
   @override
   void initState() {
@@ -306,8 +384,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
-    if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
-      _enterNativeSelectionMode(initialRange: selection);
+    if (_isMobilePlatform && hasSelection) {
+      _enterNativeSelectionMode(
+        initialRange: selection,
+        revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+      );
       return;
     }
 
@@ -868,6 +949,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+    _dismissTemporaryNativeSelectionOverlay();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -1068,6 +1150,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
+      resolveLinkTap: _resolveTerminalLinkTap,
+      onLinkTap: _handleTerminalLinkTap,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
@@ -1167,6 +1251,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           builder: (context, value, _) => SelectableText(
             value.text,
             style: textStyle,
+            onSelectionChanged: _handleNativeOverlaySelectionChanged,
             strutStyle: StrutStyle.fromTextStyle(
               textStyle,
               forceStrutHeight: true,
@@ -1254,8 +1339,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _enterNativeSelectionMode(initialRange: _terminalController.selection);
   }
 
-  void _enterNativeSelectionMode({BufferRange? initialRange}) {
-    if (_isNativeSelectionMode) {
+  void _enterNativeSelectionMode({
+    BufferRange? initialRange,
+    bool revealOverlayInTouchScrollMode = false,
+  }) {
+    if (_isNativeSelectionMode && initialRange == null) {
       return;
     }
 
@@ -1278,6 +1366,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
+      _revealsNativeSelectionOverlayInTouchScrollMode =
+          _revealsNativeSelectionOverlayInTouchScrollMode ||
+          revealOverlayInTouchScrollMode;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
@@ -1294,6 +1385,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
@@ -1410,6 +1502,127 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final start = toOffset(normalized.begin);
     final end = toOffset(normalized.end);
     return TextSelection(baseOffset: start, extentOffset: end);
+  }
+
+  void _handleNativeOverlaySelectionChanged(
+    TextSelection selection,
+    SelectionChangedCause? cause,
+  ) {
+    if (!_revealsNativeSelectionOverlayInTouchScrollMode ||
+        !selection.isCollapsed ||
+        !mounted) {
+      return;
+    }
+    setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  void _dismissTemporaryNativeSelectionOverlay() {
+    if (!_revealsNativeSelectionOverlayInTouchScrollMode) {
+      return;
+    }
+
+    final textLength = _nativeSelectionController.text.length;
+    final collapsedOffset = _nativeSelectionController.selection.extentOffset
+        .clamp(0, textLength);
+    _nativeSelectionController.value = _nativeSelectionController.value
+        .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  String? _resolveTerminalLinkTap(CellOffset offset) {
+    if (!_routesTouchScrollToTerminal || _showsNativeSelectionOverlay) {
+      return null;
+    }
+
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    final line = _terminal.buffer.lines[row];
+    if (line.getCodePoint(column) == 0) {
+      return null;
+    }
+
+    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
+    if (snapshot == null) {
+      return null;
+    }
+
+    final rowIndex = row - snapshot.startRow;
+    final textOffset =
+        snapshot.rowStarts[rowIndex] + snapshot.columnOffsets[rowIndex][column];
+    return detectTerminalLinkAtTextOffset(
+      snapshot.text,
+      textOffset,
+    )?.uri.toString();
+  }
+
+  ({
+    String text,
+    int startRow,
+    List<int> rowStarts,
+    List<List<int>> columnOffsets,
+  })?
+  _buildWrappedTerminalLinkSnapshot(int row) {
+    final buffer = _terminal.buffer;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+    }
+
+    return (
+      text: builder.toString(),
+      startRow: startRow,
+      rowStarts: rowStarts,
+      columnOffsets: columnOffsets,
+    );
+  }
+
+  void _handleTerminalLinkTap(String link) {
+    unawaited(_openTerminalLink(link));
+  }
+
+  Future<void> _openTerminalLink(String link) async {
+    final uri = Uri.tryParse(link);
+    if (uri == null) {
+      return;
+    }
+
+    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (launched || !mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('Could not open $link')));
   }
 
   Widget get _selectionActions => SafeArea(

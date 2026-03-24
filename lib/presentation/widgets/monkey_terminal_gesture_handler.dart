@@ -29,6 +29,8 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onTertiaryTapUp,
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
+    this.resolveLinkTap,
+    this.onLinkTap,
     this.readOnly = false,
   });
 
@@ -56,6 +58,13 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
 
   final GestureDragUpdateCallback? onTouchScrollUpdate;
 
+  /// Resolves a tappable link at the given local position, if any.
+  final String? Function(Offset localPosition)? resolveLinkTap;
+
+  /// Called when a primary tap should open a resolved link instead of sending
+  /// mouse input to the terminal.
+  final ValueChanged<String>? onLinkTap;
+
   final bool readOnly;
 
   @override
@@ -71,6 +80,8 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   DragStartDetails? _lastDragStartDetails;
 
   LongPressStartDetails? _lastLongPressStartDetails;
+
+  String? _pendingLinkTap;
 
   @override
   Widget build(BuildContext context) {
@@ -141,6 +152,10 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   }
 
   void onTapDown(TapDownDetails details) {
+    _pendingLinkTap = _resolveLinkTap(details.localPosition);
+    if (_pendingLinkTap != null) {
+      return;
+    }
     // onTapDown is special, as it will always call the supplied callback.
     // The TerminalView depends on it to bring the terminal into focus.
     _tapDown(
@@ -152,6 +167,13 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   }
 
   void onSingleTapUp(TapUpDetails details) {
+    final pendingLinkTap =
+        _pendingLinkTap ?? _resolveLinkTap(details.localPosition);
+    _pendingLinkTap = null;
+    if (pendingLinkTap != null) {
+      widget.onLinkTap?.call(pendingLinkTap);
+      return;
+    }
     _tapUp(widget.onSingleTapUp, details, TerminalMouseButton.left);
   }
 
@@ -172,10 +194,12 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   }
 
   void onDoubleTapDown(TapDownDetails details) {
+    _pendingLinkTap = null;
     renderTerminal.selectWord(details.localPosition);
   }
 
   void onLongPressStart(LongPressStartDetails details) {
+    _pendingLinkTap = null;
     _lastLongPressStartDetails = details;
     renderTerminal.selectWord(details.localPosition);
   }
@@ -190,6 +214,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   // void onLongPressUp() {}
 
   void onDragStart(DragStartDetails details) {
+    _pendingLinkTap = null;
     _lastDragStartDetails = details;
 
     details.kind == PointerDeviceKind.mouse
@@ -202,5 +227,14 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       _lastDragStartDetails!.localPosition,
       details.localPosition,
     );
+  }
+
+  String? _resolveLinkTap(Offset localPosition) {
+    final resolveLinkTap = widget.resolveLinkTap;
+    final onLinkTap = widget.onLinkTap;
+    if (resolveLinkTap == null || onLinkTap == null) {
+      return null;
+    }
+    return resolveLinkTap(localPosition);
   }
 }

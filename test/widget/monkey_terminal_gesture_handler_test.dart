@@ -68,4 +68,61 @@ void main() {
     expect(tertiaryTapDowns, 1);
     expect(tertiaryTapUps, 1);
   });
+
+  testWidgets('link taps bypass terminal mouse callbacks', (tester) async {
+    final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            key: terminalViewKey,
+            Terminal(),
+            readOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    final terminalViewState = terminalViewKey.currentState!;
+    var tapDowns = 0;
+    var tapUps = 0;
+    final openedLinks = <String>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalGestureHandler(
+            terminalView: terminalViewState,
+            terminalController: TerminalController(),
+            readOnly: true,
+            resolveLinkTap: (_) => 'https://github.com/features/copilot',
+            onLinkTap: openedLinks.add,
+            onTapDown: (_) => tapDowns += 1,
+            onSingleTapUp: (_) => tapUps += 1,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTapDown!(TapDownDetails(localPosition: const Offset(10, 10)));
+    detector.onSingleTapUp!(
+      TapUpDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(10, 10),
+      ),
+    );
+
+    expect(openedLinks, ['https://github.com/features/copilot']);
+    expect(tapDowns, 0);
+    expect(tapUps, 0);
+  });
 }
