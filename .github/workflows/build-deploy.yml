@@ -160,6 +160,11 @@ jobs:
           python -m pip install --quiet Pillow
           python scripts/sync_play_store_icons.py
 
+      - name: Validate Play Store metadata
+        if: inputs.deploy-android-to != 'none' && inputs.sync-metadata
+        run: |
+          python3 scripts/validate_play_store_metadata.py ${{ inputs.flavor }}
+
       - name: Run Fastlane
         if: inputs.deploy-android-to != 'none'
         env:
