@@ -794,6 +794,56 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('does not open the keyboard after a suppressed touch tap', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+      final controller = TerminalTextInputHandlerController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              controller: controller,
+              deleteDetection: true,
+              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      tester.testTextInput.hide();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      controller.suppressNextTouchKeyboardRequest();
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      await tester.tapAt(target);
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      await tester.tapAt(target);
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      focusNode.dispose();
+    });
+
     testWidgets(
       'does not open the keyboard after a multitouch gesture when the last finger stays still',
       (tester) async {

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:xterm/xterm.dart';
 
 /// Tracks OSC 8 terminal hyperlinks so taps can open links whose labels do not
@@ -50,6 +51,8 @@ class TerminalHyperlinkTracker {
       return;
     }
 
+    _pruneDetachedHyperlinks();
+
     final nextUri = _parseHyperlinkUri(args);
     if (nextUri == null) {
       _closePendingHyperlink(terminal);
@@ -90,6 +93,10 @@ class TerminalHyperlinkTracker {
 
     return null;
   }
+
+  /// Number of fully tracked hyperlinks currently retained in memory.
+  @visibleForTesting
+  int get trackedHyperlinkCount => _trackedHyperlinks.length;
 
   Uri? _parseHyperlinkUri(List<String> args) {
     if (args.length < 2) {

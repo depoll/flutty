@@ -60,5 +60,39 @@ void main() {
         'https://example.com/reflow',
       );
     });
+
+    test('prunes detached hyperlinks while processing later OSC 8 output', () {
+      terminal = Terminal(maxLines: 200);
+      tracker = TerminalHyperlinkTracker()..attach(terminal);
+      terminal
+        ..onPrivateOSC = tracker.handlePrivateOsc
+        ..write(
+          [
+            '\u001b]8;;https://example.com/one\u0007',
+            'one',
+            '\u001b]8;;\u0007\n',
+            for (var i = 0; i < 220; i++) 'filler $i\n',
+          ].join(),
+        );
+
+      expect(tracker.trackedHyperlinkCount, 1);
+
+      terminal.write(
+        [
+          '\u001b]8;;https://example.com/two\u0007',
+          'two',
+          '\u001b]8;;\u0007',
+        ].join(),
+      );
+
+      expect(tracker.trackedHyperlinkCount, 1);
+      String? resolvedLink;
+      for (var y = 0; y <= terminal.buffer.absoluteCursorY; y++) {
+        for (var x = 0; x < terminal.buffer.viewWidth; x++) {
+          resolvedLink ??= tracker.resolveLinkAt(CellOffset(x, y));
+        }
+      }
+      expect(resolvedLink, 'https://example.com/two');
+    });
   });
 }

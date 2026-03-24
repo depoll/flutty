@@ -55,6 +55,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.resolveLinkTap,
+    this.onLinkTapDown,
     this.onLinkTap,
     this.mouseCursor = SystemMouseCursors.text,
     this.keyboardType = TextInputType.emailAddress,
@@ -116,6 +117,9 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// Resolves a tappable link for the tapped terminal cell, if any.
   final String? Function(CellOffset offset)? resolveLinkTap;
+
+  /// Called when a primary tap is recognized as a pending link tap.
+  final VoidCallback? onLinkTapDown;
 
   /// Called when a primary tap should open a resolved terminal link.
   final ValueChanged<String>? onLinkTap;
@@ -345,6 +349,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           : (localPosition) => widget.resolveLinkTap!(
               renderTerminal.getCellOffset(localPosition),
             ),
+      onLinkTapDown: widget.onLinkTapDown,
       onLinkTap: widget.onLinkTap,
       onTouchScrollStart: widget.touchScrollToTerminal
           ? _onTouchScrollStart

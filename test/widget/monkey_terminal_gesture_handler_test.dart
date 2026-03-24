@@ -89,6 +89,7 @@ void main() {
     final terminalViewState = terminalViewKey.currentState!;
     var tapDowns = 0;
     var tapUps = 0;
+    var pendingLinkTaps = 0;
     final openedLinks = <String>[];
 
     await tester.pumpWidget(
@@ -101,6 +102,7 @@ void main() {
             terminalController: TerminalController(),
             readOnly: true,
             resolveLinkTap: (_) => 'https://github.com/features/copilot',
+            onLinkTapDown: () => pendingLinkTaps += 1,
             onLinkTap: openedLinks.add,
             onTapDown: (_) => tapDowns += 1,
             onSingleTapUp: (_) => tapUps += 1,
@@ -122,6 +124,7 @@ void main() {
     );
 
     expect(openedLinks, ['https://github.com/features/copilot']);
+    expect(pendingLinkTaps, 1);
     expect(tapDowns, 0);
     expect(tapUps, 0);
   });

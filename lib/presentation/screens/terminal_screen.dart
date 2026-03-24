@@ -278,6 +278,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
   late FocusNode _terminalFocusNode;
+  final _terminalTextInputController = TerminalTextInputHandlerController();
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
@@ -1364,6 +1365,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       controller: _terminalController,
       scrollController: _terminalScrollController,
       resolveLinkTap: _resolveTerminalLinkTap,
+      onLinkTapDown:
+          _terminalTextInputController.suppressNextTouchKeyboardRequest,
       onLinkTap: _handleTerminalLinkTap,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
@@ -1446,6 +1449,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
+      controller: _terminalTextInputController,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
       readOnly: _showsNativeSelectionOverlay,

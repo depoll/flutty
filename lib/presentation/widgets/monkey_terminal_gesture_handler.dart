@@ -30,6 +30,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.resolveLinkTap,
+    this.onLinkTapDown,
     this.onLinkTap,
     this.readOnly = false,
   });
@@ -60,6 +61,9 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
 
   /// Resolves a tappable link at the given local position, if any.
   final String? Function(Offset localPosition)? resolveLinkTap;
+
+  /// Called when a primary tap is recognized as a pending link tap.
+  final VoidCallback? onLinkTapDown;
 
   /// Called when a primary tap should open a resolved link instead of sending
   /// mouse input to the terminal.
@@ -155,6 +159,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   void onTapDown(TapDownDetails details) {
     _pendingLinkTap = _resolveLinkTap(details.localPosition);
     if (_pendingLinkTap != null) {
+      widget.onLinkTapDown?.call();
       // Link taps are handled separately in onSingleTapUp and do not
       // trigger the generic tap-down callback here.
       return;
