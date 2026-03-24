@@ -10,6 +10,9 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/presentation/screens/lock_screen.dart';
 
+const _shortPinHash = 'AAECAwQFBgcICQoLDA0ODw==';
+const _validPinSalt = 'AAECAwQFBgcICQoLDA0ODw==';
+
 class _MockAuthService extends Mock implements AuthService {}
 
 class _MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
@@ -237,6 +240,61 @@ void main() {
               return '{"version":1,"iterations":120000,"hash":"somehash"}';
             case 'flutty_pin_salt':
               return null;
+            default:
+              return null;
+          }
+        });
+        when(() => localAuth.canCheckBiometrics).thenAnswer((_) async => false);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [authServiceProvider.overrideWithValue(authService)],
+            child: const MaterialApp(home: LockScreen()),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+        expect(reportedErrors, hasLength(1));
+        expect(find.text('Retry'), findsOneWidget);
+        expect(
+          find.text(
+            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Unlock'), findsNothing);
+        expect(find.text('Use biometrics'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'shows retry UI when auth is enabled but PIN hash is decodable with an invalid length',
+      (tester) async {
+        final storage = _MockFlutterSecureStorage();
+        final localAuth = _MockLocalAuthentication();
+        final authService = AuthService(storage: storage, localAuth: localAuth);
+        final reportedErrors = <FlutterErrorDetails>[];
+        final originalOnError = FlutterError.onError;
+
+        FlutterError.onError = reportedErrors.add;
+        addTearDown(() => FlutterError.onError = originalOnError);
+
+        when(() => storage.read(key: any(named: 'key'))).thenAnswer((
+          invocation,
+        ) async {
+          final key = invocation.namedArguments[const Symbol('key')] as String;
+          switch (key) {
+            case 'flutty_auth_enabled':
+              return 'true';
+            case 'flutty_biometric_enabled':
+              return null;
+            case 'flutty_pin_hash':
+              return '{"version":1,"iterations":120000,"hash":"$_shortPinHash"}';
+            case 'flutty_pin_salt':
+              return _validPinSalt;
             default:
               return null;
           }

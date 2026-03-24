@@ -56,6 +56,7 @@ class AuthService {
   static const _pinKdfVersion = 1;
   static const _pinKdfIterations = 120000;
   static const _pinKdfBits = 256;
+  static const _pinHashLength = _pinKdfBits ~/ 8;
   static const _pinSaltLength = 16;
   Future<void> _pinWriteQueue = Future<void>.value();
 
@@ -138,6 +139,9 @@ class AuthService {
       return false;
     }
     if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
+      return false;
+    }
+    if (!_hasValidStoredPinHash(pinRecord.hash)) {
       return false;
     }
 
@@ -306,12 +310,23 @@ class AuthService {
     return _PinHashRecord(version: version, iterations: iterations, hash: hash);
   }
 
+  bool _hasValidStoredPinHash(String hash) {
+    if (hash.isEmpty) return false;
+
+    try {
+      final decodedHash = base64Decode(hash);
+      return decodedHash.length == _pinHashLength;
+    } on FormatException {
+      return false;
+    }
+  }
+
   Future<bool> _hasUsablePin() async {
     final storedPinData = await _storage.read(key: _pinKey);
     if (storedPinData == null) return false;
 
     final pinRecord = _parsePinRecord(storedPinData);
-    if (pinRecord == null || pinRecord.hash.isEmpty) {
+    if (pinRecord == null || !_hasValidStoredPinHash(pinRecord.hash)) {
       return false;
     }
     if (pinRecord.version != _pinKdfVersion) {
