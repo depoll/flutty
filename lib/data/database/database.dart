@@ -519,9 +519,24 @@ Future<void> _applyDatabaseFilePolicy(
   return filePolicyApplier(databaseFile.parent, databaseFile);
 }
 
+@visibleForTesting
+/// Whether the database may safely open in a background isolate.
+bool shouldOpenDatabaseInBackground({
+  required bool isWeb,
+  required bool isIOS,
+  required bool isMacOS,
+}) => !isWeb && !isIOS && !isMacOS;
+
 LazyDatabase _openConnection(Future<File> databaseFileFuture) =>
     LazyDatabase(() async {
       final file = await databaseFileFuture;
+      if (!shouldOpenDatabaseInBackground(
+        isWeb: kIsWeb,
+        isIOS: !kIsWeb && Platform.isIOS,
+        isMacOS: !kIsWeb && Platform.isMacOS,
+      )) {
+        return NativeDatabase(file);
+      }
       return NativeDatabase.createInBackground(file);
     });
 

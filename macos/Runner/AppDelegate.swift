@@ -147,14 +147,57 @@ class AppDelegate: FlutterAppDelegate {
     databasePath: String,
     companionPaths: [String]
   ) throws {
-    try excludeFromBackup(path: databaseDirectoryPath)
+    let validatedPaths = try validatedDatabaseFilePolicyPaths(
+      databaseDirectoryPath: databaseDirectoryPath,
+      databasePath: databasePath,
+      companionPaths: companionPaths
+    )
 
-    for path in [databasePath] + companionPaths {
+    try excludeFromBackup(path: validatedPaths.databaseDirectoryPath)
+
+    for path in [validatedPaths.databasePath] + validatedPaths.companionPaths {
       guard FileManager.default.fileExists(atPath: path) else {
         continue
       }
       try excludeFromBackup(path: path)
     }
+  }
+
+  private func validatedDatabaseFilePolicyPaths(
+    databaseDirectoryPath: String,
+    databasePath: String,
+    companionPaths: [String]
+  ) throws -> (databaseDirectoryPath: String, databasePath: String, companionPaths: [String]) {
+    func canonicalURL(for path: String) -> URL {
+      URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    let baseURL = canonicalURL(for: databaseDirectoryPath)
+    let basePath = baseURL.path.hasSuffix("/") ? baseURL.path : baseURL.path + "/"
+
+    func validatedPath(_ path: String, kind: String) throws -> String {
+      let canonicalPath = canonicalURL(for: path).path
+      if canonicalPath == baseURL.path || canonicalPath.hasPrefix(basePath) {
+        return canonicalPath
+      }
+
+      throw NSError(
+        domain: "AppleDatabaseFilePolicy",
+        code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "\(kind) path is outside the database directory: \(path)"
+        ]
+      )
+    }
+
+    return (
+      databaseDirectoryPath: baseURL.path,
+      databasePath: try validatedPath(databasePath, kind: "Database"),
+      companionPaths: try companionPaths.map { path in
+        try validatedPath(path, kind: "Companion")
+      }
+    )
   }
 
   private func excludeFromBackup(path: String) throws {

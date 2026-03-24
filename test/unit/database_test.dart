@@ -3,7 +3,6 @@
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull;
-import 'package:drift/isolate.dart' show DriftRemoteException;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
@@ -240,6 +239,43 @@ void main() {
       final settings = await db.select(db.settings).get();
       expect(settings, hasLength(1));
       expect(settings.first.value, 'light');
+    });
+  });
+
+  group('database open strategy', () {
+    test('uses background opening only for non-Apple native platforms', () {
+      expect(
+        shouldOpenDatabaseInBackground(
+          isWeb: false,
+          isIOS: false,
+          isMacOS: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldOpenDatabaseInBackground(
+          isWeb: false,
+          isIOS: true,
+          isMacOS: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldOpenDatabaseInBackground(
+          isWeb: false,
+          isIOS: false,
+          isMacOS: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldOpenDatabaseInBackground(
+          isWeb: true,
+          isIOS: false,
+          isMacOS: false,
+        ),
+        isFalse,
+      );
     });
   });
 
@@ -500,7 +536,7 @@ void main() {
 
         await expectLater(
           failingDb.select(failingDb.settings).get(),
-          throwsA(isA<DriftRemoteException>()),
+          throwsA(isA<StateError>()),
         );
       },
     );
