@@ -593,6 +593,10 @@ class _HostRow extends ConsumerWidget {
             state: state,
             preview: connection?.preview,
             windowTitle: connection?.windowTitle,
+            iconName: connection?.iconName,
+            workingDirectory: connection?.workingDirectory,
+            shellStatus: connection?.shellStatus,
+            lastExitCode: connection?.lastExitCode,
             brightness: theme.brightness,
             themeSettings: terminalThemeSettings,
             availableThemes: terminalThemes,
@@ -814,6 +818,10 @@ class _HostRow extends ConsumerWidget {
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
                     windowTitle: connection?.windowTitle,
+                    iconName: connection?.iconName,
+                    workingDirectory: connection?.workingDirectory,
+                    shellStatus: connection?.shellStatus,
+                    lastExitCode: connection?.lastExitCode,
                     terminalTheme: resolveConnectionPreviewTheme(
                       brightness: Theme.of(context).brightness,
                       themeSettings: terminalThemeSettings,
@@ -1029,6 +1037,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.onTap,
     this.preview,
     this.windowTitle,
+    this.iconName,
+    this.workingDirectory,
+    this.shellStatus,
+    this.lastExitCode,
     this.terminalTheme,
     this.createdAt,
   });
@@ -1038,6 +1050,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final String endpoint;
   final String? preview;
   final String? windowTitle;
+  final String? iconName;
+  final Uri? workingDirectory;
+  final TerminalShellStatus? shellStatus;
+  final int? lastExitCode;
   final TerminalThemeData? terminalTheme;
   final DateTime? createdAt;
   final VoidCallback onTap;
@@ -1054,6 +1070,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
         endpoint: subtitle,
         preview: preview,
         windowTitle: windowTitle,
+        iconName: iconName,
+        workingDirectory: workingDirectory,
+        shellStatus: shellStatus,
+        lastExitCode: lastExitCode,
         terminalTheme: terminalTheme,
       ),
       isThreeLine: preview?.trim().isNotEmpty ?? false,
@@ -1157,6 +1177,10 @@ class _ConnectionsPanel extends ConsumerWidget {
                             '$endpoint  •  Connection #${connection.connectionId}',
                         preview: preview,
                         windowTitle: connection.windowTitle,
+                        iconName: connection.iconName,
+                        workingDirectory: connection.workingDirectory,
+                        shellStatus: connection.shellStatus,
+                        lastExitCode: connection.lastExitCode,
                         terminalTheme: previewTheme,
                       ),
                       isThreeLine: preview?.trim().isNotEmpty ?? false,
@@ -1220,12 +1244,20 @@ class _ConnectionPreviewText extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.windowTitle,
+    this.iconName,
+    this.workingDirectory,
+    this.shellStatus,
+    this.lastExitCode,
     this.terminalTheme,
   });
 
   final String endpoint;
   final String? preview;
   final String? windowTitle;
+  final String? iconName;
+  final Uri? workingDirectory;
+  final TerminalShellStatus? shellStatus;
+  final int? lastExitCode;
   final TerminalThemeData? terminalTheme;
 
   @override
@@ -1233,6 +1265,10 @@ class _ConnectionPreviewText extends StatelessWidget {
     endpoint: endpoint,
     preview: preview,
     windowTitle: windowTitle,
+    iconName: iconName,
+    workingDirectory: workingDirectory,
+    shellStatus: shellStatus,
+    lastExitCode: lastExitCode,
     terminalTheme: terminalTheme,
   );
 }

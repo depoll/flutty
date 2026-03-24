@@ -34,6 +34,117 @@ enum SshConnectionState {
   reconnecting,
 }
 
+/// Shell integration state reported through terminal metadata sequences.
+enum TerminalShellStatus {
+  /// The shell is displaying a prompt and ready for the next command.
+  prompt,
+
+  /// The user is composing or editing the current command line.
+  editingCommand,
+
+  /// A submitted command is currently running.
+  runningCommand,
+}
+
+/// Parses an OSC 7 working-directory URI from private terminal metadata.
+Uri? parseTerminalWorkingDirectoryUri(List<String> args) {
+  if (args.isEmpty) {
+    return null;
+  }
+
+  final candidate = args.join(';').trim();
+  if (candidate.isEmpty) {
+    return null;
+  }
+
+  final uri = Uri.tryParse(candidate);
+  if (uri == null || !uri.hasScheme) {
+    return null;
+  }
+
+  return uri;
+}
+
+/// Resolves the decoded directory path from a terminal working-directory URI.
+String? resolveTerminalWorkingDirectoryPath(Uri? workingDirectory) {
+  if (workingDirectory == null) {
+    return null;
+  }
+
+  final decodedPath = Uri.decodeComponent(workingDirectory.path).trim();
+  if (decodedPath.isNotEmpty) {
+    return decodedPath;
+  }
+
+  final fallback = workingDirectory.toString().trim();
+  return fallback.isEmpty ? null : fallback;
+}
+
+/// Formats a terminal working-directory URI for compact UI display.
+String? formatTerminalWorkingDirectoryLabel(Uri? workingDirectory) {
+  final path = resolveTerminalWorkingDirectoryPath(workingDirectory);
+  if (path == null) {
+    return null;
+  }
+
+  final host = workingDirectory?.host.trim() ?? '';
+  return host.isEmpty ? path : '$host:$path';
+}
+
+/// Applies an OSC 133 shell integration update to the current shell state.
+({TerminalShellStatus? status, int? lastExitCode})
+applyTerminalShellIntegrationOsc(
+  List<String> args, {
+  required TerminalShellStatus? previousStatus,
+  required int? previousExitCode,
+}) {
+  if (args.isEmpty) {
+    return (status: previousStatus, lastExitCode: previousExitCode);
+  }
+
+  switch (args.first) {
+    case 'A':
+      return (
+        status: TerminalShellStatus.prompt,
+        lastExitCode: previousExitCode,
+      );
+    case 'B':
+      return (status: TerminalShellStatus.editingCommand, lastExitCode: null);
+    case 'C':
+      return (status: TerminalShellStatus.runningCommand, lastExitCode: null);
+    case 'D':
+      return (
+        status: TerminalShellStatus.prompt,
+        lastExitCode: args.length > 1
+            ? int.tryParse(args[1])
+            : previousExitCode,
+      );
+    default:
+      return (status: previousStatus, lastExitCode: previousExitCode);
+  }
+}
+
+/// Formats a shell integration state for compact UI display.
+String? describeTerminalShellStatus(
+  TerminalShellStatus? status, {
+  int? lastExitCode,
+}) {
+  final exitLabel = lastExitCode != null && lastExitCode != 0
+      ? 'Exit $lastExitCode'
+      : null;
+
+  switch (status) {
+    case TerminalShellStatus.prompt:
+      return exitLabel ?? 'Prompt';
+    case TerminalShellStatus.editingCommand:
+      return 'Editing command';
+    case TerminalShellStatus.runningCommand:
+      return 'Running command';
+    case null:
+      return exitLabel;
+  }
+}
+
 /// Configuration for an SSH connection.
 class SshConnectionConfig {
   /// Creates a new [SshConnectionConfig].
@@ -628,10 +739,14 @@ class SshSession {
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
-  /// Callback invoked whenever the terminal preview changes.
-  VoidCallback? onPreviewChanged;
+  final _previewListeners = <VoidCallback>{};
+  final _metadataListeners = <VoidCallback>{};
   String? _terminalPreview;
   String? _windowTitle;
+  String? _iconName;
+  Uri? _workingDirectory;
+  TerminalShellStatus? _shellStatus;
+  int? _lastExitCode;
 
   /// The persistent terminal for this session. Created on first shell open.
   Terminal? get terminal => _terminal;
@@ -641,6 +756,38 @@ class SshSession {
 
   /// The latest terminal window title emitted by the remote session.
   String? get windowTitle => _windowTitle;
+
+  /// The latest terminal icon name emitted by the remote session.
+  String? get iconName => _iconName;
+
+  /// The latest working-directory URI emitted through OSC 7.
+  Uri? get workingDirectory => _workingDirectory;
+
+  /// The latest shell integration status emitted through OSC 133.
+  TerminalShellStatus? get shellStatus => _shellStatus;
+
+  /// The latest command exit code emitted through shell integration.
+  int? get lastExitCode => _lastExitCode;
+
+  /// Adds a listener for terminal preview and preview-adjacent metadata changes.
+  void addPreviewListener(VoidCallback listener) {
+    _previewListeners.add(listener);
+  }
+
+  /// Removes a preview listener previously added with [addPreviewListener].
+  void removePreviewListener(VoidCallback listener) {
+    _previewListeners.remove(listener);
+  }
+
+  /// Adds a listener for metadata changes used by the live terminal screen.
+  void addMetadataListener(VoidCallback listener) {
+    _metadataListeners.add(listener);
+  }
+
+  /// Removes a metadata listener previously added with [addMetadataListener].
+  void removeMetadataListener(VoidCallback listener) {
+    _metadataListeners.remove(listener);
+  }
 
   /// Persist a per-session terminal theme override.
   void setTerminalThemeId(String themeId, {required bool isDark}) {
@@ -654,9 +801,11 @@ class SshSession {
   /// Ensure a [Terminal] exists and is wired to the shell streams.
   Terminal getOrCreateTerminal({int maxLines = 10000}) {
     _terminal ??= Terminal(maxLines: maxLines);
-    _terminal!.onTitleChange = _handleWindowTitleChange;
+    _terminal!
+      ..onTitleChange = _handleWindowTitleChange
+      ..onIconChange = _handleIconNameChange;
     terminalHyperlinkTracker.attach(_terminal!);
-    _terminal!.onPrivateOSC = terminalHyperlinkTracker.handlePrivateOsc;
+    _terminal!.onPrivateOSC = _handlePrivateOsc;
     _refreshTerminalPreview();
     return _terminal!;
   }
@@ -721,6 +870,10 @@ class SshSession {
     _shell?.close();
     _shell = null;
     terminalHyperlinkTracker.reset(keepTerminalReference: false);
+    _iconName = null;
+    _workingDirectory = null;
+    _shellStatus = null;
+    _lastExitCode = null;
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
@@ -783,7 +936,7 @@ class SshSession {
       return;
     }
     _terminalPreview = nextPreview;
-    onPreviewChanged?.call();
+    _notifyPreviewChanged();
   }
 
   void _handleWindowTitleChange(String title) {
@@ -792,7 +945,45 @@ class SshSession {
       return;
     }
     _windowTitle = sanitizedTitle;
-    onPreviewChanged?.call();
+    _notifyMetadataChanged();
+  }
+
+  void _handleIconNameChange(String iconName) {
+    final sanitizedIconName = _sanitizeWindowTitle(iconName);
+    if (sanitizedIconName == _iconName) {
+      return;
+    }
+    _iconName = sanitizedIconName;
+    _notifyMetadataChanged();
+  }
+
+  void _handlePrivateOsc(String code, List<String> args) {
+    terminalHyperlinkTracker.handlePrivateOsc(code, args);
+
+    if (code == '7') {
+      final nextWorkingDirectory = parseTerminalWorkingDirectoryUri(args);
+      if (nextWorkingDirectory?.toString() == _workingDirectory?.toString()) {
+        return;
+      }
+      _workingDirectory = nextWorkingDirectory;
+      _notifyMetadataChanged();
+      return;
+    }
+
+    if (code == '133') {
+      final nextShellState = applyTerminalShellIntegrationOsc(
+        args,
+        previousStatus: _shellStatus,
+        previousExitCode: _lastExitCode,
+      );
+      if (nextShellState.status == _shellStatus &&
+          nextShellState.lastExitCode == _lastExitCode) {
+        return;
+      }
+      _shellStatus = nextShellState.status;
+      _lastExitCode = nextShellState.lastExitCode;
+      _notifyMetadataChanged();
+    }
   }
 
   /// Builds a compact plain-text preview from the terminal scrollback.
@@ -850,6 +1041,19 @@ class SshSession {
   static String? _sanitizeWindowTitle(String text) {
     final sanitized = text.replaceAll(_windowTitleSanitizerPattern, '').trim();
     return sanitized.isEmpty ? null : sanitized;
+  }
+
+  void _notifyPreviewChanged() {
+    for (final listener in _previewListeners.toList(growable: false)) {
+      listener();
+    }
+  }
+
+  void _notifyMetadataChanged() {
+    for (final listener in _metadataListeners.toList(growable: false)) {
+      listener();
+    }
+    _notifyPreviewChanged();
   }
 
   /// Execute a command.
@@ -1026,6 +1230,10 @@ class ActiveConnection {
     required this.config,
     this.preview,
     this.windowTitle,
+    this.iconName,
+    this.workingDirectory,
+    this.shellStatus,
+    this.lastExitCode,
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
   });
@@ -1050,6 +1258,18 @@ class ActiveConnection {
 
   /// The latest remote window title, when available.
   final String? windowTitle;
+
+  /// The latest remote icon name, when available.
+  final String? iconName;
+
+  /// The latest terminal working-directory URI, when available.
+  final Uri? workingDirectory;
+
+  /// The latest shell integration status, when available.
+  final TerminalShellStatus? shellStatus;
+
+  /// The latest command exit code emitted through shell integration.
+  final int? lastExitCode;
 
   /// Session-specific light theme override.
   final String? terminalThemeLightId;
@@ -1209,7 +1429,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
-    _sshService.getSession(connectionId)?.onPreviewChanged = null;
+    _sshService
+        .getSession(connectionId)
+        ?.removePreviewListener(_schedulePreviewStateRefresh);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
@@ -1220,7 +1442,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
     for (final session in _sshService.sessions.values) {
-      session.onPreviewChanged = null;
+      session.removePreviewListener(_schedulePreviewStateRefresh);
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
@@ -1252,6 +1474,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       config: session.config,
       preview: session.terminalPreview,
       windowTitle: session.windowTitle,
+      iconName: session.iconName,
+      workingDirectory: session.workingDirectory,
+      shellStatus: session.shellStatus,
+      lastExitCode: session.lastExitCode,
       terminalThemeLightId: session.terminalThemeLightId,
       terminalThemeDarkId: session.terminalThemeDarkId,
     );
@@ -1315,6 +1541,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
           config: session.config,
           preview: session.terminalPreview,
           windowTitle: session.windowTitle,
+          iconName: session.iconName,
+          workingDirectory: session.workingDirectory,
+          shellStatus: session.shellStatus,
+          lastExitCode: session.lastExitCode,
           terminalThemeLightId: session.terminalThemeLightId,
           terminalThemeDarkId: session.terminalThemeDarkId,
         ),
@@ -1332,7 +1562,9 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   void _attachSessionPreviewListener(SshSession session) {
-    session.onPreviewChanged = _schedulePreviewStateRefresh;
+    session
+      ..removePreviewListener(_schedulePreviewStateRefresh)
+      ..addPreviewListener(_schedulePreviewStateRefresh);
   }
 
   void _schedulePreviewStateRefresh() {

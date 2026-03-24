@@ -197,6 +197,17 @@ bool shouldShowNativeSelectionOverlay({
     isNativeSelectionMode &&
     (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
 
+String? _describeMouseMode(
+  MouseMode mouseMode,
+  MouseReportMode mouseReportMode,
+) => switch (mouseMode) {
+  MouseMode.none => null,
+  MouseMode.clickOnly => 'Mouse clicks',
+  MouseMode.upDownScroll => 'Mouse scroll (${mouseReportMode.name})',
+  MouseMode.upDownScrollDrag => 'Mouse drag (${mouseReportMode.name})',
+  MouseMode.upDownScrollMove => 'Mouse motion (${mouseReportMode.name})',
+};
+
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
 bool shouldFollowTerminalOutput({
@@ -266,6 +277,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _shouldFollowLiveOutput = true;
   bool _isTerminalScrollToBottomQueued = false;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
+  SshSession? _observedSession;
 
   // Theme state
   Host? _host;
@@ -296,6 +308,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     revealOverlayInTouchScrollMode:
         _revealsNativeSelectionOverlayInTouchScrollMode,
   );
+
+  String? get _windowTitle => _observedSession?.windowTitle;
+
+  String? get _iconName => _observedSession?.iconName;
+
+  Uri? get _workingDirectory => _observedSession?.workingDirectory;
+
+  String? get _workingDirectoryLabel =>
+      formatTerminalWorkingDirectoryLabel(_workingDirectory);
+
+  String? get _workingDirectoryPath =>
+      resolveTerminalWorkingDirectoryPath(_workingDirectory);
+
+  TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
+
+  int? get _lastExitCode => _observedSession?.lastExitCode;
 
   @override
   void initState() {
@@ -346,6 +374,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isUsingAltBuffer = isUsingAltBuffer;
       _terminalReportsMouseWheel = terminalReportsMouseWheel;
     });
+  }
+
+  void _observeSessionMetadata(SshSession session) {
+    if (identical(_observedSession, session)) {
+      return;
+    }
+
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
+    _observedSession = session
+      ..removeMetadataListener(_handleSessionMetadataChanged)
+      ..addMetadataListener(_handleSessionMetadataChanged);
+  }
+
+  void _handleSessionMetadataChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   void _handleTerminalScroll() {
@@ -565,6 +611,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+        _observeSessionMetadata(session);
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
@@ -584,6 +631,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+      _observeSessionMetadata(session);
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
       _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
@@ -814,6 +862,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
       ..removeListener(_onSelectionChanged)
@@ -872,6 +921,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  List<Widget> _buildTerminalStatusChips(ThemeData theme) {
+    final chipLabels = <({IconData icon, String label})>[
+      if (_workingDirectoryLabel case final workingDirectory?
+          when workingDirectory.isNotEmpty)
+        (icon: Icons.folder_outlined, label: workingDirectory),
+      if (describeTerminalShellStatus(_shellStatus, lastExitCode: _lastExitCode)
+          case final shellStatusLabel? when shellStatusLabel.isNotEmpty)
+        (icon: Icons.play_circle_outline, label: shellStatusLabel),
+      if (_isUsingAltBuffer) (icon: Icons.aspect_ratio, label: 'Alt buffer'),
+      if (_describeMouseMode(_terminal.mouseMode, _terminal.mouseReportMode)
+          case final mouseModeLabel? when mouseModeLabel.isNotEmpty)
+        (icon: Icons.mouse_outlined, label: mouseModeLabel),
+      if (_terminal.reportFocusMode)
+        (icon: Icons.center_focus_strong, label: 'Focus reports'),
+      if (_terminal.bracketedPasteMode)
+        (icon: Icons.content_paste, label: 'Bracketed paste'),
+    ];
+
+    return chipLabels
+        .map(
+          (chip) => _TerminalStatusChip(
+            icon: chip.icon,
+            label: chip.label,
+            colorScheme: theme.colorScheme,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -886,10 +964,57 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionThemeOverride ??
         _currentTheme ??
         (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+    final titleSubtitleSegments = <String>[];
+    if ((_iconName ?? '').isNotEmpty) {
+      titleSubtitleSegments.add(_iconName!);
+    }
+    if ((_windowTitle ?? '').isNotEmpty) {
+      titleSubtitleSegments.add(_windowTitle!);
+    }
+    final titleSubtitle = titleSubtitleSegments.join(' • ');
+    final statusChips = _buildTerminalStatusChips(theme);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_host?.label ?? 'Terminal'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_host?.label ?? 'Terminal'),
+            if (titleSubtitle.isNotEmpty)
+              Text(
+                titleSubtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
+        bottom: statusChips.isEmpty
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(40),
+                child: Container(
+                  alignment: Alignment.centerLeft,
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: statusChips
+                          .map(
+                            (chip) => Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: chip,
+                            ),
+                          )
+                          .toList(growable: false),
+                    ),
+                  ),
+                ),
+              ),
         actions: [
           IconButton(
             icon: const Icon(Icons.palette_outlined),
@@ -928,6 +1053,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         ? 'Exit Native Selection'
                         : 'Native Selection',
                   ),
+                ),
+              if (_workingDirectoryPath != null)
+                const PopupMenuItem(
+                  value: 'copy_working_directory',
+                  child: Text('Copy Current Directory'),
                 ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
@@ -1328,6 +1458,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'native_select':
         _toggleNativeSelectionMode();
         break;
+      case 'copy_working_directory':
+        await _copyWorkingDirectory();
+        break;
       case 'copy':
         await _copySelection();
         break;
@@ -1712,6 +1845,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(const SnackBar(content: Text('Copied')));
   }
 
+  Future<void> _copyWorkingDirectory() async {
+    final path = _workingDirectoryPath;
+    if (path == null || path.isEmpty) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: path));
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied current directory')));
+  }
+
   Future<void> _pasteClipboard() async {
     final data = await Clipboard.getData(Clipboard.kTextPlain);
     final text = data?.text;
@@ -1916,4 +2067,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     return command;
   }
+}
+
+class _TerminalStatusChip extends StatelessWidget {
+  const _TerminalStatusChip({
+    required this.icon,
+    required this.label,
+    required this.colorScheme,
+  });
+
+  final IconData icon;
+  final String label;
+  final ColorScheme colorScheme;
+
+  @override
+  Widget build(BuildContext context) => DecoratedBox(
+    decoration: BoxDecoration(
+      color: colorScheme.surfaceContainerHighest,
+      borderRadius: BorderRadius.circular(999),
+      border: Border.all(color: colorScheme.outlineVariant),
+    ),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: colorScheme.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            label,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
 }

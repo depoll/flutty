@@ -44,22 +44,50 @@ ConnectionPreviewStackEntry buildConnectionPreviewStackEntry({
   required Iterable<TerminalThemeData> availableThemes,
   String? preview,
   String? windowTitle,
+  String? iconName,
+  Uri? workingDirectory,
+  TerminalShellStatus? shellStatus,
+  int? lastExitCode,
   String? hostLightThemeId,
   String? hostDarkThemeId,
   String? connectionLightThemeId,
   String? connectionDarkThemeId,
 }) {
   final resolvedWindowTitle = windowTitle?.trim();
-  final title = resolvedWindowTitle == null || resolvedWindowTitle.isEmpty
-      ? 'Connection #$connectionId'
-      : 'Connection #$connectionId • $resolvedWindowTitle';
+  final resolvedIconName = iconName?.trim();
+  final titleSegments = <String>['Connection #$connectionId'];
+  if ((resolvedIconName ?? '').isNotEmpty) {
+    titleSegments.add(resolvedIconName!);
+  }
+  if ((resolvedWindowTitle ?? '').isNotEmpty) {
+    titleSegments.add(resolvedWindowTitle!);
+  }
   final resolvedPreview = preview?.trim();
+  final workingDirectoryLabel = formatTerminalWorkingDirectoryLabel(
+    workingDirectory,
+  );
+  final shellStatusLabel = describeTerminalShellStatus(
+    shellStatus,
+    lastExitCode: lastExitCode,
+  );
+  final metadataSegments = <String>[];
+  if ((workingDirectoryLabel ?? '').isNotEmpty) {
+    metadataSegments.add(workingDirectoryLabel!);
+  }
+  if ((shellStatusLabel ?? '').isNotEmpty) {
+    metadataSegments.add(shellStatusLabel!);
+  }
+  final body = [
+    if (metadataSegments.isNotEmpty) metadataSegments.join(' • '),
+    if (resolvedPreview == null || resolvedPreview.isEmpty)
+      fallbackConnectionPreviewStatus(state)
+    else
+      resolvedPreview,
+  ].join('\n');
 
   return ConnectionPreviewStackEntry(
-    title: title,
-    body: resolvedPreview == null || resolvedPreview.isEmpty
-        ? fallbackConnectionPreviewStatus(state)
-        : resolvedPreview,
+    title: titleSegments.join(' • '),
+    body: body,
     terminalTheme: resolveConnectionPreviewTheme(
       brightness: brightness,
       themeSettings: themeSettings,
@@ -77,6 +105,10 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.windowTitle,
+    this.iconName,
+    this.workingDirectory,
+    this.shellStatus,
+    this.lastExitCode,
     this.endpointStyle,
     this.terminalTheme,
     this.showEndpoint = true,
@@ -92,6 +124,18 @@ class ConnectionPreviewSnippet extends StatelessWidget {
 
   /// Latest remote window title, when available.
   final String? windowTitle;
+
+  /// Latest remote icon name, when available.
+  final String? iconName;
+
+  /// Latest working-directory URI, when available.
+  final Uri? workingDirectory;
+
+  /// Latest shell integration status, when available.
+  final TerminalShellStatus? shellStatus;
+
+  /// Latest command exit code emitted through shell integration.
+  final int? lastExitCode;
 
   /// Optional style override for the endpoint metadata.
   final TextStyle? endpointStyle;
@@ -110,6 +154,14 @@ class ConnectionPreviewSnippet extends StatelessWidget {
     final theme = Theme.of(context);
     final previewText = preview?.trim();
     final resolvedWindowTitle = windowTitle?.trim();
+    final resolvedIconName = iconName?.trim();
+    final workingDirectoryLabel = formatTerminalWorkingDirectoryLabel(
+      workingDirectory,
+    );
+    final shellStatusLabel = describeTerminalShellStatus(
+      shellStatus,
+      lastExitCode: lastExitCode,
+    );
     final colorScheme = theme.colorScheme;
     final previewTheme = terminalTheme;
     final previewBackgroundBase = previewTheme == null
@@ -134,8 +186,20 @@ class ConnectionPreviewSnippet extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (showEndpoint) Text(endpoint, style: endpointStyle),
-        if (resolvedWindowTitle != null && resolvedWindowTitle.isNotEmpty) ...[
+        if (resolvedIconName != null && resolvedIconName.isNotEmpty) ...[
           if (showEndpoint) const SizedBox(height: 2),
+          Text(
+            resolvedIconName,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+        if (resolvedWindowTitle != null && resolvedWindowTitle.isNotEmpty) ...[
+          if (showEndpoint || (resolvedIconName?.isNotEmpty ?? false))
+            const SizedBox(height: 2),
           Text(
             resolvedWindowTitle,
             maxLines: 1,
@@ -146,8 +210,31 @@ class ConnectionPreviewSnippet extends StatelessWidget {
             ),
           ),
         ],
+        if ((workingDirectoryLabel?.isNotEmpty ?? false) ||
+            (shellStatusLabel?.isNotEmpty ?? false)) ...[
+          if (showEndpoint ||
+              (resolvedIconName?.isNotEmpty ?? false) ||
+              (resolvedWindowTitle?.isNotEmpty ?? false))
+            const SizedBox(height: 2),
+          Text(
+            [
+              if ((workingDirectoryLabel ?? '').isNotEmpty)
+                workingDirectoryLabel!,
+              if ((shellStatusLabel ?? '').isNotEmpty) shellStatusLabel!,
+            ].join(' • '),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
         if (previewText != null && previewText.isNotEmpty) ...[
-          if (showEndpoint || (resolvedWindowTitle?.isNotEmpty ?? false))
+          if (showEndpoint ||
+              (resolvedIconName?.isNotEmpty ?? false) ||
+              (resolvedWindowTitle?.isNotEmpty ?? false) ||
+              (workingDirectoryLabel?.isNotEmpty ?? false) ||
+              (shellStatusLabel?.isNotEmpty ?? false))
             const SizedBox(height: 4),
           Container(
             width: double.infinity,

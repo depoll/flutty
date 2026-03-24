@@ -123,6 +123,57 @@ void main() {
     });
   });
 
+  group('terminal metadata helpers', () {
+    test('parses and formats working directory metadata', () {
+      final uri = parseTerminalWorkingDirectoryUri([
+        'file://remote.example.com/Users/tester/project%20name',
+      ]);
+
+      expect(uri, isNotNull);
+      expect(
+        resolveTerminalWorkingDirectoryPath(uri),
+        '/Users/tester/project name',
+      );
+      expect(
+        formatTerminalWorkingDirectoryLabel(uri),
+        'remote.example.com:/Users/tester/project name',
+      );
+    });
+
+    test('preserves shell state transitions and exit codes', () {
+      final promptState = applyTerminalShellIntegrationOsc(
+        const ['A'],
+        previousStatus: null,
+        previousExitCode: null,
+      );
+      expect(promptState.status, TerminalShellStatus.prompt);
+      expect(promptState.lastExitCode, isNull);
+
+      final runningState = applyTerminalShellIntegrationOsc(
+        const ['C'],
+        previousStatus: promptState.status,
+        previousExitCode: promptState.lastExitCode,
+      );
+      expect(runningState.status, TerminalShellStatus.runningCommand);
+      expect(runningState.lastExitCode, isNull);
+
+      final exitState = applyTerminalShellIntegrationOsc(
+        const ['D', '17'],
+        previousStatus: runningState.status,
+        previousExitCode: runningState.lastExitCode,
+      );
+      expect(exitState.status, TerminalShellStatus.prompt);
+      expect(exitState.lastExitCode, 17);
+      expect(
+        describeTerminalShellStatus(
+          exitState.status,
+          lastExitCode: exitState.lastExitCode,
+        ),
+        'Exit 17',
+      );
+    });
+  });
+
   group('SshConnectionConfig', () {
     test('creates with required fields', () {
       const config = SshConnectionConfig(
