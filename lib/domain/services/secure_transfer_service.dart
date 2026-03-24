@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../models/auto_connect_command.dart';
 
 /// Supported transfer payload types.
 enum TransferPayloadType {
@@ -325,6 +326,13 @@ class SecureTransferService {
       throw const FormatException('Host payload data missing');
     }
     final hostData = Map<String, dynamic>.from(rawHost);
+    final autoConnectCommand = normalizeImportedAutoConnectCommand(
+      _optionalString(hostData['autoConnectCommand']),
+    );
+    final requiresAutoConnectReview = importedAutoConnectRequiresReview(
+      command: autoConnectCommand,
+      snippetId: null,
+    );
     return _db.transaction(() async {
       int? keyId;
       final rawReferencedKey = payload.data['referencedKey'];
@@ -367,10 +375,9 @@ class SecureTransferService {
           terminalFontFamily: Value(
             _optionalString(hostData['terminalFontFamily']),
           ),
-          autoConnectCommand: Value(
-            _optionalString(hostData['autoConnectCommand']),
-          ),
+          autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: const Value(null),
+          autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
         ),
       );
 
@@ -667,6 +674,9 @@ class SecureTransferService {
       final oldKeyId = _optionalInt(item['keyId']);
       final oldJumpId = _optionalInt(item['jumpHostId']);
       final oldSnippetId = _optionalInt(item['autoConnectSnippetId']);
+      final autoConnectCommand = normalizeImportedAutoConnectCommand(
+        _optionalString(item['autoConnectCommand']),
+      );
       int? mappedGroupId;
       int? mappedKeyId;
       int? mappedSnippetId;
@@ -694,6 +704,11 @@ class SecureTransferService {
           );
         }
       }
+
+      final requiresAutoConnectReview = importedAutoConnectRequiresReview(
+        command: autoConnectCommand,
+        snippetId: mappedSnippetId,
+      );
 
       final newId = await _hostRepository.insert(
         HostsCompanion.insert(
@@ -725,10 +740,9 @@ class SecureTransferService {
           terminalFontFamily: Value(
             _optionalString(item['terminalFontFamily']),
           ),
-          autoConnectCommand: Value(
-            _optionalString(item['autoConnectCommand']),
-          ),
+          autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: Value(mappedSnippetId),
+          autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
         ),
       );
 

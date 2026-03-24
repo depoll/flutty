@@ -85,6 +85,7 @@ void main() {
           username: 'admin',
           autoConnectCommand: const Value('tmux attach'),
           autoConnectSnippetId: Value(snippetId),
+          autoConnectRequiresConfirmation: const Value(true),
         ),
       );
 
@@ -92,6 +93,7 @@ void main() {
       expect(host, isNotNull);
       expect(host!.autoConnectCommand, 'tmux attach');
       expect(host.autoConnectSnippetId, snippetId);
+      expect(host.autoConnectRequiresConfirmation, isTrue);
     });
 
     test('duplicate copies all host fields and port forwards', () async {
@@ -146,6 +148,7 @@ void main() {
           terminalFontFamily: const Value('Fira Code'),
           autoConnectCommand: const Value('tmux attach'),
           autoConnectSnippetId: Value(snippetId),
+          autoConnectRequiresConfirmation: const Value(true),
         ),
       );
 
@@ -208,6 +211,10 @@ void main() {
       expect(
         duplicateHost.autoConnectSnippetId,
         sourceHost.autoConnectSnippetId,
+      );
+      expect(
+        duplicateHost.autoConnectRequiresConfirmation,
+        sourceHost.autoConnectRequiresConfirmation,
       );
       expect(duplicateHost.lastConnectedAt, isNull);
       expect(duplicateHost.createdAt, isNot(sourceHost.createdAt));

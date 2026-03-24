@@ -38,6 +38,8 @@ final _terminalLinkPattern = RegExp(
   caseSensitive: false,
 );
 
+enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
+
 /// Padding around the terminal viewport.
 ///
 /// Keep the terminal flush with the bottom edge so status lines from tools like
@@ -833,6 +835,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     String? snippetCommand;
+    int? resolvedSnippetId;
     final snippetId = host.autoConnectSnippetId;
     if (snippetId != null) {
       final snippetRepo = ref.read(snippetRepositoryProvider);
@@ -843,7 +846,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } else {
         snippetCommand = snippet.command;
-        unawaited(snippetRepo.incrementUsage(snippet.id));
+        resolvedSnippetId = snippet.id;
       }
     }
 
@@ -856,7 +859,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final review = assessAutoConnectCommandExecution(
+      command,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command)));
+    if (resolvedSnippetId != null) {
+      unawaited(
+        ref.read(snippetRepositoryProvider).incrementUsage(resolvedSnippetId),
+      );
+    }
   }
 
   void _handleShellClosed() {
@@ -1988,6 +2014,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final review = assessClipboardPasteCommand(
+      text,
+      bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+    );
+    if (review.requiresReview) {
+      final shouldPaste = await _confirmCommandInsertion(
+        title: 'Review clipboard paste',
+        message: review.bracketedPasteModeEnabled
+            ? 'This clipboard content looks risky even with bracketed paste enabled.'
+            : 'This clipboard content could execute multiple or reshaped commands.',
+        confirmLabel: 'Paste anyway',
+        review: review,
+      );
+      if (!shouldPaste) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+    }
+
     _followLiveOutput();
     _terminal.paste(text);
     _terminalController.clearSelection();
@@ -2011,7 +2056,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final variablePattern = RegExp(r'\{\{(\w+)\}\}');
 
     final result =
-        await showModalBottomSheet<({String command, int snippetId})>(
+        await showModalBottomSheet<
+          ({String command, bool hadVariableSubstitution, int snippetId})
+        >(
           context: context,
           isScrollControlled: true,
           builder: (context) => DraggableScrollableSheet(
@@ -2081,7 +2128,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                           );
                           if (command != null && context.mounted) {
                             Navigator.pop(context, (
-                              command: command,
+                              command: command.command,
+                              hadVariableSubstitution:
+                                  command.hadVariableSubstitution,
                               snippetId: snippet.id,
                             ));
                           }
@@ -2097,6 +2146,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
+      final review = assessSnippetCommandInsertion(
+        result.command,
+        hadVariableSubstitution: result.hadVariableSubstitution,
+      );
+      if (review.requiresReview) {
+        final shouldInsert = await _confirmCommandInsertion(
+          title: 'Review snippet command',
+          message: 'Confirm the rendered command before inserting it.',
+          confirmLabel: 'Insert command',
+          review: review,
+        );
+        if (!shouldInsert) {
+          _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+          return;
+        }
+      }
       _followLiveOutput();
       // Insert the command into terminal
       _terminal.paste(result.command);
@@ -2106,16 +2171,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Shows dialog for variable substitution if snippet has variables.
-  Future<String?> _substituteVariables(
-    BuildContext context,
-    Snippet snippet,
-  ) async {
+  Future<({String command, bool hadVariableSubstitution})?>
+  _substituteVariables(BuildContext context, Snippet snippet) async {
     final regex = RegExp(r'\{\{(\w+)\}\}');
     final matches = regex.allMatches(snippet.command);
     final variables = matches.map((m) => m.group(1)!).toSet().toList();
 
     if (variables.isEmpty) {
-      return snippet.command;
+      return (command: snippet.command, hadVariableSubstitution: false);
     }
 
     final controllers = {for (final v in variables) v: TextEditingController()};
@@ -2182,7 +2245,114 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       entry.value.dispose();
     }
 
-    return command;
+    return (command: command, hadVariableSubstitution: true);
+  }
+
+  Future<_AutoConnectReviewDecision> _reviewImportedAutoConnectCommand(
+    TerminalCommandReview review,
+  ) async {
+    final decision = await showDialog<_AutoConnectReviewDecision>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Review imported auto-connect command'),
+        content: _buildCommandReviewContent(
+          review: review,
+          message:
+              'Imported auto-connect commands never run silently. Review this one before letting it execute.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.skip),
+            child: const Text('Skip'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.runOnce),
+            child: const Text('Run once'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.trustAndRun),
+            child: const Text('Always run'),
+          ),
+        ],
+      ),
+    );
+    return decision ?? _AutoConnectReviewDecision.skip;
+  }
+
+  Future<bool> _confirmCommandInsertion({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    required TerminalCommandReview review,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: _buildCommandReviewContent(review: review, message: message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Widget _buildCommandReviewContent({
+    required TerminalCommandReview review,
+    required String message,
+  }) {
+    final reasons = describeTerminalCommandReview(review);
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(message),
+          if (reasons.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (final reason in reasons)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Icon(Icons.warning_amber_rounded, size: 18),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(reason)),
+                  ],
+                ),
+              ),
+          ],
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: SelectableText(
+              review.command,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 

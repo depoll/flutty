@@ -632,6 +632,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalFontFamily: drift.Value(_selectedFontFamily),
             autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
             autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
+            autoConnectRequiresConfirmation: false,
             isFavorite: _isFavorite,
           ),
         );
@@ -653,6 +654,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalFontFamily: drift.Value(_selectedFontFamily),
             autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
             autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
+            autoConnectRequiresConfirmation: const drift.Value(false),
             isFavorite: drift.Value(_isFavorite),
           ),
         );

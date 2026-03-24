@@ -73,6 +73,10 @@ class Hosts extends Table {
   /// Referenced snippet to run automatically after connecting/reconnecting.
   IntColumn get autoConnectSnippetId =>
       integer().nullable().references(Snippets, #id)();
+
+  /// Whether auto-connect should require user review before it can run.
+  BoolColumn get autoConnectRequiresConfirmation =>
+      boolean().withDefault(const Constant(false))();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -274,7 +278,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase.forTesting(super.e);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 5;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -294,6 +298,14 @@ class AppDatabase extends _$AppDatabase {
         }
         if (!hostColumnNames.contains(hosts.autoConnectSnippetId.$name)) {
           await m.addColumn(hosts, hosts.autoConnectSnippetId);
+        }
+      }
+      if (from < 5) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(
+          hosts.autoConnectRequiresConfirmation.$name,
+        )) {
+          await m.addColumn(hosts, hosts.autoConnectRequiresConfirmation);
         }
       }
     },
