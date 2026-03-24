@@ -34,7 +34,7 @@ const _terminalFollowOutputTolerance = 1.0;
 const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 final _terminalLinkPattern = RegExp(
-  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:www\.))[^\s<>"']+''',
+  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
 );
 
@@ -174,6 +174,17 @@ bool isLaunchableTerminalUri(Uri uri) =>
       'mailto',
       'tel',
     }.contains(uri.scheme.toLowerCase());
+
+/// Extracts the currently selected text from the native selection overlay.
+@visibleForTesting
+String selectedNativeOverlayText(TextEditingValue value) {
+  final selection = value.selection;
+  if (!selection.isValid || selection.isCollapsed) {
+    return '';
+  }
+
+  return selection.textInside(value.text);
+}
 
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
@@ -1913,11 +1924,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   );
 
   Future<void> _copySelection() async {
+    if (_isNativeSelectionMode) {
+      final text = selectedNativeOverlayText(_nativeSelectionController.value);
+      if (text.isEmpty) {
+        return;
+      }
+
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Copied')));
+      return;
+    }
+
     final selection = _terminalController.selection;
     if (selection == null) {
       return;
     }
-
     final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
     if (text.isEmpty) {
       _restoreTerminalFocus();

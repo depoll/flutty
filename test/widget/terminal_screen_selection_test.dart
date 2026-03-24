@@ -1,3 +1,4 @@
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
@@ -86,6 +87,16 @@ void main() {
         isNull,
       );
     });
+
+    test('detects visible tel links at the tapped offset', () {
+      final detectedLink = detectTerminalLinkAtTextOffset(
+        'Call tel:+15551234567 for help.',
+        10,
+      );
+
+      expect(detectedLink, isNotNull);
+      expect(detectedLink!.uri.toString(), 'tel:+15551234567');
+    });
   });
 
   group('normalizeTerminalLinkCandidate', () {
@@ -115,6 +126,32 @@ void main() {
       expect(
         isLaunchableTerminalUri(Uri.parse('intent://example.com')),
         isFalse,
+      );
+    });
+  });
+
+  group('selectedNativeOverlayText', () {
+    test('returns the selected overlay substring', () {
+      expect(
+        selectedNativeOverlayText(
+          const TextEditingValue(
+            text: 'copilot cli',
+            selection: TextSelection(baseOffset: 0, extentOffset: 7),
+          ),
+        ),
+        'copilot',
+      );
+    });
+
+    test('returns empty text for a collapsed overlay selection', () {
+      expect(
+        selectedNativeOverlayText(
+          const TextEditingValue(
+            text: 'copilot cli',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        ),
+        isEmpty,
       );
     });
   });
