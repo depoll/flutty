@@ -270,10 +270,24 @@ class Settings extends Table {
 )
 class AppDatabase extends _$AppDatabase {
   /// Creates a new database instance.
-  AppDatabase() : super(_openConnection());
+  AppDatabase() : this.withDatabaseFile(resolveDatabaseFile());
+
+  /// Creates a new database instance backed by [databaseFileFuture].
+  AppDatabase.withDatabaseFile(
+    Future<File> databaseFileFuture, {
+    AppleDatabaseFilePolicyApplier? applyAppleFilePolicy,
+  }) : _databaseFileFuture = databaseFileFuture,
+       _appleDatabaseFilePolicyApplier =
+           applyAppleFilePolicy ?? _applyAppleDatabaseFilePolicy,
+       super(_openConnection(databaseFileFuture));
 
   /// Creates a database for testing with an in-memory database.
-  AppDatabase.forTesting(super.e);
+  AppDatabase.forTesting(super.e)
+    : _databaseFileFuture = null,
+      _appleDatabaseFilePolicyApplier = _noOpAppleDatabaseFilePolicy;
+
+  final Future<File>? _databaseFileFuture;
+  final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
   int get schemaVersion => 4;
@@ -300,6 +314,14 @@ class AppDatabase extends _$AppDatabase {
       }
     },
     beforeOpen: (details) async {
+      final databaseFileFuture = _databaseFileFuture;
+      if (databaseFileFuture != null) {
+        await _applyDatabaseFilePolicy(
+          await databaseFileFuture,
+          applyFilePolicy: _appleDatabaseFilePolicyApplier,
+        );
+      }
+
       // Fix any keys with "unknown" type or malformed public keys
       // by re-extracting from the private key
       final unknownKeys = await (select(
@@ -373,12 +395,20 @@ const _appleDatabaseFileProtectionChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/apple_file_protection',
 );
 
+/// Applies the Apple database storage policy to a database directory and file.
+typedef AppleDatabaseFilePolicyApplier =
+    Future<void> Function(Directory databaseDirectory, File databaseFile);
+
+Future<void> _noOpAppleDatabaseFilePolicy(
+  Directory databaseDirectory,
+  File databaseFile,
+) async {}
+
 /// Resolves the database file path and migrates legacy storage if needed.
 Future<File> resolveDatabaseFile({
   Future<Directory> Function()? getSupportDirectory,
   Future<Directory> Function()? getDocumentsDirectory,
-  Future<void> Function(Directory databaseDirectory, File databaseFile)?
-  applyFilePolicy,
+  AppleDatabaseFilePolicyApplier? applyFilePolicy,
 }) async {
   final supportDirectoryProvider =
       getSupportDirectory ?? getApplicationSupportDirectory;
@@ -455,29 +485,18 @@ Future<void> _applyAppleDatabaseFilePolicy(
     return;
   }
 
-  try {
-    await _appleDatabaseFileProtectionChannel.invokeMethod<void>(
-      'applyDatabaseFilePolicy',
-      <String, Object?>{
-        'databaseDirectoryPath': databaseDirectory.path,
-        'databasePath': databaseFile.path,
-        'companionPaths': [
-          for (final suffix in _databaseCompanionSuffixes)
-            '${databaseFile.path}$suffix',
-        ],
-        'applyFileProtection': Platform.isIOS,
-      },
-    );
-  } on PlatformException catch (error) {
-    debugPrint(
-      'Failed to harden Apple database files: ${error.message ?? error.code}',
-    );
-  } on MissingPluginException catch (error) {
-    debugPrint(
-      'Failed to harden Apple database files: '
-      '${error.message ?? 'missing plugin'}',
-    );
-  }
+  await _appleDatabaseFileProtectionChannel.invokeMethod<void>(
+    'applyDatabaseFilePolicy',
+    <String, Object?>{
+      'databaseDirectoryPath': databaseDirectory.path,
+      'databasePath': databaseFile.path,
+      'companionPaths': [
+        for (final suffix in _databaseCompanionSuffixes)
+          '${databaseFile.path}$suffix',
+      ],
+      'applyFileProtection': Platform.isIOS,
+    },
+  );
 }
 
 Future<void> _moveFileWithFallback(File source, File destination) async {
@@ -492,10 +511,19 @@ Future<void> _moveFileWithFallback(File source, File destination) async {
   }
 }
 
-LazyDatabase _openConnection() => LazyDatabase(() async {
-  final file = await resolveDatabaseFile();
-  return NativeDatabase.createInBackground(file);
-});
+Future<void> _applyDatabaseFilePolicy(
+  File databaseFile, {
+  AppleDatabaseFilePolicyApplier? applyFilePolicy,
+}) {
+  final filePolicyApplier = applyFilePolicy ?? _applyAppleDatabaseFilePolicy;
+  return filePolicyApplier(databaseFile.parent, databaseFile);
+}
+
+LazyDatabase _openConnection(Future<File> databaseFileFuture) =>
+    LazyDatabase(() async {
+      final file = await databaseFileFuture;
+      return NativeDatabase.createInBackground(file);
+    });
 
 /// Provider for the app database.
 final databaseProvider = Provider<AppDatabase>((ref) => AppDatabase());

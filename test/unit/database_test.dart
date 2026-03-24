@@ -3,6 +3,7 @@
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull;
+import 'package:drift/isolate.dart' show DriftRemoteException;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
@@ -284,15 +285,26 @@ void main() {
       File databaseFile,
     ) async {}
 
-    test('migrates legacy flutty.db from documents to app support', () async {
-      final rootDirectory = await Directory.systemTemp.createTemp(
-        'flutty-db-migration-test-',
+    Future<Directory> createTestRootDirectory(String name) async {
+      final rootDirectory = Directory(
+        p.join(
+          Directory.current.path,
+          '.dart_tool',
+          'database_test',
+          '$name-${DateTime.now().microsecondsSinceEpoch}',
+        ),
       );
+      await rootDirectory.create(recursive: true);
       addTearDown(() async {
         if (rootDirectory.existsSync()) {
           await rootDirectory.delete(recursive: true);
         }
       });
+      return rootDirectory;
+    }
+
+    test('migrates legacy flutty.db from documents to app support', () async {
+      final rootDirectory = await createTestRootDirectory('migration');
 
       final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
       final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
@@ -327,14 +339,9 @@ void main() {
     });
 
     test('moves legacy companion files when migration marker exists', () async {
-      final rootDirectory = await Directory.systemTemp.createTemp(
-        'flutty-db-companion-migration-test-',
+      final rootDirectory = await createTestRootDirectory(
+        'companion-migration',
       );
-      addTearDown(() async {
-        if (rootDirectory.existsSync()) {
-          await rootDirectory.delete(recursive: true);
-        }
-      });
 
       final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
       final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
@@ -377,14 +384,9 @@ void main() {
     test(
       'deletes orphan legacy companion files after migration completion',
       () async {
-        final rootDirectory = await Directory.systemTemp.createTemp(
-          'flutty-db-companion-cleanup-test-',
+        final rootDirectory = await createTestRootDirectory(
+          'companion-cleanup',
         );
-        addTearDown(() async {
-          if (rootDirectory.existsSync()) {
-            await rootDirectory.delete(recursive: true);
-          }
-        });
 
         final documentsDirectory = Directory(
           p.join(rootDirectory.path, 'docs'),
@@ -415,14 +417,7 @@ void main() {
     );
 
     test('applies file policy for a new database location', () async {
-      final rootDirectory = await Directory.systemTemp.createTemp(
-        'flutty-db-file-policy-test-',
-      );
-      addTearDown(() async {
-        if (rootDirectory.existsSync()) {
-          await rootDirectory.delete(recursive: true);
-        }
-      });
+      final rootDirectory = await createTestRootDirectory('file-policy');
 
       final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
       final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
@@ -443,6 +438,107 @@ void main() {
       expect(supportDirectory.existsSync(), isTrue);
       expect(protectedDirectory?.path, supportDirectory.path);
       expect(protectedFile?.path, resolvedFile.path);
+    });
+
+    test(
+      'propagates file policy failures before opening a new database location',
+      () async {
+        final rootDirectory = await createTestRootDirectory(
+          'pre-open-policy-failure',
+        );
+
+        final documentsDirectory = Directory(
+          p.join(rootDirectory.path, 'docs'),
+        );
+        final supportDirectory = Directory(
+          p.join(rootDirectory.path, 'support'),
+        );
+        await documentsDirectory.create(recursive: true);
+
+        await expectLater(
+          resolveDatabaseFile(
+            getSupportDirectory: () async => supportDirectory,
+            getDocumentsDirectory: () async => documentsDirectory,
+            applyFilePolicy: (databaseDirectory, databaseFile) async {
+              throw StateError('pre-open policy failed');
+            },
+          ),
+          throwsA(isA<StateError>()),
+        );
+      },
+    );
+
+    test(
+      'fails startup when post-open file policy application fails',
+      () async {
+        final rootDirectory = await createTestRootDirectory(
+          'post-open-policy-failure',
+        );
+
+        final documentsDirectory = Directory(
+          p.join(rootDirectory.path, 'docs'),
+        );
+        final supportDirectory = Directory(
+          p.join(rootDirectory.path, 'support'),
+        );
+        await documentsDirectory.create(recursive: true);
+
+        final databaseFileFuture = resolveDatabaseFile(
+          getSupportDirectory: () async => supportDirectory,
+          getDocumentsDirectory: () async => documentsDirectory,
+          applyFilePolicy: noOpFilePolicy,
+        );
+        final failingDb = AppDatabase.withDatabaseFile(
+          databaseFileFuture,
+          applyAppleFilePolicy: (databaseDirectory, databaseFile) async {
+            throw StateError('post-open policy failed');
+          },
+        );
+        addTearDown(() async {
+          await failingDb.close();
+        });
+
+        await expectLater(
+          failingDb.select(failingDb.settings).get(),
+          throwsA(isA<DriftRemoteException>()),
+        );
+      },
+    );
+
+    test('reapplies file policy after the database file is created', () async {
+      final rootDirectory = await createTestRootDirectory(
+        'fresh-install-policy',
+      );
+
+      final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
+      final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
+      await documentsDirectory.create(recursive: true);
+      final fileExistenceChecks = <bool>[];
+
+      Future<void> recordFilePolicyState(
+        Directory databaseDirectory,
+        File databaseFile,
+      ) async {
+        fileExistenceChecks.add(databaseFile.existsSync());
+      }
+
+      final databaseFileFuture = resolveDatabaseFile(
+        getSupportDirectory: () async => supportDirectory,
+        getDocumentsDirectory: () async => documentsDirectory,
+        applyFilePolicy: recordFilePolicyState,
+      );
+      final dbWithReappliedPolicy = AppDatabase.withDatabaseFile(
+        databaseFileFuture,
+        applyAppleFilePolicy: recordFilePolicyState,
+      );
+      addTearDown(() async {
+        await dbWithReappliedPolicy.close();
+      });
+
+      await dbWithReappliedPolicy.select(dbWithReappliedPolicy.settings).get();
+
+      expect(fileExistenceChecks, [isFalse, isTrue]);
+      expect((await databaseFileFuture).existsSync(), isTrue);
     });
   });
 }
