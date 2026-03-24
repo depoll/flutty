@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart' show TextInputClient;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:integration_test/integration_test.dart';
+import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
@@ -182,5 +183,53 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets('reviews suspicious IME paste before sending it', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return false;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
+          .updateEditingValue(
+            const TextEditingValue(
+              text: '\u200B\u200Becho ready\necho deploy',
+              selection: TextSelection.collapsed(offset: 24),
+            ),
+          );
+      await tester.pump();
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.multiline),
+      );
+      expect(terminalOutput, isEmpty);
+
+      focusNode.dispose();
+    });
   });
 }

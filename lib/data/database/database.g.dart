@@ -2199,6 +2199,21 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
       'REFERENCES snippets (id)',
     ),
   );
+  static const VerificationMeta _autoConnectRequiresConfirmationMeta =
+      const VerificationMeta('autoConnectRequiresConfirmation');
+  @override
+  late final GeneratedColumn<bool> autoConnectRequiresConfirmation =
+      GeneratedColumn<bool>(
+        'auto_connect_requires_confirmation',
+        aliasedName,
+        false,
+        type: DriftSqlType.bool,
+        requiredDuringInsert: false,
+        defaultConstraints: GeneratedColumn.constraintIsAlways(
+          'CHECK ("auto_connect_requires_confirmation" IN (0, 1))',
+        ),
+        defaultValue: const Constant(false),
+      );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -2222,6 +2237,7 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     terminalFontFamily,
     autoConnectCommand,
     autoConnectSnippetId,
+    autoConnectRequiresConfirmation,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -2385,6 +2401,15 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
       );
     }
+    if (data.containsKey('auto_connect_requires_confirmation')) {
+      context.handle(
+        _autoConnectRequiresConfirmationMeta,
+        autoConnectRequiresConfirmation.isAcceptableOrUnknown(
+          data['auto_connect_requires_confirmation']!,
+          _autoConnectRequiresConfirmationMeta,
+        ),
+      );
+    }
     return context;
   }
 
@@ -2478,6 +2503,10 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.int,
         data['${effectivePrefix}auto_connect_snippet_id'],
       ),
+      autoConnectRequiresConfirmation: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}auto_connect_requires_confirmation'],
+      )!,
     );
   }
 
@@ -2550,6 +2579,9 @@ class Host extends DataClass implements Insertable<Host> {
 
   /// Referenced snippet to run automatically after connecting/reconnecting.
   final int? autoConnectSnippetId;
+
+  /// Whether auto-connect should require user review before it can run.
+  final bool autoConnectRequiresConfirmation;
   const Host({
     required this.id,
     required this.label,
@@ -2572,6 +2604,7 @@ class Host extends DataClass implements Insertable<Host> {
     this.terminalFontFamily,
     this.autoConnectCommand,
     this.autoConnectSnippetId,
+    required this.autoConnectRequiresConfirmation,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -2623,6 +2656,9 @@ class Host extends DataClass implements Insertable<Host> {
     if (!nullToAbsent || autoConnectSnippetId != null) {
       map['auto_connect_snippet_id'] = Variable<int>(autoConnectSnippetId);
     }
+    map['auto_connect_requires_confirmation'] = Variable<bool>(
+      autoConnectRequiresConfirmation,
+    );
     return map;
   }
 
@@ -2673,6 +2709,7 @@ class Host extends DataClass implements Insertable<Host> {
       autoConnectSnippetId: autoConnectSnippetId == null && nullToAbsent
           ? const Value.absent()
           : Value(autoConnectSnippetId),
+      autoConnectRequiresConfirmation: Value(autoConnectRequiresConfirmation),
     );
   }
 
@@ -2713,6 +2750,9 @@ class Host extends DataClass implements Insertable<Host> {
       autoConnectSnippetId: serializer.fromJson<int?>(
         json['autoConnectSnippetId'],
       ),
+      autoConnectRequiresConfirmation: serializer.fromJson<bool>(
+        json['autoConnectRequiresConfirmation'],
+      ),
     );
   }
   @override
@@ -2740,6 +2780,9 @@ class Host extends DataClass implements Insertable<Host> {
       'terminalFontFamily': serializer.toJson<String?>(terminalFontFamily),
       'autoConnectCommand': serializer.toJson<String?>(autoConnectCommand),
       'autoConnectSnippetId': serializer.toJson<int?>(autoConnectSnippetId),
+      'autoConnectRequiresConfirmation': serializer.toJson<bool>(
+        autoConnectRequiresConfirmation,
+      ),
     };
   }
 
@@ -2765,6 +2808,7 @@ class Host extends DataClass implements Insertable<Host> {
     Value<String?> terminalFontFamily = const Value.absent(),
     Value<String?> autoConnectCommand = const Value.absent(),
     Value<int?> autoConnectSnippetId = const Value.absent(),
+    bool? autoConnectRequiresConfirmation,
   }) => Host(
     id: id ?? this.id,
     label: label ?? this.label,
@@ -2799,6 +2843,8 @@ class Host extends DataClass implements Insertable<Host> {
     autoConnectSnippetId: autoConnectSnippetId.present
         ? autoConnectSnippetId.value
         : this.autoConnectSnippetId,
+    autoConnectRequiresConfirmation:
+        autoConnectRequiresConfirmation ?? this.autoConnectRequiresConfirmation,
   );
   Host copyWithCompanion(HostsCompanion data) {
     return Host(
@@ -2839,6 +2885,10 @@ class Host extends DataClass implements Insertable<Host> {
       autoConnectSnippetId: data.autoConnectSnippetId.present
           ? data.autoConnectSnippetId.value
           : this.autoConnectSnippetId,
+      autoConnectRequiresConfirmation:
+          data.autoConnectRequiresConfirmation.present
+          ? data.autoConnectRequiresConfirmation.value
+          : this.autoConnectRequiresConfirmation,
     );
   }
 
@@ -2865,7 +2915,10 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('terminalThemeDarkId: $terminalThemeDarkId, ')
           ..write('terminalFontFamily: $terminalFontFamily, ')
           ..write('autoConnectCommand: $autoConnectCommand, ')
-          ..write('autoConnectSnippetId: $autoConnectSnippetId')
+          ..write('autoConnectSnippetId: $autoConnectSnippetId, ')
+          ..write(
+            'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation',
+          )
           ..write(')'))
         .toString();
   }
@@ -2893,6 +2946,7 @@ class Host extends DataClass implements Insertable<Host> {
     terminalFontFamily,
     autoConnectCommand,
     autoConnectSnippetId,
+    autoConnectRequiresConfirmation,
   ]);
   @override
   bool operator ==(Object other) =>
@@ -2918,7 +2972,9 @@ class Host extends DataClass implements Insertable<Host> {
           other.terminalThemeDarkId == this.terminalThemeDarkId &&
           other.terminalFontFamily == this.terminalFontFamily &&
           other.autoConnectCommand == this.autoConnectCommand &&
-          other.autoConnectSnippetId == this.autoConnectSnippetId);
+          other.autoConnectSnippetId == this.autoConnectSnippetId &&
+          other.autoConnectRequiresConfirmation ==
+              this.autoConnectRequiresConfirmation);
 }
 
 class HostsCompanion extends UpdateCompanion<Host> {
@@ -2943,6 +2999,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<String?> terminalFontFamily;
   final Value<String?> autoConnectCommand;
   final Value<int?> autoConnectSnippetId;
+  final Value<bool> autoConnectRequiresConfirmation;
   const HostsCompanion({
     this.id = const Value.absent(),
     this.label = const Value.absent(),
@@ -2965,6 +3022,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.terminalFontFamily = const Value.absent(),
     this.autoConnectCommand = const Value.absent(),
     this.autoConnectSnippetId = const Value.absent(),
+    this.autoConnectRequiresConfirmation = const Value.absent(),
   });
   HostsCompanion.insert({
     this.id = const Value.absent(),
@@ -2988,6 +3046,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.terminalFontFamily = const Value.absent(),
     this.autoConnectCommand = const Value.absent(),
     this.autoConnectSnippetId = const Value.absent(),
+    this.autoConnectRequiresConfirmation = const Value.absent(),
   }) : label = Value(label),
        hostname = Value(hostname),
        username = Value(username);
@@ -3013,6 +3072,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<String>? terminalFontFamily,
     Expression<String>? autoConnectCommand,
     Expression<int>? autoConnectSnippetId,
+    Expression<bool>? autoConnectRequiresConfirmation,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -3041,6 +3101,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
         'auto_connect_command': autoConnectCommand,
       if (autoConnectSnippetId != null)
         'auto_connect_snippet_id': autoConnectSnippetId,
+      if (autoConnectRequiresConfirmation != null)
+        'auto_connect_requires_confirmation': autoConnectRequiresConfirmation,
     });
   }
 
@@ -3066,6 +3128,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<String?>? terminalFontFamily,
     Value<String?>? autoConnectCommand,
     Value<int?>? autoConnectSnippetId,
+    Value<bool>? autoConnectRequiresConfirmation,
   }) {
     return HostsCompanion(
       id: id ?? this.id,
@@ -3089,6 +3152,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
       terminalFontFamily: terminalFontFamily ?? this.terminalFontFamily,
       autoConnectCommand: autoConnectCommand ?? this.autoConnectCommand,
       autoConnectSnippetId: autoConnectSnippetId ?? this.autoConnectSnippetId,
+      autoConnectRequiresConfirmation:
+          autoConnectRequiresConfirmation ??
+          this.autoConnectRequiresConfirmation,
     );
   }
 
@@ -3164,6 +3230,11 @@ class HostsCompanion extends UpdateCompanion<Host> {
         autoConnectSnippetId.value,
       );
     }
+    if (autoConnectRequiresConfirmation.present) {
+      map['auto_connect_requires_confirmation'] = Variable<bool>(
+        autoConnectRequiresConfirmation.value,
+      );
+    }
     return map;
   }
 
@@ -3190,7 +3261,10 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('terminalThemeDarkId: $terminalThemeDarkId, ')
           ..write('terminalFontFamily: $terminalFontFamily, ')
           ..write('autoConnectCommand: $autoConnectCommand, ')
-          ..write('autoConnectSnippetId: $autoConnectSnippetId')
+          ..write('autoConnectSnippetId: $autoConnectSnippetId, ')
+          ..write(
+            'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation',
+          )
           ..write(')'))
         .toString();
   }
@@ -6277,6 +6351,7 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<String?> terminalFontFamily,
       Value<String?> autoConnectCommand,
       Value<int?> autoConnectSnippetId,
+      Value<bool> autoConnectRequiresConfirmation,
     });
 typedef $$HostsTableUpdateCompanionBuilder =
     HostsCompanion Function({
@@ -6301,6 +6376,7 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<String?> terminalFontFamily,
       Value<String?> autoConnectCommand,
       Value<int?> autoConnectSnippetId,
+      Value<bool> autoConnectRequiresConfirmation,
     });
 
 final class $$HostsTableReferences
@@ -6491,6 +6567,11 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<String> get autoConnectCommand => $composableBuilder(
     column: $table.autoConnectCommand,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get autoConnectRequiresConfirmation => $composableBuilder(
+    column: $table.autoConnectRequiresConfirmation,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6706,6 +6787,12 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<bool> get autoConnectRequiresConfirmation =>
+      $composableBuilder(
+        column: $table.autoConnectRequiresConfirmation,
+        builder: (column) => ColumnOrderings(column),
+      );
+
   $$SshKeysTableOrderingComposer get keyId {
     final $$SshKeysTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6870,6 +6957,12 @@ class $$HostsTableAnnotationComposer
     column: $table.autoConnectCommand,
     builder: (column) => column,
   );
+
+  GeneratedColumn<bool> get autoConnectRequiresConfirmation =>
+      $composableBuilder(
+        column: $table.autoConnectRequiresConfirmation,
+        builder: (column) => column,
+      );
 
   $$SshKeysTableAnnotationComposer get keyId {
     final $$SshKeysTableAnnotationComposer composer = $composerBuilder(
@@ -7044,6 +7137,8 @@ class $$HostsTableTableManager
                 Value<String?> terminalFontFamily = const Value.absent(),
                 Value<String?> autoConnectCommand = const Value.absent(),
                 Value<int?> autoConnectSnippetId = const Value.absent(),
+                Value<bool> autoConnectRequiresConfirmation =
+                    const Value.absent(),
               }) => HostsCompanion(
                 id: id,
                 label: label,
@@ -7066,6 +7161,8 @@ class $$HostsTableTableManager
                 terminalFontFamily: terminalFontFamily,
                 autoConnectCommand: autoConnectCommand,
                 autoConnectSnippetId: autoConnectSnippetId,
+                autoConnectRequiresConfirmation:
+                    autoConnectRequiresConfirmation,
               ),
           createCompanionCallback:
               ({
@@ -7090,6 +7187,8 @@ class $$HostsTableTableManager
                 Value<String?> terminalFontFamily = const Value.absent(),
                 Value<String?> autoConnectCommand = const Value.absent(),
                 Value<int?> autoConnectSnippetId = const Value.absent(),
+                Value<bool> autoConnectRequiresConfirmation =
+                    const Value.absent(),
               }) => HostsCompanion.insert(
                 id: id,
                 label: label,
@@ -7112,6 +7211,8 @@ class $$HostsTableTableManager
                 terminalFontFamily: terminalFontFamily,
                 autoConnectCommand: autoConnectCommand,
                 autoConnectSnippetId: autoConnectSnippetId,
+                autoConnectRequiresConfirmation:
+                    autoConnectRequiresConfirmation,
               ),
           withReferenceMapper: (p0) => p0
               .map(

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -55,6 +56,7 @@ class AuthService {
   static const _pinKdfVersion = 1;
   static const _pinKdfIterations = 120000;
   static const _pinKdfBits = 256;
+  static const _pinHashLength = _pinKdfBits ~/ 8;
   static const _pinSaltLength = 16;
   Future<void> _pinWriteQueue = Future<void>.value();
 
@@ -97,15 +99,21 @@ class AuthService {
     final authEnabled = await isAuthEnabled();
     if (!authEnabled) return AuthMethod.none;
 
+    final hasUsablePin = await _hasUsablePin();
     final biometricEnabled = await isBiometricEnabled();
     final biometricAvailable = await isBiometricAvailable();
 
     if (biometricEnabled && biometricAvailable) {
-      final hasPin = await _storage.read(key: _pinKey) != null;
-      return hasPin ? AuthMethod.both : AuthMethod.biometric;
+      return hasUsablePin ? AuthMethod.both : AuthMethod.biometric;
     }
 
-    return AuthMethod.pin;
+    if (hasUsablePin) {
+      return AuthMethod.pin;
+    }
+
+    throw StateError(
+      'Authentication is enabled but no usable authentication method is available.',
+    );
   }
 
   /// Set up PIN authentication.
@@ -131,6 +139,9 @@ class AuthService {
       return false;
     }
     if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
+      return false;
+    }
+    if (!_hasValidStoredPinHash(pinRecord.hash)) {
       return false;
     }
 
@@ -250,7 +261,11 @@ class AuthService {
     if (saltData == null) return null;
 
     try {
-      return base64Decode(saltData);
+      final salt = base64Decode(saltData);
+      if (salt.length != _pinSaltLength) {
+        return null;
+      }
+      return salt;
     } on FormatException {
       return null;
     }
@@ -293,6 +308,36 @@ class AuthService {
     }
 
     return _PinHashRecord(version: version, iterations: iterations, hash: hash);
+  }
+
+  bool _hasValidStoredPinHash(String hash) {
+    if (hash.isEmpty) return false;
+
+    try {
+      final decodedHash = base64Decode(hash);
+      return decodedHash.length == _pinHashLength;
+    } on FormatException {
+      return false;
+    }
+  }
+
+  Future<bool> _hasUsablePin() async {
+    final storedPinData = await _storage.read(key: _pinKey);
+    if (storedPinData == null) return false;
+
+    final pinRecord = _parsePinRecord(storedPinData);
+    if (pinRecord == null || !_hasValidStoredPinHash(pinRecord.hash)) {
+      return false;
+    }
+    if (pinRecord.version != _pinKdfVersion) {
+      return false;
+    }
+    if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
+      return false;
+    }
+
+    final salt = await _readSalt();
+    return salt != null;
   }
 
   bool _constantTimeEquals(String a, String b) {
@@ -351,9 +396,27 @@ class AuthStateNotifier extends Notifier<AuthState> {
   }
 
   Future<void> _init() async {
-    final isEnabled = await _authService.isAuthEnabled();
+    final isEnabled = await _loadAuthEnabledState();
     if (_disposed) return;
     state = isEnabled ? AuthState.locked : AuthState.notConfigured;
+  }
+
+  Future<bool> _loadAuthEnabledState() async {
+    try {
+      return await _authService.isAuthEnabled();
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'auth',
+          context: ErrorDescription(
+            'while determining whether app authentication is enabled',
+          ),
+        ),
+      );
+      return true;
+    }
   }
 
   /// Attempt to unlock with PIN.
@@ -375,13 +438,21 @@ class AuthStateNotifier extends Notifier<AuthState> {
   }
 
   /// Lock the app.
-  void lock() {
+  Future<void> lock() async {
+    final isEnabled = await _loadAuthEnabledState();
+    if (_disposed) return;
+    state = isEnabled ? AuthState.locked : AuthState.notConfigured;
+  }
+
+  /// Lock the app immediately when auth is already known to be configured.
+  void lockForAutoLock() {
+    if (_disposed) return;
     state = AuthState.locked;
   }
 
-  /// Skip authentication (when not configured).
+  /// Skip authentication setup (when not configured).
   void skip() {
-    state = AuthState.unlocked;
+    state = AuthState.notConfigured;
   }
 
   /// Reset state after configuring auth.

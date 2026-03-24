@@ -5,9 +5,11 @@ import UIKit
 @objc class AppDelegate: FlutterAppDelegate {
   private let channelName = "xyz.depollsoft.monkeyssh/ssh_service"
   private let transferChannelName = "xyz.depollsoft.monkeyssh/transfer"
+  private let appleDatabaseChannelName = "xyz.depollsoft.monkeyssh/apple_file_protection"
   private let maxTransferPayloadBytes = 10 * 1024 * 1024
   private var backgroundSshChannel: FlutterMethodChannel?
   private var transferChannel: FlutterMethodChannel?
+  private var appleDatabaseChannel: FlutterMethodChannel?
   private var pendingTransferPayload: String?
 
   /// Background task identifier used to request a brief grace period
@@ -22,6 +24,7 @@ import UIKit
     if let registrar = self.registrar(forPlugin: "AppDelegateBridge") {
       setupBackgroundSshChannel(with: registrar)
       setupTransferChannel(with: registrar)
+      setupAppleDatabaseChannel(with: registrar)
     } else {
       NSLog("Failed to configure AppDelegate method channels.")
     }
@@ -105,6 +108,26 @@ import UIKit
     notifyIncomingTransferPayload()
   }
 
+  private func setupAppleDatabaseChannel(with registrar: FlutterPluginRegistrar) {
+    let channel = FlutterMethodChannel(
+      name: appleDatabaseChannelName,
+      binaryMessenger: registrar.messenger()
+    )
+    appleDatabaseChannel = channel
+    channel.setMethodCallHandler { [weak self] call, result in
+      guard let self = self else {
+        result(nil)
+        return
+      }
+      switch call.method {
+      case "applyDatabaseFilePolicy":
+        self.handleAppleDatabaseMethodCall(call, result: result)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
   private func handleBackgroundSshMethodCall(
     _ call: FlutterMethodCall,
     result: @escaping FlutterResult
@@ -171,6 +194,48 @@ import UIKit
     }
   }
 
+  private func handleAppleDatabaseMethodCall(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    guard
+      let arguments = call.arguments as? [String: Any],
+      let databaseDirectoryPath = arguments["databaseDirectoryPath"] as? String,
+      let databasePath = arguments["databasePath"] as? String,
+      let companionPaths = arguments["companionPaths"] as? [String]
+    else {
+      result(
+        FlutterError(
+          code: "invalid_args",
+          message: "Missing Apple database file policy arguments",
+          details: nil
+        )
+      )
+      return
+    }
+
+    let applyFileProtection =
+      arguments["applyFileProtection"] as? Bool ?? true
+
+    do {
+      try applyAppleDatabaseFilePolicy(
+        databaseDirectoryPath: databaseDirectoryPath,
+        databasePath: databasePath,
+        companionPaths: companionPaths,
+        applyFileProtection: applyFileProtection
+      )
+      result(nil)
+    } catch {
+      result(
+        FlutterError(
+          code: "file_policy_error",
+          message: "Failed to apply Apple database file policy",
+          details: error.localizedDescription
+        )
+      )
+    }
+  }
+
   private func handleTransferFile(url: URL) -> Bool {
     guard url.pathExtension.lowercased() == "monkeysshx" else {
       return false
@@ -211,5 +276,86 @@ import UIKit
       return
     }
     transferChannel?.invokeMethod("onIncomingTransferPayload", arguments: payload)
+  }
+
+  private func applyAppleDatabaseFilePolicy(
+    databaseDirectoryPath: String,
+    databasePath: String,
+    companionPaths: [String],
+    applyFileProtection: Bool
+  ) throws {
+    let validatedPaths = try validatedDatabaseFilePolicyPaths(
+      databaseDirectoryPath: databaseDirectoryPath,
+      databasePath: databasePath,
+      companionPaths: companionPaths
+    )
+
+    try excludeFromBackup(path: validatedPaths.databaseDirectoryPath)
+    if applyFileProtection {
+      try applyFileProtectionClass(path: validatedPaths.databaseDirectoryPath)
+    }
+
+    for path in [validatedPaths.databasePath] + validatedPaths.companionPaths {
+      guard FileManager.default.fileExists(atPath: path) else {
+        continue
+      }
+      try excludeFromBackup(path: path)
+      if applyFileProtection {
+        try applyFileProtectionClass(path: path)
+      }
+    }
+  }
+
+  private func validatedDatabaseFilePolicyPaths(
+    databaseDirectoryPath: String,
+    databasePath: String,
+    companionPaths: [String]
+  ) throws -> (databaseDirectoryPath: String, databasePath: String, companionPaths: [String]) {
+    func canonicalURL(for path: String) -> URL {
+      URL(fileURLWithPath: path).resolvingSymlinksInPath().standardizedFileURL
+    }
+
+    let baseURL = canonicalURL(for: databaseDirectoryPath)
+    let basePath = baseURL.path.hasSuffix("/") ? baseURL.path : baseURL.path + "/"
+
+    func validatedPath(_ path: String, kind: String) throws -> String {
+      let canonicalPath = canonicalURL(for: path).path
+      if canonicalPath == baseURL.path || canonicalPath.hasPrefix(basePath) {
+        return canonicalPath
+      }
+
+      throw NSError(
+        domain: "AppleDatabaseFilePolicy",
+        code: 1,
+        userInfo: [
+          NSLocalizedDescriptionKey:
+            "\(kind) path is outside the database directory: \(path)"
+        ]
+      )
+    }
+
+    return (
+      databaseDirectoryPath: baseURL.path,
+      databasePath: try validatedPath(databasePath, kind: "Database"),
+      companionPaths: try companionPaths.map { path in
+        try validatedPath(path, kind: "Companion")
+      }
+    )
+  }
+
+  private func excludeFromBackup(path: String) throws {
+    var url = URL(fileURLWithPath: path)
+    var resourceValues = URLResourceValues()
+    resourceValues.isExcludedFromBackup = true
+    try url.setResourceValues(resourceValues)
+  }
+
+  private func applyFileProtectionClass(path: String) throws {
+    try FileManager.default.setAttributes(
+      [
+        .protectionKey: FileProtectionType.completeUntilFirstUserAuthentication
+      ],
+      ofItemAtPath: path
+    )
   }
 }
