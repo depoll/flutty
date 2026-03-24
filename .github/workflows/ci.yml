@@ -111,13 +111,54 @@ jobs:
         run: flutter pub get
 
       - name: Build APK
-        run: flutter build apk --flavor production --release
+        run: flutter build apk --flavor production --debug
 
       - name: Upload APK
         uses: actions/upload-artifact@v7
         with:
           name: android-apk
-          path: build/app/outputs/flutter-apk/app-production-release.apk
+          path: build/app/outputs/flutter-apk/app-production-debug.apk
+
+  verify-android-release-signing:
+    name: Verify Android Release Signing
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: actions/cache@v5
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+          restore-keys: gradle-${{ runner.os }}-
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.x'
+          channel: 'stable'
+          cache: true
+
+      - name: Install dependencies
+        run: flutter pub get
+
+      - name: Release build fails without signing config
+        run: |
+          set +e
+          output=$(flutter build apk --flavor production --release 2>&1)
+          status=$?
+          set -e
+          echo "$output"
+          if [ "$status" -eq 0 ]; then
+            echo "Expected Android release build to fail without signing config."
+            exit 1
+          fi
+          echo "$output" | grep -F "Release builds require Android signing configuration in android/app/key.properties."
 
   build-ios:
     name: Build iOS
