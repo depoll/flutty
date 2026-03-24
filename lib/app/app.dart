@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
+import 'auth_lifecycle_controller.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -67,6 +68,10 @@ class _BackgroundLifecycleBridgeState
     await ref.read(activeSessionsProvider.notifier).syncBackgroundStatus();
   }
 
+  Future<void> _syncAuthLifecycle(AppLifecycleState state) => ref
+      .read(authLifecycleControllerProvider)
+      .handleLifecycleStateChanged(state);
+
   void _runLifecycleSync(
     Future<void> Function() operation, {
     required String errorContext,
@@ -97,16 +102,22 @@ class _BackgroundLifecycleBridgeState
     };
     if (isForeground) {
       _runLifecycleSync(
-        _syncForegroundBackgroundStatus,
+        () async {
+          await _syncForegroundBackgroundStatus();
+          await _syncAuthLifecycle(state);
+        },
         errorContext:
-            'while syncing background SSH status after returning to the foreground',
+            'while syncing background SSH status and auth lock state after returning to the foreground',
       );
       return;
     }
     _runLifecycleSync(
-      () => BackgroundSshService.setForegroundState(isForeground: false),
+      () async {
+        await _syncAuthLifecycle(state);
+        await BackgroundSshService.setForegroundState(isForeground: false);
+      },
       errorContext:
-          'while syncing background SSH status after moving to the background',
+          'while syncing background SSH status and auth lock state after moving to the background',
     );
   }
 

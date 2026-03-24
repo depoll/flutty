@@ -90,8 +90,10 @@ class _LockScreenState extends ConsumerState<LockScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final authState = ref.watch(authStateProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isInitializing = authState == AuthState.unknown;
 
     return Scaffold(
       body: SafeArea(
@@ -118,16 +120,24 @@ class _LockScreenState extends ConsumerState<LockScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Enter your PIN to unlock',
+                isInitializing
+                    ? 'Checking your security settings…'
+                    : 'Enter your PIN to unlock',
                 style: theme.textTheme.bodyLarge?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
               ),
               const SizedBox(height: 48),
 
+              if (isInitializing) ...[
+                const CircularProgressIndicator(),
+                const SizedBox(height: 24),
+              ],
+
               // PIN input
-              if (_authMethod == AuthMethod.pin ||
-                  _authMethod == AuthMethod.both) ...[
+              if (!isInitializing &&
+                  (_authMethod == AuthMethod.pin ||
+                      _authMethod == AuthMethod.both)) ...[
                 SizedBox(
                   width: 200,
                   child: TextField(
@@ -172,8 +182,9 @@ class _LockScreenState extends ConsumerState<LockScreen> {
               ],
 
               // Biometric button
-              if (_authMethod == AuthMethod.biometric ||
-                  _authMethod == AuthMethod.both) ...[
+              if (!isInitializing &&
+                  (_authMethod == AuthMethod.biometric ||
+                      _authMethod == AuthMethod.both)) ...[
                 const SizedBox(height: 24),
                 TextButton.icon(
                   onPressed: _isLoading ? null : _authenticateWithBiometrics,

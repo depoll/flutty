@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:convert';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -351,9 +352,27 @@ class AuthStateNotifier extends Notifier<AuthState> {
   }
 
   Future<void> _init() async {
-    final isEnabled = await _authService.isAuthEnabled();
+    final isEnabled = await _loadAuthEnabledState();
     if (_disposed) return;
     state = isEnabled ? AuthState.locked : AuthState.notConfigured;
+  }
+
+  Future<bool> _loadAuthEnabledState() async {
+    try {
+      return await _authService.isAuthEnabled();
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'auth',
+          context: ErrorDescription(
+            'while determining whether app authentication is enabled',
+          ),
+        ),
+      );
+      return true;
+    }
   }
 
   /// Attempt to unlock with PIN.
@@ -375,13 +394,15 @@ class AuthStateNotifier extends Notifier<AuthState> {
   }
 
   /// Lock the app.
-  void lock() {
-    state = AuthState.locked;
+  Future<void> lock() async {
+    final isEnabled = await _loadAuthEnabledState();
+    if (_disposed) return;
+    state = isEnabled ? AuthState.locked : AuthState.notConfigured;
   }
 
-  /// Skip authentication (when not configured).
+  /// Skip authentication setup (when not configured).
   void skip() {
-    state = AuthState.unlocked;
+    state = AuthState.notConfigured;
   }
 
   /// Reset state after configuring auth.
