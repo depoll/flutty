@@ -202,6 +202,7 @@ Future<String?> showTransferPassphraseDialog({
 Future<bool> authorizeSensitiveTransferExport({
   required BuildContext context,
   required AuthService authService,
+  required AuthState Function() readAuthState,
   required String reason,
 }) async {
   final isAuthEnabled = await authService.isAuthEnabled();
@@ -209,7 +210,22 @@ Future<bool> authorizeSensitiveTransferExport({
     return true;
   }
 
-  final method = await authService.getAuthMethod();
+  AuthMethod method;
+  try {
+    method = await authService.getAuthMethod();
+  } on Object catch (error, stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'auth',
+        context: ErrorDescription(
+          'while determining the available authentication method for sensitive transfers',
+        ),
+      ),
+    );
+    return false;
+  }
   if (!context.mounted) {
     return false;
   }
@@ -218,7 +234,13 @@ Future<bool> authorizeSensitiveTransferExport({
     case AuthMethod.none:
       return true;
     case AuthMethod.biometric:
-      return authService.authenticateWithBiometrics(reason: reason);
+      final biometricSuccess = await authService.authenticateWithBiometrics(
+        reason: reason,
+      );
+      if (!_isSensitiveTransferAuthSessionUnlocked(readAuthState)) {
+        return false;
+      }
+      return biometricSuccess;
     case AuthMethod.pin:
       final pin = await _showPinDialog(context);
       if (pin == null) {
@@ -229,6 +251,9 @@ Future<bool> authorizeSensitiveTransferExport({
       final biometricSuccess = await authService.authenticateWithBiometrics(
         reason: reason,
       );
+      if (!_isSensitiveTransferAuthSessionUnlocked(readAuthState)) {
+        return false;
+      }
       if (biometricSuccess) {
         return true;
       }
@@ -242,6 +267,10 @@ Future<bool> authorizeSensitiveTransferExport({
       return authService.verifyPin(pin);
   }
 }
+
+bool _isSensitiveTransferAuthSessionUnlocked(
+  AuthState Function() readAuthState,
+) => readAuthState() == AuthState.unlocked;
 
 Future<String?> _showPinDialog(BuildContext context) async {
   final controller = TextEditingController();

@@ -25,29 +25,10 @@ final routerProvider = Provider<GoRouter>((ref) {
 
   return GoRouter(
     initialLocation: '/',
-    redirect: (context, state) {
-      final isLocked = authState == AuthState.locked;
-      final isNotConfigured = authState == AuthState.notConfigured;
-      final isOnLockScreen = state.matchedLocation == '/lock';
-      final isOnSetupScreen = state.matchedLocation == '/auth-setup';
-
-      if (isLocked && !isOnLockScreen) {
-        return '/lock';
-      }
-
-      if (isNotConfigured && !isOnSetupScreen && !isOnLockScreen) {
-        // Allow skipping setup, so don't force redirect
-        return null;
-      }
-
-      if (!isLocked &&
-          !isNotConfigured &&
-          (isOnLockScreen || isOnSetupScreen)) {
-        return '/';
-      }
-
-      return null;
-    },
+    redirect: (context, state) => redirectForAuthState(
+      authState: authState,
+      matchedLocation: state.matchedLocation,
+    ),
     routes: [
       GoRoute(
         path: '/',
@@ -176,6 +157,32 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+/// Computes the route redirect for the given authentication state.
+String? redirectForAuthState({
+  required AuthState authState,
+  required String matchedLocation,
+}) {
+  final isBlocked =
+      authState == AuthState.unknown || authState == AuthState.locked;
+  final isNotConfigured = authState == AuthState.notConfigured;
+  final isOnLockScreen = matchedLocation == '/lock';
+  final isOnSetupScreen = matchedLocation == '/auth-setup';
+
+  if (isBlocked) {
+    return isOnLockScreen ? null : '/lock';
+  }
+
+  if (isNotConfigured && isOnLockScreen) {
+    return '/';
+  }
+
+  if (!isNotConfigured && (isOnLockScreen || isOnSetupScreen)) {
+    return '/';
+  }
+
+  return null;
+}
 
 /// Route names for type-safe navigation.
 abstract final class Routes {
