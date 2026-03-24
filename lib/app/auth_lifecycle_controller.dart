@@ -28,9 +28,9 @@ class AuthLifecycleController {
   Future<void> handleLifecycleStateChanged(AppLifecycleState state) async {
     switch (state) {
       case AppLifecycleState.resumed:
-      case AppLifecycleState.inactive:
         await _handleForegrounded();
         return;
+      case AppLifecycleState.inactive:
       case AppLifecycleState.hidden:
       case AppLifecycleState.paused:
       case AppLifecycleState.detached:

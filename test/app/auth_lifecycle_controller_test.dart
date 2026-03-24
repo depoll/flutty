@@ -58,6 +58,25 @@ void main() {
       expect(container.read(authStateProvider), AuthState.locked);
     });
 
+    test(
+      'locks on resume after timing out from an inactive-only transition',
+      () async {
+        container.read(authStateProvider);
+        await pumpEventQueue();
+        await container.read(authStateProvider.notifier).unlockWithPin('1234');
+
+        final controller = container.read(authLifecycleControllerProvider);
+        await controller.handleLifecycleStateChanged(
+          AppLifecycleState.inactive,
+        );
+
+        now = now.add(const Duration(minutes: 5));
+        await controller.handleLifecycleStateChanged(AppLifecycleState.resumed);
+
+        expect(container.read(authStateProvider), AuthState.locked);
+      },
+    );
+
     test('does not lock on resume before the timeout elapses', () async {
       container.read(authStateProvider);
       await pumpEventQueue();
