@@ -123,6 +123,81 @@ void main() {
     });
   });
 
+  group('terminal metadata helpers', () {
+    test('parses and formats working directory metadata', () {
+      final uri = parseTerminalWorkingDirectoryUri([
+        'file://remote.example.com/Users/tester/project%20name',
+      ]);
+
+      expect(uri, isNotNull);
+      expect(
+        resolveTerminalWorkingDirectoryPath(uri),
+        '/Users/tester/project name',
+      );
+      expect(
+        formatTerminalWorkingDirectoryLabel(uri),
+        'remote.example.com:/Users/tester/project name',
+      );
+    });
+
+    test('falls back to the raw working-directory path on bad encoding', () {
+      final uri = Uri.parse('file://remote.example.com/Users/tester/100%');
+
+      expect(resolveTerminalWorkingDirectoryPath(uri), '/Users/tester/100%');
+      expect(
+        formatTerminalWorkingDirectoryLabel(uri),
+        'remote.example.com:/Users/tester/100%',
+      );
+    });
+
+    test('preserves shell state transitions and exit codes', () {
+      final promptState = applyTerminalShellIntegrationOsc(
+        const ['A'],
+        previousStatus: null,
+        previousExitCode: null,
+      );
+      expect(promptState.status, TerminalShellStatus.prompt);
+      expect(promptState.lastExitCode, isNull);
+
+      final runningState = applyTerminalShellIntegrationOsc(
+        const ['C'],
+        previousStatus: promptState.status,
+        previousExitCode: promptState.lastExitCode,
+      );
+      expect(runningState.status, TerminalShellStatus.runningCommand);
+      expect(runningState.lastExitCode, isNull);
+
+      final exitState = applyTerminalShellIntegrationOsc(
+        const ['D', '17'],
+        previousStatus: runningState.status,
+        previousExitCode: runningState.lastExitCode,
+      );
+      expect(exitState.status, TerminalShellStatus.prompt);
+      expect(exitState.lastExitCode, 17);
+      expect(
+        describeTerminalShellStatus(
+          exitState.status,
+          lastExitCode: exitState.lastExitCode,
+        ),
+        'Exit 17',
+      );
+    });
+
+    test(
+      'preserves the previous exit code when OSC 133 exit code is invalid',
+      () {
+        final exitState = applyTerminalShellIntegrationOsc(
+          const ['D', 'bad'],
+          previousStatus: TerminalShellStatus.runningCommand,
+          previousExitCode: 17,
+        );
+
+        expect(exitState.status, TerminalShellStatus.prompt);
+        expect(exitState.lastExitCode, 17);
+      },
+    );
+  });
+
   group('SshConnectionConfig', () {
     test('creates with required fields', () {
       const config = SshConnectionConfig(

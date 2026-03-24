@@ -154,7 +154,6 @@ void main() {
 
       expect(output, contains('\x1b[Z'));
     });
-
     test('keeps bottom safe-area padding when keyboard is closed', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 

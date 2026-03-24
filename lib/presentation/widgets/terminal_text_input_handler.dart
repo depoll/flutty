@@ -36,6 +36,27 @@ bool shouldRequestKeyboardForTerminalPointerUp({
       !movedBeyondTapSlop;
 }
 
+/// Controls a [TerminalTextInputHandler] from an ancestor widget.
+class TerminalTextInputHandlerController {
+  _TerminalTextInputHandlerState? _state;
+
+  // ignore: use_setters_to_change_properties
+  void _attach(_TerminalTextInputHandlerState state) {
+    _state = state;
+  }
+
+  void _detach(_TerminalTextInputHandlerState state) {
+    if (identical(_state, state)) {
+      _state = null;
+    }
+  }
+
+  /// Prevents the next touch tap-up from reopening the soft keyboard.
+  void suppressNextTouchKeyboardRequest() {
+    _state?._suppressNextTouchKeyboardRequest();
+  }
+}
+
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
 /// proper IME configuration for swipe typing.
 ///
@@ -52,6 +73,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     required this.terminal,
     required this.focusNode,
     required this.child,
+    this.controller,
     this.deleteDetection = false,
     this.keyboardAppearance = Brightness.dark,
     this.onUserInput,
@@ -67,6 +89,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// The [TerminalView] child (should use `hardwareKeyboardOnly: true`).
   final Widget child;
+
+  /// Optional controller for externally coordinating touch/keyboard behavior.
+  final TerminalTextInputHandlerController? controller;
 
   /// Whether to use the delete-detection workaround for mobile.
   final bool deleteDetection;
@@ -92,6 +117,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
   bool _touchSequenceHadMultiplePointers = false;
+  bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
@@ -100,6 +126,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void initState() {
     super.initState();
     widget.focusNode.addListener(_onFocusChange);
+    widget.controller?._attach(this);
   }
 
   @override
@@ -108,6 +135,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.focusNode != oldWidget.focusNode) {
       oldWidget.focusNode.removeListener(_onFocusChange);
       widget.focusNode.addListener(_onFocusChange);
+    }
+    if (widget.controller != oldWidget.controller) {
+      oldWidget.controller?._detach(this);
+      widget.controller?._attach(this);
     }
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
@@ -118,6 +149,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void dispose() {
+    widget.controller?._detach(this);
     widget.focusNode.removeListener(_onFocusChange);
     _activeTouchPointers.clear();
     _touchPointerDownPositions.clear();
@@ -178,13 +210,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       ),
       readOnly: widget.readOnly,
     );
+    final shouldSkipKeyboardRequest =
+        event.kind == PointerDeviceKind.touch && _skipNextTouchKeyboardRequest;
+    if (event.kind == PointerDeviceKind.touch) {
+      _skipNextTouchKeyboardRequest = false;
+    }
     _clearPointerTracking(event);
-    if (shouldRequestKeyboard) {
+    if (shouldRequestKeyboard && !shouldSkipKeyboardRequest) {
       requestKeyboard();
     }
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _skipNextTouchKeyboardRequest = false;
+    }
     _clearPointerTracking(event);
   }
 
@@ -262,6 +302,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (hasInputConnection) {
       _connection?.close();
     }
+  }
+
+  void _suppressNextTouchKeyboardRequest() {
+    _skipNextTouchKeyboardRequest = true;
   }
 
   // -- Focus handling --
@@ -537,13 +581,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       userSelection: userSelection,
       userComposing: userComposing,
     );
-    final shouldResync =
-        sourceValue == null ||
-        sourceValue.text != nextState.text ||
-        sourceValue.selection != nextState.selection ||
-        sourceValue.composing != nextState.composing;
-    _currentEditingState = shouldResync ? nextState : sourceValue;
-    if (shouldResync && hasInputConnection) {
+    final shouldResyncText =
+        sourceValue == null || sourceValue.text != nextState.text;
+    _currentEditingState = nextState;
+    if (shouldResyncText && hasInputConnection) {
       _connection!.setEditingState(nextState);
     }
   }

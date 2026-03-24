@@ -377,6 +377,219 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'preserves replacement text after deleting a later swiped word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'teh world ');
+
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
+        expect(
+          (tester.state(find.byType(TerminalTextInputHandler))
+                  as TextInputClient)
+              .currentTextEditingValue,
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'preserves replacement text after a later word delete drops part of the marker',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'does not force-resync the IME when replacement text is already normalized',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+
+        (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
+            .updateEditingValue(
+              const TextEditingValue(
+                text: '\u200B\u200Bthe ',
+                selection: TextSelection(baseOffset: -1, extentOffset: 0),
+              ),
+            );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,
     ) async {
@@ -539,6 +752,94 @@ void main() {
 
       expect(focusNode.hasFocus, isTrue);
       expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+    });
+
+    testWidgets('does not open the keyboard after a touch tap when read only', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              readOnly: true,
+              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      await tester.tapAt(target);
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+    });
+
+    testWidgets('does not open the keyboard after a suppressed touch tap', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+      final controller = TerminalTextInputHandlerController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              controller: controller,
+              deleteDetection: true,
+              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      tester.testTextInput.hide();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      controller.suppressNextTouchKeyboardRequest();
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      await tester.tapAt(target);
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      await tester.tapAt(target);
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
 
       focusNode.dispose();
     });

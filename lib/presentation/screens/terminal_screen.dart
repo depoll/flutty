@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../data/database/database.dart';
@@ -19,6 +20,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
@@ -31,6 +33,10 @@ const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
 const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
+final _terminalLinkPattern = RegExp(
+  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:www\.))[^\s<>"']+''',
+  caseSensitive: false,
+);
 
 /// Padding around the terminal viewport.
 ///
@@ -82,6 +88,93 @@ String trimTerminalSelectionText(String text) =>
 double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
 
+/// Trims punctuation that terminals commonly render immediately after a link.
+@visibleForTesting
+String trimTerminalLinkCandidate(String text) {
+  var result = text;
+  while (result.isNotEmpty) {
+    if (result.endsWith(')')) {
+      final openCount = '('.allMatches(result).length;
+      final closeCount = ')'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    } else if (result.endsWith(']')) {
+      final openCount = '['.allMatches(result).length;
+      final closeCount = ']'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    } else if (result.endsWith('}')) {
+      final openCount = '{'.allMatches(result).length;
+      final closeCount = '}'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    }
+
+    final lastCharacter = result[result.length - 1];
+    if ('.!,?:;'.contains(lastCharacter)) {
+      result = result.substring(0, result.length - 1);
+      continue;
+    }
+
+    break;
+  }
+  return result;
+}
+
+/// Normalizes terminal-rendered link text before URI parsing.
+@visibleForTesting
+String normalizeTerminalLinkCandidate(String text) {
+  final candidate = trimTerminalLinkCandidate(text.trim());
+  if (candidate.toLowerCase().startsWith('www.')) {
+    return 'https://$candidate';
+  }
+  return candidate;
+}
+
+/// Resolves a tappable terminal link at the given text offset, if present.
+@visibleForTesting
+({Uri uri, int start, int end})? detectTerminalLinkAtTextOffset(
+  String text,
+  int offset,
+) {
+  for (final match in _terminalLinkPattern.allMatches(text)) {
+    final candidate = trimTerminalLinkCandidate(match.group(0)!);
+    if (candidate.isEmpty) {
+      continue;
+    }
+
+    final normalizedCandidate = normalizeTerminalLinkCandidate(candidate);
+    final uri = Uri.tryParse(normalizedCandidate);
+    if (uri == null || !isLaunchableTerminalUri(uri)) {
+      continue;
+    }
+
+    final end = match.start + candidate.length;
+    if (offset >= match.start && offset < end) {
+      return (uri: uri, start: match.start, end: end);
+    }
+  }
+
+  return null;
+}
+
+/// Whether a parsed terminal URI is safe to open externally.
+@visibleForTesting
+bool isLaunchableTerminalUri(Uri uri) =>
+    uri.hasScheme &&
+    <String>{
+      'http',
+      'https',
+      'mailto',
+      'tel',
+    }.contains(uri.scheme.toLowerCase());
+
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
@@ -114,6 +207,27 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
 }) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether the native selection overlay should be visible for terminal content.
+@visibleForTesting
+bool shouldShowNativeSelectionOverlay({
+  required bool isNativeSelectionMode,
+  required bool routesTouchScrollToTerminal,
+  required bool revealOverlayInTouchScrollMode,
+}) =>
+    isNativeSelectionMode &&
+    (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
+
+String? _describeMouseMode(
+  MouseMode mouseMode,
+  MouseReportMode mouseReportMode,
+) => switch (mouseMode) {
+  MouseMode.none => null,
+  MouseMode.clickOnly => 'Mouse clicks',
+  MouseMode.upDownScroll => 'Mouse scroll (${mouseReportMode.name})',
+  MouseMode.upDownScrollDrag => 'Mouse drag (${mouseReportMode.name})',
+  MouseMode.upDownScrollMove => 'Mouse motion (${mouseReportMode.name})',
+};
 
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
@@ -164,6 +278,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
   late FocusNode _terminalFocusNode;
+  final _terminalTextInputController = TerminalTextInputHandlerController();
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
@@ -174,6 +289,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
+  bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
   double? _pinchFontSize;
@@ -182,6 +298,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isPinchZooming = false;
   bool _shouldFollowLiveOutput = true;
   bool _isTerminalScrollToBottomQueued = false;
+  TerminalHyperlinkTracker? _terminalHyperlinkTracker;
+  SshSession? _observedSession;
+  bool _showsTerminalMetadata = false;
 
   // Theme state
   Host? _host;
@@ -206,8 +325,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
   );
 
-  bool get _showsNativeSelectionOverlay =>
-      _isNativeSelectionMode && !_routesTouchScrollToTerminal;
+  bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
+    isNativeSelectionMode: _isNativeSelectionMode,
+    routesTouchScrollToTerminal: _routesTouchScrollToTerminal,
+    revealOverlayInTouchScrollMode:
+        _revealsNativeSelectionOverlayInTouchScrollMode,
+  );
+
+  String? get _windowTitle => _observedSession?.windowTitle;
+
+  String? get _iconName => _observedSession?.iconName;
+
+  Uri? get _workingDirectory => _observedSession?.workingDirectory;
+
+  String? get _workingDirectoryLabel =>
+      formatTerminalWorkingDirectoryLabel(_workingDirectory);
+
+  String? get _workingDirectoryPath =>
+      resolveTerminalWorkingDirectoryPath(_workingDirectory);
+
+  TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
+
+  int? get _lastExitCode => _observedSession?.lastExitCode;
 
   @override
   void initState() {
@@ -258,6 +397,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isUsingAltBuffer = isUsingAltBuffer;
       _terminalReportsMouseWheel = terminalReportsMouseWheel;
     });
+  }
+
+  void _observeSessionMetadata(SshSession session) {
+    if (identical(_observedSession, session)) {
+      return;
+    }
+
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
+    _observedSession = session
+      ..removeMetadataListener(_handleSessionMetadataChanged)
+      ..addMetadataListener(_handleSessionMetadataChanged);
+  }
+
+  void _handleSessionMetadataChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   void _handleTerminalScroll() {
@@ -312,8 +469,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
-    if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
-      _enterNativeSelectionMode(initialRange: selection);
+    if (_isMobilePlatform && hasSelection) {
+      _enterNativeSelectionMode(
+        initialRange: selection,
+        revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+      );
       return;
     }
 
@@ -473,6 +633,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (existingTerminal != null) {
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
+        _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+        _observeSessionMetadata(session);
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
@@ -491,6 +653,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final sessionTerminal = session.getOrCreateTerminal();
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
+      _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+      _observeSessionMetadata(session);
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
       _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
@@ -721,6 +885,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
       ..removeListener(_onSelectionChanged)
@@ -779,6 +944,66 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  List<Widget> _buildTerminalStatusChips(ThemeData theme) {
+    final chipLabels = <({IconData icon, String label, String tooltip})>[
+      if (_workingDirectoryLabel case final workingDirectory?
+          when workingDirectory.isNotEmpty)
+        (
+          icon: Icons.folder_outlined,
+          label: workingDirectory,
+          tooltip: 'Current working directory reported by the shell session.',
+        ),
+      if (describeTerminalShellStatus(_shellStatus, lastExitCode: _lastExitCode)
+          case final shellStatusLabel? when shellStatusLabel.isNotEmpty)
+        (
+          icon: Icons.play_circle_outline,
+          label: shellStatusLabel,
+          tooltip:
+              'Shell integration status for the current prompt or command.',
+        ),
+      if (_isUsingAltBuffer)
+        (
+          icon: Icons.aspect_ratio,
+          label: 'Alt buffer',
+          tooltip:
+              'A full-screen terminal app is using the alternate screen buffer.',
+        ),
+      if (_describeMouseMode(_terminal.mouseMode, _terminal.mouseReportMode)
+          case final mouseModeLabel? when mouseModeLabel.isNotEmpty)
+        (
+          icon: Icons.mouse_outlined,
+          label: mouseModeLabel,
+          tooltip:
+              'Terminal apps like tmux are actively receiving mouse input events.',
+        ),
+      if (_terminal.reportFocusMode)
+        (
+          icon: Icons.center_focus_strong,
+          label: 'Focus reports',
+          tooltip:
+              'The terminal is reporting focus gained and lost events to the shell.',
+        ),
+      if (_terminal.bracketedPasteMode)
+        (
+          icon: Icons.content_paste,
+          label: 'Bracketed paste',
+          tooltip:
+              'Paste operations are wrapped so terminal apps can handle them safely.',
+        ),
+    ];
+
+    return chipLabels
+        .map(
+          (chip) => _TerminalStatusChip(
+            icon: chip.icon,
+            label: chip.label,
+            tooltip: chip.tooltip,
+            colorScheme: theme.colorScheme,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -793,11 +1018,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionThemeOverride ??
         _currentTheme ??
         (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+    final titleSubtitleSegments = <String>[];
+    if ((_iconName ?? '').isNotEmpty) {
+      titleSubtitleSegments.add(_iconName!);
+    }
+    if ((_windowTitle ?? '').isNotEmpty) {
+      titleSubtitleSegments.add(_windowTitle!);
+    }
+    final titleSubtitle = titleSubtitleSegments.join(' • ');
+    final statusChips = _buildTerminalStatusChips(theme);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_host?.label ?? 'Terminal'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_host?.label ?? 'Terminal'),
+            if (titleSubtitle.isNotEmpty)
+              Text(
+                titleSubtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
+        bottom: !_showsTerminalMetadata || statusChips.isEmpty
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(40),
+                child: Container(
+                  alignment: Alignment.centerLeft,
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: statusChips
+                          .map(
+                            (chip) => Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: chip,
+                            ),
+                          )
+                          .toList(growable: false),
+                    ),
+                  ),
+                ),
+              ),
         actions: [
+          if (statusChips.isNotEmpty)
+            IconButton(
+              icon: Icon(
+                _showsTerminalMetadata ? Icons.info : Icons.info_outline,
+              ),
+              onPressed: () => setState(
+                () => _showsTerminalMetadata = !_showsTerminalMetadata,
+              ),
+              tooltip: _showsTerminalMetadata
+                  ? 'Hide terminal info'
+                  : 'Show terminal info',
+            ),
           IconButton(
             icon: const Icon(Icons.palette_outlined),
             onPressed: _showThemePicker,
@@ -835,6 +1119,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         ? 'Exit Native Selection'
                         : 'Native Selection',
                   ),
+                ),
+              if (_workingDirectoryPath != null)
+                const PopupMenuItem(
+                  value: 'copy_working_directory',
+                  child: Text('Copy Current Directory'),
                 ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
@@ -874,6 +1163,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+    _dismissTemporaryNativeSelectionOverlay();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -1074,6 +1364,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
+      resolveLinkTap: _resolveTerminalLinkTap,
+      onLinkTapDown:
+          _terminalTextInputController.suppressNextTouchKeyboardRequest,
+      onLinkTap: _handleTerminalLinkTap,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
@@ -1155,8 +1449,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
+      controller: _terminalTextInputController,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
+      readOnly: _showsNativeSelectionOverlay,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -1178,6 +1474,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           builder: (context, value, _) => SelectableText(
             value.text,
             style: textStyle,
+            onSelectionChanged: _handleNativeOverlaySelectionChanged,
             strutStyle: StrutStyle.fromTextStyle(
               textStyle,
               forceStrutHeight: true,
@@ -1236,6 +1533,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'native_select':
         _toggleNativeSelectionMode();
         break;
+      case 'copy_working_directory':
+        await _copyWorkingDirectory();
+        break;
       case 'copy':
         await _copySelection();
         break;
@@ -1265,8 +1565,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _enterNativeSelectionMode(initialRange: _terminalController.selection);
   }
 
-  void _enterNativeSelectionMode({BufferRange? initialRange}) {
-    if (_isNativeSelectionMode) {
+  void _enterNativeSelectionMode({
+    BufferRange? initialRange,
+    bool revealOverlayInTouchScrollMode = false,
+  }) {
+    if (_isNativeSelectionMode && initialRange == null) {
       return;
     }
 
@@ -1289,6 +1592,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
+      _revealsNativeSelectionOverlayInTouchScrollMode =
+          _revealsNativeSelectionOverlayInTouchScrollMode ||
+          revealOverlayInTouchScrollMode;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
@@ -1305,6 +1611,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
@@ -1423,6 +1730,151 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
+  void _handleNativeOverlaySelectionChanged(
+    TextSelection selection,
+    SelectionChangedCause? cause,
+  ) {
+    if (!_revealsNativeSelectionOverlayInTouchScrollMode ||
+        !selection.isCollapsed ||
+        !mounted) {
+      return;
+    }
+    setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  void _dismissTemporaryNativeSelectionOverlay() {
+    if (!_revealsNativeSelectionOverlayInTouchScrollMode) {
+      return;
+    }
+
+    final textLength = _nativeSelectionController.text.length;
+    final collapsedOffset = _nativeSelectionController.selection.extentOffset
+        .clamp(0, textLength);
+    _nativeSelectionController.value = _nativeSelectionController.value
+        .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  String? _resolveTerminalLinkTap(CellOffset offset) {
+    if (!_routesTouchScrollToTerminal || _showsNativeSelectionOverlay) {
+      return null;
+    }
+
+    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
+    if (trackedHyperlink != null) {
+      return trackedHyperlink;
+    }
+
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    final line = _terminal.buffer.lines[row];
+    if (line.getCodePoint(column) == 0) {
+      return null;
+    }
+
+    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
+    if (snapshot == null) {
+      return null;
+    }
+
+    final rowIndex = row - snapshot.startRow;
+    final textOffset =
+        snapshot.rowStarts[rowIndex] + snapshot.columnOffsets[rowIndex][column];
+    return detectTerminalLinkAtTextOffset(
+      snapshot.text,
+      textOffset,
+    )?.uri.toString();
+  }
+
+  ({
+    String text,
+    int startRow,
+    List<int> rowStarts,
+    List<List<int>> columnOffsets,
+  })?
+  _buildWrappedTerminalLinkSnapshot(int row) {
+    final buffer = _terminal.buffer;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+    }
+
+    return (
+      text: builder.toString(),
+      startRow: startRow,
+      rowStarts: rowStarts,
+      columnOffsets: columnOffsets,
+    );
+  }
+
+  void _handleTerminalLinkTap(String link) {
+    unawaited(_openTerminalLink(link));
+  }
+
+  void _showTerminalLinkMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _openTerminalLink(String link) async {
+    final normalizedLink = normalizeTerminalLinkCandidate(link);
+    final uri = Uri.tryParse(normalizedLink);
+    if (uri == null) {
+      _showTerminalLinkMessage('Could not open $link');
+      return;
+    }
+
+    if (!isLaunchableTerminalUri(uri)) {
+      _showTerminalLinkMessage('Blocked unsupported link scheme: $link');
+      return;
+    }
+
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } on PlatformException {
+      launched = false;
+    }
+    if (launched || !mounted) {
+      return;
+    }
+
+    _showTerminalLinkMessage('Could not open $link');
+  }
+
   Widget get _selectionActions => Material(
     elevation: 2,
     borderRadius: BorderRadius.circular(12),
@@ -1482,6 +1934,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  Future<void> _copyWorkingDirectory() async {
+    final path = _workingDirectoryPath;
+    if (path == null || path.isEmpty) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: path));
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied current directory')));
   }
 
   Future<void> _pasteClipboard() async {
@@ -1688,4 +2158,47 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     return command;
   }
+}
+
+class _TerminalStatusChip extends StatelessWidget {
+  const _TerminalStatusChip({
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.colorScheme,
+  });
+
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final ColorScheme colorScheme;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }
