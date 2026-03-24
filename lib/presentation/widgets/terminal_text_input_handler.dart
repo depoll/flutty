@@ -524,13 +524,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       userSelection: userSelection,
       userComposing: userComposing,
     );
-    final shouldResync =
-        sourceValue == null ||
-        sourceValue.text != nextState.text ||
-        sourceValue.selection != nextState.selection ||
-        sourceValue.composing != nextState.composing;
-    _currentEditingState = shouldResync ? nextState : sourceValue;
-    if (shouldResync && hasInputConnection) {
+    final shouldResyncText =
+        sourceValue == null || sourceValue.text != nextState.text;
+    _currentEditingState = shouldResyncText ? nextState : sourceValue;
+    if (shouldResyncText && hasInputConnection) {
       _connection!.setEditingState(nextState);
     }
   }
