@@ -266,7 +266,7 @@ jobs:
             "${scan_args[@]}"
 
       - name: Upload Gitleaks SARIF to code scanning
-        if: always() && hashFiles('gitleaks.sarif') != ''
+        if: always() && hashFiles('gitleaks.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
         uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
         with:
           sarif_file: gitleaks.sarif
