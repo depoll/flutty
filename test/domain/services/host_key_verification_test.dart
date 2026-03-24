@@ -118,6 +118,50 @@ void main() {
       expect(storedHost!.hostKey, replacementHostKey.encodedHostKey);
       expect(storedHost.fingerprint, replacementHostKey.fingerprint);
     });
+
+    test('accepts RSA host keys across signature algorithm variants', () async {
+      final storedHostKey = _rsaVerifiedHostKey(
+        'rsa.example.com',
+        22,
+        exponent: const [1, 0, 1],
+        modulus: const [1, 2, 3, 4, 5, 6, 7, 8],
+        keyType: 'rsa-sha2-256',
+      );
+      await repository.upsertTrustedHost(
+        hostname: storedHostKey.hostname,
+        port: storedHostKey.port,
+        keyType: storedHostKey.keyType,
+        fingerprint: storedHostKey.fingerprint,
+        encodedHostKey: storedHostKey.encodedHostKey,
+        resetFirstSeen: true,
+      );
+
+      var prompted = false;
+      final service = HostKeyVerificationService(
+        knownHostsRepository: repository,
+        promptHandler: (_) async {
+          prompted = true;
+          return HostKeyTrustDecision.replace;
+        },
+      );
+      final presentedHostKey = _rsaVerifiedHostKey(
+        'rsa.example.com',
+        22,
+        exponent: const [1, 0, 1],
+        modulus: const [1, 2, 3, 4, 5, 6, 7, 8],
+        keyType: 'rsa-sha2-512',
+      );
+
+      final update = await service.verify(presentedHostKey);
+      await update.commitAfterAuthentication(repository);
+
+      final storedHost = await repository.getByHost('rsa.example.com', 22);
+      expect(prompted, isFalse);
+      expect(storedHost, isNotNull);
+      expect(storedHost!.hostKey, presentedHostKey.encodedHostKey);
+      expect(storedHost.fingerprint, presentedHostKey.fingerprint);
+      expect(storedHost.keyType, 'ssh-rsa');
+    });
   });
 }
 
@@ -133,14 +177,45 @@ VerifiedHostKey _verifiedHostKey(
 );
 
 Uint8List _ed25519HostKeyBlob(List<int> keyData) {
-  final typeBytes = utf8.encode('ssh-ed25519');
   final writer = BytesBuilder(copy: false)
-    ..add(_uint32(typeBytes.length))
-    ..add(typeBytes)
-    ..add(_uint32(keyData.length))
-    ..add(keyData);
+    ..add(_sshString(utf8.encode('ssh-ed25519')))
+    ..add(_sshString(keyData));
   return writer.takeBytes();
 }
+
+VerifiedHostKey _rsaVerifiedHostKey(
+  String hostname,
+  int port, {
+  required List<int> exponent,
+  required List<int> modulus,
+  String keyType = 'ssh-rsa',
+}) => VerifiedHostKey(
+  hostname: hostname,
+  port: port,
+  keyType: keyType,
+  hostKeyBytes: _rsaHostKeyBlob(exponent: exponent, modulus: modulus),
+);
+
+Uint8List _rsaHostKeyBlob({
+  required List<int> exponent,
+  required List<int> modulus,
+}) {
+  final writer = BytesBuilder(copy: false)
+    ..add(_sshString(utf8.encode('ssh-rsa')))
+    ..add(_mpInt(exponent))
+    ..add(_mpInt(modulus));
+  return writer.takeBytes();
+}
+
+Uint8List _mpInt(List<int> bytes) {
+  final normalizedBytes = bytes.isNotEmpty && bytes.first >= 0x80
+      ? <int>[0, ...bytes]
+      : bytes;
+  return _sshString(normalizedBytes);
+}
+
+Uint8List _sshString(List<int> bytes) =>
+    Uint8List.fromList([..._uint32(bytes.length), ...bytes]);
 
 Uint8List _uint32(int value) => Uint8List.fromList([
   (value >> 24) & 0xFF,

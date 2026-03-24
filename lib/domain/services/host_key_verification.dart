@@ -31,6 +31,10 @@ class VerifiedHostKey {
     required this.keyType,
     required Uint8List hostKeyBytes,
   }) : hostKeyBytes = Uint8List.fromList(hostKeyBytes),
+       trustedKeyType = canonicalizeSshHostKeyType(
+         keyType,
+         hostKeyBytes: hostKeyBytes,
+       ),
        fingerprint = formatSshHostKeyFingerprint(hostKeyBytes),
        md5Fingerprint = formatLegacySshHostKeyFingerprint(hostKeyBytes),
        encodedHostKey = base64.encode(hostKeyBytes);
@@ -41,8 +45,11 @@ class VerifiedHostKey {
   /// The SSH port being verified.
   final int port;
 
-  /// The SSH host-key algorithm reported by the server.
+  /// The SSH host-key algorithm reported during negotiation.
   final String keyType;
+
+  /// The canonical host-key algorithm persisted for trust records.
+  final String trustedKeyType;
 
   /// The raw SSH wire-format host key bytes.
   final Uint8List hostKeyBytes;
@@ -60,18 +67,12 @@ class VerifiedHostKey {
   String get hostLabel => '$hostname:$port';
 
   /// Whether this key matches an existing trusted host entry.
-  bool matches(KnownHost knownHost) {
-    if (knownHost.keyType != keyType) {
-      return false;
-    }
-
-    if (knownHost.hostKey.isNotEmpty) {
-      return knownHost.hostKey == encodedHostKey;
-    }
-
-    return knownHost.fingerprint == fingerprint ||
-        knownHost.fingerprint == md5Fingerprint;
-  }
+  bool matches(KnownHost knownHost) => sshHostTrustMatches(
+    firstFingerprint: knownHost.fingerprint,
+    firstEncodedHostKey: knownHost.hostKey,
+    secondFingerprint: fingerprint,
+    secondEncodedHostKey: encodedHostKey,
+  );
 }
 
 /// A host-key verification request shown to the user.
@@ -137,7 +138,7 @@ class PendingHostTrustUpdate {
     await repository.upsertTrustedHost(
       hostname: _presentedHostKey.hostname,
       port: _presentedHostKey.port,
-      keyType: _presentedHostKey.keyType,
+      keyType: _presentedHostKey.trustedKeyType,
       fingerprint: _presentedHostKey.fingerprint,
       encodedHostKey: _presentedHostKey.encodedHostKey,
       resetFirstSeen: _resetFirstSeen,
@@ -155,7 +156,7 @@ class PendingHostTrustUpdate {
     await repository.markTrustedHostSeen(
       hostname: _presentedHostKey.hostname,
       port: _presentedHostKey.port,
-      keyType: _presentedHostKey.keyType,
+      keyType: _presentedHostKey.trustedKeyType,
       fingerprint: _presentedHostKey.fingerprint,
       encodedHostKey: _presentedHostKey.encodedHostKey,
     );
@@ -265,6 +266,83 @@ class HostKeyVerificationService {
   }
 }
 
+/// Returns the canonical SSH host-key algorithm for persisted trust records.
+String canonicalizeSshHostKeyType(
+  String keyType, {
+  Uint8List? hostKeyBytes,
+  String? encodedHostKey,
+}) {
+  final decodedKeyType =
+      _tryReadSshHostKeyType(hostKeyBytes) ??
+      _tryReadSshHostKeyTypeFromEncodedKey(encodedHostKey);
+  if (decodedKeyType != null && decodedKeyType.isNotEmpty) {
+    return decodedKeyType;
+  }
+
+  return switch (keyType) {
+    'rsa-sha2-256' || 'rsa-sha2-512' => 'ssh-rsa',
+    _ => keyType,
+  };
+}
+
+/// Returns whether two SSH host-key trust records represent the same key.
+bool sshHostTrustMatches({
+  required String firstFingerprint,
+  required String firstEncodedHostKey,
+  required String secondFingerprint,
+  required String secondEncodedHostKey,
+}) {
+  final first = _HostTrustMaterial.fromRecord(
+    fingerprint: firstFingerprint,
+    encodedHostKey: firstEncodedHostKey,
+  );
+  final second = _HostTrustMaterial.fromRecord(
+    fingerprint: secondFingerprint,
+    encodedHostKey: secondEncodedHostKey,
+  );
+  return first.matches(second);
+}
+
+class _HostTrustMaterial {
+  _HostTrustMaterial({
+    required this.encodedHostKey,
+    required Set<String> fingerprints,
+  }) : _fingerprints = fingerprints;
+
+  factory _HostTrustMaterial.fromRecord({
+    required String fingerprint,
+    required String encodedHostKey,
+  }) {
+    final fingerprints = <String>{};
+    if (fingerprint.isNotEmpty) {
+      fingerprints.add(fingerprint);
+    }
+
+    final hostKeyBytes = _decodeHostKey(encodedHostKey);
+    if (hostKeyBytes != null) {
+      fingerprints
+        ..add(formatSshHostKeyFingerprint(hostKeyBytes))
+        ..add(formatLegacySshHostKeyFingerprint(hostKeyBytes));
+    }
+
+    return _HostTrustMaterial(
+      encodedHostKey: encodedHostKey,
+      fingerprints: fingerprints,
+    );
+  }
+
+  final String encodedHostKey;
+  final Set<String> _fingerprints;
+
+  bool matches(_HostTrustMaterial other) {
+    if (encodedHostKey.isNotEmpty && other.encodedHostKey.isNotEmpty) {
+      return encodedHostKey == other.encodedHostKey;
+    }
+
+    return _fingerprints.any(other._fingerprints.contains);
+  }
+}
+
 /// Formats the preferred SHA-256 SSH host-key fingerprint.
 String formatSshHostKeyFingerprint(List<int> hostKeyBytes) {
   final digest = sha256.convert(hostKeyBytes).bytes;
@@ -284,3 +362,48 @@ String formatLegacySshHostKeyFingerprint(List<int> hostKeyBytes) {
   }
   return buffer.toString();
 }
+
+String? _tryReadSshHostKeyType(Uint8List? hostKeyBytes) {
+  if (hostKeyBytes == null || hostKeyBytes.length < 4) {
+    return null;
+  }
+
+  final typeLength = _readUint32(hostKeyBytes);
+  const typeStart = 4;
+  final typeEnd = typeStart + typeLength;
+  if (typeLength <= 0 || typeEnd > hostKeyBytes.length) {
+    return null;
+  }
+
+  try {
+    return utf8.decode(hostKeyBytes.sublist(typeStart, typeEnd));
+  } on FormatException {
+    return null;
+  }
+}
+
+String? _tryReadSshHostKeyTypeFromEncodedKey(String? encodedHostKey) {
+  final hostKeyBytes = _decodeHostKey(encodedHostKey);
+  if (hostKeyBytes == null) {
+    return null;
+  }
+  return _tryReadSshHostKeyType(hostKeyBytes);
+}
+
+Uint8List? _decodeHostKey(String? encodedHostKey) {
+  if (encodedHostKey == null || encodedHostKey.isEmpty) {
+    return null;
+  }
+
+  try {
+    return Uint8List.fromList(base64.decode(encodedHostKey));
+  } on FormatException {
+    return null;
+  }
+}
+
+int _readUint32(Uint8List bytes, [int offset = 0]) =>
+    (bytes[offset] << 24) |
+    (bytes[offset + 1] << 16) |
+    (bytes[offset + 2] << 8) |
+    bytes[offset + 3];
