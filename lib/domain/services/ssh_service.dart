@@ -71,7 +71,13 @@ String? resolveTerminalWorkingDirectoryPath(Uri? workingDirectory) {
     return null;
   }
 
-  final decodedPath = Uri.decodeComponent(workingDirectory.path).trim();
+  final decodedPath = () {
+    try {
+      return Uri.decodeComponent(workingDirectory.path).trim();
+    } on FormatException {
+      return workingDirectory.path.trim();
+    }
+  }();
   if (decodedPath.isNotEmpty) {
     return decodedPath;
   }
@@ -116,7 +122,7 @@ applyTerminalShellIntegrationOsc(
       return (
         status: TerminalShellStatus.prompt,
         lastExitCode: args.length > 1
-            ? int.tryParse(args[1])
+            ? int.tryParse(args[1]) ?? previousExitCode
             : previousExitCode,
       );
     default:

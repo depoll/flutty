@@ -526,7 +526,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
     final shouldResyncText =
         sourceValue == null || sourceValue.text != nextState.text;
-    _currentEditingState = shouldResyncText ? nextState : sourceValue;
+    _currentEditingState = nextState;
     if (shouldResyncText && hasInputConnection) {
       _connection!.setEditingState(nextState);
     }

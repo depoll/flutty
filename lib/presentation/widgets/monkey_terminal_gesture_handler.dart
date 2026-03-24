@@ -155,9 +155,12 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   void onTapDown(TapDownDetails details) {
     _pendingLinkTap = _resolveLinkTap(details.localPosition);
     if (_pendingLinkTap != null) {
+      // Link taps are handled separately in onSingleTapUp and do not
+      // trigger the generic tap-down callback here.
       return;
     }
-    // onTapDown is special, as it will always call the supplied callback.
+    // For non-link taps, onTapDown is special, as it will always call the
+    // supplied callback.
     // The TerminalView depends on it to bring the terminal into focus.
     _tapDown(
       widget.onTapDown,

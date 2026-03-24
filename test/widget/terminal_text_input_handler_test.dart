@@ -288,6 +288,15 @@ void main() {
 
         expect(_terminalTextFromEvents(terminalOutput), 'the ');
         expect(
+          (tester.state(find.byType(TerminalTextInputHandler))
+                  as TextInputClient)
+              .currentTextEditingValue,
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        expect(
           tester.testTextInput.log.where(
             (call) => call.method == 'TextInput.setEditingState',
           ),
