@@ -938,21 +938,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   List<Widget> _buildTerminalStatusChips(ThemeData theme) {
-    final chipLabels = <({IconData icon, String label})>[
+    final chipLabels = <({IconData icon, String label, String tooltip})>[
       if (_workingDirectoryLabel case final workingDirectory?
           when workingDirectory.isNotEmpty)
-        (icon: Icons.folder_outlined, label: workingDirectory),
+        (
+          icon: Icons.folder_outlined,
+          label: workingDirectory,
+          tooltip: 'Current working directory reported by the shell session.',
+        ),
       if (describeTerminalShellStatus(_shellStatus, lastExitCode: _lastExitCode)
           case final shellStatusLabel? when shellStatusLabel.isNotEmpty)
-        (icon: Icons.play_circle_outline, label: shellStatusLabel),
-      if (_isUsingAltBuffer) (icon: Icons.aspect_ratio, label: 'Alt buffer'),
+        (
+          icon: Icons.play_circle_outline,
+          label: shellStatusLabel,
+          tooltip:
+              'Shell integration status for the current prompt or command.',
+        ),
+      if (_isUsingAltBuffer)
+        (
+          icon: Icons.aspect_ratio,
+          label: 'Alt buffer',
+          tooltip:
+              'A full-screen terminal app is using the alternate screen buffer.',
+        ),
       if (_describeMouseMode(_terminal.mouseMode, _terminal.mouseReportMode)
           case final mouseModeLabel? when mouseModeLabel.isNotEmpty)
-        (icon: Icons.mouse_outlined, label: mouseModeLabel),
+        (
+          icon: Icons.mouse_outlined,
+          label: mouseModeLabel,
+          tooltip:
+              'Terminal apps like tmux are actively receiving mouse input events.',
+        ),
       if (_terminal.reportFocusMode)
-        (icon: Icons.center_focus_strong, label: 'Focus reports'),
+        (
+          icon: Icons.center_focus_strong,
+          label: 'Focus reports',
+          tooltip:
+              'The terminal is reporting focus gained and lost events to the shell.',
+        ),
       if (_terminal.bracketedPasteMode)
-        (icon: Icons.content_paste, label: 'Bracketed paste'),
+        (
+          icon: Icons.content_paste,
+          label: 'Bracketed paste',
+          tooltip:
+              'Paste operations are wrapped so terminal apps can handle them safely.',
+        ),
     ];
 
     return chipLabels
@@ -960,6 +990,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           (chip) => _TerminalStatusChip(
             icon: chip.icon,
             label: chip.label,
+            tooltip: chip.tooltip,
             colorScheme: theme.colorScheme,
           ),
         )
@@ -2121,35 +2152,40 @@ class _TerminalStatusChip extends StatelessWidget {
   const _TerminalStatusChip({
     required this.icon,
     required this.label,
+    required this.tooltip,
     required this.colorScheme,
   });
 
   final IconData icon;
   final String label;
+  final String tooltip;
   final ColorScheme colorScheme;
 
   @override
-  Widget build(BuildContext context) => DecoratedBox(
-    decoration: BoxDecoration(
-      color: colorScheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(999),
-      border: Border.all(color: colorScheme.outlineVariant),
-    ),
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          Icon(icon, size: 14, color: colorScheme.onSurfaceVariant),
-          const SizedBox(width: 6),
-          Text(
-            label,
-            style: Theme.of(context).textTheme.labelSmall?.copyWith(
-              color: colorScheme.onSurfaceVariant,
-              fontWeight: FontWeight.w600,
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     ),
   );
