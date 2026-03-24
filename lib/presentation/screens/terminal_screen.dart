@@ -121,6 +121,16 @@ String trimTerminalLinkCandidate(String text) {
   return result;
 }
 
+/// Normalizes terminal-rendered link text before URI parsing.
+@visibleForTesting
+String normalizeTerminalLinkCandidate(String text) {
+  final candidate = trimTerminalLinkCandidate(text.trim());
+  if (candidate.toLowerCase().startsWith('www.')) {
+    return 'https://$candidate';
+  }
+  return candidate;
+}
+
 /// Resolves a tappable terminal link at the given text offset, if present.
 @visibleForTesting
 ({Uri uri, int start, int end})? detectTerminalLinkAtTextOffset(
@@ -133,11 +143,9 @@ String trimTerminalLinkCandidate(String text) {
       continue;
     }
 
-    final normalizedCandidate = candidate.startsWith('www.')
-        ? 'https://$candidate'
-        : candidate;
+    final normalizedCandidate = normalizeTerminalLinkCandidate(candidate);
     final uri = Uri.tryParse(normalizedCandidate);
-    if (uri == null || !_isLaunchableTerminalUri(uri)) {
+    if (uri == null || !isLaunchableTerminalUri(uri)) {
       continue;
     }
 
@@ -150,9 +158,16 @@ String trimTerminalLinkCandidate(String text) {
   return null;
 }
 
-bool _isLaunchableTerminalUri(Uri uri) =>
+/// Whether a parsed terminal URI is safe to open externally.
+@visibleForTesting
+bool isLaunchableTerminalUri(Uri uri) =>
     uri.hasScheme &&
-    <String>{'http', 'https', 'mailto'}.contains(uri.scheme.toLowerCase());
+    <String>{
+      'http',
+      'https',
+      'mailto',
+      'tel',
+    }.contains(uri.scheme.toLowerCase());
 
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
@@ -1765,20 +1780,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     unawaited(_openTerminalLink(link));
   }
 
+  void _showTerminalLinkMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _openTerminalLink(String link) async {
-    final uri = Uri.tryParse(link);
+    final normalizedLink = normalizeTerminalLinkCandidate(link);
+    final uri = Uri.tryParse(normalizedLink);
     if (uri == null) {
+      _showTerminalLinkMessage('Could not open $link');
       return;
     }
 
-    final launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    if (!isLaunchableTerminalUri(uri)) {
+      _showTerminalLinkMessage('Blocked unsupported link scheme: $link');
+      return;
+    }
+
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } on PlatformException {
+      launched = false;
+    }
     if (launched || !mounted) {
       return;
     }
 
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text('Could not open $link')));
+    _showTerminalLinkMessage('Could not open $link');
   }
 
   Widget get _selectionActions => SafeArea(

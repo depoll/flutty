@@ -64,9 +64,9 @@ void main() {
       expect(detectedLink!.uri.toString(), 'https://example.com/docs');
     });
 
-    test('normalizes www links to https', () {
+    test('normalizes case-insensitive www links to https', () {
       final detectedLink = detectTerminalLinkAtTextOffset(
-        'Open www.github.com/features/copilot now',
+        'Open WWW.github.com/features/copilot now',
         10,
       );
 
@@ -84,6 +84,37 @@ void main() {
           2,
         ),
         isNull,
+      );
+    });
+  });
+
+  group('normalizeTerminalLinkCandidate', () {
+    test('prepends https for uppercase www links', () {
+      expect(
+        normalizeTerminalLinkCandidate('WWW.example.com/docs'),
+        'https://WWW.example.com/docs',
+      );
+    });
+  });
+
+  group('isLaunchableTerminalUri', () {
+    test('allows supported external link schemes', () {
+      expect(isLaunchableTerminalUri(Uri.parse('https://example.com')), isTrue);
+      expect(
+        isLaunchableTerminalUri(Uri.parse('mailto:test@example.com')),
+        isTrue,
+      );
+      expect(isLaunchableTerminalUri(Uri.parse('tel:+15551234567')), isTrue);
+    });
+
+    test('rejects unsupported schemes', () {
+      expect(
+        isLaunchableTerminalUri(Uri.parse('file:///tmp/test.txt')),
+        isFalse,
+      );
+      expect(
+        isLaunchableTerminalUri(Uri.parse('intent://example.com')),
+        isFalse,
       );
     });
   });
