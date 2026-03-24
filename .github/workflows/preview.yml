@@ -16,6 +16,9 @@ concurrency:
   group: preview-${{ github.event.pull_request.number }}
   cancel-in-progress: true
 
+permissions:
+  contents: read
+
 jobs:
   compute-version:
     name: Compute Version
@@ -24,7 +27,9 @@ jobs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
 
       - name: Compute version
         id: version
@@ -48,7 +53,6 @@ jobs:
       deploy-android-to: none
       build-ios: false
       build-android: true
-    secrets: inherit
 
   build-ios:
     name: Build iOS Preview
@@ -63,7 +67,6 @@ jobs:
       deploy-android-to: none
       build-ios: true
       build-android: false
-    secrets: inherit
 
   comment-android:
     name: PR Comment (Android)
@@ -71,12 +74,12 @@ jobs:
     needs: [compute-version, build-android]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
-      pull-requests: write
       actions: read
+      pull-requests: write
     steps:
       - name: Resolve preview status
         id: preview-status
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const owner = context.repo.owner;
@@ -130,7 +133,7 @@ jobs:
             core.setOutput('android-link', androidLink);
 
       - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@v3
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
           header: preview-build
           recreate: true
@@ -158,12 +161,12 @@ jobs:
     needs: [compute-version, build-ios]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
-      pull-requests: write
       actions: read
+      pull-requests: write
     steps:
       - name: Resolve preview status
         id: preview-status
-        uses: actions/github-script@v8
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
             const owner = context.repo.owner;
@@ -217,7 +220,7 @@ jobs:
             core.setOutput('android-link', androidLink);
 
       - name: Comment on PR
-        uses: marocchino/sticky-pull-request-comment@v3
+        uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
           header: preview-build
           message: |
