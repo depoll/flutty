@@ -111,6 +111,23 @@ void main() {
       },
     );
 
+    test('requires review for suspicious snippets without variables', () {
+      final review = assessSnippetCommandInsertion(
+        'echo ready; rm -rf /',
+        hadVariableSubstitution: false,
+      );
+
+      expect(review.requiresReview, isTrue);
+      expect(
+        review.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(
+        review.reasons,
+        isNot(contains(TerminalCommandReviewReason.variableSubstitution)),
+      );
+    });
+
     test('flags multiline and suspicious clipboard paste for confirmation', () {
       final multilineReview = assessClipboardPasteCommand(
         'echo ready\necho deploy',

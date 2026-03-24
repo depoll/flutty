@@ -131,8 +131,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _touchSequenceHadMultiplePointers = false;
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
+  bool _isProcessingEditingValue = false;
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
+  int _latestEditingValueRevision = 0;
+  TextEditingValue? _queuedEditingValue;
 
   @override
   void initState() {
@@ -337,6 +340,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   bool get _shouldCreateInputConnection => kIsWeb || !widget.readOnly;
 
+  void _invalidatePendingEditingUpdates() {
+    _latestEditingValueRevision++;
+    _queuedEditingValue = null;
+  }
+
   void _openInputConnection() {
     if (!_shouldCreateInputConnection) return;
 
@@ -359,6 +367,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
       _connection = TextInput.attach(this, config);
       _connection!.show();
+      _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
@@ -372,6 +381,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
+    _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
@@ -467,9 +477,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     TextEditingValue value,
     String currentText,
   ) {
-    if (widget.onReviewInsertedText == null ||
-        _sawImeComposition ||
-        !value.selection.isCollapsed) {
+    if (widget.onReviewInsertedText == null || !value.selection.isCollapsed) {
       return null;
     }
 
@@ -643,21 +651,50 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void updateEditingValue(TextEditingValue value) {
-    unawaited(_updateEditingValue(value));
+    if (widget.readOnly) {
+      return;
+    }
+
+    _currentEditingState = value;
+    _queuedEditingValue = value;
+    _latestEditingValueRevision++;
+
+    if (_isProcessingEditingValue) {
+      return;
+    }
+
+    _isProcessingEditingValue = true;
+    unawaited(_drainEditingValueQueue());
   }
 
-  Future<void> _updateEditingValue(TextEditingValue value) async {
-    if (widget.readOnly) return;
+  Future<void> _drainEditingValueQueue() async {
+    try {
+      while (mounted && _queuedEditingValue != null) {
+        final value = _queuedEditingValue!;
+        final revision = _latestEditingValueRevision;
+        _queuedEditingValue = null;
+        await _updateEditingValue(value, revision);
+      }
+    } finally {
+      _isProcessingEditingValue = false;
+    }
 
+    if (mounted && _queuedEditingValue != null && !_isProcessingEditingValue) {
+      _isProcessingEditingValue = true;
+      unawaited(_drainEditingValueQueue());
+    }
+  }
+
+  Future<void> _updateEditingValue(TextEditingValue value, int revision) async {
     _currentEditingState = value;
 
     // Handle composing (IME input in progress).
-    if (!_currentEditingState.composing.isCollapsed) {
+    if (!value.composing.isCollapsed) {
       _sawImeComposition = true;
       return;
     }
 
-    if (_currentEditingState.text.length < _initEditingState.text.length) {
+    if (value.text.length < _initEditingState.text.length) {
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.backspace);
       _sawImeComposition = false;
@@ -667,11 +704,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return;
     }
 
-    final currentText = _extractInputText(_currentEditingState.text);
+    final currentText = _extractInputText(value.text);
     final review = _reviewForInsertedText(value, currentText);
     if (review != null) {
       final shouldInsert = await widget.onReviewInsertedText!(review);
-      if (!mounted) {
+      if (!mounted || revision != _latestEditingValueRevision) {
         return;
       }
       if (!shouldInsert) {
@@ -715,6 +752,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;

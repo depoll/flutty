@@ -955,6 +955,69 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'reviews a suspicious committed IME payload after composition ends',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+            composing: TextRange(start: 2, end: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, isEmpty);
+        expect(terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, 'echo ready; rm -rf /');
+        expect(terminalOutput, isEmpty);
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(terminalOutput.join(), 'echo ready; rm -rf /');
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('rejects suspicious IME insertion until the user approves', (
       tester,
     ) async {
@@ -996,6 +1059,75 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'ignores stale review approvals when a newer editing value arrives',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bls',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(terminalOutput, isEmpty);
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(terminalOutput.join(), 'ls');
+
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue?.text,
+          '${_deleteDetectionMarker}ls',
+        );
+
+        focusNode.dispose();
+      },
+    );
   });
 
   group('shouldRequestKeyboardForTerminalPointerUp', () {

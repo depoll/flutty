@@ -152,11 +152,11 @@ TerminalCommandReview assessSnippetCommandInsertion(
   String command, {
   required bool hadVariableSubstitution,
 }) {
-  final reasons = <TerminalCommandReviewReason>[];
+  final reasons = <TerminalCommandReviewReason>[
+    ..._collectSuspiciousCommandReasons(command),
+  ];
   if (hadVariableSubstitution) {
-    reasons
-      ..add(TerminalCommandReviewReason.variableSubstitution)
-      ..addAll(_collectSuspiciousCommandReasons(command));
+    reasons.add(TerminalCommandReviewReason.variableSubstitution);
   }
   return TerminalCommandReview(command: command, reasons: reasons);
 }
