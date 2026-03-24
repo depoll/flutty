@@ -3,6 +3,7 @@
 import 'dart:io';
 
 import 'package:drift/drift.dart' hide isNull;
+import 'package:drift/isolate.dart' show DriftRemoteException;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
@@ -536,7 +537,16 @@ void main() {
 
         await expectLater(
           failingDb.select(failingDb.settings).get(),
-          throwsA(isA<StateError>()),
+          throwsA(
+            anyOf(
+              isA<StateError>(),
+              isA<DriftRemoteException>().having(
+                (error) => error.remoteCause,
+                'remoteCause',
+                isA<StateError>(),
+              ),
+            ),
+          ),
         );
       },
     );
