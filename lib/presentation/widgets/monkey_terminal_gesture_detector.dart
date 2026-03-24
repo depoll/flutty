@@ -15,6 +15,7 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     this.onSingleTapUp,
     this.onTapUp,
     this.onTapDown,
+    this.onTapCancel,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.onTertiaryTapDown,
@@ -36,6 +37,8 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   final GestureTapUpCallback? onSingleTapUp;
 
   final GestureTapDownCallback? onTapDown;
+
+  final GestureTapCancelCallback? onTapCancel;
 
   final GestureTapDownCallback? onSecondaryTapDown;
 
@@ -127,6 +130,7 @@ class _MonkeyTerminalGestureDetectorState
             instance
               ..onTapDown = _handleTapDown
               ..onTapUp = _handleTapUp
+              ..onTapCancel = widget.onTapCancel
               ..onSecondaryTapDown = widget.onSecondaryTapDown
               ..onSecondaryTapUp = widget.onSecondaryTapUp
               ..onTertiaryTapDown = widget.onTertiaryTapDown

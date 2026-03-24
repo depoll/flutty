@@ -125,4 +125,69 @@ void main() {
     expect(tapDowns, 0);
     expect(tapUps, 0);
   });
+
+  testWidgets('touch scroll clears any pending link tap', (tester) async {
+    final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            key: terminalViewKey,
+            Terminal(),
+            readOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    final terminalViewState = terminalViewKey.currentState!;
+    var tapUps = 0;
+    final openedLinks = <String>[];
+    var touchScrollStarts = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalGestureHandler(
+            terminalView: terminalViewState,
+            terminalController: TerminalController(),
+            readOnly: true,
+            resolveLinkTap: (localPosition) => localPosition.dx < 20
+                ? 'https://github.com/features/copilot'
+                : null,
+            onLinkTap: openedLinks.add,
+            onSingleTapUp: (_) => tapUps += 1,
+            onTouchScrollStart: (_) => touchScrollStarts += 1,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTapDown!(TapDownDetails(localPosition: const Offset(10, 10)));
+    detector.onTouchScrollStart!(
+      DragStartDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(40, 10),
+      ),
+    );
+    detector.onSingleTapUp!(
+      TapUpDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(40, 10),
+      ),
+    );
+
+    expect(openedLinks, isEmpty);
+    expect(tapUps, 1);
+    expect(touchScrollStarts, 1);
+  });
 }

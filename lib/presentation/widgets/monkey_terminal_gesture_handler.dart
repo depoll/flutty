@@ -90,12 +90,13 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onTapUp: widget.onTapUp,
       onSingleTapUp: onSingleTapUp,
       onTapDown: onTapDown,
+      onTapCancel: _clearPendingLinkTap,
       onSecondaryTapDown: onSecondaryTapDown,
       onSecondaryTapUp: onSecondaryTapUp,
       onTertiaryTapDown: onTertiaryTapDown,
       onTertiaryTapUp: onTertiaryTapUp,
-      onTouchScrollStart: widget.onTouchScrollStart,
-      onTouchScrollUpdate: widget.onTouchScrollUpdate,
+      onTouchScrollStart: onTouchScrollStart,
+      onTouchScrollUpdate: onTouchScrollUpdate,
       onLongPressStart: onLongPressStart,
       onLongPressMoveUpdate: onLongPressMoveUpdate,
       // onLongPressUp: onLongPressUp,
@@ -181,6 +182,16 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
     _tapDown(widget.onSecondaryTapDown, details, TerminalMouseButton.right);
   }
 
+  void onTouchScrollStart(DragStartDetails details) {
+    _clearPendingLinkTap();
+    widget.onTouchScrollStart?.call(details);
+  }
+
+  void onTouchScrollUpdate(DragUpdateDetails details) {
+    _clearPendingLinkTap();
+    widget.onTouchScrollUpdate?.call(details);
+  }
+
   void onSecondaryTapUp(TapUpDetails details) {
     _tapUp(widget.onSecondaryTapUp, details, TerminalMouseButton.right);
   }
@@ -236,5 +247,9 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       return null;
     }
     return resolveLinkTap(localPosition);
+  }
+
+  void _clearPendingLinkTap() {
+    _pendingLinkTap = null;
   }
 }

@@ -93,10 +93,24 @@ String trimTerminalLinkCandidate(String text) {
         result = result.substring(0, result.length - 1);
         continue;
       }
+    } else if (result.endsWith(']')) {
+      final openCount = '['.allMatches(result).length;
+      final closeCount = ']'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    } else if (result.endsWith('}')) {
+      final openCount = '{'.allMatches(result).length;
+      final closeCount = '}'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
     }
 
     final lastCharacter = result[result.length - 1];
-    if ('.!,?:;]}'.contains(lastCharacter)) {
+    if ('.!,?:;'.contains(lastCharacter)) {
       result = result.substring(0, result.length - 1);
       continue;
     }

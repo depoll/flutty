@@ -29,6 +29,28 @@ void main() {
         'https://example.com/path(test)',
       );
     });
+
+    test('keeps balanced square and curly brackets at the end of links', () {
+      expect(
+        trimTerminalLinkCandidate('https://example.com/path[tmux]'),
+        'https://example.com/path[tmux]',
+      );
+      expect(
+        trimTerminalLinkCandidate('https://example.com/path{tmux}'),
+        'https://example.com/path{tmux}',
+      );
+    });
+
+    test('removes unmatched trailing square and curly brackets', () {
+      expect(
+        trimTerminalLinkCandidate('https://example.com/path[tmux]]'),
+        'https://example.com/path[tmux]',
+      );
+      expect(
+        trimTerminalLinkCandidate('https://example.com/path{tmux}}'),
+        'https://example.com/path{tmux}',
+      );
+    });
   });
 
   group('detectTerminalLinkAtTextOffset', () {
