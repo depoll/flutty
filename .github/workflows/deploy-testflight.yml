@@ -40,7 +40,7 @@ on:
 
 concurrency:
   group: deploy-testflight-pr-${{ inputs.pr-number }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   validate-pr:
