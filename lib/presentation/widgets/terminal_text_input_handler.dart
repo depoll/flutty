@@ -19,6 +19,13 @@ final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
 typedef TerminalTextInputReviewCallback =
     Future<bool> Function(TerminalCommandReview review);
 
+/// Builds the command text that should be reviewed for a pending IME delta.
+typedef TerminalTextInputReviewTextBuilder =
+    String Function(
+      ({int deletedCount, String appendedText}) delta,
+      String currentText,
+    );
+
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
 /// Touch input should only open the keyboard after a tap-like gesture. Scrolls
@@ -86,6 +93,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.keyboardAppearance = Brightness.dark,
     this.onUserInput,
     this.onReviewInsertedText,
+    this.buildReviewTextForInsertedText,
     this.readOnly = false,
     super.key,
   });
@@ -113,6 +121,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Called before suspicious multi-character IME insertions are sent.
   final TerminalTextInputReviewCallback? onReviewInsertedText;
+
+  /// Builds the command text that should be reviewed for suspicious IME input.
+  final TerminalTextInputReviewTextBuilder? buildReviewTextForInsertedText;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -483,8 +494,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return null;
     }
 
+    final reviewText =
+        widget.buildReviewTextForInsertedText?.call(delta, currentText) ??
+        currentText;
     final review = assessClipboardPasteCommand(
-      currentText,
+      reviewText,
       bracketedPasteModeEnabled: false,
     );
     return review.requiresReview ? review : null;

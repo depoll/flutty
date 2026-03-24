@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' show max;
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -196,6 +197,35 @@ String applyTerminalCursorInsertion({
   required String insertedText,
 }) => currentText.replaceRange(cursorOffset, cursorOffset, insertedText);
 
+/// Applies terminal-style backspaces before inserting newly committed text.
+@visibleForTesting
+String applyTerminalInputDelta({
+  required String currentText,
+  required int cursorOffset,
+  required int deletedCount,
+  required String appendedText,
+}) {
+  final deleteStart = (cursorOffset - deletedCount).clamp(0, cursorOffset);
+  return currentText.replaceRange(deleteStart, cursorOffset, appendedText);
+}
+
+@visibleForTesting
+/// Resolves how much of a terminal row snapshot should remain after trimming.
+int resolveTerminalLineSnapshotTextLength({
+  required String text,
+  required int preserveOffset,
+  required bool preserveTrailingPadding,
+}) {
+  if (preserveTrailingPadding) {
+    return text.length;
+  }
+
+  return max(
+    trimTerminalLinePadding(text).length,
+    preserveOffset.clamp(0, text.length),
+  );
+}
+
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
@@ -379,6 +409,65 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       cursorOffset: snapshot.cursorOffset,
       insertedText: insertedText,
     );
+  }
+
+  String _terminalCommandAfterInputDelta(
+    ({int deletedCount, String appendedText}) delta,
+    String fallbackText,
+  ) {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return fallbackText;
+    }
+
+    return applyTerminalInputDelta(
+      currentText: snapshot.text,
+      cursorOffset: snapshot.cursorOffset,
+      deletedCount: delta.deletedCount,
+      appendedText: delta.appendedText,
+    );
+  }
+
+  bool _sameTerminalCommandReview(
+    TerminalCommandReview previous,
+    TerminalCommandReview next,
+  ) =>
+      previous.command == next.command &&
+      previous.bracketedPasteModeEnabled == next.bracketedPasteModeEnabled &&
+      listEquals(previous.reasons, next.reasons);
+
+  Future<bool> _confirmTerminalInsertionIfNeeded({
+    required String insertedText,
+    required TerminalCommandReview Function(String commandText) buildReview,
+    required String title,
+    required String Function(TerminalCommandReview review) messageBuilder,
+    required String confirmLabel,
+  }) async {
+    while (mounted) {
+      final review = buildReview(_terminalCommandAfterInsertion(insertedText));
+      if (!review.requiresReview) {
+        return true;
+      }
+
+      final shouldInsert = await _confirmCommandInsertion(
+        title: title,
+        message: messageBuilder(review),
+        confirmLabel: confirmLabel,
+        review: review,
+      );
+      if (!mounted || !shouldInsert) {
+        return false;
+      }
+
+      final latestReview = buildReview(
+        _terminalCommandAfterInsertion(insertedText),
+      );
+      if (_sameTerminalCommandReview(review, latestReview)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   @override
@@ -1510,6 +1599,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       deleteDetection: true,
       onUserInput: _followLiveOutput,
       onReviewInsertedText: _confirmKeyboardInsertion,
+      buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       readOnly: _showsNativeSelectionOverlay,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
@@ -1722,10 +1812,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+  ({String text, List<int> columnOffsets}) _buildTerminalLineSnapshot(
     BufferLine line,
-    int viewWidth,
-  ) {
+    int viewWidth, {
+    required bool preserveTrailingPadding,
+    int preserveOffset = 0,
+  }) {
     final builder = StringBuffer();
     final columnOffsets = List<int>.filled(viewWidth + 1, 0);
     var col = 0;
@@ -1752,18 +1844,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       col += step;
     }
 
-    final trimmedText = trimTerminalLinePadding(builder.toString());
-    if (trimmedText.length == builder.length) {
-      return (text: trimmedText, columnOffsets: columnOffsets);
+    final rawText = builder.toString();
+    final resolvedLength = resolveTerminalLineSnapshotTextLength(
+      text: rawText,
+      preserveOffset: preserveOffset,
+      preserveTrailingPadding: preserveTrailingPadding,
+    );
+    if (resolvedLength == rawText.length) {
+      return (text: rawText, columnOffsets: columnOffsets);
     }
 
     for (var i = 0; i < columnOffsets.length; i++) {
-      if (columnOffsets[i] > trimmedText.length) {
-        columnOffsets[i] = trimmedText.length;
+      if (columnOffsets[i] > resolvedLength) {
+        columnOffsets[i] = resolvedLength;
       }
     }
-    return (text: trimmedText, columnOffsets: columnOffsets);
+    return (
+      text: rawText.substring(0, resolvedLength),
+      columnOffsets: columnOffsets,
+    );
   }
+
+  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+    BufferLine line,
+    int viewWidth,
+  ) => _buildTerminalLineSnapshot(
+    line,
+    viewWidth,
+    preserveTrailingPadding: false,
+  );
 
   TextSelection _bufferRangeToTextSelection(
     BufferRange range, {
@@ -1901,17 +2010,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
-    if (snapshot == null) {
-      return null;
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
     }
 
-    final rowIndex = row - snapshot.startRow;
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildTerminalLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+        preserveTrailingPadding: lineIndex < endRow,
+        preserveOffset: lineIndex == row
+            ? buffer.cursorX.clamp(0, buffer.viewWidth)
+            : 0,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+    }
+
+    final rowIndex = row - startRow;
     final cursorColumn = buffer.cursorX.clamp(0, buffer.viewWidth);
     final cursorOffset =
-        snapshot.rowStarts[rowIndex] +
-        snapshot.columnOffsets[rowIndex][cursorColumn];
-    return (text: snapshot.text, cursorOffset: cursorOffset);
+        rowStarts[rowIndex] + columnOffsets[rowIndex][cursorColumn];
+    return (text: builder.toString(), cursorOffset: cursorOffset);
   }
 
   void _handleTerminalLinkTap(String link) {
@@ -2055,23 +2185,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final review = assessClipboardPasteCommand(
-      _terminalCommandAfterInsertion(text),
-      bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+    final shouldPaste = await _confirmTerminalInsertionIfNeeded(
+      insertedText: text,
+      buildReview: (commandText) => assessClipboardPasteCommand(
+        commandText,
+        bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+      ),
+      title: 'Review clipboard paste',
+      messageBuilder: (review) => review.bracketedPasteModeEnabled
+          ? 'This clipboard content looks risky even with bracketed paste enabled.'
+          : 'This clipboard content could execute multiple or reshaped commands.',
+      confirmLabel: 'Paste anyway',
     );
-    if (review.requiresReview) {
-      final shouldPaste = await _confirmCommandInsertion(
-        title: 'Review clipboard paste',
-        message: review.bracketedPasteModeEnabled
-            ? 'This clipboard content looks risky even with bracketed paste enabled.'
-            : 'This clipboard content could execute multiple or reshaped commands.',
-        confirmLabel: 'Paste anyway',
-        review: review,
-      );
-      if (!shouldPaste) {
-        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-        return;
-      }
+    if (!shouldPaste) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
     }
 
     _followLiveOutput();
@@ -2199,21 +2327,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
-      final review = assessSnippetCommandInsertion(
-        _terminalCommandAfterInsertion(result.command),
-        hadVariableSubstitution: result.hadVariableSubstitution,
+      final shouldInsert = await _confirmTerminalInsertionIfNeeded(
+        insertedText: result.command,
+        buildReview: (commandText) => assessSnippetCommandInsertion(
+          commandText,
+          hadVariableSubstitution: result.hadVariableSubstitution,
+        ),
+        title: 'Review snippet command',
+        messageBuilder: (_) =>
+            'Confirm the rendered command before inserting it.',
+        confirmLabel: 'Insert command',
       );
-      if (review.requiresReview) {
-        final shouldInsert = await _confirmCommandInsertion(
-          title: 'Review snippet command',
-          message: 'Confirm the rendered command before inserting it.',
-          confirmLabel: 'Insert command',
-          review: review,
-        );
-        if (!shouldInsert) {
-          _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-          return;
-        }
+      if (!shouldInsert) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
       }
       _followLiveOutput();
       // Insert the command into terminal

@@ -178,6 +178,44 @@ void main() {
     });
   });
 
+  group('applyTerminalInputDelta', () {
+    test('applies backspaces before inserting committed text', () {
+      expect(
+        applyTerminalInputDelta(
+          currentText: 'teh ',
+          cursorOffset: 4,
+          deletedCount: 3,
+          appendedText: 'he ',
+        ),
+        'the ',
+      );
+    });
+  });
+
+  group('resolveTerminalLineSnapshotTextLength', () {
+    test('preserves trailing spaces through the cursor offset', () {
+      expect(
+        resolveTerminalLineSnapshotTextLength(
+          text: 'cat     ',
+          preserveOffset: 4,
+          preserveTrailingPadding: false,
+        ),
+        4,
+      );
+    });
+
+    test('keeps full wrapped-row padding when requested', () {
+      expect(
+        resolveTerminalLineSnapshotTextLength(
+          text: 'cat     ',
+          preserveOffset: 0,
+          preserveTrailingPadding: true,
+        ),
+        8,
+      );
+    });
+  });
+
   group('shouldShowNativeSelectionOverlay', () {
     test(
       'shows overlay when touch scrolling is not routed to the terminal',

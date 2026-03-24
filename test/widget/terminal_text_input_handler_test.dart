@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/auto_connect_command.dart';
+import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
@@ -1332,6 +1333,90 @@ void main() {
           client.currentTextEditingValue?.text,
           '${_deleteDetectionMarker}ls',
         );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'reviews IME insertions against terminal state after input resets',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final reviews = <TerminalCommandReview>[];
+        var readOnly = false;
+
+        Widget buildHandler() => MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              readOnly: readOnly,
+              buildReviewTextForInsertedText: (delta, currentText) =>
+                  applyTerminalInputDelta(
+                    currentText: _terminalTextFromEvents(terminalOutput),
+                    cursorOffset: _terminalTextFromEvents(
+                      terminalOutput,
+                    ).length,
+                    deletedCount: delta.deletedCount,
+                    appendedText: delta.appendedText,
+                  ),
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return false;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        );
+
+        await tester.pumpWidget(buildHandler());
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        const existingCommand = 'echo ready &';
+        for (var index = 1; index <= existingCommand.length; index++) {
+          final currentCommand = existingCommand.substring(0, index);
+          tester.testTextInput.updateEditingValue(
+            TextEditingValue(
+              text: '$_deleteDetectionMarker$currentCommand',
+              selection: TextSelection.collapsed(
+                offset: _deleteDetectionMarker.length + currentCommand.length,
+              ),
+            ),
+          );
+          await tester.pump();
+        }
+
+        readOnly = true;
+        await tester.pumpWidget(buildHandler());
+        await tester.pump();
+
+        readOnly = false;
+        await tester.pumpWidget(buildHandler());
+        await tester.pump();
+
+        reviews.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker echo done',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, 'echo ready & echo done');
+        expect(
+          reviews.single.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+        expect(_terminalTextFromEvents(terminalOutput), existingCommand);
 
         focusNode.dispose();
       },
