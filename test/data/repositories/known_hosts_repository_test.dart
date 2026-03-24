@@ -49,6 +49,51 @@ void main() {
     });
 
     test(
+      'upsertTrustedHost atomically updates an existing trusted host key',
+      () async {
+        final originalTime = DateTime(2024);
+        await db
+            .into(db.knownHosts)
+            .insert(
+              KnownHostsCompanion.insert(
+                hostname: 'server.example.com',
+                port: 22,
+                keyType: 'ssh-ed25519',
+                fingerprint: 'legacy',
+                hostKey: 'legacy-key',
+                firstSeen: Value(originalTime),
+                lastSeen: Value(originalTime),
+              ),
+            );
+        final updatedHostKey = _verifiedHostKey('server.example.com', 22, [
+          9,
+          8,
+          7,
+          6,
+        ]);
+
+        await repository.upsertTrustedHost(
+          hostname: updatedHostKey.hostname,
+          port: updatedHostKey.port,
+          keyType: updatedHostKey.keyType,
+          fingerprint: updatedHostKey.fingerprint,
+          encodedHostKey: updatedHostKey.encodedHostKey,
+          resetFirstSeen: false,
+        );
+
+        final storedHost = await repository.getByHost(
+          updatedHostKey.hostname,
+          updatedHostKey.port,
+        );
+        expect(storedHost, isNotNull);
+        expect(storedHost!.fingerprint, updatedHostKey.fingerprint);
+        expect(storedHost.hostKey, updatedHostKey.encodedHostKey);
+        expect(storedHost.firstSeen, originalTime);
+        expect(storedHost.lastSeen.isAfter(originalTime), isTrue);
+      },
+    );
+
+    test(
       'markTrustedHostSeen refreshes lastSeen and normalizes imported data',
       () async {
         final now = DateTime(2024);

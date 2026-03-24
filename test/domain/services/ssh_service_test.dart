@@ -261,6 +261,48 @@ void main() {
     );
   });
 
+  group('host key capture', () {
+    test(
+      'captures host key bytes from fragmented SSH identification and kex packets',
+      () async {
+        final expectedHostKey = _ed25519HostKeyBlob([1, 2, 3, 4]);
+        final kexReplyPacket = _sshBinaryPacket(
+          _sshMessageWithHostKey(31, expectedHostKey),
+        );
+
+        await expectLater(
+          captureHostKeyFromHandshakeChunksForTesting(<Uint8List>[
+            Uint8List.fromList(utf8.encode('SSH-2.0-test-server\r')),
+            Uint8List.fromList(utf8.encode('\n')),
+            Uint8List.sublistView(kexReplyPacket, 0, 3),
+            Uint8List.sublistView(kexReplyPacket, 3, 9),
+            Uint8List.sublistView(kexReplyPacket, 9),
+          ]),
+          completion(expectedHostKey),
+        );
+      },
+    );
+
+    test(
+      'fails host key capture when the handshake packet is too large',
+      () async {
+        await expectLater(
+          captureHostKeyFromHandshakeChunksForTesting(<Uint8List>[
+            Uint8List.fromList(utf8.encode('SSH-2.0-test-server\r\n')),
+            _oversizedPacketHeader(),
+          ]),
+          throwsA(
+            isA<HostKeyVerificationException>().having(
+              (error) => error.message,
+              'message',
+              contains('host-key capture limit'),
+            ),
+          ),
+        );
+      },
+    );
+  });
+
   group('SshConnectionConfig', () {
     test('creates with required fields', () {
       const config = SshConnectionConfig(
@@ -1265,6 +1307,35 @@ Uint8List _uint32(int value) => Uint8List.fromList([
   (value >> 8) & 0xFF,
   value & 0xFF,
 ]);
+
+Uint8List _sshString(List<int> value) {
+  final writer = BytesBuilder(copy: false)
+    ..add(_uint32(value.length))
+    ..add(value);
+  return writer.takeBytes();
+}
+
+Uint8List _sshMessageWithHostKey(int messageId, Uint8List hostKey) {
+  final writer = BytesBuilder(copy: false)
+    ..add([messageId])
+    ..add(_sshString(hostKey))
+    ..add(_sshString(const <int>[0, 1, 2, 3]))
+    ..add(_sshString(const <int>[4, 5, 6, 7]));
+  return writer.takeBytes();
+}
+
+Uint8List _sshBinaryPacket(Uint8List payload) {
+  const paddingLength = 4;
+  final writer = BytesBuilder(copy: false)
+    ..add(_uint32(payload.length + paddingLength + 1))
+    ..add([paddingLength])
+    ..add(payload)
+    ..add(const <int>[0, 0, 0, 0]);
+  return writer.takeBytes();
+}
+
+Uint8List _oversizedPacketHeader() =>
+    Uint8List.fromList([0x00, 0x04, 0x00, 0x01, 0x04]);
 
 Answer<Future<SSHForwardChannel>> _returnTargetSocket(
   SSHForwardChannel socket,

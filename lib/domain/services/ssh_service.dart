@@ -283,6 +283,19 @@ abstract interface class HostKeySource {
   Future<Uint8List> get hostKeyBytes;
 }
 
+/// Captures a host key from fragmented SSH handshake chunks using the real
+/// socket wrapper and parser path.
+@visibleForTesting
+Future<Uint8List> captureHostKeyFromHandshakeChunksForTesting(
+  Iterable<Uint8List> chunks,
+) async {
+  final capturingSocket = _HostKeyCapturingSocket(
+    _FiniteChunkSshSocket(chunks),
+  );
+  unawaited(capturingSocket.stream.drain<void>());
+  return capturingSocket.hostKeyBytes;
+}
+
 /// A single progress update emitted while an SSH connection is being created.
 class ConnectionProgressUpdate {
   /// Creates a [ConnectionProgressUpdate].
@@ -815,6 +828,29 @@ class _KeepAliveSSHSocket implements SSHSocket {
   void destroy() => _socket.destroy();
 }
 
+class _FiniteChunkSshSocket implements SSHSocket {
+  _FiniteChunkSshSocket(Iterable<Uint8List> chunks)
+    : _stream = Stream<Uint8List>.fromIterable(chunks);
+
+  final Stream<Uint8List> _stream;
+  final _sinkController = StreamController<List<int>>();
+
+  @override
+  Stream<Uint8List> get stream => _stream;
+
+  @override
+  StreamSink<List<int>> get sink => _sinkController.sink;
+
+  @override
+  Future<void> close() => _sinkController.close();
+
+  @override
+  Future<void> get done async {}
+
+  @override
+  void destroy() {}
+}
+
 class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
   _HostKeyCapturingSocket(this._delegate)
     : _hostKeyParser = _SshHostKeyParser() {
@@ -848,6 +884,8 @@ class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
 }
 
 class _SshHostKeyParser {
+  static const _maxBufferedBytes = 256 * 1024;
+
   final BytesBuilder _buffer = BytesBuilder(copy: false);
   final Completer<Uint8List> _hostKeyBytes = Completer<Uint8List>();
   final BytesBuilder _versionBuffer = BytesBuilder(copy: false);
@@ -866,11 +904,23 @@ class _SshHostKeyParser {
     }
 
     _buffer.add(chunk);
+    _failIfBufferLimitExceeded(
+      _buffer.length,
+      context:
+          'SSH handshake packet buffer exceeded '
+          '$_maxBufferedBytes bytes before the host key was parsed.',
+    );
     _parsePackets();
   }
 
   void _consumeVersionBytes(Uint8List chunk) {
     _versionBuffer.add(chunk);
+    _failIfBufferLimitExceeded(
+      _versionBuffer.length,
+      context:
+          'SSH identification exchange exceeded $_maxBufferedBytes bytes '
+          'before a protocol version line was received.',
+    );
     final bytes = _versionBuffer.takeBytes();
     var searchStart = 0;
     while (true) {
@@ -901,6 +951,13 @@ class _SshHostKeyParser {
     var offset = 0;
     while (!_hostKeyBytes.isCompleted && data.length - offset >= 5) {
       final packetLength = _readUint32(data, offset);
+      if (packetLength + 4 > _maxBufferedBytes) {
+        _fail(
+          'SSH handshake packet length $packetLength exceeds the '
+          '$_maxBufferedBytes-byte host-key capture limit.',
+        );
+        return;
+      }
       if (packetLength < 1 || data.length - offset < packetLength + 4) {
         break;
       }
@@ -920,6 +977,19 @@ class _SshHostKeyParser {
     if (offset < data.length) {
       _buffer.add(data.sublist(offset));
     }
+  }
+
+  void _failIfBufferLimitExceeded(int length, {required String context}) {
+    if (length > _maxBufferedBytes) {
+      _fail(context);
+    }
+  }
+
+  void _fail(String message) {
+    if (_hostKeyBytes.isCompleted) {
+      return;
+    }
+    _hostKeyBytes.completeError(HostKeyVerificationException(message));
   }
 
   void _tryCaptureHostKey(Uint8List payload) {

@@ -29,34 +29,39 @@ class KnownHostsRepository {
     required bool resetFirstSeen,
   }) async {
     final now = DateTime.now();
-    final existing = await getByHost(hostname, port);
-    if (existing == null) {
-      await _db
-          .into(_db.knownHosts)
-          .insert(
-            KnownHostsCompanion.insert(
-              hostname: hostname,
-              port: port,
-              keyType: keyType,
-              fingerprint: fingerprint,
-              hostKey: encodedHostKey,
-              firstSeen: Value(now),
-              lastSeen: Value(now),
-            ),
-          );
-      return;
-    }
-
-    await (_db.update(
-      _db.knownHosts,
-    )..where((knownHost) => knownHost.id.equals(existing.id))).write(
-      KnownHostsCompanion(
-        keyType: Value(keyType),
-        fingerprint: Value(fingerprint),
-        hostKey: Value(encodedHostKey),
-        firstSeen: resetFirstSeen ? Value(now) : Value(existing.firstSeen),
-        lastSeen: Value(now),
-      ),
+    final unixSeconds = now.millisecondsSinceEpoch ~/ 1000;
+    final shouldResetFirstSeen = resetFirstSeen ? 1 : 0;
+    await _db.customStatement(
+      '''
+      INSERT INTO known_hosts (
+        hostname,
+        port,
+        key_type,
+        fingerprint,
+        host_key,
+        first_seen,
+        last_seen
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(hostname, port) DO UPDATE SET
+        key_type = excluded.key_type,
+        fingerprint = excluded.fingerprint,
+        host_key = excluded.host_key,
+        first_seen = CASE
+          WHEN ? = 1 THEN excluded.first_seen
+          ELSE known_hosts.first_seen
+        END,
+        last_seen = excluded.last_seen
+      ''',
+      <Object?>[
+        hostname,
+        port,
+        keyType,
+        fingerprint,
+        encodedHostKey,
+        unixSeconds,
+        unixSeconds,
+        shouldResetFirstSeen,
+      ],
     );
   }
 
