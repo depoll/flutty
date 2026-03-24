@@ -1201,6 +1201,74 @@ void main() {
     });
 
     testWidgets(
+      'reviews IME insertions against the full terminal line context',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) async {
+                  reviews.add(review);
+                  return false;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        const existingCommand = 'echo ready &';
+        for (var index = 1; index <= existingCommand.length; index++) {
+          final currentCommand = existingCommand.substring(0, index);
+          tester.testTextInput.updateEditingValue(
+            TextEditingValue(
+              text: '$_deleteDetectionMarker$currentCommand',
+              selection: TextSelection.collapsed(
+                offset: _deleteDetectionMarker.length + currentCommand.length,
+              ),
+            ),
+          );
+          await tester.pump();
+        }
+
+        reviews.clear();
+
+        const combinedCommand = '$existingCommand echo done';
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker$combinedCommand',
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length + combinedCommand.length,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), existingCommand);
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, combinedCommand);
+        expect(
+          reviews.single.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'ignores stale review approvals when a newer editing value arrives',
       (tester) async {
         final terminalOutput = <String>[];
@@ -1268,6 +1336,49 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets('controller exposes normalized terminal input text', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+      final controller = TerminalTextInputHandlerController();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              controller: controller,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}echo ready',
+          selection: TextSelection.collapsed(offset: 12),
+        ),
+      );
+      await tester.pump();
+
+      expect(
+        controller.currentUserEditingValue,
+        const TextEditingValue(
+          text: 'echo ready',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+
+      focusNode.dispose();
+    });
   });
 
   group('shouldRequestKeyboardForTerminalPointerUp', () {

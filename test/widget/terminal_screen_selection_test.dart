@@ -156,6 +156,34 @@ void main() {
     });
   });
 
+  group('applyTerminalTextInsertion', () {
+    test('appends inserted text to the current terminal input', () {
+      final nextValue = applyTerminalTextInsertion(
+        currentValue: const TextEditingValue(
+          text: 'echo ready &',
+          selection: TextSelection.collapsed(offset: 12),
+        ),
+        insertedText: ' echo done',
+      );
+
+      expect(nextValue.text, 'echo ready & echo done');
+      expect(nextValue.selection, const TextSelection.collapsed(offset: 22));
+    });
+
+    test('replaces the selected terminal input range before review', () {
+      final nextValue = applyTerminalTextInsertion(
+        currentValue: const TextEditingValue(
+          text: 'cat output.log',
+          selection: TextSelection(baseOffset: 4, extentOffset: 14),
+        ),
+        insertedText: '> secrets.txt',
+      );
+
+      expect(nextValue.text, 'cat > secrets.txt');
+      expect(nextValue.selection, const TextSelection.collapsed(offset: 17));
+    });
+  });
+
   group('shouldShowNativeSelectionOverlay', () {
     test(
       'shows overlay when touch scrolling is not routed to the terminal',

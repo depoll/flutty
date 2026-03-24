@@ -188,6 +188,27 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
+/// Applies pasted or rendered text to the current editable terminal input.
+@visibleForTesting
+TextEditingValue applyTerminalTextInsertion({
+  required TextEditingValue currentValue,
+  required String insertedText,
+}) {
+  final replacementRange = currentValue.selection.isValid
+      ? TextRange(
+          start: currentValue.selection.start,
+          end: currentValue.selection.end,
+        )
+      : TextRange.collapsed(currentValue.text.length);
+  final insertedOffset = replacementRange.start + insertedText.length;
+  return currentValue
+      .replaced(replacementRange, insertedText)
+      .copyWith(
+        selection: TextSelection.collapsed(offset: insertedOffset),
+        composing: TextRange.empty,
+      );
+}
+
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
@@ -360,6 +381,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
+
+  TextEditingValue get _currentTerminalInputValue =>
+      _terminalTextInputController.currentUserEditingValue ??
+      TextEditingValue.empty;
+
+  String _terminalCommandAfterInsertion(String insertedText) =>
+      applyTerminalTextInsertion(
+        currentValue: _currentTerminalInputValue,
+        insertedText: insertedText,
+      ).text;
 
   @override
   void initState() {
@@ -2016,7 +2047,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final review = assessClipboardPasteCommand(
-      text,
+      _terminalCommandAfterInsertion(text),
       bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
     );
     if (review.requiresReview) {
@@ -2160,7 +2191,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
       final review = assessSnippetCommandInsertion(
-        result.command,
+        _terminalCommandAfterInsertion(result.command),
         hadVariableSubstitution: result.hadVariableSubstitution,
       );
       if (review.requiresReview) {
