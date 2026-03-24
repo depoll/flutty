@@ -156,6 +156,66 @@ void main() {
     });
   });
 
+  group('applyTerminalCursorInsertion', () {
+    test('appends inserted text at the current cursor offset', () {
+      final nextValue = applyTerminalCursorInsertion(
+        currentText: 'echo ready &',
+        cursorOffset: 12,
+        insertedText: ' echo done',
+      );
+
+      expect(nextValue, 'echo ready & echo done');
+    });
+
+    test('inserts text in the middle of the current terminal input', () {
+      final nextValue = applyTerminalCursorInsertion(
+        currentText: 'echo done',
+        cursorOffset: 5,
+        insertedText: 'ready && ',
+      );
+
+      expect(nextValue, 'echo ready && done');
+    });
+  });
+
+  group('applyTerminalInputDelta', () {
+    test('applies backspaces before inserting committed text', () {
+      expect(
+        applyTerminalInputDelta(
+          currentText: 'teh ',
+          cursorOffset: 4,
+          deletedCount: 3,
+          appendedText: 'he ',
+        ),
+        'the ',
+      );
+    });
+  });
+
+  group('resolveTerminalLineSnapshotTextLength', () {
+    test('preserves trailing spaces through the cursor offset', () {
+      expect(
+        resolveTerminalLineSnapshotTextLength(
+          text: 'cat     ',
+          preserveOffset: 4,
+          preserveTrailingPadding: false,
+        ),
+        4,
+      );
+    });
+
+    test('keeps full wrapped-row padding when requested', () {
+      expect(
+        resolveTerminalLineSnapshotTextLength(
+          text: 'cat     ',
+          preserveOffset: 0,
+          preserveTrailingPadding: true,
+        ),
+        8,
+      );
+    });
+  });
+
   group('shouldShowNativeSelectionOverlay', () {
     test(
       'shows overlay when touch scrolling is not routed to the terminal',

@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../models/auto_connect_command.dart';
 
 /// Supported transfer payload types.
 enum TransferPayloadType {
@@ -325,6 +326,13 @@ class SecureTransferService {
       throw const FormatException('Host payload data missing');
     }
     final hostData = Map<String, dynamic>.from(rawHost);
+    final autoConnectCommand = normalizeImportedAutoConnectCommand(
+      _optionalString(hostData['autoConnectCommand']),
+    );
+    final requiresAutoConnectReview = importedAutoConnectRequiresReview(
+      command: autoConnectCommand,
+      snippetId: null,
+    );
     return _db.transaction(() async {
       int? keyId;
       final rawReferencedKey = payload.data['referencedKey'];
@@ -367,10 +375,9 @@ class SecureTransferService {
           terminalFontFamily: Value(
             _optionalString(hostData['terminalFontFamily']),
           ),
-          autoConnectCommand: Value(
-            _optionalString(hostData['autoConnectCommand']),
-          ),
+          autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: const Value(null),
+          autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
         ),
       );
 
@@ -442,12 +449,18 @@ class SecureTransferService {
         final snippetFolderMapping = await _importSnippetFolders(
           _listFromData(payload.data, 'snippetFolders'),
         );
+        final rawHosts = _listFromData(payload.data, 'hosts');
+        final importedAutoConnectSnippetIds = rawHosts
+            .map((host) => _optionalInt(host['autoConnectSnippetId']))
+            .whereType<int>()
+            .toSet();
         final snippetMapping = await _importSnippets(
           _listFromData(payload.data, 'snippets'),
           snippetFolderMapping: snippetFolderMapping,
+          autoConnectSnippetIds: importedAutoConnectSnippetIds,
         );
         final hostMapping = await _importHosts(
-          _listFromData(payload.data, 'hosts'),
+          rawHosts,
           groupMapping: groupMapping,
           keyMapping: keyMapping,
           snippetMapping: snippetMapping,
@@ -667,6 +680,9 @@ class SecureTransferService {
       final oldKeyId = _optionalInt(item['keyId']);
       final oldJumpId = _optionalInt(item['jumpHostId']);
       final oldSnippetId = _optionalInt(item['autoConnectSnippetId']);
+      final autoConnectCommand = normalizeImportedAutoConnectCommand(
+        _optionalString(item['autoConnectCommand']),
+      );
       int? mappedGroupId;
       int? mappedKeyId;
       int? mappedSnippetId;
@@ -694,6 +710,11 @@ class SecureTransferService {
           );
         }
       }
+
+      final requiresAutoConnectReview = importedAutoConnectRequiresReview(
+        command: autoConnectCommand,
+        snippetId: mappedSnippetId,
+      );
 
       final newId = await _hostRepository.insert(
         HostsCompanion.insert(
@@ -725,10 +746,9 @@ class SecureTransferService {
           terminalFontFamily: Value(
             _optionalString(item['terminalFontFamily']),
           ),
-          autoConnectCommand: Value(
-            _optionalString(item['autoConnectCommand']),
-          ),
+          autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: Value(mappedSnippetId),
+          autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
         ),
       );
 
@@ -814,9 +834,11 @@ class SecureTransferService {
   Future<Map<int, int>> _importSnippets(
     List<Map<String, dynamic>> rawSnippets, {
     required Map<int, int> snippetFolderMapping,
+    required Set<int> autoConnectSnippetIds,
   }) async {
     final idMapping = <int, int>{};
     for (final item in rawSnippets) {
+      final oldId = _optionalInt(item['id']);
       final oldFolderId = _optionalInt(item['folderId']);
       if (oldFolderId != null &&
           !snippetFolderMapping.containsKey(oldFolderId)) {
@@ -824,12 +846,16 @@ class SecureTransferService {
           'Invalid snippet folder reference in migration payload',
         );
       }
+      final command = _requiredString(item, 'command');
+      if (oldId != null && autoConnectSnippetIds.contains(oldId)) {
+        validateImportedAutoConnectCommandText(command);
+      }
       final newId = await _db
           .into(_db.snippets)
           .insert(
             SnippetsCompanion.insert(
               name: _requiredString(item, 'name'),
-              command: _requiredString(item, 'command'),
+              command: command,
               description: Value(_optionalString(item['description'])),
               folderId: Value(
                 oldFolderId == null ? null : snippetFolderMapping[oldFolderId],
@@ -842,7 +868,6 @@ class SecureTransferService {
               usageCount: Value(_optionalInt(item['usageCount']) ?? 0),
             ),
           );
-      final oldId = _optionalInt(item['id']);
       if (oldId != null) {
         idMapping[oldId] = newId;
       }
