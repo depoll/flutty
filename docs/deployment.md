@@ -192,6 +192,7 @@ android/fastlane/
 
 Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
 Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*.png` during deploy/metadata-sync workflows, so marketplace icons stay aligned with the app icon assets.
+Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.
 
