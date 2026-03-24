@@ -1336,49 +1336,6 @@ void main() {
         focusNode.dispose();
       },
     );
-
-    testWidgets('controller exposes normalized terminal input text', (
-      tester,
-    ) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
-      final controller = TerminalTextInputHandlerController();
-
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              controller: controller,
-              deleteDetection: true,
-              child: const SizedBox.expand(),
-            ),
-          ),
-        ),
-      );
-
-      focusNode.requestFocus();
-      await tester.pump();
-
-      tester.testTextInput.updateEditingValue(
-        const TextEditingValue(
-          text: '${_deleteDetectionMarker}echo ready',
-          selection: TextSelection.collapsed(offset: 12),
-        ),
-      );
-      await tester.pump();
-
-      expect(
-        controller.currentUserEditingValue,
-        const TextEditingValue(
-          text: 'echo ready',
-          selection: TextSelection.collapsed(offset: 10),
-        ),
-      );
-
-      focusNode.dispose();
-    });
   });
 
   group('shouldRequestKeyboardForTerminalPointerUp', () {

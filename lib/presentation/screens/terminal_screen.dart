@@ -188,26 +188,13 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
-/// Applies pasted or rendered text to the current editable terminal input.
+/// Applies pasted or rendered text at the terminal cursor within a wrapped line.
 @visibleForTesting
-TextEditingValue applyTerminalTextInsertion({
-  required TextEditingValue currentValue,
+String applyTerminalCursorInsertion({
+  required String currentText,
+  required int cursorOffset,
   required String insertedText,
-}) {
-  final replacementRange = currentValue.selection.isValid
-      ? TextRange(
-          start: currentValue.selection.start,
-          end: currentValue.selection.end,
-        )
-      : TextRange.collapsed(currentValue.text.length);
-  final insertedOffset = replacementRange.start + insertedText.length;
-  return currentValue
-      .replaced(replacementRange, insertedText)
-      .copyWith(
-        selection: TextSelection.collapsed(offset: insertedOffset),
-        composing: TextRange.empty,
-      );
-}
+}) => currentText.replaceRange(cursorOffset, cursorOffset, insertedText);
 
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
@@ -382,15 +369,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
 
-  TextEditingValue get _currentTerminalInputValue =>
-      _terminalTextInputController.currentUserEditingValue ??
-      TextEditingValue.empty;
-
-  String _terminalCommandAfterInsertion(String insertedText) =>
-      applyTerminalTextInsertion(
-        currentValue: _currentTerminalInputValue,
-        insertedText: insertedText,
-      ).text;
+  String _terminalCommandAfterInsertion(String insertedText) {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return insertedText;
+    }
+    return applyTerminalCursorInsertion(
+      currentText: snapshot.text,
+      cursorOffset: snapshot.cursorOffset,
+      insertedText: insertedText,
+    );
+  }
 
   @override
   void initState() {
@@ -1903,6 +1892,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       rowStarts: rowStarts,
       columnOffsets: columnOffsets,
     );
+  }
+
+  ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
+    final buffer = _terminal.buffer;
+    final row = buffer.absoluteCursorY;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
+    if (snapshot == null) {
+      return null;
+    }
+
+    final rowIndex = row - snapshot.startRow;
+    final cursorColumn = buffer.cursorX.clamp(0, buffer.viewWidth);
+    final cursorOffset =
+        snapshot.rowStarts[rowIndex] +
+        snapshot.columnOffsets[rowIndex][cursorColumn];
+    return (text: snapshot.text, cursorOffset: cursorOffset);
   }
 
   void _handleTerminalLinkTap(String link) {

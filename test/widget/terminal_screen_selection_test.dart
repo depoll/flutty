@@ -156,31 +156,25 @@ void main() {
     });
   });
 
-  group('applyTerminalTextInsertion', () {
-    test('appends inserted text to the current terminal input', () {
-      final nextValue = applyTerminalTextInsertion(
-        currentValue: const TextEditingValue(
-          text: 'echo ready &',
-          selection: TextSelection.collapsed(offset: 12),
-        ),
+  group('applyTerminalCursorInsertion', () {
+    test('appends inserted text at the current cursor offset', () {
+      final nextValue = applyTerminalCursorInsertion(
+        currentText: 'echo ready &',
+        cursorOffset: 12,
         insertedText: ' echo done',
       );
 
-      expect(nextValue.text, 'echo ready & echo done');
-      expect(nextValue.selection, const TextSelection.collapsed(offset: 22));
+      expect(nextValue, 'echo ready & echo done');
     });
 
-    test('replaces the selected terminal input range before review', () {
-      final nextValue = applyTerminalTextInsertion(
-        currentValue: const TextEditingValue(
-          text: 'cat output.log',
-          selection: TextSelection(baseOffset: 4, extentOffset: 14),
-        ),
-        insertedText: '> secrets.txt',
+    test('inserts text in the middle of the current terminal input', () {
+      final nextValue = applyTerminalCursorInsertion(
+        currentText: 'echo done',
+        cursorOffset: 5,
+        insertedText: 'ready && ',
       );
 
-      expect(nextValue.text, 'cat > secrets.txt');
-      expect(nextValue.selection, const TextSelection.collapsed(offset: 17));
+      expect(nextValue, 'echo ready && done');
     });
   });
 

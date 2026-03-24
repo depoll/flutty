@@ -63,10 +63,6 @@ class TerminalTextInputHandlerController {
   void suppressNextTouchKeyboardRequest() {
     _state?._suppressNextTouchKeyboardRequest();
   }
-
-  /// Returns the current user-visible terminal input text and selection.
-  TextEditingValue? get currentUserEditingValue =>
-      _state?._currentUserEditingValue;
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -404,31 +400,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       : TextEditingValue.empty;
 
   late TextEditingValue _currentEditingState = _initEditingState.copyWith();
-
-  TextEditingValue get _currentUserEditingValue {
-    final currentText = _extractInputText(_currentEditingState.text);
-    final rawPrefixLength = _editingPrefixLength(_currentEditingState.text);
-    final rawUserText = _extractRawInputText(_currentEditingState.text);
-    final trimmedLeadingCharacters = rawUserText.length - currentText.length;
-    final userSelection = _normalizeSelectionForUserText(
-      selection: _currentEditingState.selection,
-      rawPrefixLength: rawPrefixLength,
-      trimmedLeadingCharacters: trimmedLeadingCharacters,
-      userTextLength: currentText.length,
-    );
-    final userComposing = _normalizeComposingForUserText(
-      composing: _currentEditingState.composing,
-      rawPrefixLength: rawPrefixLength,
-      trimmedLeadingCharacters: trimmedLeadingCharacters,
-      userTextLength: currentText.length,
-    );
-    return TextEditingValue(
-      text: currentText,
-      selection:
-          userSelection ?? TextSelection.collapsed(offset: currentText.length),
-      composing: userComposing,
-    );
-  }
 
   int _editingPrefixLength(String text) {
     if (!widget.deleteDetection) {
