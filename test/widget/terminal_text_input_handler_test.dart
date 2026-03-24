@@ -1018,6 +1018,60 @@ void main() {
       },
     );
 
+    testWidgets('reviews a committed IME payload with a standalone ampersand', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final decision = Completer<bool>();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) {
+                reviews.add(review);
+                return decision.future;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho ready & echo done',
+          selection: TextSelection.collapsed(offset: 24),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(reviews.single.command, 'echo ready & echo done');
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(terminalOutput, isEmpty);
+
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'echo ready & echo done');
+
+      focusNode.dispose();
+    });
+
     testWidgets('rejects suspicious IME insertion until the user approves', (
       tester,
     ) async {

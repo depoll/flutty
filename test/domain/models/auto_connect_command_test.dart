@@ -128,6 +128,50 @@ void main() {
       );
     });
 
+    test('flags standalone ampersands as shell chaining', () {
+      final snippetReview = assessSnippetCommandInsertion(
+        'echo ready & echo done',
+        hadVariableSubstitution: false,
+      );
+      final clipboardReview = assessClipboardPasteCommand(
+        'echo ready &',
+        bracketedPasteModeEnabled: false,
+      );
+      final importedReview = assessAutoConnectCommandExecution(
+        'echo ready & echo done',
+        importedNeedsReview: true,
+      );
+
+      expect(
+        snippetReview.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(
+        clipboardReview.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(
+        importedReview.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+    });
+
+    test('does not double-count shell chaining for double ampersands', () {
+      final review = assessSnippetCommandInsertion(
+        'echo ready && echo done',
+        hadVariableSubstitution: false,
+      );
+
+      expect(
+        review.reasons
+            .where(
+              (reason) => reason == TerminalCommandReviewReason.shellChaining,
+            )
+            .length,
+        1,
+      );
+    });
+
     test('flags multiline and suspicious clipboard paste for confirmation', () {
       final multilineReview = assessClipboardPasteCommand(
         'echo ready\necho deploy',

@@ -17,7 +17,7 @@ final _disallowedCommandControlCharacters = RegExp(
   r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]',
 );
 final _multilinePattern = RegExp(r'[\r\n]');
-final _shellChainingPattern = RegExp(r'&&|\|\||[;|]');
+final _shellChainingPattern = RegExp(r'&&|\|\||[;&|]');
 final _shellRedirectionPattern = RegExp('>>?|<');
 
 /// Reasons a terminal command should be reviewed before it is inserted or run.
