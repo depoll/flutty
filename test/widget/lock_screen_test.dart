@@ -111,5 +111,99 @@ void main() {
         expect(reportedErrors, hasLength(2));
       },
     );
+
+    testWidgets(
+      'keeps retry UI when auth method recovers to none but refresh stays locked',
+      (tester) async {
+        final authService = _MockAuthService();
+        final container = ProviderContainer(
+          overrides: [authServiceProvider.overrideWithValue(authService)],
+        );
+        final reportedErrors = <FlutterErrorDetails>[];
+        final originalOnError = FlutterError.onError;
+        addTearDown(container.dispose);
+        FlutterError.onError = reportedErrors.add;
+        addTearDown(() => FlutterError.onError = originalOnError);
+
+        when(authService.isAuthEnabled).thenAnswer((_) async {
+          throw Exception('storage unavailable');
+        });
+
+        var authMethodCalls = 0;
+        when(authService.getAuthMethod).thenAnswer((_) async {
+          if (authMethodCalls++ == 0) {
+            throw Exception('secure storage unavailable');
+          }
+          return AuthMethod.none;
+        });
+
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const MaterialApp(home: LockScreen()),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(container.read(authStateProvider), AuthState.locked);
+        expect(find.text('Retry'), findsOneWidget);
+        expect(reportedErrors, hasLength(2));
+
+        await tester.tap(find.text('Retry'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(container.read(authStateProvider), AuthState.locked);
+        expect(find.text('Retry'), findsOneWidget);
+        expect(
+          find.text(
+            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Unlock'), findsNothing);
+        expect(find.text('Use biometrics'), findsNothing);
+        expect(reportedErrors, hasLength(3));
+      },
+    );
+
+    testWidgets(
+      'shows retry UI on initial load when state is locked without an auth method',
+      (tester) async {
+        final authService = _MockAuthService();
+        final container = ProviderContainer(
+          overrides: [authServiceProvider.overrideWithValue(authService)],
+        );
+        addTearDown(container.dispose);
+
+        when(authService.isAuthEnabled).thenAnswer((_) async => true);
+        when(
+          authService.getAuthMethod,
+        ).thenAnswer((_) async => AuthMethod.none);
+
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const MaterialApp(home: LockScreen()),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(container.read(authStateProvider), AuthState.locked);
+        expect(find.text('Retry'), findsOneWidget);
+        expect(
+          find.text(
+            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Unlock'), findsNothing);
+        expect(find.text('Use biometrics'), findsNothing);
+      },
+    );
   });
 }

@@ -124,8 +124,13 @@ class _LockScreenState extends ConsumerState<LockScreen> {
     final colorScheme = theme.colorScheme;
     final isInitializing =
         authState == AuthState.unknown || _isCheckingAuthMethod;
+    final isLockedWithoutAvailableAuth =
+        authState == AuthState.locked &&
+        !_isCheckingAuthMethod &&
+        _authMethod == AuthMethod.none;
     final showAuthMethodError =
-        authState != AuthState.unknown && _authMethodLoadFailed;
+        authState != AuthState.unknown &&
+        (_authMethodLoadFailed || isLockedWithoutAvailableAuth);
     final subtitle = switch ((isInitializing, showAuthMethodError)) {
       (true, _) => 'Checking your security settings…',
       (false, true) =>
