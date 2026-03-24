@@ -68,7 +68,7 @@ class AuthLifecycleController {
 
     final elapsed = _now().difference(backgroundedAt);
     if (elapsed >= Duration(minutes: timeoutMinutes)) {
-      await _ref.read(authStateProvider.notifier).lock();
+      _ref.read(authStateProvider.notifier).lockForAutoLock();
     }
   }
 }

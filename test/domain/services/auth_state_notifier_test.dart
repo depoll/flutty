@@ -86,5 +86,20 @@ void main() {
 
       expect(container.read(authStateProvider), AuthState.notConfigured);
     });
+
+    test('lockForAutoLock locks without re-reading auth storage', () async {
+      when(() => authService.isAuthEnabled()).thenAnswer((_) async => true);
+      when(() => authService.verifyPin(any())).thenAnswer((_) async => true);
+
+      container.read(authStateProvider);
+      await pumpEventQueue();
+      await container.read(authStateProvider.notifier).unlockWithPin('1234');
+
+      clearInteractions(authService);
+      container.read(authStateProvider.notifier).lockForAutoLock();
+
+      expect(container.read(authStateProvider), AuthState.locked);
+      verifyNever(() => authService.isAuthEnabled());
+    });
   });
 }

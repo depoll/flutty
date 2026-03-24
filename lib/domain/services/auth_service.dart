@@ -400,6 +400,12 @@ class AuthStateNotifier extends Notifier<AuthState> {
     state = isEnabled ? AuthState.locked : AuthState.notConfigured;
   }
 
+  /// Lock the app immediately when auth is already known to be configured.
+  void lockForAutoLock() {
+    if (_disposed) return;
+    state = AuthState.locked;
+  }
+
   /// Skip authentication setup (when not configured).
   void skip() {
     state = AuthState.notConfigured;
