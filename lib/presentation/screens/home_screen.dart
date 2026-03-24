@@ -177,7 +177,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ..invalidate(cursorStyleNotifierProvider)
             ..invalidate(bellSoundNotifierProvider)
             ..invalidate(terminalThemeSettingsProvider);
-          invalidateImportedEntityProviders(ref);
+          invalidateImportedEntityProviders(ref.invalidate);
           if (!mounted) {
             return;
           }

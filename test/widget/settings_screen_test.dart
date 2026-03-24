@@ -19,6 +19,8 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 
+import '../support/settings_import_test_helpers.dart';
+
 void main() {
   group('SettingsScreen', () {
     testWidgets('displays all sections', (tester) async {
@@ -29,8 +31,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -61,8 +63,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -82,8 +84,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -103,8 +105,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -124,8 +126,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -145,8 +147,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -167,8 +169,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -198,8 +200,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -220,8 +222,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -238,7 +240,7 @@ void main() {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
       final encryptionService = SecretEncryptionService.forTesting();
-      final transferService = _FakeSecureTransferService(
+      final transferService = FakeSecureTransferService(
         db,
         KeyRepository(db, encryptionService),
         HostRepository(db, encryptionService),
@@ -259,7 +261,7 @@ void main() {
         ),
       );
 
-      FilePicker.platform = _FakeFilePicker(
+      setFakeFilePickerResult(
         result: FilePickerResult([
           PlatformFile(
             name: 'migration.monkeysshx',
@@ -268,7 +270,6 @@ void main() {
           ),
         ]),
       );
-      addTearDown(() => FilePicker.platform = _FakeFilePicker(result: null));
 
       var hostBuilds = 0;
       var keyBuilds = 0;
@@ -278,24 +279,20 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
             secureTransferServiceProvider.overrideWithValue(transferService),
-            themeModeNotifierProvider.overrideWith(
-              _StaticThemeModeNotifier.new,
-            ),
-            fontSizeNotifierProvider.overrideWith(_StaticFontSizeNotifier.new),
+            themeModeNotifierProvider.overrideWith(StaticThemeModeNotifier.new),
+            fontSizeNotifierProvider.overrideWith(StaticFontSizeNotifier.new),
             fontFamilyNotifierProvider.overrideWith(
-              _StaticFontFamilyNotifier.new,
+              StaticFontFamilyNotifier.new,
             ),
             cursorStyleNotifierProvider.overrideWith(
-              _StaticCursorStyleNotifier.new,
+              StaticCursorStyleNotifier.new,
             ),
-            bellSoundNotifierProvider.overrideWith(
-              _StaticBellSoundNotifier.new,
-            ),
+            bellSoundNotifierProvider.overrideWith(StaticBellSoundNotifier.new),
             terminalThemeSettingsProvider.overrideWith(
-              _StaticTerminalThemeSettingsNotifier.new,
+              StaticTerminalThemeSettingsNotifier.new,
             ),
             allHostsProvider.overrideWith((ref) {
               hostBuilds += 1;
@@ -311,7 +308,7 @@ void main() {
             }),
           ],
           child: const MaterialApp(
-            home: Stack(children: [SettingsScreen(), _EntityProviderProbe()]),
+            home: Stack(children: [SettingsScreen(), EntityProviderProbe()]),
           ),
         ),
       );
@@ -343,128 +340,4 @@ void main() {
       expect(groupBuilds, greaterThan(initialGroupBuilds));
     });
   });
-}
-
-class _EntityProviderProbe extends ConsumerWidget {
-  const _EntityProviderProbe();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    ref
-      ..watch(allHostsProvider)
-      ..watch(allKeysProvider)
-      ..watch(allGroupsProvider);
-    return const SizedBox.shrink();
-  }
-}
-
-class _MockAuthStateNotifier extends AuthStateNotifier {
-  @override
-  AuthState build() => AuthState.notConfigured;
-}
-
-class _FakeAuthService extends AuthService {
-  @override
-  Future<bool> isAuthEnabled() async => false;
-
-  @override
-  Future<bool> isBiometricEnabled() async => false;
-
-  @override
-  Future<bool> isBiometricAvailable() async => false;
-}
-
-class _FakeFilePicker extends FilePicker {
-  _FakeFilePicker({required this.result});
-
-  final FilePickerResult? result;
-
-  @override
-  Future<FilePickerResult?> pickFiles({
-    String? dialogTitle,
-    String? initialDirectory,
-    FileType type = FileType.any,
-    List<String>? allowedExtensions,
-    Function(FilePickerStatus)? onFileLoading,
-    bool allowCompression = false,
-    int compressionQuality = 0,
-    bool allowMultiple = false,
-    bool withData = false,
-    bool withReadStream = false,
-    bool lockParentWindow = false,
-    bool readSequential = false,
-  }) async => result;
-}
-
-class _FakeSecureTransferService extends SecureTransferService {
-  _FakeSecureTransferService(
-    super.db,
-    super.keyRepository,
-    super.hostRepository, {
-    required this.payload,
-  });
-
-  final TransferPayload payload;
-  int importCallCount = 0;
-
-  @override
-  Future<TransferPayload> decryptPayload({
-    required String encodedPayload,
-    required String transferPassphrase,
-  }) async => payload;
-
-  @override
-  MigrationPreview previewMigrationPayload(TransferPayload payload) =>
-      MigrationPreview(
-        settingsCount: 0,
-        hostCount: (payload.data['hosts'] as List).length,
-        keyCount: (payload.data['keys'] as List).length,
-        groupCount: (payload.data['groups'] as List).length,
-        snippetCount: (payload.data['snippets'] as List).length,
-        snippetFolderCount: (payload.data['snippetFolders'] as List).length,
-        portForwardCount: (payload.data['portForwards'] as List).length,
-        knownHostCount: (payload.data['knownHosts'] as List).length,
-      );
-
-  @override
-  Future<void> importFullMigrationPayload({
-    required TransferPayload payload,
-    required MigrationImportMode mode,
-  }) async {
-    importCallCount += 1;
-  }
-}
-
-class _StaticThemeModeNotifier extends ThemeModeNotifier {
-  @override
-  ThemeMode build() => ThemeMode.system;
-}
-
-class _StaticFontSizeNotifier extends FontSizeNotifier {
-  @override
-  double build() => 14;
-}
-
-class _StaticFontFamilyNotifier extends FontFamilyNotifier {
-  @override
-  String build() => 'System Monospace';
-}
-
-class _StaticCursorStyleNotifier extends CursorStyleNotifier {
-  @override
-  String build() => 'block';
-}
-
-class _StaticBellSoundNotifier extends BellSoundNotifier {
-  @override
-  bool build() => true;
-}
-
-class _StaticTerminalThemeSettingsNotifier
-    extends TerminalThemeSettingsNotifier {
-  @override
-  TerminalThemeSettings build() => const TerminalThemeSettings(
-    lightThemeId: 'github-light',
-    darkThemeId: 'dracula',
-  );
 }

@@ -846,7 +846,7 @@ class _MigrationSection extends ConsumerWidget {
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
         ..invalidate(terminalThemeSettingsProvider);
-      invalidateImportedEntityProviders(ref);
+      invalidateImportedEntityProviders(ref.invalidate);
 
       if (!context.mounted) {
         return;
