@@ -22,3 +22,11 @@ final allGroupsProvider = StreamProvider<List<Group>>((ref) {
   final repo = ref.watch(groupRepositoryProvider);
   return repo.watchAll();
 });
+
+/// Refreshes shared entity list providers after migration imports replace data.
+void invalidateImportedEntityProviders(WidgetRef ref) {
+  ref
+    ..invalidate(allHostsProvider)
+    ..invalidate(allKeysProvider)
+    ..invalidate(allGroupsProvider);
+}
