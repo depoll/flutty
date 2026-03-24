@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:math' show max;
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -205,7 +204,9 @@ String applyTerminalInputDelta({
   required int deletedCount,
   required String appendedText,
 }) {
-  final deleteStart = (cursorOffset - deletedCount).clamp(0, cursorOffset);
+  final deleteStart = cursorOffset > deletedCount
+      ? cursorOffset - deletedCount
+      : 0;
   return currentText.replaceRange(deleteStart, cursorOffset, appendedText);
 }
 
@@ -220,10 +221,16 @@ int resolveTerminalLineSnapshotTextLength({
     return text.length;
   }
 
-  return max(
-    trimTerminalLinePadding(text).length,
-    preserveOffset.clamp(0, text.length),
-  );
+  final trimmedLength = trimTerminalLinePadding(text).length;
+  var clampedPreserveOffset = preserveOffset;
+  if (clampedPreserveOffset < 0) {
+    clampedPreserveOffset = 0;
+  } else if (clampedPreserveOffset > text.length) {
+    clampedPreserveOffset = text.length;
+  }
+  return trimmedLength >= clampedPreserveOffset
+      ? trimmedLength
+      : clampedPreserveOffset;
 }
 
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.

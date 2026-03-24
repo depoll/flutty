@@ -624,26 +624,25 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
-        await repo.update(
-          _existingHost!.copyWith(
-            label: _labelController.text,
-            hostname: _hostnameController.text,
-            port: port,
-            username: _usernameController.text,
-            password: drift.Value(password),
-            tags: drift.Value(tags),
-            keyId: drift.Value(_selectedKeyId),
-            groupId: drift.Value(_selectedGroupId),
-            jumpHostId: drift.Value(_selectedJumpHostId),
-            terminalThemeLightId: drift.Value(_selectedLightThemeId),
-            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
-            terminalFontFamily: drift.Value(_selectedFontFamily),
-            autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
-            autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
-            autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
-            isFavorite: _isFavorite,
-          ),
+        final updatedHost = _existingHost!.copyWith(
+          label: _labelController.text,
+          hostname: _hostnameController.text,
+          port: port,
+          username: _usernameController.text,
+          password: drift.Value(password),
+          tags: drift.Value(tags),
+          keyId: drift.Value(_selectedKeyId),
+          groupId: drift.Value(_selectedGroupId),
+          jumpHostId: drift.Value(_selectedJumpHostId),
+          terminalThemeLightId: drift.Value(_selectedLightThemeId),
+          terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
+          terminalFontFamily: drift.Value(_selectedFontFamily),
+          autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
+          autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
+          autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+          isFavorite: _isFavorite,
         );
+        await repo.update(updatedHost);
       } else {
         // Create new host
         await repo.insert(

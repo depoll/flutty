@@ -341,6 +341,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           onInvoke: (intent) async {
             if (widget.onPasteText != null) {
               await widget.onPasteText!();
+              _controller.clearSelection();
               return null;
             }
 
