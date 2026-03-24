@@ -35,32 +35,56 @@ jobs:
         run: |
           set -euo pipefail
 
-          mapfile -t dependency_targets < <(
+          mapfile -t detected_targets < <(
             git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${HEAD_SHA}" | while IFS= read -r path; do
               case "${path}" in
                 Gemfile|Gemfile.lock)
-                  printf '%s\n' 'Gemfile.lock'
+                  printf '%s\n' 'scan:Gemfile.lock'
                   ;;
                 pubspec.yaml|pubspec.lock)
-                  printf '%s\n' 'pubspec.lock'
+                  printf '%s\n' 'scan:pubspec.lock'
                   ;;
                 ios/Podfile|ios/Podfile.lock)
-                  printf '%s\n' 'ios/Podfile.lock'
+                  printf '%s\n' 'skip:ios/Podfile.lock'
                   ;;
                 macos/Podfile|macos/Podfile.lock)
-                  printf '%s\n' 'macos/Podfile.lock'
+                  printf '%s\n' 'skip:macos/Podfile.lock'
                   ;;
               esac
             done | awk '!seen[$0]++'
           )
+
+          dependency_targets=()
+          unsupported_targets=()
+          for target in "${detected_targets[@]}"; do
+            case "${target}" in
+              scan:*)
+                dependency_targets+=("${target#scan:}")
+                ;;
+              skip:*)
+                unsupported_targets+=("${target#skip:}")
+                ;;
+            esac
+          done
 
           {
             echo '## Dependency review fallback'
             echo '- GitHub dependency review is unavailable in this repository because dependency graph is disabled.'
           } >> "$GITHUB_STEP_SUMMARY"
 
+          if [ "${#unsupported_targets[@]}" -gt 0 ]; then
+            echo '- Skipping unsupported fallback lockfiles because the current OSV source scan cannot extract CocoaPods `Podfile.lock` files:' >> "$GITHUB_STEP_SUMMARY"
+            for target in "${unsupported_targets[@]}"; do
+              echo "  - \`${target}\`" >> "$GITHUB_STEP_SUMMARY"
+            done
+          fi
+
           if [ "${#dependency_targets[@]}" -eq 0 ]; then
-            echo '- No supported dependency lockfiles changed in this pull request, so no fallback OSV diff scan was needed.' >> "$GITHUB_STEP_SUMMARY"
+            if [ "${#unsupported_targets[@]}" -eq 0 ]; then
+              echo '- No supported dependency lockfiles changed in this pull request, so no fallback OSV diff scan was needed.' >> "$GITHUB_STEP_SUMMARY"
+            else
+              echo '- No OSV-supported dependency lockfiles changed in this pull request, so no fallback OSV diff scan was run.' >> "$GITHUB_STEP_SUMMARY"
+            fi
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
           fi
