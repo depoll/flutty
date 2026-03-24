@@ -449,12 +449,18 @@ class SecureTransferService {
         final snippetFolderMapping = await _importSnippetFolders(
           _listFromData(payload.data, 'snippetFolders'),
         );
+        final rawHosts = _listFromData(payload.data, 'hosts');
+        final importedAutoConnectSnippetIds = rawHosts
+            .map((host) => _optionalInt(host['autoConnectSnippetId']))
+            .whereType<int>()
+            .toSet();
         final snippetMapping = await _importSnippets(
           _listFromData(payload.data, 'snippets'),
           snippetFolderMapping: snippetFolderMapping,
+          autoConnectSnippetIds: importedAutoConnectSnippetIds,
         );
         final hostMapping = await _importHosts(
-          _listFromData(payload.data, 'hosts'),
+          rawHosts,
           groupMapping: groupMapping,
           keyMapping: keyMapping,
           snippetMapping: snippetMapping,
@@ -828,9 +834,11 @@ class SecureTransferService {
   Future<Map<int, int>> _importSnippets(
     List<Map<String, dynamic>> rawSnippets, {
     required Map<int, int> snippetFolderMapping,
+    required Set<int> autoConnectSnippetIds,
   }) async {
     final idMapping = <int, int>{};
     for (final item in rawSnippets) {
+      final oldId = _optionalInt(item['id']);
       final oldFolderId = _optionalInt(item['folderId']);
       if (oldFolderId != null &&
           !snippetFolderMapping.containsKey(oldFolderId)) {
@@ -838,12 +846,16 @@ class SecureTransferService {
           'Invalid snippet folder reference in migration payload',
         );
       }
+      final command = _requiredString(item, 'command');
+      if (oldId != null && autoConnectSnippetIds.contains(oldId)) {
+        validateImportedAutoConnectCommandText(command);
+      }
       final newId = await _db
           .into(_db.snippets)
           .insert(
             SnippetsCompanion.insert(
               name: _requiredString(item, 'name'),
-              command: _requiredString(item, 'command'),
+              command: command,
               description: Value(_optionalString(item['description'])),
               folderId: Value(
                 oldFolderId == null ? null : snippetFolderMapping[oldFolderId],
@@ -856,7 +868,6 @@ class SecureTransferService {
               usageCount: Value(_optionalInt(item['usageCount']) ?? 0),
             ),
           );
-      final oldId = _optionalInt(item['id']);
       if (oldId != null) {
         idMapping[oldId] = newId;
       }

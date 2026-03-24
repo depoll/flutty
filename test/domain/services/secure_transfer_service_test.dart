@@ -226,6 +226,40 @@ void main() {
       },
     );
 
+    test(
+      'rejects imported auto-connect snippets with hidden control characters',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.fullMigration,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'snippets': [
+              {'id': 5, 'name': 'Auto connect', 'command': 'printf "ok"\x00'},
+            ],
+            'hosts': [
+              {
+                'id': 1,
+                'label': 'Imported Host',
+                'hostname': 'imported.example.com',
+                'port': 22,
+                'username': 'root',
+                'autoConnectSnippetId': 5,
+              },
+            ],
+          },
+        );
+
+        await expectLater(
+          transferService.importFullMigrationPayload(
+            payload: payload,
+            mode: MigrationImportMode.merge,
+          ),
+          throwsFormatException,
+        );
+      },
+    );
+
     test('rejects invalid passphrase', () async {
       final hostId = await db
           .into(db.hosts)

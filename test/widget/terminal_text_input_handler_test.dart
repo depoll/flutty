@@ -1,9 +1,12 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
@@ -897,6 +900,102 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets('reviews suspicious multi-character IME insertion', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final decision = Completer<bool>();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) {
+                reviews.add(review);
+                return decision.future;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho ready; rm -rf /',
+          selection: TextSelection.collapsed(offset: 21),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(reviews.single.command, 'echo ready; rm -rf /');
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(terminalOutput, isEmpty);
+
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'echo ready; rm -rf /');
+
+      focusNode.dispose();
+    });
+
+    testWidgets('rejects suspicious IME insertion until the user approves', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (_) async => false,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho ready\necho deploy',
+          selection: TextSelection.collapsed(offset: 24),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final client =
+          tester.state(find.byType(TerminalTextInputHandler))
+              as TextInputClient;
+      expect(terminalOutput, isEmpty);
+      expect(client.currentTextEditingValue?.text, _deleteDetectionMarker);
+
+      focusNode.dispose();
+    });
   });
 
   group('shouldRequestKeyboardForTerminalPointerUp', () {

@@ -109,6 +109,15 @@ String formatAutoConnectCommandForShell(String command) {
   return '$command\r';
 }
 
+/// Rejects imported auto-connect text with hidden control characters.
+void validateImportedAutoConnectCommandText(String command) {
+  if (_disallowedCommandControlCharacters.hasMatch(command)) {
+    throw const FormatException(
+      'Imported auto-connect command contains unsupported control characters',
+    );
+  }
+}
+
 /// Normalizes an imported auto-connect command before it is stored locally.
 String? normalizeImportedAutoConnectCommand(String? command) {
   if (!_hasVisibleContent(command)) {
@@ -116,11 +125,7 @@ String? normalizeImportedAutoConnectCommand(String? command) {
   }
 
   final normalized = command!.trim();
-  if (_disallowedCommandControlCharacters.hasMatch(normalized)) {
-    throw const FormatException(
-      'Imported auto-connect command contains unsupported control characters',
-    );
-  }
+  validateImportedAutoConnectCommandText(normalized);
   return normalized;
 }
 
@@ -163,7 +168,9 @@ TerminalCommandReview assessAutoConnectCommandExecution(
 }) {
   final reasons = <TerminalCommandReviewReason>[];
   if (importedNeedsReview) {
-    reasons.add(TerminalCommandReviewReason.importedAutoConnect);
+    reasons
+      ..add(TerminalCommandReviewReason.importedAutoConnect)
+      ..addAll(_collectSuspiciousCommandReasons(command));
   }
   return TerminalCommandReview(command: command, reasons: reasons);
 }

@@ -131,5 +131,22 @@ void main() {
         contains(TerminalCommandReviewReason.shellChaining),
       );
     });
+
+    test('surfaces suspicious reasons for imported auto-connect execution', () {
+      final review = assessAutoConnectCommandExecution(
+        'printf "ok"\x00',
+        importedNeedsReview: true,
+      );
+
+      expect(review.requiresReview, isTrue);
+      expect(
+        review.reasons,
+        contains(TerminalCommandReviewReason.importedAutoConnect),
+      );
+      expect(
+        review.reasons,
+        contains(TerminalCommandReviewReason.controlCharacters),
+      );
+    });
   });
 }

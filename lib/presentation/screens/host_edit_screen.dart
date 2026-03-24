@@ -154,6 +154,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 children: [
                   // Label
                   TextFormField(
+                    key: const Key('host-label-field'),
                     controller: _labelController,
                     decoration: const InputDecoration(
                       labelText: 'Label',
@@ -319,6 +320,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                   // Advanced section
                   ExpansionTile(
+                    key: const Key('host-advanced-tile'),
                     title: const Text('Advanced'),
                     initiallyExpanded:
                         _selectedJumpHostId != null ||
@@ -415,6 +417,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           AutoConnectCommandMode.custom) ...[
                         const SizedBox(height: 16),
                         TextFormField(
+                          key: const Key('host-auto-connect-command-field'),
                           controller: _autoConnectCommandController,
                           decoration: const InputDecoration(
                             labelText: 'Custom command',
@@ -557,6 +560,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                   // Save button
                   FilledButton.icon(
+                    key: const Key('host-save-button'),
                     onPressed: _saveHost,
                     icon: const Icon(Icons.save),
                     label: Text(isEditing ? 'Save Changes' : 'Add Host'),
@@ -613,6 +617,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               selectedSnippet != null
           ? selectedSnippet.id
           : null;
+      final autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+        command: normalizedAutoConnectCommand,
+        snippetId: normalizedAutoConnectSnippetId,
+      );
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
@@ -632,7 +640,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalFontFamily: drift.Value(_selectedFontFamily),
             autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
             autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
-            autoConnectRequiresConfirmation: false,
+            autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
             isFavorite: _isFavorite,
           ),
         );
@@ -654,7 +662,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalFontFamily: drift.Value(_selectedFontFamily),
             autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
             autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
-            autoConnectRequiresConfirmation: const drift.Value(false),
+            autoConnectRequiresConfirmation: drift.Value(
+              autoConnectRequiresConfirmation,
+            ),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -681,6 +691,36 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  bool _resolveAutoConnectConfirmation({
+    required String? command,
+    required int? snippetId,
+  }) {
+    final existingHost = _existingHost;
+    if (existingHost == null || !existingHost.autoConnectRequiresConfirmation) {
+      return false;
+    }
+
+    final previousMode = resolveAutoConnectCommandMode(
+      command: existingHost.autoConnectCommand,
+      snippetId: existingHost.autoConnectSnippetId,
+    );
+    final nextMode = resolveAutoConnectCommandMode(
+      command: command,
+      snippetId: snippetId,
+    );
+    if (nextMode != previousMode) {
+      return false;
+    }
+
+    return switch (nextMode) {
+      AutoConnectCommandMode.none => false,
+      AutoConnectCommandMode.custom =>
+        existingHost.autoConnectCommand == command,
+      AutoConnectCommandMode.snippet =>
+        existingHost.autoConnectSnippetId == snippetId,
+    };
   }
 
   Future<void> _testConnection() async {

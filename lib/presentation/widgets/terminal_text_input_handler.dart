@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -8,8 +10,14 @@ import 'package:flutter/widgets.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../domain/models/auto_connect_command.dart';
+
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
+
+/// Confirms suspicious text inserted through the system keyboard or IME.
+typedef TerminalTextInputReviewCallback =
+    Future<bool> Function(TerminalCommandReview review);
 
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
@@ -77,6 +85,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.deleteDetection = false,
     this.keyboardAppearance = Brightness.dark,
     this.onUserInput,
+    this.onReviewInsertedText,
     this.readOnly = false,
     super.key,
   });
@@ -101,6 +110,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Called when user input has been accepted for sending to the terminal.
   final VoidCallback? onUserInput;
+
+  /// Called before suspicious multi-character IME insertions are sent.
+  final TerminalTextInputReviewCallback? onReviewInsertedText;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -425,20 +437,52 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   int _sendInputDelta(String currentText) {
-    final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
-    final deletedCount = _lastSentText.length - commonPrefix;
+    final delta = _computeTextDelta(currentText);
+    final deletedCount = delta.deletedCount;
 
     for (var i = 0; i < deletedCount; i++) {
       widget.terminal.keyInput(TerminalKey.backspace);
     }
 
-    final appendedText = currentText.substring(commonPrefix);
+    final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
       widget.terminal.textInput(appendedText);
     }
 
     _lastSentText = currentText;
     return '\n'.allMatches(appendedText).length;
+  }
+
+  ({int deletedCount, String appendedText}) _computeTextDelta(
+    String currentText,
+  ) {
+    final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
+    return (
+      deletedCount: _lastSentText.length - commonPrefix,
+      appendedText: currentText.substring(commonPrefix),
+    );
+  }
+
+  TerminalCommandReview? _reviewForInsertedText(
+    TextEditingValue value,
+    String currentText,
+  ) {
+    if (widget.onReviewInsertedText == null ||
+        _sawImeComposition ||
+        !value.selection.isCollapsed) {
+      return null;
+    }
+
+    final delta = _computeTextDelta(currentText);
+    if (delta.appendedText.length <= 1) {
+      return null;
+    }
+
+    final review = assessClipboardPasteCommand(
+      delta.appendedText,
+      bracketedPasteModeEnabled: false,
+    );
+    return review.requiresReview ? review : null;
   }
 
   int _clampTextOffset(int offset, int maxOffset) {
@@ -599,6 +643,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void updateEditingValue(TextEditingValue value) {
+    unawaited(_updateEditingValue(value));
+  }
+
+  Future<void> _updateEditingValue(TextEditingValue value) async {
     if (widget.readOnly) return;
 
     _currentEditingState = value;
@@ -620,6 +668,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final currentText = _extractInputText(_currentEditingState.text);
+    final review = _reviewForInsertedText(value, currentText);
+    if (review != null) {
+      final shouldInsert = await widget.onReviewInsertedText!(review);
+      if (!mounted) {
+        return;
+      }
+      if (!shouldInsert) {
+        _syncEditingStateWithUserText(_lastSentText);
+        _sawImeComposition = false;
+        return;
+      }
+    }
+
     if (currentText != _lastSentText) {
       _notifyUserInput();
     }

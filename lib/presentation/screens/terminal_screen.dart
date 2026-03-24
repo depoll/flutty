@@ -1489,6 +1489,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       controller: _terminalTextInputController,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
+      onReviewInsertedText: _confirmKeyboardInsertion,
       readOnly: _showsNativeSelectionOverlay,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
@@ -2037,6 +2038,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.paste(text);
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+  }
+
+  Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
+    final shouldInsert = await _confirmCommandInsertion(
+      title: 'Review keyboard paste',
+      message:
+          'This text inserted from your keyboard could execute multiple or reshaped commands.',
+      confirmLabel: 'Insert anyway',
+      review: review,
+    );
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    return shouldInsert;
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
