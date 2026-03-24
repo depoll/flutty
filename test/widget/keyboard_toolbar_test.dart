@@ -117,6 +117,21 @@ void main() {
       expect(output, contains('\r'));
     });
 
+    test('keeps bottom safe-area padding when keyboard is closed', () {
+      const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
+
+      expect(shouldKeepToolbarBottomSafeArea(mediaQuery), isTrue);
+    });
+
+    test('drops bottom safe-area padding when keyboard is open', () {
+      const mediaQuery = MediaQueryData(
+        padding: EdgeInsets.only(bottom: 34),
+        viewInsets: EdgeInsets.only(bottom: 320),
+      );
+
+      expect(shouldKeepToolbarBottomSafeArea(mediaQuery), isFalse);
+    });
+
     testWidgets('arrow keys repeat while held', (tester) async {
       final output = <String>[];
       terminal.onOutput = output.add;

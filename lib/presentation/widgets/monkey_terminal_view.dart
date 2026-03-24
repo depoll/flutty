@@ -28,6 +28,14 @@ import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
 
+/// Safe-area padding that the terminal renderer should respect.
+///
+/// Keep the top and horizontal insets so text does not sit under cutouts, but
+/// let the terminal use the full available height instead of reserving the
+/// bottom home-indicator inset as an extra blank row.
+EdgeInsets resolveTerminalRenderPadding(MediaQueryData mediaQuery) =>
+    mediaQuery.padding.copyWith(bottom: 0);
+
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
   const MonkeyTerminalView(
@@ -253,7 +261,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           terminal: widget.terminal,
           controller: _controller,
           offset: offset,
-          padding: MediaQuery.of(context).padding,
+          padding: resolveTerminalRenderPadding(MediaQuery.of(context)),
           autoResize: widget.autoResize,
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
