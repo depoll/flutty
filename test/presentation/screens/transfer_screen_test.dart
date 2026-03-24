@@ -84,6 +84,7 @@ void main() {
       final result = await authorizeSensitiveTransferExport(
         context: context,
         authService: authService,
+        readAuthState: () => container.read(authStateProvider),
         reason: 'Authenticate to export migration package',
       );
 

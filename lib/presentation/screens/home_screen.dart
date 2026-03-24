@@ -927,6 +927,7 @@ class _HostRow extends ConsumerWidget {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
         authService: ref.read(authServiceProvider),
+        readAuthState: () => ref.read(authStateProvider),
         reason: 'Authenticate to export host credentials',
       );
       if (!context.mounted) {
@@ -1530,6 +1531,7 @@ class _KeyRow extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to export private key',
     );
     if (!context.mounted) {

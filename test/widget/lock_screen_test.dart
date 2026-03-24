@@ -60,7 +60,7 @@ void main() {
       expect(find.text('Retry'), findsOneWidget);
       expect(
         find.text(
-          'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+          'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
         ),
         findsOneWidget,
       );
@@ -168,7 +168,7 @@ void main() {
         expect(find.text('Retry'), findsOneWidget);
         expect(
           find.text(
-            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+            'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
           ),
           findsOneWidget,
         );
@@ -206,7 +206,7 @@ void main() {
         expect(find.text('Retry'), findsOneWidget);
         expect(
           find.text(
-            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+            'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
           ),
           findsOneWidget,
         );
@@ -261,7 +261,7 @@ void main() {
         expect(find.text('Retry'), findsOneWidget);
         expect(
           find.text(
-            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+            'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
           ),
           findsOneWidget,
         );
@@ -316,7 +316,7 @@ void main() {
         expect(find.text('Retry'), findsOneWidget);
         expect(
           find.text(
-            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+            'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
           ),
           findsOneWidget,
         );

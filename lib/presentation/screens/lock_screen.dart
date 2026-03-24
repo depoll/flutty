@@ -134,7 +134,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
     final subtitle = switch ((isInitializing, showAuthMethodError)) {
       (true, _) => 'Checking your security settings…',
       (false, true) =>
-        'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+        'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
       (false, false) => 'Enter your PIN to unlock',
     };
 

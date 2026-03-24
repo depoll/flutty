@@ -4,7 +4,6 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -203,13 +202,13 @@ Future<String?> showTransferPassphraseDialog({
 Future<bool> authorizeSensitiveTransferExport({
   required BuildContext context,
   required AuthService authService,
+  required AuthState Function() readAuthState,
   required String reason,
 }) async {
   final isAuthEnabled = await authService.isAuthEnabled();
   if (!isAuthEnabled || !context.mounted) {
     return true;
   }
-  final container = ProviderScope.containerOf(context, listen: false);
 
   AuthMethod method;
   try {
@@ -238,7 +237,7 @@ Future<bool> authorizeSensitiveTransferExport({
       final biometricSuccess = await authService.authenticateWithBiometrics(
         reason: reason,
       );
-      if (!_isSensitiveTransferAuthSessionUnlocked(container)) {
+      if (!_isSensitiveTransferAuthSessionUnlocked(readAuthState)) {
         return false;
       }
       return biometricSuccess;
@@ -252,7 +251,7 @@ Future<bool> authorizeSensitiveTransferExport({
       final biometricSuccess = await authService.authenticateWithBiometrics(
         reason: reason,
       );
-      if (!_isSensitiveTransferAuthSessionUnlocked(container)) {
+      if (!_isSensitiveTransferAuthSessionUnlocked(readAuthState)) {
         return false;
       }
       if (biometricSuccess) {
@@ -269,8 +268,9 @@ Future<bool> authorizeSensitiveTransferExport({
   }
 }
 
-bool _isSensitiveTransferAuthSessionUnlocked(ProviderContainer container) =>
-    container.read(authStateProvider) == AuthState.unlocked;
+bool _isSensitiveTransferAuthSessionUnlocked(
+  AuthState Function() readAuthState,
+) => readAuthState() == AuthState.unlocked;
 
 Future<String?> _showPinDialog(BuildContext context) async {
   final controller = TextEditingController();

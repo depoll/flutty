@@ -734,6 +734,7 @@ class _MigrationSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to export migration package',
     );
     if (!context.mounted) {
@@ -782,6 +783,7 @@ class _MigrationSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to import migration package',
     );
     if (!context.mounted) {
