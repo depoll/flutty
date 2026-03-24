@@ -539,11 +539,15 @@ void main() {
           failingDb.select(failingDb.settings).get(),
           throwsA(
             anyOf(
-              isA<StateError>(),
+              isA<StateError>().having(
+                (error) => error.message,
+                'message',
+                contains('post-open policy failed'),
+              ),
               isA<DriftRemoteException>().having(
-                (error) => error.remoteCause,
+                (error) => error.remoteCause.toString(),
                 'remoteCause',
-                isA<StateError>(),
+                contains('post-open policy failed'),
               ),
             ),
           ),
