@@ -2,6 +2,8 @@ import 'dart:io';
 
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -366,16 +368,23 @@ class AppDatabase extends _$AppDatabase {
 
 const _databaseFileName = 'flutty.db';
 const _migrationMarkerSuffix = '.legacy-migration-incomplete';
+const _databaseCompanionSuffixes = ['-journal', '-wal', '-shm'];
+const _appleDatabaseFileProtectionChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/apple_file_protection',
+);
 
 /// Resolves the database file path and migrates legacy storage if needed.
 Future<File> resolveDatabaseFile({
   Future<Directory> Function()? getSupportDirectory,
   Future<Directory> Function()? getDocumentsDirectory,
+  Future<void> Function(Directory databaseDirectory, File databaseFile)?
+  applyFilePolicy,
 }) async {
   final supportDirectoryProvider =
       getSupportDirectory ?? getApplicationSupportDirectory;
   final documentsDirectoryProvider =
       getDocumentsDirectory ?? getApplicationDocumentsDirectory;
+  final filePolicyApplier = applyFilePolicy ?? _applyAppleDatabaseFilePolicy;
 
   final supportDirectory = await supportDirectoryProvider();
   await supportDirectory.create(recursive: true);
@@ -396,6 +405,7 @@ Future<File> resolveDatabaseFile({
     } else {
       await _deleteLegacyCompanionFiles(legacyFile);
     }
+    await filePolicyApplier(supportDirectory, supportFile);
     return supportFile;
   }
 
@@ -406,6 +416,7 @@ Future<File> resolveDatabaseFile({
     await migrationMarker.delete();
   }
 
+  await filePolicyApplier(supportDirectory, supportFile);
   return supportFile;
 }
 
@@ -413,7 +424,7 @@ Future<void> _moveLegacyCompanionFiles(
   File legacyFile,
   File supportFile,
 ) async {
-  for (final suffix in ['-journal', '-wal', '-shm']) {
+  for (final suffix in _databaseCompanionSuffixes) {
     final legacyCompanion = File('${legacyFile.path}$suffix');
     final supportCompanion = File('${supportFile.path}$suffix');
     if (!legacyCompanion.existsSync()) {
@@ -428,11 +439,44 @@ Future<void> _moveLegacyCompanionFiles(
 }
 
 Future<void> _deleteLegacyCompanionFiles(File legacyFile) async {
-  for (final suffix in ['-journal', '-wal', '-shm']) {
+  for (final suffix in _databaseCompanionSuffixes) {
     final legacyCompanion = File('${legacyFile.path}$suffix');
     if (legacyCompanion.existsSync()) {
       await legacyCompanion.delete();
     }
+  }
+}
+
+Future<void> _applyAppleDatabaseFilePolicy(
+  Directory databaseDirectory,
+  File databaseFile,
+) async {
+  if (kIsWeb || !(Platform.isIOS || Platform.isMacOS)) {
+    return;
+  }
+
+  try {
+    await _appleDatabaseFileProtectionChannel.invokeMethod<void>(
+      'applyDatabaseFilePolicy',
+      <String, Object?>{
+        'databaseDirectoryPath': databaseDirectory.path,
+        'databasePath': databaseFile.path,
+        'companionPaths': [
+          for (final suffix in _databaseCompanionSuffixes)
+            '${databaseFile.path}$suffix',
+        ],
+        'applyFileProtection': Platform.isIOS,
+      },
+    );
+  } on PlatformException catch (error) {
+    debugPrint(
+      'Failed to harden Apple database files: ${error.message ?? error.code}',
+    );
+  } on MissingPluginException catch (error) {
+    debugPrint(
+      'Failed to harden Apple database files: '
+      '${error.message ?? 'missing plugin'}',
+    );
   }
 }
 

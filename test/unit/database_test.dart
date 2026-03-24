@@ -279,6 +279,11 @@ void main() {
   });
 
   group('Database storage path', () {
+    Future<void> noOpFilePolicy(
+      Directory databaseDirectory,
+      File databaseFile,
+    ) async {}
+
     test('migrates legacy flutty.db from documents to app support', () async {
       final rootDirectory = await Directory.systemTemp.createTemp(
         'flutty-db-migration-test-',
@@ -297,10 +302,16 @@ void main() {
       await legacyFile.writeAsString('legacy-db');
       final legacyJournalFile = File('${legacyFile.path}-journal');
       await legacyJournalFile.writeAsString('legacy-journal');
+      Directory? protectedDirectory;
+      File? protectedFile;
 
       final resolvedFile = await resolveDatabaseFile(
         getSupportDirectory: () async => supportDirectory,
         getDocumentsDirectory: () async => documentsDirectory,
+        applyFilePolicy: (databaseDirectory, databaseFile) async {
+          protectedDirectory = databaseDirectory;
+          protectedFile = databaseFile;
+        },
       );
 
       expect(resolvedFile.path, p.join(supportDirectory.path, 'flutty.db'));
@@ -311,6 +322,8 @@ void main() {
       expect(await migratedJournalFile.readAsString(), 'legacy-journal');
       expect(legacyFile.existsSync(), isFalse);
       expect(legacyJournalFile.existsSync(), isFalse);
+      expect(protectedDirectory?.path, supportDirectory.path);
+      expect(protectedFile?.path, resolvedFile.path);
     });
 
     test('moves legacy companion files when migration marker exists', () async {
@@ -339,10 +352,16 @@ void main() {
         p.join(documentsDirectory.path, 'flutty.db-journal'),
       );
       await legacyJournalFile.writeAsString('legacy-journal');
+      Directory? protectedDirectory;
+      File? protectedFile;
 
       final resolvedFile = await resolveDatabaseFile(
         getSupportDirectory: () async => supportDirectory,
         getDocumentsDirectory: () async => documentsDirectory,
+        applyFilePolicy: (databaseDirectory, databaseFile) async {
+          protectedDirectory = databaseDirectory;
+          protectedFile = databaseFile;
+        },
       );
 
       expect(resolvedFile.path, supportFile.path);
@@ -351,6 +370,8 @@ void main() {
       expect(await migratedJournalFile.readAsString(), 'legacy-journal');
       expect(legacyJournalFile.existsSync(), isFalse);
       expect(markerFile.existsSync(), isFalse);
+      expect(protectedDirectory?.path, supportDirectory.path);
+      expect(protectedFile?.path, resolvedFile.path);
     });
 
     test(
@@ -385,11 +406,43 @@ void main() {
         await resolveDatabaseFile(
           getSupportDirectory: () async => supportDirectory,
           getDocumentsDirectory: () async => documentsDirectory,
+          applyFilePolicy: noOpFilePolicy,
         );
 
         expect(File('${supportFile.path}-journal').existsSync(), isFalse);
         expect(legacyJournalFile.existsSync(), isFalse);
       },
     );
+
+    test('applies file policy for a new database location', () async {
+      final rootDirectory = await Directory.systemTemp.createTemp(
+        'flutty-db-file-policy-test-',
+      );
+      addTearDown(() async {
+        if (rootDirectory.existsSync()) {
+          await rootDirectory.delete(recursive: true);
+        }
+      });
+
+      final documentsDirectory = Directory(p.join(rootDirectory.path, 'docs'));
+      final supportDirectory = Directory(p.join(rootDirectory.path, 'support'));
+      await documentsDirectory.create(recursive: true);
+      Directory? protectedDirectory;
+      File? protectedFile;
+
+      final resolvedFile = await resolveDatabaseFile(
+        getSupportDirectory: () async => supportDirectory,
+        getDocumentsDirectory: () async => documentsDirectory,
+        applyFilePolicy: (databaseDirectory, databaseFile) async {
+          protectedDirectory = databaseDirectory;
+          protectedFile = databaseFile;
+        },
+      );
+
+      expect(resolvedFile.path, p.join(supportDirectory.path, 'flutty.db'));
+      expect(supportDirectory.existsSync(), isTrue);
+      expect(protectedDirectory?.path, supportDirectory.path);
+      expect(protectedFile?.path, resolvedFile.path);
+    });
   });
 }
