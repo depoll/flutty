@@ -8,12 +8,12 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
-import '../../app/host_key_prompt.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import 'background_ssh_service.dart';
+import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'terminal_hyperlink_tracker.dart';
 

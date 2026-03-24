@@ -1040,8 +1040,13 @@ class SecureTransferService {
     return _requiredString(item, 'fingerprint');
   }
 
-  String _normalizedImportedKnownHostHostKey(Map<String, dynamic> item) =>
-      _optionalString(item['hostKey']) ?? '';
+  String _normalizedImportedKnownHostHostKey(Map<String, dynamic> item) {
+    final hostKey = _optionalString(item['hostKey']) ?? '';
+    if (hostKey.isEmpty || _tryDecodeKnownHostKey(hostKey) != null) {
+      return hostKey;
+    }
+    return '';
+  }
 
   String _normalizedImportedKnownHostKeyType(Map<String, dynamic> item) =>
       canonicalizeSshHostKeyType(
@@ -1064,9 +1069,12 @@ class SecureTransferService {
         importedKnownHost.lastSeen.isAfter(existingKnownHost.lastSeen)
         ? importedKnownHost.lastSeen
         : existingKnownHost.lastSeen;
+    final preferImported = importedKnownHost.lastSeen.isAfter(
+      existingKnownHost.lastSeen,
+    );
+    final mergedHostKeyBytes = _tryDecodeKnownHostKey(mergedHostKey);
 
-    if (mergedHostKey.isNotEmpty) {
-      final mergedHostKeyBytes = base64.decode(mergedHostKey);
+    if (mergedHostKeyBytes != null) {
       return KnownHostsCompanion(
         keyType: Value(
           canonicalizeSshHostKeyType(
@@ -1081,26 +1089,40 @@ class SecureTransferService {
       );
     }
 
+    final fallbackHostKey =
+        preferImported ||
+            _tryDecodeKnownHostKey(existingKnownHost.hostKey) == null
+        ? ''
+        : existingKnownHost.hostKey;
     final mergedFingerprint = _preferKnownHostFingerprint(
       existingKnownHost.fingerprint,
       importedKnownHost.fingerprint,
-      preferSecond: importedKnownHost.lastSeen.isAfter(
-        existingKnownHost.lastSeen,
-      ),
+      preferSecond: preferImported,
     );
     final mergedKeyType = canonicalizeSshHostKeyType(
-      importedKnownHost.lastSeen.isAfter(existingKnownHost.lastSeen)
-          ? importedKnownHost.keyType
-          : existingKnownHost.keyType,
+      preferImported ? importedKnownHost.keyType : existingKnownHost.keyType,
+      encodedHostKey: fallbackHostKey.isEmpty ? null : fallbackHostKey,
     );
 
     return KnownHostsCompanion(
       keyType: Value(mergedKeyType),
       fingerprint: Value(mergedFingerprint),
-      hostKey: Value(mergedHostKey),
+      hostKey: Value(fallbackHostKey),
       firstSeen: Value(mergedFirstSeen),
       lastSeen: Value(mergedLastSeen),
     );
+  }
+
+  Uint8List? _tryDecodeKnownHostKey(String encodedHostKey) {
+    if (encodedHostKey.isEmpty) {
+      return null;
+    }
+
+    try {
+      return Uint8List.fromList(base64.decode(encodedHostKey));
+    } on FormatException {
+      return null;
+    }
   }
 
   String _preferKnownHostFingerprint(

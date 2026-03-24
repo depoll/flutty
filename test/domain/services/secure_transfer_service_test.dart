@@ -718,6 +718,59 @@ void main() {
       expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
     });
 
+    test(
+      'merge import falls back to fingerprint-only trust for malformed host keys',
+      () async {
+        final existingFirstSeen = DateTime.utc(2024);
+        final existingLastSeen = DateTime.utc(2024, 1, 2);
+        final existingKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [1, 2, 3, 4],
+          firstSeen: existingFirstSeen,
+          lastSeen: existingLastSeen,
+        );
+        await db.into(db.knownHosts).insert(existingKnownHost.toCompanion());
+
+        const importedFingerprint = 'SHA256:malformedImportedHostKey';
+        final importedFirstSeen = DateTime.utc(2024, 2);
+        final importedLastSeen = DateTime.utc(2024, 2, 2);
+
+        await transferService.importFullMigrationPayload(
+          payload: TransferPayload(
+            type: TransferPayloadType.fullMigration,
+            schemaVersion: 1,
+            createdAt: DateTime.now().toUtc(),
+            data: {
+              'knownHosts': [
+                {
+                  'hostname': 'shared.example.com',
+                  'port': 22,
+                  'keyType': 'ssh-ed25519',
+                  'fingerprint': importedFingerprint,
+                  'hostKey': 'not base64',
+                  'firstSeen': importedFirstSeen.toIso8601String(),
+                  'lastSeen': importedLastSeen.toIso8601String(),
+                },
+              ],
+            },
+          ),
+          mode: MigrationImportMode.merge,
+        );
+
+        final storedKnownHost =
+            await (db.select(db.knownHosts)..where(
+                  (knownHost) =>
+                      knownHost.hostname.equals('shared.example.com'),
+                ))
+                .getSingle();
+        expect(storedKnownHost.keyType, 'ssh-ed25519');
+        expect(storedKnownHost.fingerprint, importedFingerprint);
+        expect(storedKnownHost.hostKey, isEmpty);
+        expect(storedKnownHost.firstSeen.toUtc(), importedFirstSeen);
+        expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
+      },
+    );
+
     test('encrypts and imports key payload roundtrip', () async {
       final keyId = await db
           .into(db.sshKeys)
