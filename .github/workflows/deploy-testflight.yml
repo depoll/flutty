@@ -12,23 +12,28 @@ on:
         required: false
         default: ''
         type: string
-      request-reaction-id:
-        description: 'Reaction node ID that requested the deploy'
+      request-comment-id:
+        description: 'Issue comment ID that requested the deploy'
         required: false
         default: ''
         type: string
-      request-reaction-at:
-        description: 'Timestamp of the reaction that requested the deploy'
+      request-comment-at:
+        description: 'Timestamp of the /deploy comment that requested the deploy'
         required: false
         default: ''
         type: string
-      request-reaction-user:
+      request-comment-user:
         description: 'GitHub login that requested the deploy'
         required: false
         default: ''
         type: string
+      request-comment-url:
+        description: 'URL of the /deploy comment that requested the deploy'
+        required: false
+        default: ''
+        type: string
       request-preview-comment-url:
-        description: 'URL of the sticky preview comment that received the reaction'
+        description: 'URL of the sticky preview comment for the requested build'
         required: false
         default: ''
         type: string
@@ -149,23 +154,26 @@ jobs:
             const existingBody = existing?.body ?? '';
 
             const requestedBy =
-              '${{ inputs.request-reaction-user }}' ||
+              '${{ inputs.request-comment-user }}' ||
               readMeta(existingBody, 'preview-deploy-requested-by') ||
               '${{ github.actor }}';
             const requestedAt =
-              '${{ inputs.request-reaction-at }}' ||
+              '${{ inputs.request-comment-at }}' ||
               readMeta(existingBody, 'preview-deploy-requested-at');
-            const reactionId =
-              '${{ inputs.request-reaction-id }}' ||
-              readMeta(existingBody, 'preview-deploy-last-reaction-id');
+            const requestCommentId =
+              '${{ inputs.request-comment-id }}' ||
+              readMeta(existingBody, 'preview-deploy-last-command-comment-id');
+            const requestCommentUrl =
+              '${{ inputs.request-comment-url }}' ||
+              readMeta(existingBody, 'preview-deploy-request-comment-url');
             const previewCommentUrl =
               '${{ inputs.request-preview-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-preview-comment-url');
             const deploySha =
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha');
-            const requestDetails = reactionId
-              ? `@${requestedBy} via 🚀 on preview artifacts`
+            const requestDetails = requestCommentId
+              ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
 
             const body = [
@@ -178,6 +186,9 @@ jobs:
               `| **Preview SHA** | \`${deploySha}\` |`,
               `| **Version** | \`${{ needs.compute-version.outputs.build-name }}\` |`,
               `| **Build** | \`${{ needs.compute-version.outputs.build-number }}\` |`,
+              requestCommentUrl
+                ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`
+                : null,
               previewCommentUrl
                 ? `| **Preview Comment** | [View preview artifacts](${previewCommentUrl}) |`
                 : null,
@@ -187,9 +198,10 @@ jobs:
               '> Duplicate requests stay locked out while this deploy is queued or running.',
               statusMarker,
               '<!-- preview-deploy-state:in_progress -->',
-              `<!-- preview-deploy-last-reaction-id:${reactionId} -->`,
+              `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
               `<!-- preview-deploy-requested-by:${requestedBy} -->`,
               `<!-- preview-deploy-requested-at:${requestedAt} -->`,
+              `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
               `<!-- preview-deploy-source-sha:${deploySha} -->`,
             ]
@@ -301,15 +313,18 @@ jobs:
             const existingBody = existing?.body ?? '';
 
             const requestedBy =
-              '${{ inputs.request-reaction-user }}' ||
+              '${{ inputs.request-comment-user }}' ||
               readMeta(existingBody, 'preview-deploy-requested-by') ||
               '${{ github.actor }}';
             const requestedAt =
-              '${{ inputs.request-reaction-at }}' ||
+              '${{ inputs.request-comment-at }}' ||
               readMeta(existingBody, 'preview-deploy-requested-at');
-            const reactionId =
-              '${{ inputs.request-reaction-id }}' ||
-              readMeta(existingBody, 'preview-deploy-last-reaction-id');
+            const requestCommentId =
+              '${{ inputs.request-comment-id }}' ||
+              readMeta(existingBody, 'preview-deploy-last-command-comment-id');
+            const requestCommentUrl =
+              '${{ inputs.request-comment-url }}' ||
+              readMeta(existingBody, 'preview-deploy-request-comment-url');
             const previewCommentUrl =
               '${{ inputs.request-preview-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-preview-comment-url');
@@ -317,8 +332,8 @@ jobs:
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha') ||
               '${{ inputs.source-sha }}';
-            const requestDetails = reactionId
-              ? `@${requestedBy} via 🚀 on preview artifacts`
+            const requestDetails = requestCommentId
+              ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
 
             const validationResult = '${{ needs.validate-pr.result }}';
@@ -364,18 +379,22 @@ jobs:
               '${{ needs.compute-version.outputs.build-number }}'
                 ? `| **Build** | \`${{ needs.compute-version.outputs.build-number }}\` |`
                 : null,
+              requestCommentUrl
+                ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`
+                : null,
               previewCommentUrl
                 ? `| **Preview Comment** | [View preview artifacts](${previewCommentUrl}) |`
                 : null,
               requestedAt ? `| **Requested at** | ${requestedAt} |` : null,
               `| **Workflow** | [View deploy run](${runUrl}) |`,
               '',
-              '> Add a new 🚀 reaction after the preview comment updates if you want to request another deploy.',
+              '> Add a new `/deploy` comment if you want to request another deploy.',
               statusMarker,
               `<!-- preview-deploy-state:${state} -->`,
-              `<!-- preview-deploy-last-reaction-id:${reactionId} -->`,
+              `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
               `<!-- preview-deploy-requested-by:${requestedBy} -->`,
               `<!-- preview-deploy-requested-at:${requestedAt} -->`,
+              `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
               `<!-- preview-deploy-source-sha:${deploySha} -->`,
             ]
