@@ -25,7 +25,7 @@ val missingReleaseSigningProperties = requiredReleaseSigningProperties.filter {
 }
 val releaseStoreFilePath = keystoreProperties.getProperty("storeFile")
     ?.takeIf { it.isNotBlank() }
-val releaseStoreFile = releaseStoreFilePath?.let(::file)
+val releaseStoreFile = releaseStoreFilePath?.let { file(it) }
 val hasCompleteReleaseSigningConfig = keystorePropertiesFile.exists() &&
     missingReleaseSigningProperties.isEmpty() &&
     releaseStoreFile?.exists() == true
