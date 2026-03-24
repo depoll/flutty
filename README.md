@@ -159,7 +159,7 @@ Recent hardening changes:
   - Android disables app backup and excludes app data from backup/device-transfer rules.
   - iOS disables `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`.
 - CI/CD workflows pin third-party GitHub Actions by commit SHA, scope `GITHUB_TOKEN` permissions to the minimum needed, and avoid inherited reusable-workflow secrets.
-- CI now runs baseline secret scanning (Gitleaks), pull-request dependency review, and OSV dependency scanning, while release uploads publish `SHA256SUMS.txt` alongside release artifacts.
+- CI now runs OSS Gitleaks secret scanning, a pull-request dependency diff review backed by OSV when GitHub dependency review is unavailable, and baseline OSV dependency scanning, while release uploads publish `SHA256SUMS.txt` alongside release artifacts.
 
 Transfer packages are encrypted with a user-provided passphrase and are intended for direct device-to-device transfer through encrypted file import. No cloud sync is required.
 

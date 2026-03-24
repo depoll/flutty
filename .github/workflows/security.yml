@@ -24,20 +24,190 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          fetch-depth: 0
           persist-credentials: false
 
-      - name: Review dependency changes
-        uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4.9.0
-        with:
-          fail-on-severity: moderate
-          fail-on-scopes: runtime
+      - name: Detect changed dependency lockfiles
+        id: changed-deps
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+
+          mapfile -t dependency_targets < <(
+            git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${HEAD_SHA}" | while IFS= read -r path; do
+              case "${path}" in
+                Gemfile|Gemfile.lock)
+                  printf '%s\n' 'Gemfile.lock'
+                  ;;
+                pubspec.yaml|pubspec.lock)
+                  printf '%s\n' 'pubspec.lock'
+                  ;;
+                ios/Podfile|ios/Podfile.lock)
+                  printf '%s\n' 'ios/Podfile.lock'
+                  ;;
+                macos/Podfile|macos/Podfile.lock)
+                  printf '%s\n' 'macos/Podfile.lock'
+                  ;;
+              esac
+            done | awk '!seen[$0]++'
+          )
+
+          {
+            echo '## Dependency review fallback'
+            echo '- GitHub dependency review is unavailable in this repository because dependency graph is disabled.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          if [ "${#dependency_targets[@]}" -eq 0 ]; then
+            echo '- No supported dependency lockfiles changed in this pull request, so no fallback OSV diff scan was needed.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo '- Running an OSS OSV comparison against the changed dependency lockfiles instead.' >> "$GITHUB_STEP_SUMMARY"
+          echo >> "$GITHUB_STEP_SUMMARY"
+          echo 'Changed lockfiles:' >> "$GITHUB_STEP_SUMMARY"
+          for target in "${dependency_targets[@]}"; do
+            echo "- \`${target}\`" >> "$GITHUB_STEP_SUMMARY"
+          done
+
+          echo 'changed=true' >> "$GITHUB_OUTPUT"
+          {
+            echo 'files<<EOF'
+            printf '%s\n' "${dependency_targets[@]}"
+            echo 'EOF'
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Compare changed dependencies with OSV
+        if: steps.changed-deps.outputs.changed == 'true'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          CHANGED_FILES: ${{ steps.changed-deps.outputs.files }}
+          OSV_SCANNER_IMAGE: ghcr.io/google/osv-scanner:v2.3.3
+        run: |
+          set -euo pipefail
+
+          scan_root="${RUNNER_TEMP}/dependency-review"
+          base_root="${scan_root}/base"
+          head_root="${scan_root}/head"
+          results_root="${scan_root}/results"
+          index_file="${results_root}/index.tsv"
+
+          mkdir -p "${base_root}" "${head_root}" "${results_root}"
+          : > "${index_file}"
+
+          run_osv_scan() {
+            local mounted_path="$1"
+            local output_path="$2"
+            local status
+
+            set +e
+            docker run --rm \
+              -v "${scan_root}:/scan" \
+              "${OSV_SCANNER_IMAGE}" \
+              scan --format json -L "/scan/${mounted_path}" > "${output_path}"
+            status=$?
+            set -e
+
+            if [ "${status}" -gt 1 ]; then
+              echo "::error::OSV scanner failed while scanning ${mounted_path} (exit ${status})."
+              return "${status}"
+            fi
+          }
+
+          while IFS= read -r file; do
+            [ -n "${file}" ] || continue
+
+            mkdir -p "${head_root}/$(dirname "${file}")"
+            cp "${file}" "${head_root}/${file}"
+
+            safe_name="$(printf '%s' "${file}" | tr '/.' '__')"
+            head_json="${results_root}/${safe_name}.head.json"
+            base_json="${results_root}/${safe_name}.base.json"
+
+            run_osv_scan "head/${file}" "${head_json}"
+
+            if git cat-file -e "${BASE_SHA}:${file}" 2>/dev/null; then
+              mkdir -p "${base_root}/$(dirname "${file}")"
+              git show "${BASE_SHA}:${file}" > "${base_root}/${file}"
+              run_osv_scan "base/${file}" "${base_json}"
+            else
+              printf '{"results":[]}\n' > "${base_json}"
+            fi
+
+            printf '%s\t%s\t%s\n' "${file}" "${base_json}" "${head_json}" >> "${index_file}"
+          done <<< "${CHANGED_FILES}"
+
+          python - <<'PY'
+          import json
+          import os
+          import pathlib
+          import sys
+
+          index_path = pathlib.Path(os.environ['RUNNER_TEMP']) / 'dependency-review' / 'results' / 'index.tsv'
+          summary_path = pathlib.Path(os.environ['GITHUB_STEP_SUMMARY'])
+
+          def extract_findings(path: pathlib.Path) -> set[tuple[str, str, tuple[str, ...]]]:
+              data = json.loads(path.read_text())
+              findings: set[tuple[str, str, tuple[str, ...]]] = set()
+              for result in data.get('results', []):
+                  for package in result.get('packages', []):
+                      package_info = package.get('package', {})
+                      ecosystem = package_info.get('ecosystem', '')
+                      name = package_info.get('name', '')
+                      groups = package.get('groups') or []
+                      if groups:
+                          for group in groups:
+                              ids = tuple(sorted(group.get('ids', [])))
+                              if ids:
+                                  findings.add((ecosystem, name, ids))
+                          continue
+                      for vulnerability in package.get('vulnerabilities', []):
+                          vuln_id = vulnerability.get('id')
+                          if vuln_id:
+                              findings.add((ecosystem, name, (vuln_id,)))
+              return findings
+
+          introduced: list[tuple[str, list[tuple[str, str, tuple[str, ...]]]]] = []
+
+          for line in index_path.read_text().splitlines():
+              file, base_json, head_json = line.split('\t')
+              base_findings = extract_findings(pathlib.Path(base_json))
+              head_findings = extract_findings(pathlib.Path(head_json))
+              new_findings = sorted(head_findings - base_findings)
+              if new_findings:
+                  introduced.append((file, new_findings))
+
+          with summary_path.open('a', encoding='utf-8') as summary:
+              summary.write('\n')
+              if introduced:
+                  summary.write('- ❌ The fallback OSV dependency review found newly introduced vulnerable dependencies.\n')
+                  for file, findings in introduced:
+                      summary.write(f'  - `{file}`\n')
+                      for ecosystem, package, vuln_ids in findings:
+                          vuln_list = ', '.join(vuln_ids)
+                          summary.write(f'    - `{package}` ({ecosystem or "unknown"}) -> {vuln_list}\n')
+              else:
+                  summary.write('- ✅ No newly introduced known vulnerabilities were detected in the changed dependency lockfiles.\n')
+
+          if introduced:
+              print('Introduced vulnerabilities detected in changed dependency lockfiles:')
+              for file, findings in introduced:
+                  print(f'- {file}')
+                  for ecosystem, package, vuln_ids in findings:
+                      print(f'  - {package} ({ecosystem or "unknown"}): {", ".join(vuln_ids)}')
+              sys.exit(1)
+
+          print('No newly introduced known vulnerabilities were detected in the changed dependency lockfiles.')
+          PY
 
   secret-scan:
     name: Secret Scan
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      pull-requests: read
+      security-events: write
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -45,12 +215,50 @@ jobs:
           persist-credentials: false
 
       - name: Scan repository for leaked secrets
-        uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
+        id: gitleaks-scan
+        continue-on-error: true
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GITLEAKS_ENABLE_COMMENTS: 'false'
-          GITLEAKS_ENABLE_SUMMARY: 'true'
-          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: 'false'
+          GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1
+        run: |
+          set -euo pipefail
+
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}:/repo" \
+            "${GITLEAKS_IMAGE}" \
+            git \
+            --no-banner \
+            --redact \
+            --report-format sarif \
+            --report-path /repo/gitleaks.sarif \
+            /repo
+
+      - name: Upload Gitleaks SARIF to code scanning
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
+        with:
+          sarif_file: gitleaks.sarif
+          category: gitleaks
+
+      - name: Upload Gitleaks SARIF artifact
+        if: always() && hashFiles('gitleaks.sarif') != ''
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: gitleaks-results-${{ github.run_id }}
+          path: gitleaks.sarif
+
+      - name: Summarize Gitleaks findings
+        if: always()
+        run: |
+          echo '## Secret scan' >> "$GITHUB_STEP_SUMMARY"
+          if [ "${{ steps.gitleaks-scan.outcome }}" = 'failure' ]; then
+            echo '- The OSS Gitleaks scan detected secrets or encountered a scan error. Review the job logs and any uploaded SARIF results for details.' >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo '- No leaked secrets were detected by the OSS Gitleaks scan.' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Fail on secret scan findings
+        if: steps.gitleaks-scan.outcome == 'failure'
+        run: exit 1
 
   osv-scan:
     name: OSV Dependency Scan
