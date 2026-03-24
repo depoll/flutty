@@ -69,13 +69,13 @@ class AppDelegate: FlutterAppDelegate {
     )
     appleDatabaseChannel = channel
     channel.setMethodCallHandler { [weak self] call, result in
-      guard self != nil else {
+      guard let self = self else {
         result(nil)
         return
       }
       switch call.method {
       case "applyDatabaseFilePolicy":
-        self?.handleAppleDatabaseMethodCall(call, result: result)
+        self.handleAppleDatabaseMethodCall(call, result: result)
       default:
         result(FlutterMethodNotImplemented)
       }
