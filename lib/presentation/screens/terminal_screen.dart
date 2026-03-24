@@ -1529,6 +1529,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      onInsertText: isMobile ? null : _confirmDesktopInsertedText,
+      onPasteText: isMobile ? null : _pasteClipboard,
     );
 
     if (!isMobile) return terminalView;
@@ -2218,6 +2220,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     return shouldInsert;
+  }
+
+  Future<bool> _confirmDesktopInsertedText(String text) async {
+    if (text.length <= 1) {
+      return true;
+    }
+
+    return _confirmTerminalInsertionIfNeeded(
+      insertedText: text,
+      buildReview: (commandText) => assessClipboardPasteCommand(
+        commandText,
+        bracketedPasteModeEnabled: false,
+      ),
+      title: 'Review keyboard paste',
+      messageBuilder: (_) =>
+          'This text inserted from your keyboard could execute multiple or reshaped commands.',
+      confirmLabel: 'Insert anyway',
+    );
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.

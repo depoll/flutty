@@ -3,6 +3,8 @@
 // dependency when upgrading.
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions
 
+import 'dart:async';
+
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -20,9 +22,9 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
 import 'package:xterm/src/ui/render.dart';
+import 'package:xterm/src/ui/selection_mode.dart';
 import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
-import 'package:xterm/src/ui/shortcut/actions.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
@@ -69,6 +71,8 @@ class MonkeyTerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
+    this.onInsertText,
+    this.onPasteText,
   });
 
   /// The underlying terminal that this widget renders.
@@ -174,6 +178,12 @@ class MonkeyTerminalView extends StatefulWidget {
   /// If true, vertical touch drags are converted into terminal scroll input
   /// instead of scrolling the Flutter viewport.
   final bool touchScrollToTerminal;
+
+  /// Called before inserted text is sent to the terminal.
+  final Future<bool> Function(String text)? onInsertText;
+
+  /// Called to handle paste shortcuts before xterm pastes clipboard text.
+  final Future<void> Function()? onPasteText;
 
   @override
   State<MonkeyTerminalView> createState() => MonkeyTerminalViewState();
@@ -325,9 +335,54 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
       );
     }
 
-    child = TerminalActions(
-      terminal: widget.terminal,
-      controller: _controller,
+    child = Actions(
+      actions: {
+        PasteTextIntent: CallbackAction<PasteTextIntent>(
+          onInvoke: (intent) async {
+            if (widget.onPasteText != null) {
+              await widget.onPasteText!();
+              return null;
+            }
+
+            final data = await Clipboard.getData(Clipboard.kTextPlain);
+            final text = data?.text;
+            if (text != null) {
+              widget.terminal.paste(text);
+              _controller.clearSelection();
+            }
+            return null;
+          },
+        ),
+        CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
+          onInvoke: (intent) async {
+            final selection = _controller.selection;
+
+            if (selection == null) {
+              return null;
+            }
+
+            final text = widget.terminal.buffer.getText(selection);
+            await Clipboard.setData(ClipboardData(text: text));
+            return null;
+          },
+        ),
+        SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
+          onInvoke: (intent) {
+            _controller.setSelection(
+              widget.terminal.buffer.createAnchor(
+                0,
+                widget.terminal.buffer.height - widget.terminal.viewHeight,
+              ),
+              widget.terminal.buffer.createAnchor(
+                widget.terminal.viewWidth,
+                widget.terminal.buffer.height - 1,
+              ),
+              mode: SelectionMode.line,
+            );
+            return null;
+          },
+        ),
+      },
       child: child,
     );
 
@@ -493,6 +548,17 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   }
 
   void _onInsert(String text) {
+    unawaited(_handleInsert(text));
+  }
+
+  Future<void> _handleInsert(String text) async {
+    if (widget.onInsertText != null) {
+      final shouldInsert = await widget.onInsertText!(text);
+      if (!mounted || !shouldInsert) {
+        return;
+      }
+    }
+
     final key = charToTerminalKey(text.trim());
 
     // On mobile platforms there is no guarantee that virtual keyboard will
