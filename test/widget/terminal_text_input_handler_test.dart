@@ -1072,6 +1072,92 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'reviews a suspicious committed IME payload while keeping its selection',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        const suspiciousUserText = 'echo ready; rm -rf /';
+        const suspiciousText = '\u200B\u200Becho ready; rm -rf /';
+        const suspiciousSelection = TextSelection(
+          baseOffset: _deleteDetectionMarker.length,
+          extentOffset: suspiciousText.length,
+        );
+
+        tester.testTextInput.log.clear();
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: suspiciousText,
+            selection: suspiciousSelection,
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, suspiciousUserText);
+        expect(
+          reviews.single.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+        expect(terminalOutput, isEmpty);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), suspiciousUserText);
+
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: suspiciousText,
+            selection: suspiciousSelection,
+          ),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('rejects suspicious IME insertion until the user approves', (
       tester,
     ) async {

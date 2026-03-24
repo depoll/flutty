@@ -477,7 +477,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     TextEditingValue value,
     String currentText,
   ) {
-    if (widget.onReviewInsertedText == null || !value.selection.isCollapsed) {
+    if (widget.onReviewInsertedText == null) {
       return null;
     }
 
