@@ -904,7 +904,7 @@ class SecureTransferService {
         port: _optionalInt(item['port']) ?? 22,
         keyType: _normalizedImportedKnownHostKeyType(item),
         fingerprint: _normalizedImportedKnownHostFingerprint(item),
-        hostKey: _requiredString(item, 'hostKey'),
+        hostKey: _normalizedImportedKnownHostHostKey(item),
         firstSeen: _optionalDateTime(item['firstSeen']) ?? DateTime.now(),
         lastSeen: _optionalDateTime(item['lastSeen']) ?? DateTime.now(),
       );
@@ -1028,7 +1028,7 @@ class SecureTransferService {
   }
 
   String _normalizedImportedKnownHostFingerprint(Map<String, dynamic> item) {
-    final hostKey = _requiredString(item, 'hostKey');
+    final hostKey = _normalizedImportedKnownHostHostKey(item);
     if (hostKey.isNotEmpty) {
       try {
         final hostKeyBytes = base64.decode(hostKey);
@@ -1040,10 +1040,13 @@ class SecureTransferService {
     return _requiredString(item, 'fingerprint');
   }
 
+  String _normalizedImportedKnownHostHostKey(Map<String, dynamic> item) =>
+      _optionalString(item['hostKey']) ?? '';
+
   String _normalizedImportedKnownHostKeyType(Map<String, dynamic> item) =>
       canonicalizeSshHostKeyType(
         _requiredString(item, 'keyType'),
-        encodedHostKey: _requiredString(item, 'hostKey'),
+        encodedHostKey: _normalizedImportedKnownHostHostKey(item),
       );
 
   KnownHostsCompanion _mergeKnownHosts(

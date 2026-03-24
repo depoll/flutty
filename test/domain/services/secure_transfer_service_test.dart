@@ -678,6 +678,46 @@ void main() {
       },
     );
 
+    test('imports fingerprint-only legacy known-host rows', () async {
+      const importedFingerprint = 'SHA256:legacyFingerprintOnlyRow';
+      final importedFirstSeen = DateTime.utc(2024, 3);
+      final importedLastSeen = DateTime.utc(2024, 3, 2);
+
+      await transferService.importFullMigrationPayload(
+        payload: TransferPayload(
+          type: TransferPayloadType.fullMigration,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'knownHosts': [
+              {
+                'hostname': 'legacy.example.com',
+                'port': 2222,
+                'keyType': 'ssh-ed25519',
+                'fingerprint': importedFingerprint,
+                'hostKey': '',
+                'firstSeen': importedFirstSeen.toIso8601String(),
+                'lastSeen': importedLastSeen.toIso8601String(),
+              },
+            ],
+          },
+        ),
+        mode: MigrationImportMode.merge,
+      );
+
+      final storedKnownHost =
+          await (db.select(db.knownHosts)..where(
+                (knownHost) => knownHost.hostname.equals('legacy.example.com'),
+              ))
+              .getSingle();
+      expect(storedKnownHost.port, 2222);
+      expect(storedKnownHost.keyType, 'ssh-ed25519');
+      expect(storedKnownHost.fingerprint, importedFingerprint);
+      expect(storedKnownHost.hostKey, isEmpty);
+      expect(storedKnownHost.firstSeen.toUtc(), importedFirstSeen);
+      expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
+    });
+
     test('encrypts and imports key payload roundtrip', () async {
       final keyId = await db
           .into(db.sshKeys)

@@ -112,8 +112,14 @@ void main() {
 
       final update = await service.verify(replacementHostKey);
       await update.persistTrustDecision(repository);
+      var storedHost = await repository.getByHost('replace.example.com', 22);
+      expect(storedHost, isNotNull);
+      expect(storedHost!.hostKey, originalHostKey.encodedHostKey);
+      expect(storedHost.fingerprint, originalHostKey.fingerprint);
 
-      final storedHost = await repository.getByHost('replace.example.com', 22);
+      await update.commitAfterAuthentication(repository);
+
+      storedHost = await repository.getByHost('replace.example.com', 22);
       expect(storedHost, isNotNull);
       expect(storedHost!.hostKey, replacementHostKey.encodedHostKey);
       expect(storedHost.fingerprint, replacementHostKey.fingerprint);

@@ -1168,6 +1168,78 @@ void main() {
       },
     );
 
+    test(
+      'connect preserves an existing host key when replacement auth fails',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final originalHostKey = VerifiedHostKey(
+          hostname: 'replace.example.com',
+          port: 22,
+          keyType: 'ssh-ed25519',
+          hostKeyBytes: _ed25519HostKeyBlob([1, 2, 3]),
+        );
+        await knownHostsRepository.upsertTrustedHost(
+          hostname: originalHostKey.hostname,
+          port: originalHostKey.port,
+          keyType: originalHostKey.trustedKeyType,
+          fingerprint: originalHostKey.fingerprint,
+          encodedHostKey: originalHostKey.encodedHostKey,
+          resetFirstSeen: true,
+        );
+
+        final socket = _FakeHostKeySocket(_ed25519HostKeyBlob([7, 8, 9]));
+        final client = _MockSshClient();
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          hostKeyPromptHandler: (_) async => HostKeyTrustDecision.replace,
+          socketConnector: (host, port, {timeout}) async => socket,
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                  return Future<void>.error(
+                    SSHAuthFailError('Authentication failed'),
+                  );
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'replace.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isFalse);
+        final storedHost = await knownHostsRepository.getByHost(
+          'replace.example.com',
+          22,
+        );
+        expect(storedHost, isNotNull);
+        expect(storedHost!.hostKey, originalHostKey.encodedHostKey);
+        expect(storedHost.fingerprint, originalHostKey.fingerprint);
+      },
+    );
+
     test('sessions map is unmodifiable', () {
       expect(
         () => (sshService.sessions as Map)[1] = 'test',

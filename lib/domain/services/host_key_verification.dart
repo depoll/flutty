@@ -104,9 +104,11 @@ class PendingHostTrustUpdate {
     required VerifiedHostKey presentedHostKey,
     required _TrustedHostUpdateMode mode,
     bool resetFirstSeen = false,
+    bool persistBeforeAuthentication = false,
   }) : _presentedHostKey = presentedHostKey,
        _mode = mode,
-       _resetFirstSeen = resetFirstSeen;
+       _resetFirstSeen = resetFirstSeen,
+       _persistBeforeAuthentication = persistBeforeAuthentication;
 
   /// Creates an update that refreshes the stored host key metadata.
   factory PendingHostTrustUpdate.touch(VerifiedHostKey presentedHostKey) =>
@@ -119,19 +121,23 @@ class PendingHostTrustUpdate {
   factory PendingHostTrustUpdate.upsert(
     VerifiedHostKey presentedHostKey, {
     required bool resetFirstSeen,
+    required bool persistBeforeAuthentication,
   }) => PendingHostTrustUpdate._(
     presentedHostKey: presentedHostKey,
     mode: _TrustedHostUpdateMode.upsert,
     resetFirstSeen: resetFirstSeen,
+    persistBeforeAuthentication: persistBeforeAuthentication,
   );
 
   final VerifiedHostKey _presentedHostKey;
   final _TrustedHostUpdateMode _mode;
   final bool _resetFirstSeen;
+  final bool _persistBeforeAuthentication;
 
-  /// Persists a newly accepted trust decision immediately.
+  /// Persists a newly accepted TOFU trust decision immediately.
   Future<void> persistTrustDecision(KnownHostsRepository repository) async {
-    if (_mode != _TrustedHostUpdateMode.upsert) {
+    if (_mode != _TrustedHostUpdateMode.upsert ||
+        !_persistBeforeAuthentication) {
       return;
     }
 
@@ -145,20 +151,33 @@ class PendingHostTrustUpdate {
     );
   }
 
-  /// Updates `lastSeen` after authentication succeeds with a trusted key.
+  /// Applies the remaining trusted-host update after authentication succeeds.
   Future<void> commitAfterAuthentication(
     KnownHostsRepository repository,
   ) async {
-    if (_mode != _TrustedHostUpdateMode.touch) {
+    if (_mode == _TrustedHostUpdateMode.touch) {
+      await repository.markTrustedHostSeen(
+        hostname: _presentedHostKey.hostname,
+        port: _presentedHostKey.port,
+        keyType: _presentedHostKey.trustedKeyType,
+        fingerprint: _presentedHostKey.fingerprint,
+        encodedHostKey: _presentedHostKey.encodedHostKey,
+      );
       return;
     }
 
-    await repository.markTrustedHostSeen(
+    if (_mode != _TrustedHostUpdateMode.upsert ||
+        _persistBeforeAuthentication) {
+      return;
+    }
+
+    await repository.upsertTrustedHost(
       hostname: _presentedHostKey.hostname,
       port: _presentedHostKey.port,
       keyType: _presentedHostKey.trustedKeyType,
       fingerprint: _presentedHostKey.fingerprint,
       encodedHostKey: _presentedHostKey.encodedHostKey,
+      resetFirstSeen: _resetFirstSeen,
     );
   }
 }
@@ -202,6 +221,7 @@ class HostKeyVerificationService {
       return PendingHostTrustUpdate.upsert(
         presentedHostKey,
         resetFirstSeen: true,
+        persistBeforeAuthentication: true,
       );
     }
 
@@ -213,6 +233,7 @@ class HostKeyVerificationService {
     return PendingHostTrustUpdate.upsert(
       presentedHostKey,
       resetFirstSeen: true,
+      persistBeforeAuthentication: false,
     );
   }
 
