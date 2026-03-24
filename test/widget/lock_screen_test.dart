@@ -3,12 +3,18 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/presentation/screens/lock_screen.dart';
 
 class _MockAuthService extends Mock implements AuthService {}
+
+class _MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
+
+class _MockLocalAuthentication extends Mock implements LocalAuthentication {}
 
 class _LockedAuthStateNotifier extends AuthStateNotifier {
   @override
@@ -194,6 +200,61 @@ void main() {
         await tester.pump();
 
         expect(container.read(authStateProvider), AuthState.locked);
+        expect(find.text('Retry'), findsOneWidget);
+        expect(
+          find.text(
+            'Secure storage is unavailable. The app will stay locked until authentication is ready.',
+          ),
+          findsOneWidget,
+        );
+        expect(find.text('Unlock'), findsNothing);
+        expect(find.text('Use biometrics'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'shows retry UI when auth is enabled but PIN material is partial and biometrics are unavailable',
+      (tester) async {
+        final storage = _MockFlutterSecureStorage();
+        final localAuth = _MockLocalAuthentication();
+        final authService = AuthService(storage: storage, localAuth: localAuth);
+        final reportedErrors = <FlutterErrorDetails>[];
+        final originalOnError = FlutterError.onError;
+
+        FlutterError.onError = reportedErrors.add;
+        addTearDown(() => FlutterError.onError = originalOnError);
+
+        when(() => storage.read(key: any(named: 'key'))).thenAnswer((
+          invocation,
+        ) async {
+          final key = invocation.namedArguments[const Symbol('key')] as String;
+          switch (key) {
+            case 'flutty_auth_enabled':
+              return 'true';
+            case 'flutty_biometric_enabled':
+              return null;
+            case 'flutty_pin_hash':
+              return '{"version":1,"iterations":120000,"hash":"somehash"}';
+            case 'flutty_pin_salt':
+              return null;
+            default:
+              return null;
+          }
+        });
+        when(() => localAuth.canCheckBiometrics).thenAnswer((_) async => false);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [authServiceProvider.overrideWithValue(authService)],
+            child: const MaterialApp(home: LockScreen()),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(tester.takeException(), isNull);
+        expect(reportedErrors, hasLength(1));
         expect(find.text('Retry'), findsOneWidget);
         expect(
           find.text(

@@ -231,9 +231,16 @@ void main() {
         when(
           () => mockStorage.read(key: 'flutty_biometric_enabled'),
         ).thenAnswer((_) async => null);
+        when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
+          (_) async => jsonEncode({
+            'version': 1,
+            'iterations': 120000,
+            'hash': 'somehash',
+          }),
+        );
         when(
-          () => mockStorage.read(key: 'flutty_pin_hash'),
-        ).thenAnswer((_) async => 'somehash');
+          () => mockStorage.read(key: 'flutty_pin_salt'),
+        ).thenAnswer((_) async => 'AQIDBA==');
         when(
           () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => false);
@@ -243,6 +250,61 @@ void main() {
         expect(result, AuthMethod.pin);
       });
 
+      test(
+        'throws when auth is enabled but PIN material is partial and biometrics are unavailable',
+        () async {
+          when(
+            () => mockStorage.read(key: 'flutty_auth_enabled'),
+          ).thenAnswer((_) async => 'true');
+          when(
+            () => mockStorage.read(key: 'flutty_biometric_enabled'),
+          ).thenAnswer((_) async => null);
+          when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
+            (_) async => jsonEncode({
+              'version': 1,
+              'iterations': 120000,
+              'hash': 'somehash',
+            }),
+          );
+          when(
+            () => mockStorage.read(key: 'flutty_pin_salt'),
+          ).thenAnswer((_) async => null);
+          when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => false);
+
+          await expectLater(
+            authService.getAuthMethod(),
+            throwsA(isA<StateError>()),
+          );
+        },
+      );
+
+      test(
+        'returns biometric when biometrics work but PIN material is corrupt',
+        () async {
+          when(
+            () => mockStorage.read(key: 'flutty_auth_enabled'),
+          ).thenAnswer((_) async => 'true');
+          when(
+            () => mockStorage.read(key: 'flutty_biometric_enabled'),
+          ).thenAnswer((_) async => 'true');
+          when(
+            () => mockStorage.read(key: 'flutty_pin_hash'),
+          ).thenAnswer((_) async => 'legacy-hash-value');
+          when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => true);
+          when(
+            () => mockLocalAuth.getAvailableBiometrics(),
+          ).thenAnswer((_) async => [BiometricType.fingerprint]);
+
+          final result = await authService.getAuthMethod();
+
+          expect(result, AuthMethod.biometric);
+        },
+      );
+
       test('returns both when PIN and biometric enabled', () async {
         when(
           () => mockStorage.read(key: 'flutty_auth_enabled'),
@@ -250,9 +312,16 @@ void main() {
         when(
           () => mockStorage.read(key: 'flutty_biometric_enabled'),
         ).thenAnswer((_) async => 'true');
+        when(() => mockStorage.read(key: 'flutty_pin_hash')).thenAnswer(
+          (_) async => jsonEncode({
+            'version': 1,
+            'iterations': 120000,
+            'hash': 'somehash',
+          }),
+        );
         when(
-          () => mockStorage.read(key: 'flutty_pin_hash'),
-        ).thenAnswer((_) async => 'somehash');
+          () => mockStorage.read(key: 'flutty_pin_salt'),
+        ).thenAnswer((_) async => 'AQIDBA==');
         when(
           () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => true);

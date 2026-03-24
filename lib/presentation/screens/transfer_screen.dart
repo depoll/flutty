@@ -209,7 +209,22 @@ Future<bool> authorizeSensitiveTransferExport({
     return true;
   }
 
-  final method = await authService.getAuthMethod();
+  AuthMethod method;
+  try {
+    method = await authService.getAuthMethod();
+  } on Object catch (error, stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'auth',
+        context: ErrorDescription(
+          'while determining the available authentication method for sensitive transfers',
+        ),
+      ),
+    );
+    return false;
+  }
   if (!context.mounted) {
     return false;
   }

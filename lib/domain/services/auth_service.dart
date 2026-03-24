@@ -98,15 +98,21 @@ class AuthService {
     final authEnabled = await isAuthEnabled();
     if (!authEnabled) return AuthMethod.none;
 
+    final hasUsablePin = await _hasUsablePin();
     final biometricEnabled = await isBiometricEnabled();
     final biometricAvailable = await isBiometricAvailable();
 
     if (biometricEnabled && biometricAvailable) {
-      final hasPin = await _storage.read(key: _pinKey) != null;
-      return hasPin ? AuthMethod.both : AuthMethod.biometric;
+      return hasUsablePin ? AuthMethod.both : AuthMethod.biometric;
     }
 
-    return AuthMethod.pin;
+    if (hasUsablePin) {
+      return AuthMethod.pin;
+    }
+
+    throw StateError(
+      'Authentication is enabled but no usable authentication method is available.',
+    );
   }
 
   /// Set up PIN authentication.
@@ -294,6 +300,25 @@ class AuthService {
     }
 
     return _PinHashRecord(version: version, iterations: iterations, hash: hash);
+  }
+
+  Future<bool> _hasUsablePin() async {
+    final storedPinData = await _storage.read(key: _pinKey);
+    if (storedPinData == null) return false;
+
+    final pinRecord = _parsePinRecord(storedPinData);
+    if (pinRecord == null || pinRecord.hash.isEmpty) {
+      return false;
+    }
+    if (pinRecord.version != _pinKdfVersion) {
+      return false;
+    }
+    if (pinRecord.iterations <= 0 || pinRecord.iterations > 1000000) {
+      return false;
+    }
+
+    final salt = await _readSalt();
+    return salt != null;
   }
 
   bool _constantTimeEquals(String a, String b) {
