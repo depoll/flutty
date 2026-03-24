@@ -20,6 +20,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
+import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import 'transfer_screen.dart';
@@ -133,7 +134,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       switch (payload.type) {
         case TransferPayloadType.host:
           final host = await transferService.importHostPayload(payload);
-          ref.invalidate(_allHostsStreamProvider);
+          ref.invalidate(allHostsProvider);
           if (!mounted) {
             return;
           }
@@ -143,7 +144,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           break;
         case TransferPayloadType.key:
           final key = await transferService.importKeyPayload(payload);
-          ref.invalidate(_allKeysStreamProvider);
+          ref.invalidate(allKeysProvider);
           if (!mounted) {
             return;
           }
@@ -175,9 +176,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ..invalidate(fontFamilyNotifierProvider)
             ..invalidate(cursorStyleNotifierProvider)
             ..invalidate(bellSoundNotifierProvider)
-            ..invalidate(terminalThemeSettingsProvider)
-            ..invalidate(_allHostsStreamProvider)
-            ..invalidate(_allKeysStreamProvider);
+            ..invalidate(terminalThemeSettingsProvider);
+          invalidateImportedEntityProviders(ref.invalidate);
           if (!mounted) {
             return;
           }
@@ -449,7 +449,7 @@ class _HostsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -592,6 +592,10 @@ class _HostRow extends ConsumerWidget {
             state: state,
             preview: connection?.preview,
             windowTitle: connection?.windowTitle,
+            iconName: connection?.iconName,
+            workingDirectory: connection?.workingDirectory,
+            shellStatus: connection?.shellStatus,
+            lastExitCode: connection?.lastExitCode,
             brightness: theme.brightness,
             themeSettings: terminalThemeSettings,
             availableThemes: terminalThemes,
@@ -813,6 +817,10 @@ class _HostRow extends ConsumerWidget {
                     endpoint: '${host.username}@${host.hostname}:${host.port}',
                     preview: connection?.preview,
                     windowTitle: connection?.windowTitle,
+                    iconName: connection?.iconName,
+                    workingDirectory: connection?.workingDirectory,
+                    shellStatus: connection?.shellStatus,
+                    lastExitCode: connection?.lastExitCode,
                     terminalTheme: resolveConnectionPreviewTheme(
                       brightness: Theme.of(context).brightness,
                       themeSettings: terminalThemeSettings,
@@ -892,14 +900,6 @@ class _HostRow extends ConsumerWidget {
               },
             ),
             ListTile(
-              leading: const Icon(Icons.qr_code_2),
-              title: const Text('Show Transfer QR'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_showTransferQr(parentContext, ref));
-              },
-            ),
-            ListTile(
               leading: const Icon(Icons.save_alt),
               title: const Text('Export Encrypted File'),
               onTap: () {
@@ -921,66 +921,12 @@ class _HostRow extends ConsumerWidget {
     );
   }
 
-  Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
-    if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
-      final isAuthorized = await authorizeSensitiveTransferExport(
-        context: context,
-        authService: ref.read(authServiceProvider),
-        reason: 'Authenticate to export host credentials',
-      );
-      if (!context.mounted) {
-        return;
-      }
-      if (!isAuthorized) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('Authentication required for host export'),
-          ),
-        );
-        return;
-      }
-    }
-
-    final transferPassphrase = await showTransferPassphraseDialog(
-      context: context,
-      title: 'Host transfer passphrase',
-    );
-    if (!context.mounted || transferPassphrase == null) {
-      return;
-    }
-
-    final payload = await ref
-        .read(secureTransferServiceProvider)
-        .createHostPayload(
-          host: host,
-          transferPassphrase: transferPassphrase,
-          includeReferencedKey: host.keyId != null,
-        );
-
-    if (!context.mounted) {
-      return;
-    }
-
-    final defaultFileName = sanitizeTransferFileBaseName(
-      'host-${host.label.toLowerCase().replaceAll(' ', '-')}',
-    );
-
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => TransferQrScreen(
-          title: 'Host Transfer QR',
-          payload: payload,
-          defaultFileName: defaultFileName,
-        ),
-      ),
-    );
-  }
-
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
     if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
         authService: ref.read(authServiceProvider),
+        readAuthState: () => ref.read(authStateProvider),
         reason: 'Authenticate to export host credentials',
       );
       if (!context.mounted) {
@@ -1055,26 +1001,7 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _duplicateHost(BuildContext context, WidgetRef ref) async {
-    await ref
-        .read(hostRepositoryProvider)
-        .insert(
-          HostsCompanion.insert(
-            label: '${host.label} (copy)',
-            hostname: host.hostname,
-            port: drift.Value(host.port),
-            username: host.username,
-            password: drift.Value(host.password),
-            keyId: drift.Value(host.keyId),
-            groupId: drift.Value(host.groupId),
-            jumpHostId: drift.Value(host.jumpHostId),
-            color: drift.Value(host.color),
-            tags: drift.Value(host.tags),
-            terminalThemeLightId: drift.Value(host.terminalThemeLightId),
-            terminalThemeDarkId: drift.Value(host.terminalThemeDarkId),
-            terminalFontFamily: drift.Value(host.terminalFontFamily),
-            isFavorite: drift.Value(host.isFavorite),
-          ),
-        );
+    await ref.read(hostRepositoryProvider).duplicate(host);
     if (context.mounted) {
       ScaffoldMessenger.of(
         context,
@@ -1091,6 +1018,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
     required this.onTap,
     this.preview,
     this.windowTitle,
+    this.iconName,
+    this.workingDirectory,
+    this.shellStatus,
+    this.lastExitCode,
     this.terminalTheme,
     this.createdAt,
   });
@@ -1100,6 +1031,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
   final String endpoint;
   final String? preview;
   final String? windowTitle;
+  final String? iconName;
+  final Uri? workingDirectory;
+  final TerminalShellStatus? shellStatus;
+  final int? lastExitCode;
   final TerminalThemeData? terminalTheme;
   final DateTime? createdAt;
   final VoidCallback onTap;
@@ -1116,6 +1051,10 @@ class _ConnectionSelectionTile extends StatelessWidget {
         endpoint: subtitle,
         preview: preview,
         windowTitle: windowTitle,
+        iconName: iconName,
+        workingDirectory: workingDirectory,
+        shellStatus: shellStatus,
+        lastExitCode: lastExitCode,
         terminalTheme: terminalTheme,
       ),
       isThreeLine: preview?.trim().isNotEmpty ?? false,
@@ -1150,7 +1089,7 @@ class _ConnectionsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final hostsAsync = ref.watch(_allHostsStreamProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
     final connectionStates = ref.watch(activeSessionsProvider);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
@@ -1219,6 +1158,10 @@ class _ConnectionsPanel extends ConsumerWidget {
                             '$endpoint  •  Connection #${connection.connectionId}',
                         preview: preview,
                         windowTitle: connection.windowTitle,
+                        iconName: connection.iconName,
+                        workingDirectory: connection.workingDirectory,
+                        shellStatus: connection.shellStatus,
+                        lastExitCode: connection.lastExitCode,
                         terminalTheme: previewTheme,
                       ),
                       isThreeLine: preview?.trim().isNotEmpty ?? false,
@@ -1282,12 +1225,20 @@ class _ConnectionPreviewText extends StatelessWidget {
     required this.endpoint,
     this.preview,
     this.windowTitle,
+    this.iconName,
+    this.workingDirectory,
+    this.shellStatus,
+    this.lastExitCode,
     this.terminalTheme,
   });
 
   final String endpoint;
   final String? preview;
   final String? windowTitle;
+  final String? iconName;
+  final Uri? workingDirectory;
+  final TerminalShellStatus? shellStatus;
+  final int? lastExitCode;
   final TerminalThemeData? terminalTheme;
 
   @override
@@ -1295,6 +1246,10 @@ class _ConnectionPreviewText extends StatelessWidget {
     endpoint: endpoint,
     preview: preview,
     windowTitle: windowTitle,
+    iconName: iconName,
+    workingDirectory: workingDirectory,
+    shellStatus: shellStatus,
+    lastExitCode: lastExitCode,
     terminalTheme: terminalTheme,
   );
 }
@@ -1367,18 +1322,6 @@ class _SmallIconButton extends StatelessWidget {
   }
 }
 
-/// Provider for all hosts as stream.
-final _allHostsStreamProvider = StreamProvider<List<Host>>((ref) {
-  final repo = ref.watch(hostRepositoryProvider);
-  return repo.watchAll();
-});
-
-/// Provider for all keys as stream.
-final _allKeysStreamProvider = StreamProvider<List<SshKey>>((ref) {
-  final repo = ref.watch(keyRepositoryProvider);
-  return repo.watchAll();
-});
-
 class _KeysPanel extends ConsumerWidget {
   const _KeysPanel();
 
@@ -1386,7 +1329,7 @@ class _KeysPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final keysAsync = ref.watch(_allKeysStreamProvider);
+    final keysAsync = ref.watch(allKeysProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -1549,10 +1492,6 @@ class _KeyRow extends ConsumerWidget {
 
               // Transfer and key actions
               _SmallIconButton(
-                icon: Icons.qr_code_2,
-                onTap: () => unawaited(_showTransferQr(context, ref)),
-              ),
-              _SmallIconButton(
                 icon: Icons.save_alt,
                 onTap: () => unawaited(_exportEncryptedFile(context, ref)),
               ),
@@ -1587,57 +1526,11 @@ class _KeyRow extends ConsumerWidget {
     ).showSnackBar(const SnackBar(content: Text('Public key copied')));
   }
 
-  Future<void> _showTransferQr(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await authorizeSensitiveTransferExport(
-      context: context,
-      authService: ref.read(authServiceProvider),
-      reason: 'Authenticate to export private key',
-    );
-    if (!context.mounted) {
-      return;
-    }
-    if (!isAuthorized) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Authentication required for key export')),
-      );
-      return;
-    }
-
-    final transferPassphrase = await showTransferPassphraseDialog(
-      context: context,
-      title: 'Key transfer passphrase',
-    );
-    if (!context.mounted || transferPassphrase == null) {
-      return;
-    }
-
-    final payload = await ref
-        .read(secureTransferServiceProvider)
-        .createKeyPayload(key: sshKey, transferPassphrase: transferPassphrase);
-
-    if (!context.mounted) {
-      return;
-    }
-
-    final defaultFileName = sanitizeTransferFileBaseName(
-      'key-${sshKey.name.toLowerCase().replaceAll(' ', '-')}',
-    );
-
-    await Navigator.of(context).push<void>(
-      MaterialPageRoute(
-        builder: (_) => TransferQrScreen(
-          title: 'Key Transfer QR',
-          payload: payload,
-          defaultFileName: defaultFileName,
-        ),
-      ),
-    );
-  }
-
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to export private key',
     );
     if (!context.mounted) {

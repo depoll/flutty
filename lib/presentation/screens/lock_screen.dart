@@ -19,6 +19,8 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   final _pinController = TextEditingController();
   final _focusNode = FocusNode();
   bool _isLoading = false;
+  bool _isCheckingAuthMethod = true;
+  bool _authMethodLoadFailed = false;
   String? _error;
   bool _showPin = false;
   AuthMethod _authMethod = AuthMethod.none;
@@ -29,14 +31,41 @@ class _LockScreenState extends ConsumerState<LockScreen> {
     unawaited(_checkAuthMethod());
   }
 
-  Future<void> _checkAuthMethod() async {
+  Future<void> _checkAuthMethod({bool refreshAuthState = false}) async {
     final authService = ref.read(authServiceProvider);
-    final method = await authService.getAuthMethod();
-    setState(() => _authMethod = method);
+    try {
+      final method = await authService.getAuthMethod();
+      if (refreshAuthState) {
+        await ref.read(authStateProvider.notifier).refresh();
+      }
+      if (!mounted) return;
 
-    // Auto-trigger biometric if available
-    if (method == AuthMethod.biometric || method == AuthMethod.both) {
-      unawaited(_authenticateWithBiometrics());
+      setState(() {
+        _authMethod = method;
+        _isCheckingAuthMethod = false;
+        _authMethodLoadFailed = false;
+      });
+
+      // Auto-trigger biometric if available
+      if (method == AuthMethod.biometric || method == AuthMethod.both) {
+        unawaited(_authenticateWithBiometrics());
+      }
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'auth',
+          context: ErrorDescription(
+            'while determining the available lock-screen authentication method',
+          ),
+        ),
+      );
+      if (!mounted) return;
+      setState(() {
+        _isCheckingAuthMethod = false;
+        _authMethodLoadFailed = true;
+      });
     }
   }
 
@@ -90,8 +119,24 @@ class _LockScreenState extends ConsumerState<LockScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final authState = ref.watch(authStateProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final isInitializing =
+        authState == AuthState.unknown || _isCheckingAuthMethod;
+    final isLockedWithoutAvailableAuth =
+        authState == AuthState.locked &&
+        !_isCheckingAuthMethod &&
+        _authMethod == AuthMethod.none;
+    final showAuthMethodError =
+        authState != AuthState.unknown &&
+        (_authMethodLoadFailed || isLockedWithoutAvailableAuth);
+    final subtitle = switch ((isInitializing, showAuthMethodError)) {
+      (true, _) => 'Checking your security settings…',
+      (false, true) =>
+        'Authentication data is unavailable or corrupted. The app will stay locked until authentication is ready.',
+      (false, false) => 'Enter your PIN to unlock',
+    };
 
     return Scaffold(
       body: SafeArea(
@@ -118,16 +163,24 @@ class _LockScreenState extends ConsumerState<LockScreen> {
               ),
               const SizedBox(height: 8),
               Text(
-                'Enter your PIN to unlock',
+                subtitle,
                 style: theme.textTheme.bodyLarge?.copyWith(
                   color: colorScheme.onSurface.withValues(alpha: 0.6),
                 ),
+                textAlign: TextAlign.center,
               ),
               const SizedBox(height: 48),
 
+              if (isInitializing) ...[
+                const CircularProgressIndicator(),
+                const SizedBox(height: 24),
+              ],
+
               // PIN input
-              if (_authMethod == AuthMethod.pin ||
-                  _authMethod == AuthMethod.both) ...[
+              if (!isInitializing &&
+                  !showAuthMethodError &&
+                  (_authMethod == AuthMethod.pin ||
+                      _authMethod == AuthMethod.both)) ...[
                 SizedBox(
                   width: 200,
                   child: TextField(
@@ -172,13 +225,31 @@ class _LockScreenState extends ConsumerState<LockScreen> {
               ],
 
               // Biometric button
-              if (_authMethod == AuthMethod.biometric ||
-                  _authMethod == AuthMethod.both) ...[
+              if (!isInitializing &&
+                  !showAuthMethodError &&
+                  (_authMethod == AuthMethod.biometric ||
+                      _authMethod == AuthMethod.both)) ...[
                 const SizedBox(height: 24),
                 TextButton.icon(
                   onPressed: _isLoading ? null : _authenticateWithBiometrics,
                   icon: const Icon(Icons.fingerprint),
                   label: const Text('Use biometrics'),
+                ),
+              ],
+
+              if (showAuthMethodError) ...[
+                SizedBox(
+                  width: 200,
+                  child: OutlinedButton(
+                    onPressed: () {
+                      setState(() {
+                        _isCheckingAuthMethod = true;
+                        _authMethodLoadFailed = false;
+                      });
+                      unawaited(_checkAuthMethod(refreshAuthState: true));
+                    },
+                    child: const Text('Retry'),
+                  ),
                 ),
               ],
             ],

@@ -1,6 +1,6 @@
 # Deployment Guide
 
-This guide covers setting up automated deployment to TestFlight, Play Store internal testing, and production store releases.
+This guide covers setting up automated deployment to TestFlight, Play Store internal testing, internal-only production release candidates, and public store releases.
 
 ## App Variants
 
@@ -66,7 +66,7 @@ keytool -genkey -v \
   -alias upload
 ```
 
-For local development, create `android/app/key.properties` (see `key.properties.example`).
+Signed Android release builds require `android/app/key.properties` (see `key.properties.example`) and the real upload keystore. Debug builds for local development do not require release signing material.
 
 ## GitHub Secrets
 
@@ -98,8 +98,8 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
-- **iOS**: Run the **Deploy PR to TestFlight** workflow manually from the Actions tab
-- **Android**: Builds APK for direct download (linked in PR comment)
+- **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
+- **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
 
 ### Deploy Private (`develop.yml`)
 
@@ -108,6 +108,18 @@ Triggered on push to `main`. Builds the **private** flavor and deploys to:
 - **Android**: Play Store internal testing track
 
 This ensures TestFlight and Play Store internal testing always reflect the latest `main`.
+
+### Release Internal (`release-internal.yml`)
+
+Manually triggered from the Actions tab with a version input.
+
+Builds the **production** flavor and deploys it to internal-only channels:
+- **iOS**: TestFlight internal testers for the production `MonkeySSH` app
+- **Android**: Play Store internal testing track for the production `xyz.depollsoft.monkeyssh` app
+
+Metadata is synced as part of the deploy so the production store listing stays aligned while the binary remains limited to internal testers.
+
+Use this workflow to validate a release candidate on the non-private app before promoting a later build publicly.
 
 ### Release (`release.yml`)
 
@@ -120,6 +132,8 @@ Builds the **production** flavor and deploys to:
 - **Android**: Play Store production track
 
 Metadata (description, icons, etc.) is synced automatically on release deploys.
+
+Android release workflows fail early if the signing secrets or local `android/app/key.properties` configuration are missing or incomplete. This prevents release builds from silently falling back to the debug keystore.
 
 ### Sync Metadata (`sync-metadata.yml`)
 
@@ -180,6 +194,7 @@ android/fastlane/
 
 Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
 Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*.png` during deploy/metadata-sync workflows, so marketplace icons stay aligned with the app icon assets.
+Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.
 

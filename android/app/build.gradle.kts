@@ -1,4 +1,5 @@
 import java.util.Properties
+import org.gradle.api.GradleException
 
 plugins {
     id("com.android.application")
@@ -11,6 +12,43 @@ val keystoreProperties = Properties()
 val keystorePropertiesFile = rootProject.file("app/key.properties")
 if (keystorePropertiesFile.exists()) {
     keystorePropertiesFile.inputStream().use { keystoreProperties.load(it) }
+}
+
+val requiredReleaseSigningProperties = listOf(
+    "storePassword",
+    "keyPassword",
+    "keyAlias",
+    "storeFile",
+)
+val missingReleaseSigningProperties = requiredReleaseSigningProperties.filter {
+    keystoreProperties.getProperty(it).isNullOrBlank()
+}
+val releaseStoreFilePath = keystoreProperties.getProperty("storeFile")
+    ?.takeIf { it.isNotBlank() }
+val releaseStoreFile = releaseStoreFilePath?.let { file(it) }
+val hasCompleteReleaseSigningConfig = keystorePropertiesFile.exists() &&
+    missingReleaseSigningProperties.isEmpty() &&
+    releaseStoreFile?.exists() == true
+val isReleaseBuildRequested = gradle.startParameter.taskNames.any { taskName ->
+    taskName.contains("Release", ignoreCase = true)
+}
+
+if (isReleaseBuildRequested) {
+    when {
+        !keystorePropertiesFile.exists() -> throw GradleException(
+            "Release builds require Android signing configuration in android/app/key.properties. " +
+                "Copy android/app/key.properties.example and provide a real release keystore, " +
+                "or use a debug build for local development.",
+        )
+        missingReleaseSigningProperties.isNotEmpty() -> throw GradleException(
+            "Release builds require complete Android signing configuration in android/app/key.properties. " +
+                "Missing: ${missingReleaseSigningProperties.joinToString(", ")}.",
+        )
+        releaseStoreFile?.exists() != true -> throw GradleException(
+            "Release builds require a valid Android keystore. " +
+                "Configured storeFile '${releaseStoreFilePath ?: "(missing)"}' was not found.",
+        )
+    }
 }
 
 android {
@@ -34,12 +72,12 @@ android {
     }
 
     signingConfigs {
-        if (keystorePropertiesFile.exists()) {
+        if (hasCompleteReleaseSigningConfig && releaseStoreFile != null) {
             create("release") {
-                keyAlias = keystoreProperties["keyAlias"] as String
-                keyPassword = keystoreProperties["keyPassword"] as String
-                storeFile = file(keystoreProperties["storeFile"] as String)
-                storePassword = keystoreProperties["storePassword"] as String
+                keyAlias = keystoreProperties.getProperty("keyAlias")
+                keyPassword = keystoreProperties.getProperty("keyPassword")
+                storeFile = releaseStoreFile
+                storePassword = keystoreProperties.getProperty("storePassword")
             }
         }
     }
@@ -68,10 +106,8 @@ android {
 
     buildTypes {
         release {
-            signingConfig = if (keystorePropertiesFile.exists()) {
-                signingConfigs.getByName("release")
-            } else {
-                signingConfigs.getByName("debug")
+            if (hasCompleteReleaseSigningConfig) {
+                signingConfig = signingConfigs.getByName("release")
             }
         }
     }

@@ -13,8 +13,8 @@ import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../providers/entity_list_providers.dart';
 import '../widgets/terminal_theme_picker.dart';
-import 'hosts_screen.dart';
 import 'transfer_screen.dart';
 
 /// Screen for adding or editing a host.
@@ -124,7 +124,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.hostId != null;
-    final keysAsync = ref.watch(_allKeysProvider);
+    final keysAsync = ref.watch(allKeysProvider);
     final hostsAsync = ref.watch(allHostsProvider);
     final snippetsAsync = ref.watch(_allSnippetsProvider);
 
@@ -154,6 +154,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 children: [
                   // Label
                   TextFormField(
+                    key: const Key('host-label-field'),
                     controller: _labelController,
                     decoration: const InputDecoration(
                       labelText: 'Label',
@@ -319,6 +320,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                   // Advanced section
                   ExpansionTile(
+                    key: const Key('host-advanced-tile'),
                     title: const Text('Advanced'),
                     initiallyExpanded:
                         _selectedJumpHostId != null ||
@@ -415,6 +417,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           AutoConnectCommandMode.custom) ...[
                         const SizedBox(height: 16),
                         TextFormField(
+                          key: const Key('host-auto-connect-command-field'),
                           controller: _autoConnectCommandController,
                           decoration: const InputDecoration(
                             labelText: 'Custom command',
@@ -557,6 +560,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
                   // Save button
                   FilledButton.icon(
+                    key: const Key('host-save-button'),
                     onPressed: _saveHost,
                     icon: const Icon(Icons.save),
                     label: Text(isEditing ? 'Save Changes' : 'Add Host'),
@@ -613,28 +617,32 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               selectedSnippet != null
           ? selectedSnippet.id
           : null;
+      final autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+        command: normalizedAutoConnectCommand,
+        snippetId: normalizedAutoConnectSnippetId,
+      );
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
-        await repo.update(
-          _existingHost!.copyWith(
-            label: _labelController.text,
-            hostname: _hostnameController.text,
-            port: port,
-            username: _usernameController.text,
-            password: drift.Value(password),
-            tags: drift.Value(tags),
-            keyId: drift.Value(_selectedKeyId),
-            groupId: drift.Value(_selectedGroupId),
-            jumpHostId: drift.Value(_selectedJumpHostId),
-            terminalThemeLightId: drift.Value(_selectedLightThemeId),
-            terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
-            terminalFontFamily: drift.Value(_selectedFontFamily),
-            autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
-            autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
-            isFavorite: _isFavorite,
-          ),
+        final updatedHost = _existingHost!.copyWith(
+          label: _labelController.text,
+          hostname: _hostnameController.text,
+          port: port,
+          username: _usernameController.text,
+          password: drift.Value(password),
+          tags: drift.Value(tags),
+          keyId: drift.Value(_selectedKeyId),
+          groupId: drift.Value(_selectedGroupId),
+          jumpHostId: drift.Value(_selectedJumpHostId),
+          terminalThemeLightId: drift.Value(_selectedLightThemeId),
+          terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
+          terminalFontFamily: drift.Value(_selectedFontFamily),
+          autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
+          autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
+          autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+          isFavorite: _isFavorite,
         );
+        await repo.update(updatedHost);
       } else {
         // Create new host
         await repo.insert(
@@ -653,6 +661,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             terminalFontFamily: drift.Value(_selectedFontFamily),
             autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
             autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
+            autoConnectRequiresConfirmation: drift.Value(
+              autoConnectRequiresConfirmation,
+            ),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -679,6 +690,36 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     } finally {
       if (mounted) setState(() => _isLoading = false);
     }
+  }
+
+  bool _resolveAutoConnectConfirmation({
+    required String? command,
+    required int? snippetId,
+  }) {
+    final existingHost = _existingHost;
+    if (existingHost == null || !existingHost.autoConnectRequiresConfirmation) {
+      return false;
+    }
+
+    final previousMode = resolveAutoConnectCommandMode(
+      command: existingHost.autoConnectCommand,
+      snippetId: existingHost.autoConnectSnippetId,
+    );
+    final nextMode = resolveAutoConnectCommandMode(
+      command: command,
+      snippetId: snippetId,
+    );
+    if (nextMode != previousMode) {
+      return false;
+    }
+
+    return switch (nextMode) {
+      AutoConnectCommandMode.none => false,
+      AutoConnectCommandMode.custom =>
+        existingHost.autoConnectCommand == command,
+      AutoConnectCommandMode.snippet =>
+        existingHost.autoConnectSnippetId == snippetId,
+    };
   }
 
   Future<void> _testConnection() async {
@@ -747,17 +788,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Future<void> _importFromTransfer() async {
-    final source = await showTransferImportSourceSheet(context);
-    if (!mounted || source == null) {
-      return;
-    }
-
-    String? encodedPayload;
-    if (source == TransferImportSource.qr) {
-      encodedPayload = await scanTransferPayload(context);
-    } else {
-      encodedPayload = await pickTransferPayloadFromFile(context);
-    }
+    final encodedPayload = await pickTransferPayloadFromFile(context);
     if (!mounted || encodedPayload == null) {
       return;
     }
@@ -1525,12 +1556,6 @@ class _PortForwardTile extends StatelessWidget {
     );
   }
 }
-
-/// Provider for all SSH keys as stream.
-final _allKeysProvider = StreamProvider<List<SshKey>>((ref) {
-  final repo = ref.watch(keyRepositoryProvider);
-  return repo.watchAll();
-});
 
 final _allSnippetsProvider = StreamProvider<List<Snippet>>((ref) {
   final repo = ref.watch(snippetRepositoryProvider);

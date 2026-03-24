@@ -300,14 +300,6 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
-                        onPressed: _isImporting ? null : _importFromQrTransfer,
-                        icon: const Icon(Icons.qr_code_scanner),
-                        label: const Text('Scan QR'),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    Expanded(
-                      child: OutlinedButton.icon(
                         onPressed: _isImporting
                             ? null
                             : _importFromEncryptedFile,
@@ -449,14 +441,6 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     } finally {
       if (mounted) setState(() => _isImporting = false);
     }
-  }
-
-  Future<void> _importFromQrTransfer() async {
-    if (_isImporting) {
-      return;
-    }
-    final encodedPayload = await scanTransferPayload(context);
-    await _importFromTransferPayload(encodedPayload);
   }
 
   Future<void> _importFromFile() async {

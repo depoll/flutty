@@ -45,13 +45,42 @@ on:
         type: boolean
         default: false
         description: 'Whether to sync store metadata alongside the deploy'
+    secrets:
+      ANDROID_KEYSTORE_BASE64:
+        required: false
+      ANDROID_KEY_ALIAS:
+        required: false
+      ANDROID_KEY_PASSWORD:
+        required: false
+      ANDROID_STORE_PASSWORD:
+        required: false
+      PLAY_STORE_SERVICE_ACCOUNT_JSON:
+        required: false
+      MATCH_GIT_URL:
+        required: false
+      MATCH_PASSWORD:
+        required: false
+      MATCH_GIT_BASIC_AUTHORIZATION:
+        required: false
+      APP_STORE_CONNECT_API_KEY_ID:
+        required: false
+      APP_STORE_CONNECT_API_ISSUER_ID:
+        required: false
+      APP_STORE_CONNECT_API_KEY_CONTENT:
+        required: false
     outputs:
       apk-artifact-id:
         description: 'Artifact ID of the uploaded APK'
         value: ${{ jobs.build-android.outputs.apk-artifact-id }}
+      android-source-sha:
+        description: 'Git SHA used for Android build checkout'
+        value: ${{ jobs.build-android.outputs.source-sha }}
       ios-source-sha:
         description: 'Git SHA used for iOS build checkout'
         value: ${{ jobs.build-ios.outputs.source-sha }}
+
+permissions:
+  contents: read
 
 jobs:
   build-android:
@@ -60,17 +89,23 @@ jobs:
     runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
+      source-sha: ${{ steps.source-sha.outputs.value }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.source-ref || github.ref }}
 
-      - uses: actions/setup-java@v5
+      - name: Capture source SHA
+        id: source-sha
+        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
         with:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: |
             ~/.gradle/caches
@@ -78,7 +113,7 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
         with:
           flutter-version: '3.x'
           channel: 'stable'
@@ -87,11 +122,37 @@ jobs:
       - name: Install dependencies
         run: flutter pub get
 
+      - name: Validate Android signing secrets
+        if: inputs.deploy-android-to != 'none'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_KEYSTORE_BASE64 is required for signed Android release builds."
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEY_ALIAS" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_KEY_ALIAS is required for signed Android release builds."
+            exit 1
+          fi
+          if [ -z "$ANDROID_KEY_PASSWORD" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_KEY_PASSWORD is required for signed Android release builds."
+            exit 1
+          fi
+          if [ -z "$ANDROID_STORE_PASSWORD" ]; then
+            echo "::error title=Missing Android signing secret::ANDROID_STORE_PASSWORD is required for signed Android release builds."
+            exit 1
+          fi
+
       - name: Decode keystore
         if: inputs.deploy-android-to != 'none'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
+          umask 077
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
 
       - name: Create key.properties
@@ -101,12 +162,13 @@ jobs:
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
-          cat > android/app/key.properties << EOF
+          umask 077
+          cat > android/app/key.properties << EOF_KEY_PROPERTIES
           storePassword=$ANDROID_STORE_PASSWORD
           keyPassword=$ANDROID_KEY_PASSWORD
           keyAlias=$ANDROID_KEY_ALIAS
           storeFile=upload-keystore.jks
-          EOF
+          EOF_KEY_PROPERTIES
 
       - name: Build AAB
         if: inputs.deploy-android-to != 'none'
@@ -117,7 +179,8 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }}
 
-      - name: Build APK
+      - name: Build release APK
+        if: inputs.deploy-android-to != 'none'
         run: |
           flutter build apk \
             --flavor ${{ inputs.flavor }} \
@@ -125,23 +188,32 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }}
 
+      - name: Build debug APK
+        if: inputs.deploy-android-to == 'none'
+        run: |
+          flutter build apk \
+            --flavor ${{ inputs.flavor }} \
+            --debug \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }}
+
       - name: Upload AAB artifact
         if: inputs.deploy-android-to != 'none'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload APK artifact
         id: upload-apk
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-release.apk
+          path: ${{ inputs.deploy-android-to != 'none' && format('build/app/outputs/flutter-apk/app-{0}-release.apk', inputs.flavor) || format('build/app/outputs/flutter-apk/app-{0}-debug.apk', inputs.flavor) }}
 
-      - name: Deploy to Play Store
+      - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none'
-        uses: ruby/setup-ruby@v1
+        uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -152,6 +224,11 @@ jobs:
           python -m pip install --quiet Pillow
           python scripts/sync_play_store_icons.py
 
+      - name: Validate Play Store metadata
+        if: inputs.deploy-android-to != 'none' && inputs.sync-metadata
+        run: |
+          python3 scripts/validate_play_store_metadata.py ${{ inputs.flavor }}
+
       - name: Run Fastlane
         if: inputs.deploy-android-to != 'none'
         env:
@@ -161,11 +238,16 @@ jobs:
         run: |
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
+          PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
           if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then
-            bundle exec fastlane internal skip_metadata:"$SKIP_META"
+            bundle exec fastlane internal package_name:"$PACKAGE_NAME" skip_metadata:"$SKIP_META"
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
             bundle exec fastlane release skip_metadata:"$SKIP_META"
           fi
+
+      - name: Remove Android signing material
+        if: always() && inputs.deploy-android-to != 'none'
+        run: rm -f android/app/upload-keystore.jks android/app/key.properties
 
   build-ios:
     name: Build & Deploy iOS (${{ inputs.flavor }})
@@ -173,35 +255,29 @@ jobs:
     runs-on: macos-26
     outputs:
       source-sha: ${{ steps.source-sha.outputs.value }}
-    env:
-      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
-      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
-      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
+          persist-credentials: false
           ref: ${{ inputs.source-ref || github.ref }}
 
       - name: Capture source SHA
         id: source-sha
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/cache@v5
+      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
           path: ios/Pods
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
           restore-keys: pods-${{ runner.os }}-
 
-      - uses: subosito/flutter-action@v2
+      - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
         with:
           flutter-version: '3.x'
           channel: 'stable'
           cache: true
 
-      - uses: ruby/setup-ruby@v1
+      - uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -212,6 +288,12 @@ jobs:
       - name: Setup code signing
         if: inputs.deploy-ios-to != 'none'
         env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
@@ -233,6 +315,12 @@ jobs:
       - name: Archive, sign & deploy via Fastlane
         if: inputs.deploy-ios-to != 'none'
         env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
@@ -246,7 +334,7 @@ jobs:
 
       - name: Upload IPA artifact
         if: inputs.deploy-ios-to != 'none'
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/*.ipa

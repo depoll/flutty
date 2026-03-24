@@ -14,6 +14,9 @@ concurrency:
   group: release
   cancel-in-progress: false
 
+permissions:
+  contents: read
+
 jobs:
   compute-version:
     name: Compute Version
@@ -26,7 +29,6 @@ jobs:
         id: version
         run: |
           if [ "${{ github.event_name }}" = "release" ]; then
-            # Strip 'v' prefix from tag
             BUILD_NAME="${{ github.event.release.tag_name }}"
             BUILD_NAME="${BUILD_NAME#v}"
           else
@@ -52,7 +54,18 @@ jobs:
       deploy-ios-to: appstore
       deploy-android-to: production
       sync-metadata: true
-    secrets: inherit
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+      PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
 
   upload-release-artifacts:
     name: Upload to GitHub Release
@@ -63,20 +76,25 @@ jobs:
       contents: write
     steps:
       - name: Download Android artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: android-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
           path: artifacts/android
 
       - name: Download iOS artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
           name: ios-production-${{ needs.compute-version.outputs.build-name }}-${{ needs.compute-version.outputs.build-number }}
           path: artifacts/ios
 
+      - name: Generate release checksums
+        working-directory: artifacts
+        run: shasum -a 256 android/*.aab ios/*.ipa > SHA256SUMS.txt
+
       - name: Upload to release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe # v2
         with:
           files: |
             artifacts/android/*.aab
             artifacts/ios/*.ipa
+            artifacts/SHA256SUMS.txt

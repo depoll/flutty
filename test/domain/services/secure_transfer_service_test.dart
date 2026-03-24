@@ -168,12 +168,97 @@ void main() {
 
       final imported = await transferService.importHostPayload(payload);
       expect(imported.password, 'host-pass');
+      expect(imported.autoConnectRequiresConfirmation, isFalse);
 
       final stored = await (db.select(
         db.hosts,
       )..where((h) => h.id.equals(imported.id))).getSingle();
       expect(stored.password, startsWith('ENCv1:'));
     });
+
+    test(
+      'marks imported auto-connect commands for review before first run',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.host,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'host': {
+              'label': 'Imported Host',
+              'hostname': 'imported.example.com',
+              'port': 22,
+              'username': 'root',
+              'autoConnectCommand': '  tmux attach  ',
+            },
+          },
+        );
+
+        final imported = await transferService.importHostPayload(payload);
+
+        expect(imported.autoConnectCommand, 'tmux attach');
+        expect(imported.autoConnectRequiresConfirmation, isTrue);
+      },
+    );
+
+    test(
+      'rejects imported auto-connect commands with hidden control characters',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.host,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'host': {
+              'label': 'Imported Host',
+              'hostname': 'imported.example.com',
+              'port': 22,
+              'username': 'root',
+              'autoConnectCommand': 'tmux attach\x00rm -rf /',
+            },
+          },
+        );
+
+        await expectLater(
+          transferService.importHostPayload(payload),
+          throwsFormatException,
+        );
+      },
+    );
+
+    test(
+      'rejects imported auto-connect snippets with hidden control characters',
+      () async {
+        final payload = TransferPayload(
+          type: TransferPayloadType.fullMigration,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'snippets': [
+              {'id': 5, 'name': 'Auto connect', 'command': 'printf "ok"\x00'},
+            ],
+            'hosts': [
+              {
+                'id': 1,
+                'label': 'Imported Host',
+                'hostname': 'imported.example.com',
+                'port': 22,
+                'username': 'root',
+                'autoConnectSnippetId': 5,
+              },
+            ],
+          },
+        );
+
+        await expectLater(
+          transferService.importFullMigrationPayload(
+            payload: payload,
+            mode: MigrationImportMode.merge,
+          ),
+          throwsFormatException,
+        );
+      },
+    );
 
     test('rejects invalid passphrase', () async {
       final hostId = await db
@@ -541,6 +626,7 @@ void main() {
         expect(hosts, hasLength(2));
         expect(hostA.autoConnectCommand, 'ls -la');
         expect(hostA.autoConnectSnippetId, importedSnippet.id);
+        expect(hostA.autoConnectRequiresConfirmation, isTrue);
         expect(groups, hasLength(2));
         expect(snippetFolders, hasLength(2));
         expect(portForwards, hasLength(1));

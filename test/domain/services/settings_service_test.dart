@@ -243,6 +243,34 @@ void main() {
         final result = await container.read(autoLockTimeoutProvider.future);
         expect(result, 5);
       });
+
+      test('returns stored zero when auto-lock is disabled', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setInt(SettingKeys.autoLockTimeout, 0);
+        container.invalidate(autoLockTimeoutProvider);
+
+        final result = await container.read(autoLockTimeoutProvider.future);
+
+        expect(result, 0);
+      });
+    });
+
+    group('autoLockTimeoutNotifierProvider', () {
+      test('persists zero as an intentional disablement', () async {
+        final notifier = container.read(
+          autoLockTimeoutNotifierProvider.notifier,
+        );
+
+        await notifier.setTimeout(0);
+
+        expect(container.read(autoLockTimeoutNotifierProvider), 0);
+        expect(
+          await container
+              .read(settingsServiceProvider)
+              .getInt(SettingKeys.autoLockTimeout),
+          0,
+        );
+      });
     });
 
     group('cursorStyleProvider', () {

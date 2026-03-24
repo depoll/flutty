@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/services.dart';
@@ -8,8 +10,21 @@ import 'package:flutter/widgets.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../domain/models/auto_connect_command.dart';
+
 const _deleteDetectionMarker = '\u200B\u200B';
-final _leadingSwipeNewlinePattern = RegExp(r'^[\r\n]+(?=\S)');
+final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
+
+/// Confirms suspicious text inserted through the system keyboard or IME.
+typedef TerminalTextInputReviewCallback =
+    Future<bool> Function(TerminalCommandReview review);
+
+/// Builds the command text that should be reviewed for a pending IME delta.
+typedef TerminalTextInputReviewTextBuilder =
+    String Function(
+      ({int deletedCount, String appendedText}) delta,
+      String currentText,
+    );
 
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
@@ -36,6 +51,27 @@ bool shouldRequestKeyboardForTerminalPointerUp({
       !movedBeyondTapSlop;
 }
 
+/// Controls a [TerminalTextInputHandler] from an ancestor widget.
+class TerminalTextInputHandlerController {
+  _TerminalTextInputHandlerState? _state;
+
+  // ignore: use_setters_to_change_properties
+  void _attach(_TerminalTextInputHandlerState state) {
+    _state = state;
+  }
+
+  void _detach(_TerminalTextInputHandlerState state) {
+    if (identical(_state, state)) {
+      _state = null;
+    }
+  }
+
+  /// Prevents the next touch tap-up from reopening the soft keyboard.
+  void suppressNextTouchKeyboardRequest() {
+    _state?._suppressNextTouchKeyboardRequest();
+  }
+}
+
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
 /// proper IME configuration for swipe typing.
 ///
@@ -52,9 +88,12 @@ class TerminalTextInputHandler extends StatefulWidget {
     required this.terminal,
     required this.focusNode,
     required this.child,
+    this.controller,
     this.deleteDetection = false,
     this.keyboardAppearance = Brightness.dark,
     this.onUserInput,
+    this.onReviewInsertedText,
+    this.buildReviewTextForInsertedText,
     this.readOnly = false,
     super.key,
   });
@@ -68,6 +107,9 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// The [TerminalView] child (should use `hardwareKeyboardOnly: true`).
   final Widget child;
 
+  /// Optional controller for externally coordinating touch/keyboard behavior.
+  final TerminalTextInputHandlerController? controller;
+
   /// Whether to use the delete-detection workaround for mobile.
   final bool deleteDetection;
 
@@ -76,6 +118,12 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Called when user input has been accepted for sending to the terminal.
   final VoidCallback? onUserInput;
+
+  /// Called before suspicious multi-character IME insertions are sent.
+  final TerminalTextInputReviewCallback? onReviewInsertedText;
+
+  /// Builds the command text that should be reviewed for suspicious IME input.
+  final TerminalTextInputReviewTextBuilder? buildReviewTextForInsertedText;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -92,13 +140,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
   bool _touchSequenceHadMultiplePointers = false;
+  bool _skipNextTouchKeyboardRequest = false;
+  bool _sawImeComposition = false;
+  bool _isProcessingEditingValue = false;
   String _lastSentText = '';
   int _pendingEnterActionSuppressions = 0;
+  int _latestEditingValueRevision = 0;
+  TextEditingValue? _queuedEditingValue;
 
   @override
   void initState() {
     super.initState();
     widget.focusNode.addListener(_onFocusChange);
+    widget.controller?._attach(this);
   }
 
   @override
@@ -107,6 +161,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.focusNode != oldWidget.focusNode) {
       oldWidget.focusNode.removeListener(_onFocusChange);
       widget.focusNode.addListener(_onFocusChange);
+    }
+    if (widget.controller != oldWidget.controller) {
+      oldWidget.controller?._detach(this);
+      widget.controller?._attach(this);
     }
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
@@ -117,6 +175,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void dispose() {
+    widget.controller?._detach(this);
     widget.focusNode.removeListener(_onFocusChange);
     _activeTouchPointers.clear();
     _touchPointerDownPositions.clear();
@@ -177,13 +236,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       ),
       readOnly: widget.readOnly,
     );
+    final shouldSkipKeyboardRequest =
+        event.kind == PointerDeviceKind.touch && _skipNextTouchKeyboardRequest;
+    if (event.kind == PointerDeviceKind.touch) {
+      _skipNextTouchKeyboardRequest = false;
+    }
     _clearPointerTracking(event);
-    if (shouldRequestKeyboard) {
+    if (shouldRequestKeyboard && !shouldSkipKeyboardRequest) {
       requestKeyboard();
     }
   }
 
   void _handlePointerCancel(PointerCancelEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _skipNextTouchKeyboardRequest = false;
+    }
     _clearPointerTracking(event);
   }
 
@@ -263,6 +330,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
   }
 
+  void _suppressNextTouchKeyboardRequest() {
+    _skipNextTouchKeyboardRequest = true;
+  }
+
   // -- Focus handling --
 
   void _onFocusChange() {
@@ -279,6 +350,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   // -- Input connection management --
 
   bool get _shouldCreateInputConnection => kIsWeb || !widget.readOnly;
+
+  void _invalidatePendingEditingUpdates() {
+    _latestEditingValueRevision++;
+    _queuedEditingValue = null;
+  }
 
   void _openInputConnection() {
     if (!_shouldCreateInputConnection) return;
@@ -302,6 +378,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
       _connection = TextInput.attach(this, config);
       _connection!.show();
+      _invalidatePendingEditingUpdates();
+      _sawImeComposition = false;
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
@@ -314,6 +392,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.close();
       _connection = null;
     }
+    _invalidatePendingEditingUpdates();
+    _sawImeComposition = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
@@ -332,6 +412,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   late TextEditingValue _currentEditingState = _initEditingState.copyWith();
 
+  int _editingPrefixLength(String text) {
+    if (!widget.deleteDetection) {
+      return 0;
+    }
+
+    var prefixLength = 0;
+    while (prefixLength < text.length &&
+        prefixLength < _deleteDetectionMarker.length &&
+        text.codeUnitAt(prefixLength) ==
+            _deleteDetectionMarker.codeUnitAt(prefixLength)) {
+      prefixLength++;
+    }
+    return prefixLength;
+  }
+
   int _commonPrefixLength(String a, String b) {
     final maxLength = a.length < b.length ? a.length : b.length;
     var index = 0;
@@ -341,26 +436,36 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return index;
   }
 
+  String _extractRawInputText(String text) =>
+      text.substring(_editingPrefixLength(text));
+
   String _extractInputText(String text) {
-    final initText = _initEditingState.text;
-    final extractedText = text.startsWith(initText)
-        ? text.substring(initText.length)
-        : text;
+    final extractedText = _extractRawInputText(text);
     if (_lastSentText.isNotEmpty) {
       return extractedText;
     }
-    return extractedText.replaceFirst(_leadingSwipeNewlinePattern, '');
+    final sanitizedText = extractedText.replaceFirst(
+      _leadingSwipeNewlineArtifactPattern,
+      '',
+    );
+    if (_sawImeComposition &&
+        sanitizedText.startsWith(' ') &&
+        !sanitizedText.startsWith('  ') &&
+        sanitizedText.trimLeft().isNotEmpty) {
+      return sanitizedText.substring(1);
+    }
+    return sanitizedText;
   }
 
   int _sendInputDelta(String currentText) {
-    final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
-    final deletedCount = _lastSentText.length - commonPrefix;
+    final delta = _computeTextDelta(currentText);
+    final deletedCount = delta.deletedCount;
 
     for (var i = 0; i < deletedCount; i++) {
       widget.terminal.keyInput(TerminalKey.backspace);
     }
 
-    final appendedText = currentText.substring(commonPrefix);
+    final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
       widget.terminal.textInput(appendedText);
     }
@@ -369,20 +474,180 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return '\n'.allMatches(appendedText).length;
   }
 
-  void _syncEditingStateWithUserText(String userText) {
-    final nextState = widget.deleteDetection
-        ? TextEditingValue(
-            text: '${_initEditingState.text}$userText',
-            selection: TextSelection.collapsed(
-              offset: _initEditingState.text.length + userText.length,
-            ),
-          )
-        : TextEditingValue(
-            text: userText,
-            selection: TextSelection.collapsed(offset: userText.length),
+  ({int deletedCount, String appendedText}) _computeTextDelta(
+    String currentText,
+  ) {
+    final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
+    return (
+      deletedCount: _lastSentText.length - commonPrefix,
+      appendedText: currentText.substring(commonPrefix),
+    );
+  }
+
+  TerminalCommandReview? _reviewForInsertedText(String currentText) {
+    if (widget.onReviewInsertedText == null) {
+      return null;
+    }
+
+    final delta = _computeTextDelta(currentText);
+    if (delta.appendedText.length <= 1) {
+      return null;
+    }
+
+    final reviewText =
+        widget.buildReviewTextForInsertedText?.call(delta, currentText) ??
+        currentText;
+    final review = assessClipboardPasteCommand(
+      reviewText,
+      bracketedPasteModeEnabled: false,
+    );
+    return review.requiresReview ? review : null;
+  }
+
+  int _clampTextOffset(int offset, int maxOffset) {
+    if (offset < 0) {
+      return 0;
+    }
+    if (offset > maxOffset) {
+      return maxOffset;
+    }
+    return offset;
+  }
+
+  int _normalizeUserOffset({
+    required int rawOffset,
+    required int rawPrefixLength,
+    required int trimmedLeadingCharacters,
+    required int userTextLength,
+  }) => _clampTextOffset(
+    rawOffset - rawPrefixLength - trimmedLeadingCharacters,
+    userTextLength,
+  );
+
+  TextSelection? _normalizeSelectionForUserText({
+    required TextSelection selection,
+    required int rawPrefixLength,
+    required int trimmedLeadingCharacters,
+    required int userTextLength,
+  }) {
+    if (!selection.isValid) {
+      return null;
+    }
+
+    return TextSelection(
+      baseOffset: _normalizeUserOffset(
+        rawOffset: selection.baseOffset,
+        rawPrefixLength: rawPrefixLength,
+        trimmedLeadingCharacters: trimmedLeadingCharacters,
+        userTextLength: userTextLength,
+      ),
+      extentOffset: _normalizeUserOffset(
+        rawOffset: selection.extentOffset,
+        rawPrefixLength: rawPrefixLength,
+        trimmedLeadingCharacters: trimmedLeadingCharacters,
+        userTextLength: userTextLength,
+      ),
+      affinity: selection.affinity,
+      isDirectional: selection.isDirectional,
+    );
+  }
+
+  TextRange _normalizeComposingForUserText({
+    required TextRange composing,
+    required int rawPrefixLength,
+    required int trimmedLeadingCharacters,
+    required int userTextLength,
+  }) {
+    if (!composing.isValid || composing.isCollapsed) {
+      return TextRange.empty;
+    }
+
+    final start = _normalizeUserOffset(
+      rawOffset: composing.start,
+      rawPrefixLength: rawPrefixLength,
+      trimmedLeadingCharacters: trimmedLeadingCharacters,
+      userTextLength: userTextLength,
+    );
+    final end = _normalizeUserOffset(
+      rawOffset: composing.end,
+      rawPrefixLength: rawPrefixLength,
+      trimmedLeadingCharacters: trimmedLeadingCharacters,
+      userTextLength: userTextLength,
+    );
+    if (start >= end) {
+      return TextRange.empty;
+    }
+    return TextRange(start: start, end: end);
+  }
+
+  TextEditingValue _editingStateForUserText({
+    required String userText,
+    TextSelection? userSelection,
+    TextRange userComposing = TextRange.empty,
+  }) {
+    final prefixLength = widget.deleteDetection
+        ? _initEditingState.text.length
+        : 0;
+    final text = widget.deleteDetection
+        ? '${_initEditingState.text}$userText'
+        : userText;
+    final selection = userSelection == null
+        ? TextSelection.collapsed(offset: prefixLength + userText.length)
+        : TextSelection(
+            baseOffset: prefixLength + userSelection.baseOffset,
+            extentOffset: prefixLength + userSelection.extentOffset,
+            affinity: userSelection.affinity,
+            isDirectional: userSelection.isDirectional,
           );
+    final composing = userComposing.isValid && !userComposing.isCollapsed
+        ? TextRange(
+            start: prefixLength + userComposing.start,
+            end: prefixLength + userComposing.end,
+          )
+        : TextRange.empty;
+    return TextEditingValue(
+      text: text,
+      selection: selection,
+      composing: composing,
+    );
+  }
+
+  void _syncEditingStateWithUserText(
+    String userText, {
+    TextEditingValue? sourceValue,
+  }) {
+    final rawPrefixLength = sourceValue == null
+        ? _initEditingState.text.length
+        : _editingPrefixLength(sourceValue.text);
+    final rawUserText = sourceValue == null
+        ? userText
+        : _extractRawInputText(sourceValue.text);
+    final trimmedLeadingCharacters = rawUserText.length - userText.length;
+    final userSelection = sourceValue == null
+        ? null
+        : _normalizeSelectionForUserText(
+            selection: sourceValue.selection,
+            rawPrefixLength: rawPrefixLength,
+            trimmedLeadingCharacters: trimmedLeadingCharacters,
+            userTextLength: userText.length,
+          );
+    final userComposing = sourceValue == null
+        ? TextRange.empty
+        : _normalizeComposingForUserText(
+            composing: sourceValue.composing,
+            rawPrefixLength: rawPrefixLength,
+            trimmedLeadingCharacters: trimmedLeadingCharacters,
+            userTextLength: userText.length,
+          );
+    final nextState = _editingStateForUserText(
+      userText: userText,
+      userSelection: userSelection,
+      userComposing: userComposing,
+    );
+    final shouldResyncText =
+        sourceValue == null || sourceValue.text != nextState.text;
     _currentEditingState = nextState;
-    if (hasInputConnection) {
+    if (shouldResyncText && hasInputConnection) {
       _connection!.setEditingState(nextState);
     }
   }
@@ -397,30 +662,79 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   @override
   void updateEditingValue(TextEditingValue value) {
-    if (widget.readOnly) return;
-
-    _currentEditingState = value;
-
-    // Handle composing (IME input in progress).
-    if (!_currentEditingState.composing.isCollapsed) {
+    if (widget.readOnly) {
       return;
     }
 
-    if (_currentEditingState.text.length < _initEditingState.text.length) {
+    _currentEditingState = value;
+    _queuedEditingValue = value;
+    _latestEditingValueRevision++;
+
+    if (_isProcessingEditingValue) {
+      return;
+    }
+
+    _isProcessingEditingValue = true;
+    unawaited(_drainEditingValueQueue());
+  }
+
+  Future<void> _drainEditingValueQueue() async {
+    try {
+      while (mounted && _queuedEditingValue != null) {
+        final value = _queuedEditingValue!;
+        final revision = _latestEditingValueRevision;
+        _queuedEditingValue = null;
+        await _updateEditingValue(value, revision);
+      }
+    } finally {
+      _isProcessingEditingValue = false;
+    }
+
+    if (mounted && _queuedEditingValue != null && !_isProcessingEditingValue) {
+      _isProcessingEditingValue = true;
+      unawaited(_drainEditingValueQueue());
+    }
+  }
+
+  Future<void> _updateEditingValue(TextEditingValue value, int revision) async {
+    _currentEditingState = value;
+
+    // Handle composing (IME input in progress).
+    if (!value.composing.isCollapsed) {
+      _sawImeComposition = true;
+      return;
+    }
+
+    if (value.text.length < _initEditingState.text.length) {
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.backspace);
+      _sawImeComposition = false;
       _lastSentText = '';
       _pendingEnterActionSuppressions = 0;
       _syncEditingStateWithUserText('');
       return;
     }
 
-    final currentText = _extractInputText(_currentEditingState.text);
+    final currentText = _extractInputText(value.text);
+    final review = _reviewForInsertedText(currentText);
+    if (review != null) {
+      final shouldInsert = await widget.onReviewInsertedText!(review);
+      if (!mounted || revision != _latestEditingValueRevision) {
+        return;
+      }
+      if (!shouldInsert) {
+        _syncEditingStateWithUserText(_lastSentText);
+        _sawImeComposition = false;
+        return;
+      }
+    }
+
     if (currentText != _lastSentText) {
       _notifyUserInput();
     }
     _pendingEnterActionSuppressions += _sendInputDelta(currentText);
-    _syncEditingStateWithUserText(currentText);
+    _syncEditingStateWithUserText(currentText, sourceValue: value);
+    _sawImeComposition = false;
   }
 
   @override
@@ -449,6 +763,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _invalidatePendingEditingUpdates();
+    _sawImeComposition = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();

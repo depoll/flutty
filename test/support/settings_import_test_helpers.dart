@@ -1,0 +1,164 @@
+// ignore_for_file: public_member_api_docs, use_super_parameters
+
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
+import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/domain/services/auth_service.dart';
+import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
+
+void setFakeFilePickerResult({required FilePickerResult? result}) {
+  final originalPlatform = _currentFilePickerPlatform();
+  FilePicker.platform = FakeFilePicker(result: result);
+  addTearDown(() => FilePicker.platform = originalPlatform);
+}
+
+FilePicker _currentFilePickerPlatform() {
+  try {
+    return FilePicker.platform;
+  } catch (error) {
+    if (!error.toString().startsWith('LateInitializationError:')) {
+      rethrow;
+    }
+    final platform = Platform.isMacOS
+        ? FilePickerMacOS()
+        : Platform.isLinux
+        ? FilePickerLinux()
+        : Platform.isWindows
+        ? FilePickerWindows()
+        : FilePickerIO();
+    FilePicker.platform = platform;
+    return platform;
+  }
+}
+
+class EntityProviderProbe extends ConsumerWidget {
+  const EntityProviderProbe({super.key});
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    ref
+      ..watch(allHostsProvider)
+      ..watch(allKeysProvider)
+      ..watch(allGroupsProvider);
+    return const SizedBox.shrink();
+  }
+}
+
+class MockAuthStateNotifier extends AuthStateNotifier {
+  @override
+  AuthState build() => AuthState.notConfigured;
+}
+
+class FakeAuthService extends AuthService {
+  @override
+  Future<bool> isAuthEnabled() async => false;
+
+  @override
+  Future<bool> isBiometricEnabled() async => false;
+
+  @override
+  Future<bool> isBiometricAvailable() async => false;
+}
+
+class FakeFilePicker extends FilePicker {
+  FakeFilePicker({required this.result});
+
+  final FilePickerResult? result;
+
+  @override
+  Future<FilePickerResult?> pickFiles({
+    String? dialogTitle,
+    String? initialDirectory,
+    FileType type = FileType.any,
+    List<String>? allowedExtensions,
+    Function(FilePickerStatus)? onFileLoading,
+    bool allowCompression = false,
+    int compressionQuality = 0,
+    bool allowMultiple = false,
+    bool withData = false,
+    bool withReadStream = false,
+    bool lockParentWindow = false,
+    bool readSequential = false,
+  }) async => result;
+}
+
+class FakeSecureTransferService extends SecureTransferService {
+  FakeSecureTransferService(
+    AppDatabase db,
+    KeyRepository keyRepository,
+    HostRepository hostRepository, {
+    required this.payload,
+  }) : super(db, keyRepository, hostRepository);
+
+  final TransferPayload payload;
+  int importCallCount = 0;
+
+  @override
+  Future<TransferPayload> decryptPayload({
+    required String encodedPayload,
+    required String transferPassphrase,
+  }) async => payload;
+
+  @override
+  MigrationPreview previewMigrationPayload(TransferPayload payload) =>
+      MigrationPreview(
+        settingsCount: 0,
+        hostCount: (payload.data['hosts'] as List).length,
+        keyCount: (payload.data['keys'] as List).length,
+        groupCount: (payload.data['groups'] as List).length,
+        snippetCount: (payload.data['snippets'] as List).length,
+        snippetFolderCount: (payload.data['snippetFolders'] as List).length,
+        portForwardCount: (payload.data['portForwards'] as List).length,
+        knownHostCount: (payload.data['knownHosts'] as List).length,
+      );
+
+  @override
+  Future<void> importFullMigrationPayload({
+    required TransferPayload payload,
+    required MigrationImportMode mode,
+  }) async {
+    importCallCount += 1;
+  }
+}
+
+class StaticThemeModeNotifier extends ThemeModeNotifier {
+  @override
+  ThemeMode build() => ThemeMode.system;
+}
+
+class StaticFontSizeNotifier extends FontSizeNotifier {
+  @override
+  double build() => 14;
+}
+
+class StaticFontFamilyNotifier extends FontFamilyNotifier {
+  @override
+  String build() => 'System Monospace';
+}
+
+class StaticCursorStyleNotifier extends CursorStyleNotifier {
+  @override
+  String build() => 'block';
+}
+
+class StaticBellSoundNotifier extends BellSoundNotifier {
+  @override
+  bool build() => true;
+}
+
+class StaticTerminalThemeSettingsNotifier
+    extends TerminalThemeSettingsNotifier {
+  @override
+  TerminalThemeSettings build() => const TerminalThemeSettings(
+    lightThemeId: 'github-light',
+    darkThemeId: 'dracula',
+  );
+}

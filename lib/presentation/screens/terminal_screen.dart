@@ -12,6 +12,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
+import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../data/database/database.dart';
@@ -24,6 +25,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
@@ -34,10 +36,23 @@ import '../widgets/terminal_theme_picker.dart';
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
+const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 const _clipboardContentChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/clipboard_content',
 );
+final _terminalLinkPattern = RegExp(
+  r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
+  caseSensitive: false,
+);
+
+enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
+
+/// Padding around the terminal viewport.
+///
+/// Keep the terminal flush with the bottom edge so status lines from tools like
+/// tmux use the full available height in every keyboard and toolbar state.
+const terminalViewportPadding = EdgeInsets.fromLTRB(8, 8, 8, 0);
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
@@ -78,6 +93,154 @@ String trimTerminalLinePadding(String line) =>
 String trimTerminalSelectionText(String text) =>
     text.split('\n').map(trimTerminalLinePadding).join('\n');
 
+/// Keeps floating selection actions above the bottom safe area.
+@visibleForTesting
+double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
+    _selectionActionsBottomPadding + mediaQuery.padding.bottom;
+
+/// Trims punctuation that terminals commonly render immediately after a link.
+@visibleForTesting
+String trimTerminalLinkCandidate(String text) {
+  var result = text;
+  while (result.isNotEmpty) {
+    if (result.endsWith(')')) {
+      final openCount = '('.allMatches(result).length;
+      final closeCount = ')'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    } else if (result.endsWith(']')) {
+      final openCount = '['.allMatches(result).length;
+      final closeCount = ']'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    } else if (result.endsWith('}')) {
+      final openCount = '{'.allMatches(result).length;
+      final closeCount = '}'.allMatches(result).length;
+      if (closeCount > openCount) {
+        result = result.substring(0, result.length - 1);
+        continue;
+      }
+    }
+
+    final lastCharacter = result[result.length - 1];
+    if ('.!,?:;'.contains(lastCharacter)) {
+      result = result.substring(0, result.length - 1);
+      continue;
+    }
+
+    break;
+  }
+  return result;
+}
+
+/// Normalizes terminal-rendered link text before URI parsing.
+@visibleForTesting
+String normalizeTerminalLinkCandidate(String text) {
+  final candidate = trimTerminalLinkCandidate(text.trim());
+  if (candidate.toLowerCase().startsWith('www.')) {
+    return 'https://$candidate';
+  }
+  return candidate;
+}
+
+/// Resolves a tappable terminal link at the given text offset, if present.
+@visibleForTesting
+({Uri uri, int start, int end})? detectTerminalLinkAtTextOffset(
+  String text,
+  int offset,
+) {
+  for (final match in _terminalLinkPattern.allMatches(text)) {
+    final candidate = trimTerminalLinkCandidate(match.group(0)!);
+    if (candidate.isEmpty) {
+      continue;
+    }
+
+    final normalizedCandidate = normalizeTerminalLinkCandidate(candidate);
+    final uri = Uri.tryParse(normalizedCandidate);
+    if (uri == null || !isLaunchableTerminalUri(uri)) {
+      continue;
+    }
+
+    final end = match.start + candidate.length;
+    if (offset >= match.start && offset < end) {
+      return (uri: uri, start: match.start, end: end);
+    }
+  }
+
+  return null;
+}
+
+/// Whether a parsed terminal URI is safe to open externally.
+@visibleForTesting
+bool isLaunchableTerminalUri(Uri uri) =>
+    uri.hasScheme &&
+    <String>{
+      'http',
+      'https',
+      'mailto',
+      'tel',
+    }.contains(uri.scheme.toLowerCase());
+
+/// Extracts the currently selected text from the native selection overlay.
+@visibleForTesting
+String selectedNativeOverlayText(TextEditingValue value) {
+  final selection = value.selection;
+  if (!selection.isValid || selection.isCollapsed) {
+    return '';
+  }
+
+  return selection.textInside(value.text);
+}
+
+/// Applies pasted or rendered text at the terminal cursor within a wrapped line.
+@visibleForTesting
+String applyTerminalCursorInsertion({
+  required String currentText,
+  required int cursorOffset,
+  required String insertedText,
+}) => currentText.replaceRange(cursorOffset, cursorOffset, insertedText);
+
+/// Applies terminal-style backspaces before inserting newly committed text.
+@visibleForTesting
+String applyTerminalInputDelta({
+  required String currentText,
+  required int cursorOffset,
+  required int deletedCount,
+  required String appendedText,
+}) {
+  final deleteStart = cursorOffset > deletedCount
+      ? cursorOffset - deletedCount
+      : 0;
+  return currentText.replaceRange(deleteStart, cursorOffset, appendedText);
+}
+
+@visibleForTesting
+/// Resolves how much of a terminal row snapshot should remain after trimming.
+int resolveTerminalLineSnapshotTextLength({
+  required String text,
+  required int preserveOffset,
+  required bool preserveTrailingPadding,
+}) {
+  if (preserveTrailingPadding) {
+    return text.length;
+  }
+
+  final trimmedLength = trimTerminalLinePadding(text).length;
+  var clampedPreserveOffset = preserveOffset;
+  if (clampedPreserveOffset < 0) {
+    clampedPreserveOffset = 0;
+  } else if (clampedPreserveOffset > text.length) {
+    clampedPreserveOffset = text.length;
+  }
+  return trimmedLength >= clampedPreserveOffset
+      ? trimmedLength
+      : clampedPreserveOffset;
+}
+
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
@@ -110,6 +273,27 @@ bool shouldRouteTouchScrollToTerminal({
   required bool isUsingAltBuffer,
   required bool terminalReportsMouseWheel,
 }) => isMobile && (isUsingAltBuffer || terminalReportsMouseWheel);
+
+/// Whether the native selection overlay should be visible for terminal content.
+@visibleForTesting
+bool shouldShowNativeSelectionOverlay({
+  required bool isNativeSelectionMode,
+  required bool routesTouchScrollToTerminal,
+  required bool revealOverlayInTouchScrollMode,
+}) =>
+    isNativeSelectionMode &&
+    (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
+
+String? _describeMouseMode(
+  MouseMode mouseMode,
+  MouseReportMode mouseReportMode,
+) => switch (mouseMode) {
+  MouseMode.none => null,
+  MouseMode.clickOnly => 'Mouse clicks',
+  MouseMode.upDownScroll => 'Mouse scroll (${mouseReportMode.name})',
+  MouseMode.upDownScrollDrag => 'Mouse drag (${mouseReportMode.name})',
+  MouseMode.upDownScrollMove => 'Mouse motion (${mouseReportMode.name})',
+};
 
 /// Whether live terminal output should keep following the current viewport.
 @visibleForTesting
@@ -154,14 +338,13 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
-  static const _terminalViewportPadding = EdgeInsets.all(8);
-
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
   late FocusNode _terminalFocusNode;
+  final _terminalTextInputController = TerminalTextInputHandlerController();
   final _toolbarKey = GlobalKey<KeyboardToolbarState>();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
@@ -172,6 +355,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
+  bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   int? _connectionId;
   double? _pinchFontSize;
@@ -180,6 +364,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isPinchZooming = false;
   bool _shouldFollowLiveOutput = true;
   bool _isTerminalScrollToBottomQueued = false;
+  TerminalHyperlinkTracker? _terminalHyperlinkTracker;
+  SshSession? _observedSession;
+  bool _showsTerminalMetadata = false;
 
   // Theme state
   Host? _host;
@@ -207,8 +394,99 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     terminalReportsMouseWheel: _terminalReportsMouseWheel,
   );
 
-  bool get _showsNativeSelectionOverlay =>
-      _isNativeSelectionMode && !_routesTouchScrollToTerminal;
+  bool get _showsNativeSelectionOverlay => shouldShowNativeSelectionOverlay(
+    isNativeSelectionMode: _isNativeSelectionMode,
+    routesTouchScrollToTerminal: _routesTouchScrollToTerminal,
+    revealOverlayInTouchScrollMode:
+        _revealsNativeSelectionOverlayInTouchScrollMode,
+  );
+
+  String? get _windowTitle => _observedSession?.windowTitle;
+
+  String? get _iconName => _observedSession?.iconName;
+
+  Uri? get _workingDirectory => _observedSession?.workingDirectory;
+
+  String? get _workingDirectoryLabel =>
+      formatTerminalWorkingDirectoryLabel(_workingDirectory);
+
+  String? get _workingDirectoryPath =>
+      resolveTerminalWorkingDirectoryPath(_workingDirectory);
+
+  TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
+
+  int? get _lastExitCode => _observedSession?.lastExitCode;
+
+  String _terminalCommandAfterInsertion(String insertedText) {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return insertedText;
+    }
+    return applyTerminalCursorInsertion(
+      currentText: snapshot.text,
+      cursorOffset: snapshot.cursorOffset,
+      insertedText: insertedText,
+    );
+  }
+
+  String _terminalCommandAfterInputDelta(
+    ({int deletedCount, String appendedText}) delta,
+    String fallbackText,
+  ) {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return fallbackText;
+    }
+
+    return applyTerminalInputDelta(
+      currentText: snapshot.text,
+      cursorOffset: snapshot.cursorOffset,
+      deletedCount: delta.deletedCount,
+      appendedText: delta.appendedText,
+    );
+  }
+
+  bool _sameTerminalCommandReview(
+    TerminalCommandReview previous,
+    TerminalCommandReview next,
+  ) =>
+      previous.command == next.command &&
+      previous.bracketedPasteModeEnabled == next.bracketedPasteModeEnabled &&
+      listEquals(previous.reasons, next.reasons);
+
+  Future<bool> _confirmTerminalInsertionIfNeeded({
+    required String insertedText,
+    required TerminalCommandReview Function(String commandText) buildReview,
+    required String title,
+    required String Function(TerminalCommandReview review) messageBuilder,
+    required String confirmLabel,
+  }) async {
+    while (mounted) {
+      final review = buildReview(_terminalCommandAfterInsertion(insertedText));
+      if (!review.requiresReview) {
+        return true;
+      }
+
+      final shouldInsert = await _confirmCommandInsertion(
+        title: title,
+        message: messageBuilder(review),
+        confirmLabel: confirmLabel,
+        review: review,
+      );
+      if (!mounted || !shouldInsert) {
+        return false;
+      }
+
+      final latestReview = buildReview(
+        _terminalCommandAfterInsertion(insertedText),
+      );
+      if (_sameTerminalCommandReview(review, latestReview)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
 
   @override
   void initState() {
@@ -259,6 +537,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isUsingAltBuffer = isUsingAltBuffer;
       _terminalReportsMouseWheel = terminalReportsMouseWheel;
     });
+  }
+
+  void _observeSessionMetadata(SshSession session) {
+    if (identical(_observedSession, session)) {
+      return;
+    }
+
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
+    _observedSession = session
+      ..removeMetadataListener(_handleSessionMetadataChanged)
+      ..addMetadataListener(_handleSessionMetadataChanged);
+  }
+
+  void _handleSessionMetadataChanged() {
+    if (!mounted) {
+      return;
+    }
+    setState(() {});
   }
 
   void _handleTerminalScroll() {
@@ -313,8 +609,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
-    if (_isMobilePlatform && hasSelection && !_isNativeSelectionMode) {
-      _enterNativeSelectionMode(initialRange: selection);
+    if (_isMobilePlatform && hasSelection) {
+      _enterNativeSelectionMode(
+        initialRange: selection,
+        revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+      );
       return;
     }
 
@@ -474,6 +773,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (existingTerminal != null) {
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
+        _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+        _observeSessionMetadata(session);
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
@@ -492,6 +793,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final sessionTerminal = session.getOrCreateTerminal();
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
+      _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+      _observeSessionMetadata(session);
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
       _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
@@ -659,6 +962,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     String? snippetCommand;
+    int? resolvedSnippetId;
     final snippetId = host.autoConnectSnippetId;
     if (snippetId != null) {
       final snippetRepo = ref.read(snippetRepositoryProvider);
@@ -669,7 +973,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } else {
         snippetCommand = snippet.command;
-        unawaited(snippetRepo.incrementUsage(snippet.id));
+        resolvedSnippetId = snippet.id;
       }
     }
 
@@ -682,7 +986,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final review = assessAutoConnectCommandExecution(
+      command,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command)));
+    if (resolvedSnippetId != null) {
+      unawaited(
+        ref.read(snippetRepositoryProvider).incrementUsage(resolvedSnippetId),
+      );
+    }
   }
 
   void _handleShellClosed() {
@@ -722,6 +1049,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
       ..removeListener(_onSelectionChanged)
@@ -780,6 +1108,66 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  List<Widget> _buildTerminalStatusChips(ThemeData theme) {
+    final chipLabels = <({IconData icon, String label, String tooltip})>[
+      if (_workingDirectoryLabel case final workingDirectory?
+          when workingDirectory.isNotEmpty)
+        (
+          icon: Icons.folder_outlined,
+          label: workingDirectory,
+          tooltip: 'Current working directory reported by the shell session.',
+        ),
+      if (describeTerminalShellStatus(_shellStatus, lastExitCode: _lastExitCode)
+          case final shellStatusLabel? when shellStatusLabel.isNotEmpty)
+        (
+          icon: Icons.play_circle_outline,
+          label: shellStatusLabel,
+          tooltip:
+              'Shell integration status for the current prompt or command.',
+        ),
+      if (_isUsingAltBuffer)
+        (
+          icon: Icons.aspect_ratio,
+          label: 'Alt buffer',
+          tooltip:
+              'A full-screen terminal app is using the alternate screen buffer.',
+        ),
+      if (_describeMouseMode(_terminal.mouseMode, _terminal.mouseReportMode)
+          case final mouseModeLabel? when mouseModeLabel.isNotEmpty)
+        (
+          icon: Icons.mouse_outlined,
+          label: mouseModeLabel,
+          tooltip:
+              'Terminal apps like tmux are actively receiving mouse input events.',
+        ),
+      if (_terminal.reportFocusMode)
+        (
+          icon: Icons.center_focus_strong,
+          label: 'Focus reports',
+          tooltip:
+              'The terminal is reporting focus gained and lost events to the shell.',
+        ),
+      if (_terminal.bracketedPasteMode)
+        (
+          icon: Icons.content_paste,
+          label: 'Bracketed paste',
+          tooltip:
+              'Paste operations are wrapped so terminal apps can handle them safely.',
+        ),
+    ];
+
+    return chipLabels
+        .map(
+          (chip) => _TerminalStatusChip(
+            icon: chip.icon,
+            label: chip.label,
+            tooltip: chip.tooltip,
+            colorScheme: theme.colorScheme,
+          ),
+        )
+        .toList(growable: false);
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -794,11 +1182,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionThemeOverride ??
         _currentTheme ??
         (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+    final titleSubtitleSegments = <String>[];
+    if ((_iconName ?? '').isNotEmpty) {
+      titleSubtitleSegments.add(_iconName!);
+    }
+    if ((_windowTitle ?? '').isNotEmpty) {
+      titleSubtitleSegments.add(_windowTitle!);
+    }
+    final titleSubtitle = titleSubtitleSegments.join(' • ');
+    final statusChips = _buildTerminalStatusChips(theme);
 
     return Scaffold(
       appBar: AppBar(
-        title: Text(_host?.label ?? 'Terminal'),
+        title: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(_host?.label ?? 'Terminal'),
+            if (titleSubtitle.isNotEmpty)
+              Text(
+                titleSubtitle,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
+        bottom: !_showsTerminalMetadata || statusChips.isEmpty
+            ? null
+            : PreferredSize(
+                preferredSize: const Size.fromHeight(40),
+                child: Container(
+                  alignment: Alignment.centerLeft,
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: statusChips
+                          .map(
+                            (chip) => Padding(
+                              padding: const EdgeInsets.only(right: 8),
+                              child: chip,
+                            ),
+                          )
+                          .toList(growable: false),
+                    ),
+                  ),
+                ),
+              ),
         actions: [
+          if (statusChips.isNotEmpty)
+            IconButton(
+              icon: Icon(
+                _showsTerminalMetadata ? Icons.info : Icons.info_outline,
+              ),
+              onPressed: () => setState(
+                () => _showsTerminalMetadata = !_showsTerminalMetadata,
+              ),
+              tooltip: _showsTerminalMetadata
+                  ? 'Hide terminal info'
+                  : 'Show terminal info',
+            ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             onPressed: _connectionId == null
@@ -844,6 +1291,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         : 'Native Selection',
                   ),
                 ),
+              if (_workingDirectoryPath != null)
+                const PopupMenuItem(
+                  value: 'copy_working_directory',
+                  child: Text('Copy Current Directory'),
+                ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
@@ -882,6 +1334,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+    _dismissTemporaryNativeSelectionOverlay();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -1082,10 +1535,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
+      resolveLinkTap: _resolveTerminalLinkTap,
+      onLinkTapDown:
+          _terminalTextInputController.suppressNextTouchKeyboardRequest,
+      onLinkTap: _handleTerminalLinkTap,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
-      padding: _terminalViewportPadding,
+      padding: terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
       hardwareKeyboardOnly: isMobile,
@@ -1097,6 +1554,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      onInsertText: isMobile ? null : _confirmDesktopInsertedText,
+      onPasteText: isMobile ? null : _pasteClipboard,
     );
 
     if (!isMobile) return terminalView;
@@ -1118,7 +1577,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          Positioned(left: 12, right: 12, bottom: 12, child: _selectionActions),
+          Positioned(
+            left: 12,
+            right: 12,
+            bottom: selectionActionsBottomOffset(MediaQuery.of(context)),
+            child: _selectionActions,
+          ),
         ],
       );
     }
@@ -1158,8 +1622,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
+      controller: _terminalTextInputController,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
+      onReviewInsertedText: _confirmKeyboardInsertion,
+      buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
+      readOnly: _showsNativeSelectionOverlay,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -1172,7 +1640,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
-      padding: _terminalViewportPadding,
+      padding: terminalViewportPadding,
       child: SingleChildScrollView(
         controller: _nativeSelectionScrollController,
         physics: const ClampingScrollPhysics(),
@@ -1181,6 +1649,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           builder: (context, value, _) => SelectableText(
             value.text,
             style: textStyle,
+            onSelectionChanged: _handleNativeOverlaySelectionChanged,
             strutStyle: StrutStyle.fromTextStyle(
               textStyle,
               forceStrutHeight: true,
@@ -1251,6 +1720,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       case 'native_select':
         _toggleNativeSelectionMode();
         break;
+      case 'copy_working_directory':
+        await _copyWorkingDirectory();
+        break;
       case 'copy':
         await _copySelection();
         break;
@@ -1280,8 +1752,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _enterNativeSelectionMode(initialRange: _terminalController.selection);
   }
 
-  void _enterNativeSelectionMode({BufferRange? initialRange}) {
-    if (_isNativeSelectionMode) {
+  void _enterNativeSelectionMode({
+    BufferRange? initialRange,
+    bool revealOverlayInTouchScrollMode = false,
+  }) {
+    if (_isNativeSelectionMode && initialRange == null) {
       return;
     }
 
@@ -1304,6 +1779,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
+      _revealsNativeSelectionOverlayInTouchScrollMode =
+          _revealsNativeSelectionOverlayInTouchScrollMode ||
+          revealOverlayInTouchScrollMode;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _syncNativeScrollFromTerminal();
@@ -1320,6 +1798,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
@@ -1372,10 +1851,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+  ({String text, List<int> columnOffsets}) _buildTerminalLineSnapshot(
     BufferLine line,
-    int viewWidth,
-  ) {
+    int viewWidth, {
+    required bool preserveTrailingPadding,
+    int preserveOffset = 0,
+  }) {
     final builder = StringBuffer();
     final columnOffsets = List<int>.filled(viewWidth + 1, 0);
     var col = 0;
@@ -1402,18 +1883,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       col += step;
     }
 
-    final trimmedText = trimTerminalLinePadding(builder.toString());
-    if (trimmedText.length == builder.length) {
-      return (text: trimmedText, columnOffsets: columnOffsets);
+    final rawText = builder.toString();
+    final resolvedLength = resolveTerminalLineSnapshotTextLength(
+      text: rawText,
+      preserveOffset: preserveOffset,
+      preserveTrailingPadding: preserveTrailingPadding,
+    );
+    if (resolvedLength == rawText.length) {
+      return (text: rawText, columnOffsets: columnOffsets);
     }
 
     for (var i = 0; i < columnOffsets.length; i++) {
-      if (columnOffsets[i] > trimmedText.length) {
-        columnOffsets[i] = trimmedText.length;
+      if (columnOffsets[i] > resolvedLength) {
+        columnOffsets[i] = resolvedLength;
       }
     }
-    return (text: trimmedText, columnOffsets: columnOffsets);
+    return (
+      text: rawText.substring(0, resolvedLength),
+      columnOffsets: columnOffsets,
+    );
   }
+
+  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+    BufferLine line,
+    int viewWidth,
+  ) => _buildTerminalLineSnapshot(
+    line,
+    viewWidth,
+    preserveTrailingPadding: false,
+  );
 
   TextSelection _bufferRangeToTextSelection(
     BufferRange range, {
@@ -1438,52 +1936,250 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
-  Widget get _selectionActions => SafeArea(
-    top: false,
-    child: Material(
-      elevation: 2,
-      borderRadius: BorderRadius.circular(12),
-      color: Theme.of(context).colorScheme.surfaceContainerHigh,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-        child: Row(
-          children: [
-            Expanded(
-              child: TextButton.icon(
-                onPressed: () => unawaited(_copySelection()),
-                icon: const Icon(Icons.copy_outlined),
-                label: const Text('Copy'),
-              ),
+  void _handleNativeOverlaySelectionChanged(
+    TextSelection selection,
+    SelectionChangedCause? cause,
+  ) {
+    if (!_revealsNativeSelectionOverlayInTouchScrollMode ||
+        !selection.isCollapsed ||
+        !mounted) {
+      return;
+    }
+    setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  void _dismissTemporaryNativeSelectionOverlay() {
+    if (!_revealsNativeSelectionOverlayInTouchScrollMode) {
+      return;
+    }
+
+    final textLength = _nativeSelectionController.text.length;
+    final collapsedOffset = _nativeSelectionController.selection.extentOffset
+        .clamp(0, textLength);
+    _nativeSelectionController.value = _nativeSelectionController.value
+        .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    if (!mounted) {
+      return;
+    }
+    setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  String? _resolveTerminalLinkTap(CellOffset offset) {
+    if (!_routesTouchScrollToTerminal || _showsNativeSelectionOverlay) {
+      return null;
+    }
+
+    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
+    if (trackedHyperlink != null) {
+      return trackedHyperlink;
+    }
+
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    final line = _terminal.buffer.lines[row];
+    if (line.getCodePoint(column) == 0) {
+      return null;
+    }
+
+    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
+    if (snapshot == null) {
+      return null;
+    }
+
+    final rowIndex = row - snapshot.startRow;
+    final textOffset =
+        snapshot.rowStarts[rowIndex] + snapshot.columnOffsets[rowIndex][column];
+    return detectTerminalLinkAtTextOffset(
+      snapshot.text,
+      textOffset,
+    )?.uri.toString();
+  }
+
+  ({
+    String text,
+    int startRow,
+    List<int> rowStarts,
+    List<List<int>> columnOffsets,
+  })?
+  _buildWrappedTerminalLinkSnapshot(int row) {
+    final buffer = _terminal.buffer;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+    }
+
+    return (
+      text: builder.toString(),
+      startRow: startRow,
+      rowStarts: rowStarts,
+      columnOffsets: columnOffsets,
+    );
+  }
+
+  ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
+    final buffer = _terminal.buffer;
+    final row = buffer.absoluteCursorY;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildTerminalLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+        preserveTrailingPadding: lineIndex < endRow,
+        preserveOffset: lineIndex == row
+            ? buffer.cursorX.clamp(0, buffer.viewWidth)
+            : 0,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+    }
+
+    final rowIndex = row - startRow;
+    final cursorColumn = buffer.cursorX.clamp(0, buffer.viewWidth);
+    final cursorOffset =
+        rowStarts[rowIndex] + columnOffsets[rowIndex][cursorColumn];
+    return (text: builder.toString(), cursorOffset: cursorOffset);
+  }
+
+  void _handleTerminalLinkTap(String link) {
+    unawaited(_openTerminalLink(link));
+  }
+
+  void _showTerminalLinkMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _openTerminalLink(String link) async {
+    final normalizedLink = normalizeTerminalLinkCandidate(link);
+    final uri = Uri.tryParse(normalizedLink);
+    if (uri == null) {
+      _showTerminalLinkMessage('Could not open $link');
+      return;
+    }
+
+    if (!isLaunchableTerminalUri(uri)) {
+      _showTerminalLinkMessage('Blocked unsupported link scheme: $link');
+      return;
+    }
+
+    var launched = false;
+    try {
+      launched = await launchUrl(uri, mode: LaunchMode.externalApplication);
+    } on PlatformException {
+      launched = false;
+    }
+    if (launched || !mounted) {
+      return;
+    }
+
+    _showTerminalLinkMessage('Could not open $link');
+  }
+
+  Widget get _selectionActions => Material(
+    elevation: 2,
+    borderRadius: BorderRadius.circular(12),
+    color: Theme.of(context).colorScheme.surfaceContainerHigh,
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: TextButton.icon(
+              onPressed: () => unawaited(_copySelection()),
+              icon: const Icon(Icons.copy_outlined),
+              label: const Text('Copy'),
             ),
-            Expanded(
-              child: TextButton.icon(
-                onPressed: () => unawaited(_pasteClipboard()),
-                icon: const Icon(Icons.paste_outlined),
-                label: const Text('Paste'),
-              ),
+          ),
+          Expanded(
+            child: TextButton.icon(
+              onPressed: () => unawaited(_pasteClipboard()),
+              icon: const Icon(Icons.paste_outlined),
+              label: const Text('Paste'),
             ),
-            Expanded(
-              child: TextButton.icon(
-                onPressed: () {
-                  _terminalController.clearSelection();
-                  _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-                },
-                icon: const Icon(Icons.close),
-                label: const Text('Clear'),
-              ),
+          ),
+          Expanded(
+            child: TextButton.icon(
+              onPressed: () {
+                _terminalController.clearSelection();
+                _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+              },
+              icon: const Icon(Icons.close),
+              label: const Text('Clear'),
             ),
-          ],
-        ),
+          ),
+        ],
       ),
     ),
   );
 
   Future<void> _copySelection() async {
+    if (_isNativeSelectionMode) {
+      final text = selectedNativeOverlayText(_nativeSelectionController.value);
+      if (text.isEmpty) {
+        return;
+      }
+
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Copied')));
+      return;
+    }
+
     final selection = _terminalController.selection;
     if (selection == null) {
       return;
     }
-
     final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
     if (text.isEmpty) {
       _restoreTerminalFocus();
@@ -1509,6 +2205,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _copyWorkingDirectory() async {
+    final path = _workingDirectoryPath;
+    if (path == null || path.isEmpty) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    await Clipboard.setData(ClipboardData(text: path));
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied current directory')));
   }
 
   SshSession? _activeSession() {
@@ -1548,6 +2262,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (text == null || text.isEmpty) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         _showClipboardMessage('Clipboard is empty');
+        return;
+      }
+
+      final shouldPaste = await _confirmTerminalInsertionIfNeeded(
+        insertedText: text,
+        buildReview: (commandText) => assessClipboardPasteCommand(
+          commandText,
+          bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+        ),
+        title: 'Review clipboard paste',
+        messageBuilder: (review) => review.bracketedPasteModeEnabled
+            ? 'This clipboard content looks risky even with bracketed paste enabled.'
+            : 'This clipboard content could execute multiple or reshaped commands.',
+        confirmLabel: 'Paste anyway',
+      );
+      if (!shouldPaste) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
       }
 
@@ -1681,6 +2412,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return remotePaths;
     });
 
+    final shouldPaste = await _confirmTerminalInsertionIfNeeded(
+      insertedText: buildTerminalUploadInsertion(remotePaths),
+      buildReview: (commandText) => assessClipboardPasteCommand(
+        commandText,
+        bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+      ),
+      title: 'Review clipboard paste',
+      messageBuilder: (review) => review.bracketedPasteModeEnabled
+          ? 'This clipboard content looks risky even with bracketed paste enabled.'
+          : 'This clipboard content could execute multiple or reshaped commands.',
+      confirmLabel: 'Paste anyway',
+    );
+    if (!shouldPaste) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
     _followLiveOutput();
     _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
     _terminalController.clearSelection();
@@ -1713,6 +2461,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showClipboardMessage('Uploaded clipboard image to $remotePath');
   }
 
+  Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
+    final shouldInsert = await _confirmCommandInsertion(
+      title: 'Review keyboard paste',
+      message:
+          'This text inserted from your keyboard could execute multiple or reshaped commands.',
+      confirmLabel: 'Insert anyway',
+      review: review,
+    );
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    return shouldInsert;
+  }
+
+  Future<bool> _confirmDesktopInsertedText(String text) async {
+    if (text.length <= 1) {
+      return true;
+    }
+
+    return _confirmTerminalInsertionIfNeeded(
+      insertedText: text,
+      buildReview: (commandText) => assessClipboardPasteCommand(
+        commandText,
+        bracketedPasteModeEnabled: false,
+      ),
+      title: 'Review keyboard paste',
+      messageBuilder: (_) =>
+          'This text inserted from your keyboard could execute multiple or reshaped commands.',
+      confirmLabel: 'Insert anyway',
+    );
+  }
+
   /// Shows snippet picker and inserts selected snippet into terminal.
   Future<void> _showSnippetPicker() async {
     final snippetRepo = ref.read(snippetRepositoryProvider);
@@ -1730,7 +2508,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final variablePattern = RegExp(r'\{\{(\w+)\}\}');
 
     final result =
-        await showModalBottomSheet<({String command, int snippetId})>(
+        await showModalBottomSheet<
+          ({String command, bool hadVariableSubstitution, int snippetId})
+        >(
           context: context,
           isScrollControlled: true,
           builder: (context) => DraggableScrollableSheet(
@@ -1800,7 +2580,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                           );
                           if (command != null && context.mounted) {
                             Navigator.pop(context, (
-                              command: command,
+                              command: command.command,
+                              hadVariableSubstitution:
+                                  command.hadVariableSubstitution,
                               snippetId: snippet.id,
                             ));
                           }
@@ -1816,6 +2598,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
+      final shouldInsert = await _confirmTerminalInsertionIfNeeded(
+        insertedText: result.command,
+        buildReview: (commandText) => assessSnippetCommandInsertion(
+          commandText,
+          hadVariableSubstitution: result.hadVariableSubstitution,
+        ),
+        title: 'Review snippet command',
+        messageBuilder: (_) =>
+            'Confirm the rendered command before inserting it.',
+        confirmLabel: 'Insert command',
+      );
+      if (!shouldInsert) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
       _followLiveOutput();
       // Insert the command into terminal
       _terminal.paste(result.command);
@@ -1825,16 +2622,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Shows dialog for variable substitution if snippet has variables.
-  Future<String?> _substituteVariables(
-    BuildContext context,
-    Snippet snippet,
-  ) async {
+  Future<({String command, bool hadVariableSubstitution})?>
+  _substituteVariables(BuildContext context, Snippet snippet) async {
     final regex = RegExp(r'\{\{(\w+)\}\}');
     final matches = regex.allMatches(snippet.command);
     final variables = matches.map((m) => m.group(1)!).toSet().toList();
 
     if (variables.isEmpty) {
-      return snippet.command;
+      return (command: snippet.command, hadVariableSubstitution: false);
     }
 
     final controllers = {for (final v in variables) v: TextEditingController()};
@@ -1901,6 +2696,156 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       entry.value.dispose();
     }
 
-    return command;
+    return (command: command, hadVariableSubstitution: true);
   }
+
+  Future<_AutoConnectReviewDecision> _reviewImportedAutoConnectCommand(
+    TerminalCommandReview review,
+  ) async {
+    final decision = await showDialog<_AutoConnectReviewDecision>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Review imported auto-connect command'),
+        content: _buildCommandReviewContent(
+          review: review,
+          message:
+              'Imported auto-connect commands never run silently. Review this one before letting it execute.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.skip),
+            child: const Text('Skip'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.runOnce),
+            child: const Text('Run once'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.trustAndRun),
+            child: const Text('Always run'),
+          ),
+        ],
+      ),
+    );
+    return decision ?? _AutoConnectReviewDecision.skip;
+  }
+
+  Future<bool> _confirmCommandInsertion({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    required TerminalCommandReview review,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: _buildCommandReviewContent(review: review, message: message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Widget _buildCommandReviewContent({
+    required TerminalCommandReview review,
+    required String message,
+  }) {
+    final reasons = describeTerminalCommandReview(review);
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(message),
+          if (reasons.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (final reason in reasons)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Icon(Icons.warning_amber_rounded, size: 18),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(reason)),
+                  ],
+                ),
+              ),
+          ],
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: SelectableText(
+              review.command,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _TerminalStatusChip extends StatelessWidget {
+  const _TerminalStatusChip({
+    required this.icon,
+    required this.label,
+    required this.tooltip,
+    required this.colorScheme,
+  });
+
+  final IconData icon;
+  final String label;
+  final String tooltip;
+  final ColorScheme colorScheme;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip,
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHighest,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 14, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
 }

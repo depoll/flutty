@@ -1,5 +1,6 @@
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:xterm/xterm.dart';
@@ -115,6 +116,57 @@ void main() {
       expect(callCount, 1);
       // keyInput(TerminalKey.enter) produces '\r'
       expect(output, contains('\r'));
+    });
+
+    testWidgets('Tab ignores the system keyboard shift state', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
+      await tester.tap(find.text('Tab'));
+      await tester.pump();
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
+
+      expect(output, contains('\t'));
+      expect(output, isNot(contains('\x1b[Z')));
+    });
+
+    testWidgets('toolbar Shift still sends reverse-tab', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.text('Shift'));
+      await tester.pump();
+      await tester.tap(find.text('Tab'));
+      await tester.pump();
+
+      expect(output, contains('\x1b[Z'));
+    });
+    test('keeps bottom safe-area padding when keyboard is closed', () {
+      const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
+
+      expect(shouldKeepToolbarBottomSafeArea(mediaQuery), isTrue);
+    });
+
+    test('drops bottom safe-area padding when keyboard is open', () {
+      const mediaQuery = MediaQueryData(
+        padding: EdgeInsets.only(bottom: 34),
+        viewInsets: EdgeInsets.only(bottom: 320),
+      );
+
+      expect(shouldKeepToolbarBottomSafeArea(mediaQuery), isFalse);
     });
 
     testWidgets('arrow keys repeat while held', (tester) async {
