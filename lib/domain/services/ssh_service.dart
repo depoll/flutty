@@ -1,16 +1,20 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:xterm/xterm.dart';
 
+import '../../app/host_key_prompt.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../data/repositories/known_hosts_repository.dart';
 import 'background_ssh_service.dart';
+import 'host_key_verification.dart';
 import 'terminal_hyperlink_tracker.dart';
 
 /// Connection state for an SSH session.
@@ -258,6 +262,27 @@ class SshConnectionResult {
 typedef ConnectionProgressCallback =
     void Function(ConnectionProgressUpdate update);
 
+/// Connects a raw SSH socket for the requested host.
+typedef SshSocketConnector =
+    Future<SSHSocket> Function(String host, int port, {Duration? timeout});
+
+/// Creates an [SSHClient] for a prepared socket.
+typedef SshClientFactory =
+    SSHClient Function(
+      SSHSocket socket, {
+      required String username,
+      SSHHostkeyVerifyHandler? onVerifyHostKey,
+      SSHPasswordRequestHandler? onPasswordRequest,
+      List<SSHKeyPair>? identities,
+      Duration? keepAliveInterval,
+    });
+
+/// Exposes the raw SSH host key bytes observed during the handshake.
+abstract interface class HostKeySource {
+  /// Completes with the raw SSH wire-format host key.
+  Future<Uint8List> get hostKeyBytes;
+}
+
 /// A single progress update emitted while an SSH connection is being created.
 class ConnectionProgressUpdate {
   /// Creates a [ConnectionProgressUpdate].
@@ -302,7 +327,15 @@ class ConnectionAttemptStatus {
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
-  SshService({this.hostRepository, this.keyRepository});
+  SshService({
+    this.hostRepository,
+    this.keyRepository,
+    this.knownHostsRepository,
+    this.hostKeyPromptHandler,
+    SshSocketConnector? socketConnector,
+    SshClientFactory? clientFactory,
+  }) : _socketConnector = socketConnector ?? _connectWithKeepAlive,
+       _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
   ///
@@ -315,6 +348,15 @@ class SshService {
 
   /// Key repository for looking up keys.
   final KeyRepository? keyRepository;
+
+  /// Repository for trusted SSH host keys.
+  final KnownHostsRepository? knownHostsRepository;
+
+  /// UI callback used for TOFU and changed-key prompts.
+  final HostKeyPromptHandler? hostKeyPromptHandler;
+
+  final SshSocketConnector _socketConnector;
+  final SshClientFactory _clientFactory;
 
   final Map<int, SshSession> _sessions = {};
   int _nextConnectionId = 1;
@@ -478,20 +520,78 @@ class SshService {
               ? 'Opening jump host connection…'
               : 'Opening network connection…',
         );
-        socket = await _connectWithKeepAlive(
+        socket = await _socketConnector(
           config.hostname,
           config.port,
           timeout: config.connectionTimeout,
         );
       }
 
+      final verificationSocket = socket is HostKeySource
+          ? socket
+          : _HostKeyCapturingSocket(socket);
+      final hostKeySource = verificationSocket as HostKeySource;
+      PendingHostTrustUpdate? pendingHostTrustUpdate;
+
       report(
         SshConnectionState.authenticating,
         isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
       );
-      client = SSHClient(
-        socket,
+      client = _clientFactory(
+        verificationSocket,
         username: config.username,
+        onVerifyHostKey: (type, fingerprint) async {
+          report(
+            SshConnectionState.connecting,
+            isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
+          );
+          final verificationService = knownHostsRepository == null
+              ? null
+              : HostKeyVerificationService(
+                  knownHostsRepository: knownHostsRepository!,
+                  promptHandler: hostKeyPromptHandler,
+                );
+          if (verificationService == null) {
+            throw HostKeyVerificationException(
+              'SSH host key verification is unavailable for '
+              '${config.hostname}:${config.port}.',
+            );
+          }
+
+          final hostKeyBytes = await hostKeySource.hostKeyBytes.timeout(
+            config.connectionTimeout,
+            onTimeout: () => throw HostKeyVerificationException(
+              'Timed out while reading the host key for '
+              '${config.hostname}:${config.port}.',
+            ),
+          );
+          final presentedHostKey = VerifiedHostKey(
+            hostname: config.hostname,
+            port: config.port,
+            keyType: type,
+            hostKeyBytes: hostKeyBytes,
+          );
+          final legacyFingerprint = formatLegacySshHostKeyFingerprint(
+            hostKeyBytes,
+          );
+          final callbackFingerprint = fingerprint
+              .map((value) => value.toRadixString(16).padLeft(2, '0'))
+              .join(':');
+          if (legacyFingerprint != callbackFingerprint) {
+            throw HostKeyVerificationException(
+              'Failed to confirm the presented host key for '
+              '${config.hostname}:${config.port}.',
+            );
+          }
+
+          pendingHostTrustUpdate = await verificationService.verify(
+            presentedHostKey,
+          );
+          await pendingHostTrustUpdate!.persistTrustDecision(
+            knownHostsRepository!,
+          );
+          return true;
+        },
         onPasswordRequest: config.password != null
             ? () => config.password!
             : null,
@@ -513,11 +613,27 @@ class SshService {
         SshConnectionState.connected,
         isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
       );
+      if (pendingHostTrustUpdate != null && knownHostsRepository != null) {
+        await pendingHostTrustUpdate!.commitAfterAuthentication(
+          knownHostsRepository!,
+        );
+      }
 
       return SshConnectionResult(
         success: true,
         client: client,
         dependentClients: dependentClients,
+      );
+    } on HostKeyVerificationException catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
+      return SshConnectionResult(success: false, error: e.message);
+    } on SSHHostkeyError catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
+      return SshConnectionResult(
+        success: false,
+        error: 'Host key verification failed: ${e.message}',
       );
     } on SSHAuthFailError catch (e) {
       client?.close();
@@ -608,6 +724,22 @@ class SshService {
     }
   }
 
+  static SSHClient _defaultClientFactory(
+    SSHSocket socket, {
+    required String username,
+    SSHHostkeyVerifyHandler? onVerifyHostKey,
+    SSHPasswordRequestHandler? onPasswordRequest,
+    List<SSHKeyPair>? identities,
+    Duration? keepAliveInterval,
+  }) => SSHClient(
+    socket,
+    username: username,
+    onVerifyHostKey: onVerifyHostKey,
+    onPasswordRequest: onPasswordRequest,
+    identities: identities,
+    keepAliveInterval: keepAliveInterval,
+  );
+
   /// Connects a TCP socket with OS-level keepalive enabled so the connection
   /// survives brief periods in the background without the OS tearing it down.
   static Future<SSHSocket> _connectWithKeepAlive(
@@ -681,6 +813,165 @@ class _KeepAliveSSHSocket implements SSHSocket {
 
   @override
   void destroy() => _socket.destroy();
+}
+
+class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
+  _HostKeyCapturingSocket(this._delegate)
+    : _hostKeyParser = _SshHostKeyParser() {
+    _stream = _delegate.stream.map((chunk) {
+      _hostKeyParser.addChunk(chunk);
+      return chunk;
+    });
+  }
+
+  final SSHSocket _delegate;
+  final _SshHostKeyParser _hostKeyParser;
+  late final Stream<Uint8List> _stream;
+
+  @override
+  Future<Uint8List> get hostKeyBytes => _hostKeyParser.hostKeyBytes;
+
+  @override
+  Stream<Uint8List> get stream => _stream;
+
+  @override
+  StreamSink<List<int>> get sink => _delegate.sink;
+
+  @override
+  Future<void> close() => _delegate.close();
+
+  @override
+  Future<void> get done => _delegate.done;
+
+  @override
+  void destroy() => _delegate.destroy();
+}
+
+class _SshHostKeyParser {
+  final BytesBuilder _buffer = BytesBuilder(copy: false);
+  final Completer<Uint8List> _hostKeyBytes = Completer<Uint8List>();
+  final BytesBuilder _versionBuffer = BytesBuilder(copy: false);
+  bool _versionSeen = false;
+
+  Future<Uint8List> get hostKeyBytes => _hostKeyBytes.future;
+
+  void addChunk(Uint8List chunk) {
+    if (_hostKeyBytes.isCompleted) {
+      return;
+    }
+
+    if (!_versionSeen) {
+      _consumeVersionBytes(chunk);
+      return;
+    }
+
+    _buffer.add(chunk);
+    _parsePackets();
+  }
+
+  void _consumeVersionBytes(Uint8List chunk) {
+    _versionBuffer.add(chunk);
+    final bytes = _versionBuffer.takeBytes();
+    var searchStart = 0;
+    while (true) {
+      final newlineIndex = bytes.indexOf(0x0A, searchStart);
+      if (newlineIndex == -1) {
+        _versionBuffer.add(bytes.sublist(searchStart));
+        return;
+      }
+
+      final lineBytes = bytes.sublist(searchStart, newlineIndex + 1);
+      final line = utf8.decode(lineBytes, allowMalformed: true).trim();
+      searchStart = newlineIndex + 1;
+      if (!line.startsWith('SSH-')) {
+        continue;
+      }
+
+      _versionSeen = true;
+      if (searchStart < bytes.length) {
+        _buffer.add(bytes.sublist(searchStart));
+        _parsePackets();
+      }
+      return;
+    }
+  }
+
+  void _parsePackets() {
+    final data = _buffer.takeBytes();
+    var offset = 0;
+    while (!_hostKeyBytes.isCompleted && data.length - offset >= 5) {
+      final packetLength = _readUint32(data, offset);
+      if (packetLength < 1 || data.length - offset < packetLength + 4) {
+        break;
+      }
+
+      final paddingLength = data[offset + 4];
+      final payloadLength = packetLength - paddingLength - 1;
+      if (payloadLength > 0) {
+        final payloadStart = offset + 5;
+        final payloadEnd = payloadStart + payloadLength;
+        final payload = Uint8List.sublistView(data, payloadStart, payloadEnd);
+        _tryCaptureHostKey(payload);
+      }
+
+      offset += packetLength + 4;
+    }
+
+    if (offset < data.length) {
+      _buffer.add(data.sublist(offset));
+    }
+  }
+
+  void _tryCaptureHostKey(Uint8List payload) {
+    if (payload.isEmpty) {
+      return;
+    }
+
+    final messageId = payload[0];
+    if (messageId != 31 && messageId != 33) {
+      return;
+    }
+
+    final hostKey = _readSshString(payload, 1);
+    if (hostKey == null || !_looksLikeHostKeyBlob(hostKey)) {
+      return;
+    }
+
+    _hostKeyBytes.complete(Uint8List.fromList(hostKey));
+  }
+
+  bool _looksLikeHostKeyBlob(Uint8List hostKey) {
+    final typeBytes = _readSshString(hostKey, 0);
+    if (typeBytes == null) {
+      return false;
+    }
+
+    final type = utf8.decode(typeBytes, allowMalformed: true);
+    return type == 'ssh-rsa' ||
+        type == 'ssh-ed25519' ||
+        type.startsWith('ecdsa-sha2-');
+  }
+
+  static int _readUint32(Uint8List bytes, int offset) =>
+      (bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3];
+
+  static Uint8List? _readSshString(Uint8List bytes, int offset) {
+    if (bytes.length - offset < 4) {
+      return null;
+    }
+
+    final length = _readUint32(bytes, offset);
+    final start = offset + 4;
+    final end = start + length;
+    if (length < 0 || end > bytes.length) {
+      return null;
+    }
+
+    return Uint8List.sublistView(bytes, start, end);
+  }
 }
 
 /// An active SSH session.
@@ -1344,6 +1635,8 @@ final sshServiceProvider = Provider<SshService>(
   (ref) => SshService(
     hostRepository: ref.watch(hostRepositoryProvider),
     keyRepository: ref.watch(keyRepositoryProvider),
+    knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
+    hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
   ),
 );
 

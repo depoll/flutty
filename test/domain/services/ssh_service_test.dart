@@ -1,7 +1,10 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 // ignore_for_file: public_member_api_docs
 
+import 'package:crypto/crypto.dart';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
@@ -12,8 +15,10 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
+import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:xterm/xterm.dart';
 
@@ -66,6 +71,64 @@ class _CountingKeyRepository extends KeyRepository {
 }
 
 class _MockSshClient extends Mock implements SSHClient {}
+
+class _FakeHostKeySocket implements SSHSocket, HostKeySource {
+  _FakeHostKeySocket(this._hostKeyBytes);
+
+  final Uint8List _hostKeyBytes;
+  final _streamController = StreamController<Uint8List>();
+  final _sinkController = StreamController<List<int>>();
+
+  @override
+  Future<Uint8List> get hostKeyBytes async => _hostKeyBytes;
+
+  @override
+  Stream<Uint8List> get stream => _streamController.stream;
+
+  @override
+  StreamSink<List<int>> get sink => _sinkController.sink;
+
+  @override
+  Future<void> close() async {
+    await _streamController.close();
+    await _sinkController.close();
+  }
+
+  @override
+  Future<void> get done async {}
+
+  @override
+  void destroy() {}
+}
+
+class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
+  _FakeForwardHostKeySocket(this._hostKeyBytes);
+
+  final Uint8List _hostKeyBytes;
+  final _streamController = StreamController<Uint8List>();
+  final _sinkController = StreamController<List<int>>();
+
+  @override
+  Future<Uint8List> get hostKeyBytes async => _hostKeyBytes;
+
+  @override
+  Stream<Uint8List> get stream => _streamController.stream;
+
+  @override
+  StreamSink<List<int>> get sink => _sinkController.sink;
+
+  @override
+  Future<void> close() async {
+    await _streamController.close();
+    await _sinkController.close();
+  }
+
+  @override
+  Future<void> get done async {}
+
+  @override
+  void destroy() {}
+}
 
 class _FakeActiveSessionsSshService extends SshService {
   final Map<int, SshSession> _sessions = {};
@@ -966,6 +1029,145 @@ void main() {
       expect(result.error, isNotNull);
     });
 
+    test('connect verifies jump-host and destination host keys', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final jumpSocket = _FakeHostKeySocket(_ed25519HostKeyBlob([1, 2, 3]));
+      final targetSocket = _FakeForwardHostKeySocket(
+        _ed25519HostKeyBlob([4, 5, 6]),
+      );
+      final jumpClient = _MockSshClient();
+      final targetClient = _MockSshClient();
+      var clientIndex = 0;
+
+      when(
+        () => jumpClient.forwardLocal('target.example.com', 22),
+      ).thenAnswer(_returnTargetSocket(targetSocket));
+      when(jumpClient.close).thenReturn(null);
+      when(targetClient.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        hostKeyPromptHandler: (_) async => HostKeyTrustDecision.trust,
+        socketConnector: (host, port, {timeout}) async {
+          expect(host, 'jump.example.com');
+          expect(port, 2222);
+          return jumpSocket;
+        },
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              final client = clientIndex == 0 ? jumpClient : targetClient;
+              final hostKeyBytes = socket is HostKeySource
+                  ? (socket as HostKeySource).hostKeyBytes
+                  : Future<Uint8List>.value(Uint8List(0));
+              if (clientIndex == 0) {
+                when(() => jumpClient.authenticated).thenAnswer((_) async {
+                  final bytes = await hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                });
+              } else {
+                when(() => targetClient.authenticated).thenAnswer((_) async {
+                  final bytes = await hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                });
+              }
+              clientIndex++;
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'target.example.com',
+        port: 22,
+        username: 'target',
+        jumpHost: SshConnectionConfig(
+          hostname: 'jump.example.com',
+          port: 2222,
+          username: 'jump',
+        ),
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isTrue);
+      expect(
+        await knownHostsRepository.getByHost('jump.example.com', 2222),
+        isNotNull,
+      );
+      expect(
+        await knownHostsRepository.getByHost('target.example.com', 22),
+        isNotNull,
+      );
+    });
+
+    test(
+      'connect persists accepted TOFU trust before authentication succeeds',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final socket = _FakeHostKeySocket(_ed25519HostKeyBlob([7, 8, 9]));
+        final client = _MockSshClient();
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          hostKeyPromptHandler: (_) async => HostKeyTrustDecision.trust,
+          socketConnector: (host, port, {timeout}) async => socket,
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                  return Future<void>.error(
+                    SSHAuthFailError('Authentication failed'),
+                  );
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'persist.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isFalse);
+        expect(
+          await knownHostsRepository.getByHost('persist.example.com', 22),
+          isNotNull,
+        );
+      },
+    );
+
     test('sessions map is unmodifiable', () {
       expect(
         () => (sshService.sessions as Map)[1] = 'test',
@@ -974,3 +1176,25 @@ void main() {
     });
   });
 }
+
+Uint8List _ed25519HostKeyBlob(List<int> keyData) {
+  final typeBytes = utf8.encode('ssh-ed25519');
+  final writer = BytesBuilder(copy: false)
+    ..add(_uint32(typeBytes.length))
+    ..add(typeBytes)
+    ..add(_uint32(keyData.length))
+    ..add(keyData);
+  return writer.takeBytes();
+}
+
+Uint8List _uint32(int value) => Uint8List.fromList([
+  (value >> 24) & 0xFF,
+  (value >> 16) & 0xFF,
+  (value >> 8) & 0xFF,
+  value & 0xFF,
+]);
+
+Answer<Future<SSHForwardChannel>> _returnTargetSocket(
+  SSHForwardChannel socket,
+) =>
+    (_) async => socket;
