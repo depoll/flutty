@@ -6,6 +6,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../providers/entity_list_providers.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
@@ -734,6 +735,7 @@ class _MigrationSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to export migration package',
     );
     if (!context.mounted) {
@@ -782,6 +784,7 @@ class _MigrationSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to import migration package',
     );
     if (!context.mounted) {
@@ -845,6 +848,7 @@ class _MigrationSection extends ConsumerWidget {
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
         ..invalidate(terminalThemeSettingsProvider);
+      invalidateImportedEntityProviders(ref.invalidate);
 
       if (!context.mounted) {
         return;

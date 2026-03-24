@@ -176,9 +176,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ..invalidate(fontFamilyNotifierProvider)
             ..invalidate(cursorStyleNotifierProvider)
             ..invalidate(bellSoundNotifierProvider)
-            ..invalidate(terminalThemeSettingsProvider)
-            ..invalidate(allHostsProvider)
-            ..invalidate(allKeysProvider);
+            ..invalidate(terminalThemeSettingsProvider);
+          invalidateImportedEntityProviders(ref.invalidate);
           if (!mounted) {
             return;
           }
@@ -927,6 +926,7 @@ class _HostRow extends ConsumerWidget {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
         authService: ref.read(authServiceProvider),
+        readAuthState: () => ref.read(authStateProvider),
         reason: 'Authenticate to export host credentials',
       );
       if (!context.mounted) {
@@ -1530,6 +1530,7 @@ class _KeyRow extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to export private key',
     );
     if (!context.mounted) {
