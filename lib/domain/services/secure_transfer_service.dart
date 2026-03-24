@@ -910,7 +910,9 @@ class SecureTransferService {
       );
 
       if (mode == MigrationImportMode.replace) {
-        await _db.into(_db.knownHosts).insert(importedKnownHost.toCompanion());
+        await _db
+            .into(_db.knownHosts)
+            .insertOnConflictUpdate(importedKnownHost.toCompanion());
         continue;
       }
 
