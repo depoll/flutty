@@ -58,5 +58,58 @@ void main() {
       expect(find.text('Unlock'), findsNothing);
       expect(find.text('Use biometrics'), findsNothing);
     });
+
+    testWidgets(
+      'retry refreshes auth state when storage recovers without auth configured',
+      (tester) async {
+        final authService = _MockAuthService();
+        final container = ProviderContainer(
+          overrides: [authServiceProvider.overrideWithValue(authService)],
+        );
+        final reportedErrors = <FlutterErrorDetails>[];
+        final originalOnError = FlutterError.onError;
+        addTearDown(container.dispose);
+        FlutterError.onError = reportedErrors.add;
+        addTearDown(() => FlutterError.onError = originalOnError);
+
+        var authEnabledCalls = 0;
+        when(authService.isAuthEnabled).thenAnswer((_) async {
+          if (authEnabledCalls++ == 0) {
+            throw Exception('storage unavailable');
+          }
+          return false;
+        });
+
+        var authMethodCalls = 0;
+        when(authService.getAuthMethod).thenAnswer((_) async {
+          if (authMethodCalls++ == 0) {
+            throw Exception('secure storage unavailable');
+          }
+          return AuthMethod.none;
+        });
+
+        await tester.pumpWidget(
+          UncontrolledProviderScope(
+            container: container,
+            child: const MaterialApp(home: LockScreen()),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+
+        expect(container.read(authStateProvider), AuthState.locked);
+        expect(find.text('Retry'), findsOneWidget);
+        expect(reportedErrors, hasLength(2));
+
+        await tester.tap(find.text('Retry'));
+        await tester.pump();
+        await tester.pump();
+
+        expect(container.read(authStateProvider), AuthState.notConfigured);
+        expect(find.text('Retry'), findsNothing);
+        expect(reportedErrors, hasLength(2));
+      },
+    );
   });
 }

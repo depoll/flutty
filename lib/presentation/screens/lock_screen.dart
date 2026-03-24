@@ -31,10 +31,13 @@ class _LockScreenState extends ConsumerState<LockScreen> {
     unawaited(_checkAuthMethod());
   }
 
-  Future<void> _checkAuthMethod() async {
+  Future<void> _checkAuthMethod({bool refreshAuthState = false}) async {
     final authService = ref.read(authServiceProvider);
     try {
       final method = await authService.getAuthMethod();
+      if (refreshAuthState) {
+        await ref.read(authStateProvider.notifier).refresh();
+      }
       if (!mounted) return;
 
       setState(() {
@@ -238,7 +241,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
                         _isCheckingAuthMethod = true;
                         _authMethodLoadFailed = false;
                       });
-                      unawaited(_checkAuthMethod());
+                      unawaited(_checkAuthMethod(refreshAuthState: true));
                     },
                     child: const Text('Retry'),
                   ),

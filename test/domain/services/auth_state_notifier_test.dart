@@ -87,6 +87,29 @@ void main() {
       expect(container.read(authStateProvider), AuthState.notConfigured);
     });
 
+    test(
+      'refresh recovers from fail-closed startup when storage recovers',
+      () async {
+        var isAuthEnabledCalls = 0;
+        when(() => authService.isAuthEnabled()).thenAnswer((_) async {
+          if (isAuthEnabledCalls++ == 0) {
+            throw Exception('storage unavailable');
+          }
+          return false;
+        });
+
+        expect(container.read(authStateProvider), AuthState.unknown);
+
+        await pumpEventQueue();
+
+        expect(container.read(authStateProvider), AuthState.locked);
+
+        await container.read(authStateProvider.notifier).refresh();
+
+        expect(container.read(authStateProvider), AuthState.notConfigured);
+      },
+    );
+
     test('lockForAutoLock locks without re-reading auth storage', () async {
       when(() => authService.isAuthEnabled()).thenAnswer((_) async => true);
       when(() => authService.verifyPin(any())).thenAnswer((_) async => true);
