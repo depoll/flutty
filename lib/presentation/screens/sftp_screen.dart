@@ -250,7 +250,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   @override
   Widget build(BuildContext context) => PopScope(
     canPop: _pathHistory.length <= 1,
-    onPopInvokedWithResult: (didPop, result) {
+    onPopInvokedWithResult: (didPop, _) {
       if (!didPop && _pathHistory.length > 1) {
         unawaited(_goBack());
       }
