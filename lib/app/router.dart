@@ -20,11 +20,15 @@ import '../presentation/screens/terminal_screen.dart';
 import '../presentation/screens/theme_editor_screen.dart';
 import 'routes.dart';
 
+/// Root navigator key used for global modal prompts.
+final appNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'appNavigator');
+
 /// Provider for the app router.
 final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authStateProvider);
 
   return GoRouter(
+    navigatorKey: appNavigatorKey,
     initialLocation: '/',
     redirect: (context, state) => redirectForAuthState(
       authState: authState,

@@ -9,6 +9,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../models/auto_connect_command.dart';
+import 'host_key_verification.dart';
 
 /// Supported transfer payload types.
 enum TransferPayloadType {
@@ -469,7 +470,10 @@ class SecureTransferService {
           _listFromData(payload.data, 'portForwards'),
           hostMapping: hostMapping,
         );
-        await _importKnownHosts(_listFromData(payload.data, 'knownHosts'));
+        await _importKnownHosts(
+          _listFromData(payload.data, 'knownHosts'),
+          mode: mode,
+        );
         await _importSettings(
           _settingsFromData(payload.data),
           clearExisting: mode == MigrationImportMode.replace,
@@ -916,27 +920,59 @@ class SecureTransferService {
   }
 
   Future<void> _importKnownHosts(
-    List<Map<String, dynamic>> rawKnownHosts,
-  ) async {
+    List<Map<String, dynamic>> rawKnownHosts, {
+    required MigrationImportMode mode,
+  }) async {
     for (final item in rawKnownHosts) {
-      await _db
-          .into(_db.knownHosts)
-          .insert(
-            KnownHostsCompanion.insert(
-              hostname: _requiredString(item, 'hostname'),
-              port: _optionalInt(item['port']) ?? 22,
-              keyType: _requiredString(item, 'keyType'),
-              fingerprint: _requiredString(item, 'fingerprint'),
-              hostKey: _requiredString(item, 'hostKey'),
-              firstSeen: Value(
-                _optionalDateTime(item['firstSeen']) ?? DateTime.now(),
-              ),
-              lastSeen: Value(
-                _optionalDateTime(item['lastSeen']) ?? DateTime.now(),
-              ),
-            ),
-            mode: InsertMode.insertOrIgnore,
-          );
+      final importedKnownHost = _ImportedKnownHost(
+        hostname: _requiredString(item, 'hostname'),
+        port: _optionalInt(item['port']) ?? 22,
+        keyType: _normalizedImportedKnownHostKeyType(item),
+        fingerprint: _normalizedImportedKnownHostFingerprint(item),
+        hostKey: _normalizedImportedKnownHostHostKey(item),
+        firstSeen: _optionalDateTime(item['firstSeen']) ?? DateTime.now(),
+        lastSeen: _optionalDateTime(item['lastSeen']) ?? DateTime.now(),
+      );
+
+      if (mode == MigrationImportMode.replace) {
+        await _db
+            .into(_db.knownHosts)
+            .insertOnConflictUpdate(importedKnownHost.toCompanion());
+        continue;
+      }
+
+      final existingKnownHost =
+          await ((_db.select(_db.knownHosts))..where(
+                (knownHost) =>
+                    knownHost.hostname.equals(importedKnownHost.hostname) &
+                    knownHost.port.equals(importedKnownHost.port),
+              ))
+              .getSingleOrNull();
+      if (existingKnownHost == null) {
+        await _db.into(_db.knownHosts).insert(importedKnownHost.toCompanion());
+        continue;
+      }
+
+      final isSameTrustedKey = sshHostTrustMatches(
+        firstFingerprint: existingKnownHost.fingerprint,
+        firstEncodedHostKey: existingKnownHost.hostKey,
+        secondFingerprint: importedKnownHost.fingerprint,
+        secondEncodedHostKey: importedKnownHost.hostKey,
+      );
+      if (isSameTrustedKey) {
+        await (_db.update(_db.knownHosts)
+              ..where((knownHost) => knownHost.id.equals(existingKnownHost.id)))
+            .write(_mergeKnownHosts(existingKnownHost, importedKnownHost));
+        continue;
+      }
+
+      if (!importedKnownHost.lastSeen.isAfter(existingKnownHost.lastSeen)) {
+        continue;
+      }
+
+      await (_db.update(_db.knownHosts)
+            ..where((knownHost) => knownHost.id.equals(existingKnownHost.id)))
+          .write(importedKnownHost.toCompanion());
     }
   }
 
@@ -1018,6 +1054,151 @@ class SecureTransferService {
     return null;
   }
 
+  String _normalizedImportedKnownHostFingerprint(Map<String, dynamic> item) {
+    final hostKey = _normalizedImportedKnownHostHostKey(item);
+    if (hostKey.isNotEmpty) {
+      try {
+        final hostKeyBytes = base64.decode(hostKey);
+        return formatSshHostKeyFingerprint(hostKeyBytes);
+      } on FormatException {
+        return _requiredString(item, 'fingerprint');
+      }
+    }
+    return _requiredString(item, 'fingerprint');
+  }
+
+  String _normalizedImportedKnownHostHostKey(Map<String, dynamic> item) {
+    final hostKey = _optionalString(item['hostKey']) ?? '';
+    if (hostKey.isEmpty || _tryDecodeKnownHostKey(hostKey) != null) {
+      return hostKey;
+    }
+    return '';
+  }
+
+  String _normalizedImportedKnownHostKeyType(Map<String, dynamic> item) =>
+      canonicalizeSshHostKeyType(
+        _requiredString(item, 'keyType'),
+        encodedHostKey: _normalizedImportedKnownHostHostKey(item),
+      );
+
+  KnownHostsCompanion _mergeKnownHosts(
+    KnownHost existingKnownHost,
+    _ImportedKnownHost importedKnownHost,
+  ) {
+    final mergedHostKey = importedKnownHost.hostKey.isNotEmpty
+        ? importedKnownHost.hostKey
+        : existingKnownHost.hostKey;
+    final mergedFirstSeen =
+        importedKnownHost.firstSeen.isBefore(existingKnownHost.firstSeen)
+        ? importedKnownHost.firstSeen
+        : existingKnownHost.firstSeen;
+    final mergedLastSeen =
+        importedKnownHost.lastSeen.isAfter(existingKnownHost.lastSeen)
+        ? importedKnownHost.lastSeen
+        : existingKnownHost.lastSeen;
+    final preferImported = importedKnownHost.lastSeen.isAfter(
+      existingKnownHost.lastSeen,
+    );
+    final mergedHostKeyBytes = _tryDecodeKnownHostKey(mergedHostKey);
+
+    if (mergedHostKeyBytes != null) {
+      return KnownHostsCompanion(
+        keyType: Value(
+          canonicalizeSshHostKeyType(
+            importedKnownHost.keyType,
+            encodedHostKey: mergedHostKey,
+          ),
+        ),
+        fingerprint: Value(formatSshHostKeyFingerprint(mergedHostKeyBytes)),
+        hostKey: Value(mergedHostKey),
+        firstSeen: Value(mergedFirstSeen),
+        lastSeen: Value(mergedLastSeen),
+      );
+    }
+
+    final fallbackHostKey =
+        preferImported ||
+            _tryDecodeKnownHostKey(existingKnownHost.hostKey) == null
+        ? ''
+        : existingKnownHost.hostKey;
+    final mergedFingerprint = _preferKnownHostFingerprint(
+      existingKnownHost.fingerprint,
+      importedKnownHost.fingerprint,
+      preferSecond: preferImported,
+    );
+    final mergedKeyType = canonicalizeSshHostKeyType(
+      preferImported ? importedKnownHost.keyType : existingKnownHost.keyType,
+      encodedHostKey: fallbackHostKey.isEmpty ? null : fallbackHostKey,
+    );
+
+    return KnownHostsCompanion(
+      keyType: Value(mergedKeyType),
+      fingerprint: Value(mergedFingerprint),
+      hostKey: Value(fallbackHostKey),
+      firstSeen: Value(mergedFirstSeen),
+      lastSeen: Value(mergedLastSeen),
+    );
+  }
+
+  Uint8List? _tryDecodeKnownHostKey(String encodedHostKey) {
+    if (encodedHostKey.isEmpty) {
+      return null;
+    }
+
+    try {
+      final decoded = Uint8List.fromList(base64.decode(encodedHostKey));
+      if (!_looksLikeKnownHostKeyBlob(decoded)) {
+        return null;
+      }
+      return decoded;
+    } on FormatException {
+      return null;
+    }
+  }
+
+  bool _looksLikeKnownHostKeyBlob(Uint8List hostKeyBytes) {
+    final keyTypeBytes = _readSshBlobString(hostKeyBytes, 0);
+    if (keyTypeBytes == null) {
+      return false;
+    }
+
+    final keyType = utf8.decode(keyTypeBytes, allowMalformed: true);
+    return keyType == 'ssh-rsa' ||
+        keyType == 'ssh-ed25519' ||
+        keyType.startsWith('ecdsa-sha2-');
+  }
+
+  Uint8List? _readSshBlobString(Uint8List bytes, int offset) {
+    if (bytes.length - offset < 4) {
+      return null;
+    }
+
+    final length =
+        (bytes[offset] << 24) |
+        (bytes[offset + 1] << 16) |
+        (bytes[offset + 2] << 8) |
+        bytes[offset + 3];
+    final start = offset + 4;
+    final end = start + length;
+    if (length < 0 || end > bytes.length) {
+      return null;
+    }
+    return Uint8List.sublistView(bytes, start, end);
+  }
+
+  String _preferKnownHostFingerprint(
+    String firstFingerprint,
+    String secondFingerprint, {
+    required bool preferSecond,
+  }) {
+    final firstIsSha256 = firstFingerprint.startsWith('SHA256:');
+    final secondIsSha256 = secondFingerprint.startsWith('SHA256:');
+    if (firstIsSha256 != secondIsSha256) {
+      return secondIsSha256 ? secondFingerprint : firstFingerprint;
+    }
+    return preferSecond ? secondFingerprint : firstFingerprint;
+  }
+
   List<int> _decodeEnvelopeField(Map<String, dynamic> envelope, String key) {
     final value = envelope[key];
     if (value is! String || value.isEmpty) {
@@ -1029,6 +1210,36 @@ class SecureTransferService {
       throw const FormatException('Invalid transfer envelope');
     }
   }
+}
+
+class _ImportedKnownHost {
+  const _ImportedKnownHost({
+    required this.hostname,
+    required this.port,
+    required this.keyType,
+    required this.fingerprint,
+    required this.hostKey,
+    required this.firstSeen,
+    required this.lastSeen,
+  });
+
+  final String hostname;
+  final int port;
+  final String keyType;
+  final String fingerprint;
+  final String hostKey;
+  final DateTime firstSeen;
+  final DateTime lastSeen;
+
+  KnownHostsCompanion toCompanion() => KnownHostsCompanion.insert(
+    hostname: hostname,
+    port: port,
+    keyType: keyType,
+    fingerprint: fingerprint,
+    hostKey: hostKey,
+    firstSeen: Value(firstSeen),
+    lastSeen: Value(lastSeen),
+  );
 }
 
 /// Provider for [SecureTransferService].
