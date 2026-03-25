@@ -39,6 +39,15 @@ class KeyboardToolbarController extends ChangeNotifier {
   bool? _altState;
   bool? _shiftState;
 
+  /// The current Ctrl modifier mode: off (`null`), one-shot (`false`), locked (`true`).
+  bool? get ctrlState => _ctrlState;
+
+  /// The current Alt modifier mode: off (`null`), one-shot (`false`), locked (`true`).
+  bool? get altState => _altState;
+
+  /// The current Shift modifier mode: off (`null`), one-shot (`false`), locked (`true`).
+  bool? get shiftState => _shiftState;
+
   /// Whether Ctrl is currently active (one-shot or locked).
   bool get isCtrlActive => _ctrlState != null;
 
@@ -254,19 +263,19 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       _ToolbarButton(label: 'Tab', onTap: _sendTab, onLongPressStart: _sendTab),
       _ModifierButton(
         label: 'Ctrl',
-        state: _controller._ctrlState,
+        state: _controller.ctrlState,
         onTap: _toggleCtrl,
         onDoubleTap: _lockCtrl,
       ),
       _ModifierButton(
         label: 'Alt',
-        state: _controller._altState,
+        state: _controller.altState,
         onTap: _toggleAlt,
         onDoubleTap: _lockAlt,
       ),
       _ModifierButton(
         label: 'Shift',
-        state: _controller._shiftState,
+        state: _controller.shiftState,
         onTap: _toggleShift,
         onDoubleTap: _lockShift,
       ),

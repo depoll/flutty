@@ -12,6 +12,7 @@ void main() {
     (tester) async {
       final terminal = Terminal();
       final controller = KeyboardToolbarController();
+      addTearDown(controller.dispose);
 
       Widget buildToolbar() => MaterialApp(
         home: Scaffold(

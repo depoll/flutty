@@ -62,6 +62,7 @@ void main() {
       'controller preserves Ctrl state across toolbar rebuilds for system keyboard input',
       (tester) async {
         final controller = KeyboardToolbarController();
+        addTearDown(controller.dispose);
 
         await tester.pumpWidget(
           MaterialApp(
