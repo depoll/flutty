@@ -6,11 +6,16 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as path;
 
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/ssh_service.dart';
+
+const _maxEditableBytes = 1024 * 1024;
+const _maxPreviewBytes = 10 * 1024 * 1024;
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -37,6 +42,26 @@ List<String> popSftpPathHistory(List<String> history) {
   }
   return List<String>.from(history)..removeLast();
 }
+
+/// Whether the file name should be previewable as an image.
+@visibleForTesting
+bool isPreviewableImageFileName(String filename) {
+  final extension = path.extension(filename).toLowerCase();
+  return {
+    '.png',
+    '.jpg',
+    '.jpeg',
+    '.gif',
+    '.webp',
+    '.bmp',
+    '.svg',
+  }.contains(extension);
+}
+
+/// Whether the file name is an SVG image.
+@visibleForTesting
+bool isSvgFileName(String filename) =>
+    path.extension(filename).toLowerCase() == '.svg';
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
@@ -405,6 +430,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   void _handleFileTap(SftpName file) {
     if (file.attr.isDirectory) {
       unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
+    } else if (isPreviewableImageFileName(file.filename)) {
+      unawaited(_previewImageFile(file));
     } else {
       _showFileOptions(file);
     }
@@ -425,6 +452,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 _showFileInfo(file);
               },
             ),
+            if (!file.attr.isDirectory &&
+                isPreviewableImageFileName(file.filename))
+              ListTile(
+                leading: const Icon(Icons.image_outlined),
+                title: const Text('View'),
+                onTap: () {
+                  Navigator.pop(context);
+                  unawaited(_previewImageFile(file));
+                },
+              ),
             if (!file.attr.isDirectory)
               ListTile(
                 leading: const Icon(Icons.edit_outlined),
@@ -443,6 +480,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                   unawaited(_downloadFile(file));
                 },
               ),
+            ListTile(
+              leading: const Icon(Icons.copy_all_outlined),
+              title: const Text('Copy as path'),
+              onTap: () async {
+                Navigator.pop(context);
+                await _copyRemotePath(file);
+              },
+            ),
             ListTile(
               leading: const Icon(Icons.drive_file_rename_outline),
               title: const Text('Rename'),
@@ -722,13 +767,84 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
+  Future<void> _copyRemotePath(SftpName file) async {
+    final remotePath = _joinRemotePath(_currentPath, file.filename);
+    await Clipboard.setData(ClipboardData(text: shellEscapePosix(remotePath)));
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Copied shell-safe path')));
+  }
+
+  Future<void> _previewImageFile(SftpName file) async {
+    if (_sftp == null) {
+      return;
+    }
+
+    if ((file.attr.size ?? 0) > _maxPreviewBytes) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('File is too large to preview here (max 10 MB)'),
+          ),
+        );
+      }
+      return;
+    }
+
+    final remotePath = _joinRemotePath(_currentPath, file.filename);
+    try {
+      final remoteFile = await _sftp!.open(remotePath);
+      late final Uint8List bytes;
+      try {
+        bytes = await remoteFile.readBytes(length: _maxPreviewBytes + 1);
+      } finally {
+        await remoteFile.close();
+      }
+
+      if (bytes.length > _maxPreviewBytes) {
+        if (mounted) {
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text('File is too large to preview here (max 10 MB)'),
+            ),
+          );
+        }
+        return;
+      }
+
+      if (!mounted) {
+        return;
+      }
+
+      await Navigator.of(context).push<void>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (context) => _RemoteImageViewerScreen(
+            fileName: file.filename,
+            bytes: bytes,
+            isSvg: isSvgFileName(file.filename),
+          ),
+        ),
+      );
+    } on Exception catch (e) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Preview failed: $e')));
+    }
+  }
+
   Future<void> _editTextFile(SftpName file) async {
     if (_sftp == null) {
       return;
     }
 
-    const maxEditableBytes = 1024 * 1024;
-    if ((file.attr.size ?? 0) > maxEditableBytes) {
+    if ((file.attr.size ?? 0) > _maxEditableBytes) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -744,12 +860,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final remoteFile = await _sftp!.open(remotePath);
       late final Uint8List bytes;
       try {
-        bytes = await remoteFile.readBytes(length: maxEditableBytes + 1);
+        bytes = await remoteFile.readBytes(length: _maxEditableBytes + 1);
       } finally {
         await remoteFile.close();
       }
 
-      if (bytes.length > maxEditableBytes) {
+      if (bytes.length > _maxEditableBytes) {
         if (mounted) {
           ScaffoldMessenger.of(context).showSnackBar(
             const SnackBar(
@@ -776,30 +892,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         controller.dispose();
         return;
       }
-      final updated = await showDialog<String>(
-        context: context,
-        builder: (context) => AlertDialog(
-          title: Text('Edit ${file.filename}'),
-          content: SizedBox(
-            width: 520,
-            child: TextField(
-              controller: controller,
-              autofocus: true,
-              maxLines: 20,
-              style: const TextStyle(fontFamily: 'monospace'),
-              decoration: const InputDecoration(border: OutlineInputBorder()),
-            ),
+      final updated = await Navigator.of(context).push<String>(
+        MaterialPageRoute(
+          fullscreenDialog: true,
+          builder: (context) => _RemoteTextEditorScreen(
+            fileName: file.filename,
+            controller: controller,
           ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => Navigator.pop(context, controller.text),
-              child: const Text('Save'),
-            ),
-          ],
         ),
       );
       controller.dispose();
@@ -875,11 +974,13 @@ class _FileListTile extends StatelessWidget {
   }
 
   IconData _getFileIcon(String filename) {
+    if (isPreviewableImageFileName(filename)) {
+      return Icons.image;
+    }
     final ext = filename.split('.').last.toLowerCase();
     return switch (ext) {
       'txt' || 'md' || 'log' => Icons.description,
       'pdf' => Icons.picture_as_pdf,
-      'jpg' || 'jpeg' || 'png' || 'gif' => Icons.image,
       'mp3' || 'wav' || 'flac' => Icons.audio_file,
       'mp4' || 'mov' || 'avi' => Icons.video_file,
       'zip' || 'tar' || 'gz' || 'rar' => Icons.archive,
@@ -913,6 +1014,125 @@ class _InfoRow extends StatelessWidget {
         ),
         Expanded(child: Text(value)),
       ],
+    ),
+  );
+}
+
+class _RemoteTextEditorScreen extends StatefulWidget {
+  const _RemoteTextEditorScreen({
+    required this.fileName,
+    required this.controller,
+  });
+
+  final String fileName;
+  final TextEditingController controller;
+
+  @override
+  State<_RemoteTextEditorScreen> createState() =>
+      _RemoteTextEditorScreenState();
+}
+
+class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
+  bool _wrapLines = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final editor = TextField(
+      controller: widget.controller,
+      autofocus: true,
+      expands: true,
+      maxLines: null,
+      keyboardType: TextInputType.multiline,
+      textAlignVertical: TextAlignVertical.top,
+      style: const TextStyle(fontFamily: 'monospace'),
+      decoration: const InputDecoration(
+        border: OutlineInputBorder(),
+        alignLabelWithHint: true,
+      ),
+    );
+
+    return Scaffold(
+      appBar: AppBar(
+        title: Text('Edit ${widget.fileName}'),
+        actions: [
+          IconButton(
+            onPressed: () {
+              setState(() {
+                _wrapLines = !_wrapLines;
+              });
+            },
+            icon: const Icon(Icons.wrap_text),
+            tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(context, widget.controller.text),
+            child: const Text('Save'),
+          ),
+        ],
+      ),
+      body: Padding(
+        padding: const EdgeInsets.all(12),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            if (_wrapLines) {
+              return editor;
+            }
+
+            return SingleChildScrollView(
+              scrollDirection: Axis.horizontal,
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minWidth: constraints.maxWidth),
+                child: IntrinsicWidth(
+                  child: SizedBox(height: constraints.maxHeight, child: editor),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _RemoteImageViewerScreen extends StatelessWidget {
+  const _RemoteImageViewerScreen({
+    required this.fileName,
+    required this.bytes,
+    required this.isSvg,
+  });
+
+  final String fileName;
+  final Uint8List bytes;
+  final bool isSvg;
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    backgroundColor: Colors.black,
+    appBar: AppBar(title: Text(fileName)),
+    body: InteractiveViewer(
+      maxScale: 8,
+      minScale: 0.5,
+      child: Center(
+        child: Padding(
+          padding: const EdgeInsets.all(16),
+          child: isSvg
+              ? Container(
+                  color: Colors.white,
+                  padding: const EdgeInsets.all(16),
+                  child: SvgPicture.memory(bytes),
+                )
+              : Image.memory(
+                  bytes,
+                  fit: BoxFit.contain,
+                  errorBuilder: (context, error, stackTrace) => Text(
+                    'Could not render image preview',
+                    style: Theme.of(
+                      context,
+                    ).textTheme.bodyMedium?.copyWith(color: Colors.white),
+                  ),
+                ),
+        ),
+      ),
     ),
   );
 }

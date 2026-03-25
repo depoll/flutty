@@ -24,5 +24,17 @@ void main() {
         '/tmp',
       ]);
     });
+
+    test('detects previewable image file names including svg', () {
+      expect(isPreviewableImageFileName('screenshot.png'), isTrue);
+      expect(isPreviewableImageFileName('diagram.svg'), isTrue);
+      expect(isPreviewableImageFileName('notes.txt'), isFalse);
+    });
+
+    test('detects svg file names', () {
+      expect(isSvgFileName('diagram.svg'), isTrue);
+      expect(isSvgFileName('diagram.SVG'), isTrue);
+      expect(isSvgFileName('diagram.png'), isFalse);
+    });
   });
 }
