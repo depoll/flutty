@@ -1048,9 +1048,32 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
     super.dispose();
   }
 
+  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
+    final longestLine = widget.controller.text
+        .split('\n')
+        .fold<String>(
+          '',
+          (widest, line) => line.length > widest.length ? line : widest,
+        );
+
+    if (longestLine.isEmpty) {
+      return 0;
+    }
+
+    final painter = TextPainter(
+      text: TextSpan(text: longestLine, style: style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+
+    return painter.width + 32;
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    const editorTextStyle = TextStyle(fontFamily: 'monospace');
     final editor = TextField(
       controller: widget.controller,
       autofocus: true,
@@ -1058,7 +1081,7 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
       maxLines: null,
       keyboardType: TextInputType.multiline,
       textAlignVertical: TextAlignVertical.top,
-      style: const TextStyle(fontFamily: 'monospace'),
+      style: editorTextStyle,
       decoration: const InputDecoration(
         border: InputBorder.none,
         isCollapsed: true,
@@ -1106,8 +1129,17 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
                     );
                   }
 
+                  final measuredContentWidth = _measureUnwrappedContentWidth(
+                    context,
+                    editorTextStyle,
+                  );
+                  final viewportWidth = constraints.maxWidth;
+                  final contentWidth = measuredContentWidth > viewportWidth
+                      ? measuredContentWidth
+                      : viewportWidth;
+
                   return SizedBox(
-                    width: constraints.maxWidth,
+                    width: viewportWidth,
                     height: constraints.maxHeight,
                     child: ClipRect(
                       child: Scrollbar(
@@ -1118,16 +1150,10 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
                         child: SingleChildScrollView(
                           controller: _horizontalScrollController,
                           scrollDirection: Axis.horizontal,
-                          child: ConstrainedBox(
-                            constraints: BoxConstraints(
-                              minWidth: constraints.maxWidth,
-                            ),
-                            child: IntrinsicWidth(
-                              child: SizedBox(
-                                height: constraints.maxHeight,
-                                child: editor,
-                              ),
-                            ),
+                          child: SizedBox(
+                            width: contentWidth,
+                            height: constraints.maxHeight,
+                            child: editor,
                           ),
                         ),
                       ),
