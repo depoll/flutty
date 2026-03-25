@@ -26,6 +26,9 @@ typedef TerminalTextInputReviewTextBuilder =
       String currentText,
     );
 
+/// Resolves the current terminal text that appears before the cursor.
+typedef TerminalTextBeforeCursorResolver = String? Function();
+
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
 /// Touch input should only open the keyboard after a tap-like gesture. Scrolls
@@ -94,6 +97,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.onUserInput,
     this.onReviewInsertedText,
     this.buildReviewTextForInsertedText,
+    this.resolveTextBeforeCursor,
     this.readOnly = false,
     super.key,
   });
@@ -124,6 +128,12 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Builds the command text that should be reviewed for suspicious IME input.
   final TerminalTextInputReviewTextBuilder? buildReviewTextForInsertedText;
+
+  /// Resolves the current terminal text before the cursor.
+  ///
+  /// This lets the IME handler distinguish a stray leading swipe space from the
+  /// only separator needed between existing terminal text and the next word.
+  final TerminalTextBeforeCursorResolver? resolveTextBeforeCursor;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -451,10 +461,26 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (_sawImeComposition &&
         sanitizedText.startsWith(' ') &&
         !sanitizedText.startsWith('  ') &&
-        sanitizedText.trimLeft().isNotEmpty) {
+        sanitizedText.trimLeft().isNotEmpty &&
+        _shouldTrimLeadingSwipeSpace()) {
       return sanitizedText.substring(1);
     }
     return sanitizedText;
+  }
+
+  bool _shouldTrimLeadingSwipeSpace() {
+    final textBeforeCursor = widget.resolveTextBeforeCursor?.call();
+    if (textBeforeCursor == null || textBeforeCursor.isEmpty) {
+      return true;
+    }
+
+    final trailingCodeUnit = textBeforeCursor.codeUnitAt(
+      textBeforeCursor.length - 1,
+    );
+    return trailingCodeUnit == 0x20 ||
+        trailingCodeUnit == 0x09 ||
+        trailingCodeUnit == 0x0A ||
+        trailingCodeUnit == 0x0D;
   }
 
   int _sendInputDelta(String currentText) {
