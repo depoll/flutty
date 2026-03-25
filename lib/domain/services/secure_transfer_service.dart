@@ -1146,10 +1146,44 @@ class SecureTransferService {
     }
 
     try {
-      return Uint8List.fromList(base64.decode(encodedHostKey));
+      final decoded = Uint8List.fromList(base64.decode(encodedHostKey));
+      if (!_looksLikeKnownHostKeyBlob(decoded)) {
+        return null;
+      }
+      return decoded;
     } on FormatException {
       return null;
     }
+  }
+
+  bool _looksLikeKnownHostKeyBlob(Uint8List hostKeyBytes) {
+    final keyTypeBytes = _readSshBlobString(hostKeyBytes, 0);
+    if (keyTypeBytes == null) {
+      return false;
+    }
+
+    final keyType = utf8.decode(keyTypeBytes, allowMalformed: true);
+    return keyType == 'ssh-rsa' ||
+        keyType == 'ssh-ed25519' ||
+        keyType.startsWith('ecdsa-sha2-');
+  }
+
+  Uint8List? _readSshBlobString(Uint8List bytes, int offset) {
+    if (bytes.length - offset < 4) {
+      return null;
+    }
+
+    final length =
+        (bytes[offset] << 24) |
+        (bytes[offset + 1] << 16) |
+        (bytes[offset + 2] << 8) |
+        bytes[offset + 3];
+    final start = offset + 4;
+    final end = start + length;
+    if (length < 0 || end > bytes.length) {
+      return null;
+    }
+    return Uint8List.sublistView(bytes, start, end);
   }
 
   String _preferKnownHostFingerprint(
