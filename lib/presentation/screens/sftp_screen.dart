@@ -68,6 +68,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     _connect();
   }
 
+  @override
+  void dispose() {
+    _sftp?.close();
+    _sftp = null;
+    super.dispose();
+  }
+
   Future<void> _connect() async {
     setState(() {
       _isLoading = true;
@@ -87,6 +94,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       // Connect if not already connected
       if (session == null) {
         final result = await sessionsNotifier.connect(widget.hostId);
+        if (!mounted) {
+          return;
+        }
         if (!result.success) {
           setState(() {
             _isLoading = false;
@@ -101,6 +111,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
 
       if (session == null) {
+        if (!mounted) {
+          return;
+        }
         setState(() {
           _isLoading = false;
           _error = 'Session not found';
@@ -109,13 +122,28 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
 
       await sessionsNotifier.syncBackgroundStatus();
-      _sftp = await session.sftp();
+      if (!mounted) {
+        return;
+      }
+      final sftp = await session.sftp();
+      if (!mounted) {
+        sftp.close();
+        return;
+      }
+      _sftp?.close();
+      _sftp = sftp;
       _hostLabel = session.config.hostname;
-      final initialPath = await remoteFileService.resolveInitialDirectory(
-        _sftp!,
-      );
+      final initialPath = await remoteFileService.resolveInitialDirectory(sftp);
+      if (!mounted) {
+        sftp.close();
+        _sftp = null;
+        return;
+      }
       await _loadDirectory(initialPath, nextHistory: [initialPath]);
     } on Exception catch (e) {
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _isLoading = false;
         _error = 'SFTP connection failed: $e';
