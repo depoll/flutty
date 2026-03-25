@@ -954,18 +954,24 @@ class _FileListTile extends StatelessWidget {
     final isDirectory = file.attr.isDirectory;
 
     return ListTile(
+      visualDensity: VisualDensity.compact,
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12),
+      minVerticalPadding: 2,
+      minLeadingWidth: 32,
       leading: Icon(
         isDirectory ? Icons.folder : _getFileIcon(file.filename),
         color: isDirectory
             ? theme.colorScheme.primary
             : theme.colorScheme.onSurfaceVariant,
       ),
-      title: Text(file.filename),
+      title: Text(file.filename, maxLines: 1, overflow: TextOverflow.ellipsis),
       subtitle: isDirectory
           ? null
           : Text(
               formatRemoteFileSize(file.attr.size ?? 0),
               style: theme.textTheme.bodySmall,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
             ),
       trailing: isDirectory ? const Icon(Icons.chevron_right, size: 20) : null,
       onTap: onTap,
@@ -1034,9 +1040,17 @@ class _RemoteTextEditorScreen extends StatefulWidget {
 
 class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   bool _wrapLines = false;
+  final ScrollController _horizontalScrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _horizontalScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final editor = TextField(
       controller: widget.controller,
       autofocus: true,
@@ -1046,8 +1060,8 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
       textAlignVertical: TextAlignVertical.top,
       style: const TextStyle(fontFamily: 'monospace'),
       decoration: const InputDecoration(
-        border: OutlineInputBorder(),
-        alignLabelWithHint: true,
+        border: InputBorder.none,
+        isCollapsed: true,
       ),
     );
 
@@ -1072,22 +1086,47 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
       ),
       body: Padding(
         padding: const EdgeInsets.all(12),
-        child: LayoutBuilder(
-          builder: (context, constraints) {
-            if (_wrapLines) {
-              return editor;
-            }
+        child: DecoratedBox(
+          decoration: ShapeDecoration(
+            shape: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(4),
+              borderSide: BorderSide(color: theme.colorScheme.outline),
+            ),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                if (_wrapLines) {
+                  return editor;
+                }
 
-            return SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minWidth: constraints.maxWidth),
-                child: IntrinsicWidth(
-                  child: SizedBox(height: constraints.maxHeight, child: editor),
-                ),
-              ),
-            );
-          },
+                return ClipRect(
+                  child: Scrollbar(
+                    controller: _horizontalScrollController,
+                    thumbVisibility: true,
+                    notificationPredicate: (notification) =>
+                        notification.metrics.axis == Axis.horizontal,
+                    child: SingleChildScrollView(
+                      controller: _horizontalScrollController,
+                      scrollDirection: Axis.horizontal,
+                      child: ConstrainedBox(
+                        constraints: BoxConstraints(
+                          minWidth: constraints.maxWidth,
+                        ),
+                        child: IntrinsicWidth(
+                          child: SizedBox(
+                            height: constraints.maxHeight,
+                            child: editor,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
         ),
       ),
     );
