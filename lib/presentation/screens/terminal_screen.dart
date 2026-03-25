@@ -1206,6 +1206,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+    if (!mounted) {
+      return;
+    }
     _dismissNativeSelectionOverlayForEditing();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
@@ -1820,6 +1823,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _dismissNativeSelectionOverlayForEditing() {
+    if (!mounted) {
+      return;
+    }
+
     if (!_isNativeSelectionMode) {
       return;
     }
