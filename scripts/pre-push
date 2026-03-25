@@ -1,0 +1,15 @@
+#!/bin/bash
+# Pre-push hook for Flutty
+# Install via scripts/setup.sh or copy into "$(git rev-parse --git-path hooks)".
+
+set -euo pipefail
+
+echo 'Running pre-push checks...'
+
+echo 'Running analyzer...'
+flutter analyze --fatal-infos --no-pub
+
+echo 'Running tests...'
+flutter test --no-pub
+
+echo 'Pre-push checks passed!'
