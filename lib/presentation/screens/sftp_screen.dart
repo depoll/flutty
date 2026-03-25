@@ -16,6 +16,7 @@ import '../../domain/services/ssh_service.dart';
 
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
+const _unwrappedEditorTrailingSlack = 24.0;
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -62,6 +63,46 @@ bool isPreviewableImageFileName(String filename) {
 @visibleForTesting
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
+
+/// Measures the width needed to display unwrapped editor lines without clipping.
+@visibleForTesting
+double measureUnwrappedEditorContentWidth({
+  required Iterable<String> lines,
+  required TextStyle style,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+  double trailingSlack = _unwrappedEditorTrailingSlack,
+  double Function(String line, TextStyle style)? measureLineWidth,
+}) {
+  final painter = measureLineWidth == null
+      ? TextPainter(
+          textDirection: textDirection,
+          textScaler: textScaler,
+          maxLines: 1,
+        )
+      : null;
+  var maxWidth = 0.0;
+  var hasVisibleText = false;
+
+  for (final line in lines) {
+    if (line.isEmpty) {
+      continue;
+    }
+
+    hasVisibleText = true;
+    final lineWidth =
+        measureLineWidth?.call(line, style) ??
+        (painter!
+              ..text = TextSpan(text: line, style: style)
+              ..layout())
+            .width;
+    if (lineWidth > maxWidth) {
+      maxWidth = lineWidth;
+    }
+  }
+
+  return hasVisibleText ? maxWidth + trailingSlack : 0;
+}
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
@@ -1043,32 +1084,42 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
   final ScrollController _horizontalScrollController = ScrollController();
 
   @override
+  void initState() {
+    super.initState();
+    widget.controller.addListener(_handleControllerChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant _RemoteTextEditorScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.controller == widget.controller) {
+      return;
+    }
+    oldWidget.controller.removeListener(_handleControllerChanged);
+    widget.controller.addListener(_handleControllerChanged);
+  }
+
+  @override
   void dispose() {
+    widget.controller.removeListener(_handleControllerChanged);
     _horizontalScrollController.dispose();
     super.dispose();
   }
 
-  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
-    final longestLine = widget.controller.text
-        .split('\n')
-        .fold<String>(
-          '',
-          (widest, line) => line.length > widest.length ? line : widest,
-        );
-
-    if (longestLine.isEmpty) {
-      return 0;
+  void _handleControllerChanged() {
+    if (_wrapLines || !mounted) {
+      return;
     }
-
-    final painter = TextPainter(
-      text: TextSpan(text: longestLine, style: style),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      maxLines: 1,
-    )..layout();
-
-    return painter.width + 32;
+    setState(() {});
   }
+
+  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) =>
+      measureUnwrappedEditorContentWidth(
+        lines: widget.controller.text.split('\n'),
+        style: style,
+        textDirection: Directionality.of(context),
+        textScaler: MediaQuery.textScalerOf(context),
+      );
 
   @override
   Widget build(BuildContext context) {
