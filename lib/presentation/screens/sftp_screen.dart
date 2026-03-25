@@ -1086,45 +1086,47 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
       ),
       body: Padding(
         padding: const EdgeInsets.all(12),
-        child: DecoratedBox(
-          decoration: ShapeDecoration(
-            shape: OutlineInputBorder(
-              borderRadius: BorderRadius.circular(4),
-              borderSide: BorderSide(color: theme.colorScheme.outline),
+        child: SizedBox.expand(
+          child: DecoratedBox(
+            decoration: ShapeDecoration(
+              shape: OutlineInputBorder(
+                borderRadius: BorderRadius.circular(4),
+                borderSide: BorderSide(color: theme.colorScheme.outline),
+              ),
             ),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                if (_wrapLines) {
-                  return editor;
-                }
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  if (_wrapLines) {
+                    return editor;
+                  }
 
-                return ClipRect(
-                  child: Scrollbar(
-                    controller: _horizontalScrollController,
-                    thumbVisibility: true,
-                    notificationPredicate: (notification) =>
-                        notification.metrics.axis == Axis.horizontal,
-                    child: SingleChildScrollView(
+                  return ClipRect(
+                    child: Scrollbar(
                       controller: _horizontalScrollController,
-                      scrollDirection: Axis.horizontal,
-                      child: ConstrainedBox(
-                        constraints: BoxConstraints(
-                          minWidth: constraints.maxWidth,
-                        ),
-                        child: IntrinsicWidth(
-                          child: SizedBox(
-                            height: constraints.maxHeight,
-                            child: editor,
+                      thumbVisibility: true,
+                      notificationPredicate: (notification) =>
+                          notification.metrics.axis == Axis.horizontal,
+                      child: SingleChildScrollView(
+                        controller: _horizontalScrollController,
+                        scrollDirection: Axis.horizontal,
+                        child: ConstrainedBox(
+                          constraints: BoxConstraints(
+                            minWidth: constraints.maxWidth,
+                          ),
+                          child: IntrinsicWidth(
+                            child: SizedBox(
+                              height: constraints.maxHeight,
+                              child: editor,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                  ),
-                );
-              },
+                  );
+                },
+              ),
             ),
           ),
         ),
