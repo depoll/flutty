@@ -373,7 +373,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final TextEditingController _nativeSelectionController;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
-  final _toolbarKey = GlobalKey<KeyboardToolbarState>();
+  final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
   bool _isConnecting = true;
@@ -870,32 +870,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // Apply toolbar modifier state to system keyboard input.
       // When the user toggles Ctrl on the toolbar then types on the system
       // keyboard, we convert the character to the corresponding control code.
-      final toolbar = _toolbarKey.currentState;
-      if (toolbar != null && output.length == 1) {
-        if (toolbar.isCtrlActive) {
-          final codeUnit = output.codeUnitAt(0);
-          int? ctrlCode;
-          if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
-            // 'a'–'z' → 0x01–0x1A
-            ctrlCode = codeUnit - 0x60;
-          } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
-            // '@'–'_' (includes A–Z) → 0x00–0x1F
-            ctrlCode = codeUnit - 0x40;
-          } else if (codeUnit == 0x20) {
-            ctrlCode = 0x00; // Ctrl+Space → NUL
-          } else if (codeUnit == 0x3F) {
-            ctrlCode = 0x7F; // Ctrl+? → DEL
-          }
-          if (ctrlCode != null) {
-            output = String.fromCharCode(ctrlCode);
-          }
-          toolbar.consumeOneShot();
-        } else if (toolbar.isAltActive) {
-          // Alt sends ESC prefix
-          output = '\x1b$output';
-          toolbar.consumeOneShot();
-        }
-      }
+      output = _toolbarController.applySystemKeyboardModifiers(output);
 
       _shell?.write(utf8.encode(output));
     };
@@ -1084,6 +1059,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
+    _toolbarController.dispose();
     super.dispose();
   }
 
@@ -1327,7 +1303,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
           if (_showKeyboard && (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
-              key: _toolbarKey,
+              controller: _toolbarController,
               terminal: _terminal,
               onKeyPressed: _followLiveOutput,
               terminalFocusNode: _terminalFocusNode,
@@ -1644,6 +1620,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onUserInput: _followLiveOutput,
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
+      resolveTextBeforeCursor: _terminalTextBeforeCursor,
       readOnly: _showsNativeSelectionOverlay,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
@@ -2127,6 +2104,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cursorOffset =
         rowStarts[rowIndex] + columnOffsets[rowIndex][cursorColumn];
     return (text: builder.toString(), cursorOffset: cursorOffset);
+  }
+
+  String? _terminalTextBeforeCursor() {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return null;
+    }
+    return snapshot.text.substring(0, snapshot.cursorOffset);
   }
 
   void _handleTerminalLinkTap(String link) {

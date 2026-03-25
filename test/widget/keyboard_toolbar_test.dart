@@ -58,6 +58,38 @@ void main() {
       await tester.pumpAndSettle();
     });
 
+    testWidgets(
+      'controller preserves Ctrl state across toolbar rebuilds for system keyboard input',
+      (tester) async {
+        final controller = KeyboardToolbarController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: KeyboardToolbar(terminal: terminal, controller: controller),
+            ),
+          ),
+        );
+
+        await tester.tap(find.text('Ctrl'));
+        await tester.pump();
+
+        expect(controller.isCtrlActive, isTrue);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: KeyboardToolbar(terminal: terminal, controller: controller),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        expect(controller.applySystemKeyboardModifiers('b'), '\u0002');
+        expect(controller.isCtrlActive, isFalse);
+      },
+    );
+
     testWidgets('calls onKeyPressed callback', (tester) async {
       var callCount = 0;
 

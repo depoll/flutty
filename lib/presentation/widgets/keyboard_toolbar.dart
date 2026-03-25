@@ -12,40 +12,29 @@ import 'package:xterm/xterm.dart';
 bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
     mediaQuery.viewInsets.bottom == 0;
 
-/// Compact keyboard toolbar for terminal input.
-///
-/// Features:
-/// - Modifier keys (Ctrl, Alt, Shift) with toggle/lock functionality
-/// - Navigation keys (arrows, Home, End, PgUp, PgDn)
-/// - Special keys (Esc, Tab, Enter, pipe, etc.)
-/// - Haptic feedback
-class KeyboardToolbar extends StatefulWidget {
-  /// Creates a new [KeyboardToolbar].
-  const KeyboardToolbar({
-    required this.terminal,
-    this.onKeyPressed,
-    this.terminalFocusNode,
-    super.key,
-  });
+int? _ctrlCodeForCharacter(String text) {
+  if (text.length != 1) {
+    return null;
+  }
 
-  /// The terminal to send input to.
-  final Terminal terminal;
-
-  /// Optional callback when any key is pressed.
-  final VoidCallback? onKeyPressed;
-
-  /// Optional focus node for the terminal. When provided, the toolbar
-  /// re-requests focus after interactions so the soft keyboard stays visible.
-  final FocusNode? terminalFocusNode;
-
-  @override
-  State<KeyboardToolbar> createState() => KeyboardToolbarState();
+  final codeUnit = text.codeUnitAt(0);
+  if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
+    return codeUnit - 0x60;
+  }
+  if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
+    return codeUnit - 0x40;
+  }
+  if (codeUnit == 0x20) {
+    return 0x00;
+  }
+  if (codeUnit == 0x3F) {
+    return 0x7F;
+  }
+  return null;
 }
 
-/// State for [KeyboardToolbar], exposed so the terminal screen can query
-/// active modifier state for system keyboard input.
-class KeyboardToolbarState extends State<KeyboardToolbar> {
-  // Modifier states: null = off, false = one-shot, true = locked
+/// Stores the toolbar modifier state independently of the widget lifecycle.
+class KeyboardToolbarController extends ChangeNotifier {
   bool? _ctrlState;
   bool? _altState;
   bool? _shiftState;
@@ -59,8 +48,172 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   /// Whether Shift is currently active (one-shot or locked).
   bool get isShiftActive => _shiftState != null;
 
-  /// Consumes one-shot modifiers (call after applying them).
-  void consumeOneShot() => _consumeOneShot();
+  /// Toggles Ctrl between off and one-shot mode.
+  void toggleCtrl() => _toggleModifier(_Modifier.ctrl);
+
+  /// Toggles Alt between off and one-shot mode.
+  void toggleAlt() => _toggleModifier(_Modifier.alt);
+
+  /// Toggles Shift between off and one-shot mode.
+  void toggleShift() => _toggleModifier(_Modifier.shift);
+
+  /// Locks or unlocks Ctrl.
+  void lockCtrl() => _lockModifier(_Modifier.ctrl);
+
+  /// Locks or unlocks Alt.
+  void lockAlt() => _lockModifier(_Modifier.alt);
+
+  /// Locks or unlocks Shift.
+  void lockShift() => _lockModifier(_Modifier.shift);
+
+  /// Clears any one-shot modifiers while preserving locked modifiers.
+  void consumeOneShot() {
+    final changed = switch ((_ctrlState, _altState, _shiftState)) {
+      (false, _, _) || (_, false, _) || (_, _, false) => true,
+      _ => false,
+    };
+    if (!changed) {
+      return;
+    }
+
+    if (_ctrlState case false) {
+      _ctrlState = null;
+    }
+    if (_altState case false) {
+      _altState = null;
+    }
+    if (_shiftState case false) {
+      _shiftState = null;
+    }
+    notifyListeners();
+  }
+
+  /// Applies toolbar modifiers to a single system-keyboard text payload.
+  ///
+  /// This is used for soft-keyboard characters that reach the terminal through
+  /// the regular text-input path instead of toolbar buttons or hardware keys.
+  String applySystemKeyboardModifiers(String text) {
+    if (text.length != 1) {
+      return text;
+    }
+
+    var output = text;
+    var shouldConsume = false;
+
+    if (_ctrlState != null) {
+      final ctrlCode = _ctrlCodeForCharacter(output);
+      if (ctrlCode != null) {
+        output = String.fromCharCode(ctrlCode);
+      }
+      shouldConsume = true;
+    } else if (_altState != null) {
+      output = '\x1b$output';
+      shouldConsume = true;
+    }
+
+    if (shouldConsume) {
+      consumeOneShot();
+    }
+
+    return output;
+  }
+
+  void _toggleModifier(_Modifier mod) {
+    switch (mod) {
+      case _Modifier.ctrl:
+        _ctrlState = _ctrlState == null ? false : null;
+      case _Modifier.alt:
+        _altState = _altState == null ? false : null;
+      case _Modifier.shift:
+        _shiftState = _shiftState == null ? false : null;
+    }
+    notifyListeners();
+  }
+
+  void _lockModifier(_Modifier mod) {
+    switch (mod) {
+      case _Modifier.ctrl:
+        _ctrlState = _ctrlState ?? false ? null : true;
+      case _Modifier.alt:
+        _altState = _altState ?? false ? null : true;
+      case _Modifier.shift:
+        _shiftState = _shiftState ?? false ? null : true;
+    }
+    notifyListeners();
+  }
+}
+
+/// Compact keyboard toolbar for terminal input.
+///
+/// Features:
+/// - Modifier keys (Ctrl, Alt, Shift) with toggle/lock functionality
+/// - Navigation keys (arrows, Home, End, PgUp, PgDn)
+/// - Special keys (Esc, Tab, Enter, pipe, etc.)
+/// - Haptic feedback
+class KeyboardToolbar extends StatefulWidget {
+  /// Creates a new [KeyboardToolbar].
+  const KeyboardToolbar({
+    required this.terminal,
+    this.controller,
+    this.onKeyPressed,
+    this.terminalFocusNode,
+    super.key,
+  });
+
+  /// The terminal to send input to.
+  final Terminal terminal;
+
+  /// Optional controller that keeps modifier state stable across rebuilds.
+  final KeyboardToolbarController? controller;
+
+  /// Optional callback when any key is pressed.
+  final VoidCallback? onKeyPressed;
+
+  /// Optional focus node for the terminal. When provided, the toolbar
+  /// re-requests focus after interactions so the soft keyboard stays visible.
+  final FocusNode? terminalFocusNode;
+
+  @override
+  State<KeyboardToolbar> createState() => KeyboardToolbarState();
+}
+
+/// State for [KeyboardToolbar].
+class KeyboardToolbarState extends State<KeyboardToolbar> {
+  late final KeyboardToolbarController _fallbackController;
+
+  KeyboardToolbarController get _controller =>
+      widget.controller ?? _fallbackController;
+
+  @override
+  void initState() {
+    super.initState();
+    _fallbackController = KeyboardToolbarController();
+    _controller.addListener(_handleControllerChanged);
+  }
+
+  @override
+  void didUpdateWidget(covariant KeyboardToolbar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final previousController = oldWidget.controller ?? _fallbackController;
+    final nextController = _controller;
+    if (!identical(previousController, nextController)) {
+      previousController.removeListener(_handleControllerChanged);
+      nextController.addListener(_handleControllerChanged);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.removeListener(_handleControllerChanged);
+    _fallbackController.dispose();
+    super.dispose();
+  }
+
+  void _handleControllerChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
 
   /// Re-requests focus on the terminal so the soft keyboard stays visible.
   void _refocusTerminal() {
@@ -101,21 +254,21 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       _ToolbarButton(label: 'Tab', onTap: _sendTab, onLongPressStart: _sendTab),
       _ModifierButton(
         label: 'Ctrl',
-        state: _ctrlState,
-        onTap: () => _toggleModifier(_Modifier.ctrl),
-        onDoubleTap: () => _lockModifier(_Modifier.ctrl),
+        state: _controller._ctrlState,
+        onTap: _toggleCtrl,
+        onDoubleTap: _lockCtrl,
       ),
       _ModifierButton(
         label: 'Alt',
-        state: _altState,
-        onTap: () => _toggleModifier(_Modifier.alt),
-        onDoubleTap: () => _lockModifier(_Modifier.alt),
+        state: _controller._altState,
+        onTap: _toggleAlt,
+        onDoubleTap: _lockAlt,
       ),
       _ModifierButton(
         label: 'Shift',
-        state: _shiftState,
-        onTap: () => _toggleModifier(_Modifier.shift),
-        onDoubleTap: () => _lockModifier(_Modifier.shift),
+        state: _controller._shiftState,
+        onTap: _toggleShift,
+        onDoubleTap: _lockShift,
       ),
       _ToolbarButton(label: '|', onTap: () => _sendText('|')),
       _ToolbarButton(label: '/', onTap: () => _sendText('/')),
@@ -189,42 +342,44 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     ],
   );
 
-  void _toggleModifier(_Modifier mod) {
+  void _toggleCtrl() {
     HapticFeedback.selectionClick();
-    setState(() {
-      switch (mod) {
-        case _Modifier.ctrl:
-          _ctrlState = _ctrlState == null ? false : null;
-        case _Modifier.alt:
-          _altState = _altState == null ? false : null;
-        case _Modifier.shift:
-          _shiftState = _shiftState == null ? false : null;
-      }
-    });
+    _controller.toggleCtrl();
     _refocusTerminal();
   }
 
-  void _lockModifier(_Modifier mod) {
+  void _toggleAlt() {
+    HapticFeedback.selectionClick();
+    _controller.toggleAlt();
+    _refocusTerminal();
+  }
+
+  void _toggleShift() {
+    HapticFeedback.selectionClick();
+    _controller.toggleShift();
+    _refocusTerminal();
+  }
+
+  void _lockCtrl() {
     HapticFeedback.mediumImpact();
-    setState(() {
-      switch (mod) {
-        case _Modifier.ctrl:
-          _ctrlState = _ctrlState ?? false ? null : true;
-        case _Modifier.alt:
-          _altState = _altState ?? false ? null : true;
-        case _Modifier.shift:
-          _shiftState = _shiftState ?? false ? null : true;
-      }
-    });
+    _controller.lockCtrl();
+    _refocusTerminal();
+  }
+
+  void _lockAlt() {
+    HapticFeedback.mediumImpact();
+    _controller.lockAlt();
+    _refocusTerminal();
+  }
+
+  void _lockShift() {
+    HapticFeedback.mediumImpact();
+    _controller.lockShift();
     _refocusTerminal();
   }
 
   void _consumeOneShot() {
-    setState(() {
-      if (_ctrlState case false) _ctrlState = null;
-      if (_altState case false) _altState = null;
-      if (_shiftState case false) _shiftState = null;
-    });
+    _controller.consumeOneShot();
     _refocusTerminal();
   }
 
@@ -237,17 +392,13 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     // remote terminal's escape-sequence parser times out the bare ESC
     // before the next keystroke can arrive and be misinterpreted as
     // Alt+<key>.
-    setState(() {
-      if (_ctrlState case false) _ctrlState = null;
-      if (_altState case false) _altState = null;
-      if (_shiftState case false) _shiftState = null;
-    });
+    _controller.consumeOneShot();
     Future<void>.delayed(const Duration(milliseconds: 100), _refocusTerminal);
   }
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    if (_shiftState != null) {
+    if (_controller.isShiftActive) {
       // Only the toolbar's explicit Shift modifier should turn Tab into
       // reverse-tab. The system keyboard can keep Shift latched after typing an
       // uppercase character, and that should not block shell completion.
@@ -271,30 +422,19 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     HapticFeedback.lightImpact();
     var output = text;
 
-    if (_ctrlState != null && text.length == 1) {
-      // Convert to control character
-      final codeUnit = text.codeUnitAt(0);
-      int? ctrlCode;
-      if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
-        ctrlCode = codeUnit - 0x60;
-      } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
-        ctrlCode = codeUnit - 0x40;
-      } else if (codeUnit == 0x20) {
-        ctrlCode = 0x00;
-      } else if (codeUnit == 0x3F) {
-        ctrlCode = 0x7F;
-      }
+    if (_controller.isCtrlActive) {
+      final ctrlCode = _ctrlCodeForCharacter(output);
       if (ctrlCode != null) {
         output = String.fromCharCode(ctrlCode);
       }
     }
 
-    if (_altState != null) {
+    if (_controller.isAltActive) {
       // Alt/Meta sends ESC prefix
       output = '\x1b$output';
     }
 
-    if (_shiftState != null) {
+    if (_controller.isShiftActive) {
       output = output.toUpperCase();
     }
 
@@ -348,9 +488,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   String _getModifierPrefix() {
     var mod = 1;
-    if (_shiftState != null) mod += 1;
-    if (_altState != null) mod += 2;
-    if (_ctrlState != null) mod += 4;
+    if (_controller.isShiftActive) mod += 1;
+    if (_controller.isAltActive) mod += 2;
+    if (_controller.isCtrlActive) mod += 4;
     return mod > 1 ? '$mod' : '';
   }
 }
