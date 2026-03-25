@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+cd "$REPO_ROOT"
+
 echo 'Running pre-commit checks...'
 
 staged_dart_files=()
@@ -21,7 +25,7 @@ echo 'Checking formatting...'
 dart format --output=none --set-exit-if-changed "${staged_dart_files[@]}"
 
 echo 'Running analyzer on staged Dart files...'
-flutter analyze --fatal-infos --no-pub "${staged_dart_files[@]}"
+flutter analyze --fatal-warnings --fatal-infos --no-pub "${staged_dart_files[@]}"
 
 echo 'Skipping tests in pre-commit; full checks run in pre-push.'
 echo 'Pre-commit checks passed!'

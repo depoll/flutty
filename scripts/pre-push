@@ -4,10 +4,14 @@
 
 set -euo pipefail
 
+REPO_ROOT=$(git rev-parse --show-toplevel)
+
+cd "$REPO_ROOT"
+
 echo 'Running pre-push checks...'
 
 echo 'Running analyzer...'
-flutter analyze --fatal-infos --no-pub
+flutter analyze --fatal-warnings --fatal-infos --no-pub
 
 echo 'Running tests...'
 flutter test --no-pub
