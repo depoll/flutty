@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:drift/drift.dart' hide isNull;
 import 'package:drift/native.dart';
@@ -10,6 +11,7 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 
 void main() {
@@ -670,6 +672,244 @@ void main() {
       },
     );
 
+    test(
+      'merge import replaces an older known-host entry with newer trust data',
+      () async {
+        final existingFirstSeen = DateTime.utc(2024);
+        final existingLastSeen = DateTime.utc(2024, 1, 2);
+        final existingKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [1, 2, 3, 4],
+          firstSeen: existingFirstSeen,
+          lastSeen: existingLastSeen,
+        );
+        await db.into(db.knownHosts).insert(existingKnownHost.toCompanion());
+
+        final importedFirstSeen = DateTime.utc(2024, 2);
+        final importedLastSeen = DateTime.utc(2024, 2, 2);
+        final importedKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [9, 8, 7, 6],
+          firstSeen: importedFirstSeen,
+          lastSeen: importedLastSeen,
+        );
+
+        await transferService.importFullMigrationPayload(
+          payload: TransferPayload(
+            type: TransferPayloadType.fullMigration,
+            schemaVersion: 1,
+            createdAt: DateTime.now().toUtc(),
+            data: {
+              'knownHosts': [importedKnownHost.toJson()],
+            },
+          ),
+          mode: MigrationImportMode.merge,
+        );
+
+        final storedKnownHost =
+            await (db.select(db.knownHosts)..where(
+                  (knownHost) =>
+                      knownHost.hostname.equals('shared.example.com'),
+                ))
+                .getSingle();
+        expect(storedKnownHost.hostKey, importedKnownHost.hostKey);
+        expect(storedKnownHost.fingerprint, importedKnownHost.fingerprint);
+        expect(storedKnownHost.firstSeen.toUtc(), importedFirstSeen);
+        expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
+      },
+    );
+
+    test(
+      'merge import preserves a newer local known-host entry when import is older',
+      () async {
+        final existingFirstSeen = DateTime.utc(2024, 2);
+        final existingLastSeen = DateTime.utc(2024, 2, 2);
+        final existingKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [9, 8, 7, 6],
+          firstSeen: existingFirstSeen,
+          lastSeen: existingLastSeen,
+        );
+        await db.into(db.knownHosts).insert(existingKnownHost.toCompanion());
+
+        final importedKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [1, 2, 3, 4],
+          firstSeen: DateTime.utc(2024),
+          lastSeen: DateTime.utc(2024, 1, 2),
+        );
+
+        await transferService.importFullMigrationPayload(
+          payload: TransferPayload(
+            type: TransferPayloadType.fullMigration,
+            schemaVersion: 1,
+            createdAt: DateTime.now().toUtc(),
+            data: {
+              'knownHosts': [importedKnownHost.toJson()],
+            },
+          ),
+          mode: MigrationImportMode.merge,
+        );
+
+        final storedKnownHost =
+            await (db.select(db.knownHosts)..where(
+                  (knownHost) =>
+                      knownHost.hostname.equals('shared.example.com'),
+                ))
+                .getSingle();
+        expect(storedKnownHost.hostKey, existingKnownHost.hostKey);
+        expect(storedKnownHost.fingerprint, existingKnownHost.fingerprint);
+        expect(storedKnownHost.firstSeen.toUtc(), existingFirstSeen);
+        expect(storedKnownHost.lastSeen.toUtc(), existingLastSeen);
+      },
+    );
+
+    test('imports fingerprint-only legacy known-host rows', () async {
+      const importedFingerprint = 'SHA256:legacyFingerprintOnlyRow';
+      final importedFirstSeen = DateTime.utc(2024, 3);
+      final importedLastSeen = DateTime.utc(2024, 3, 2);
+
+      await transferService.importFullMigrationPayload(
+        payload: TransferPayload(
+          type: TransferPayloadType.fullMigration,
+          schemaVersion: 1,
+          createdAt: DateTime.now().toUtc(),
+          data: {
+            'knownHosts': [
+              {
+                'hostname': 'legacy.example.com',
+                'port': 2222,
+                'keyType': 'ssh-ed25519',
+                'fingerprint': importedFingerprint,
+                'hostKey': '',
+                'firstSeen': importedFirstSeen.toIso8601String(),
+                'lastSeen': importedLastSeen.toIso8601String(),
+              },
+            ],
+          },
+        ),
+        mode: MigrationImportMode.merge,
+      );
+
+      final storedKnownHost =
+          await (db.select(db.knownHosts)..where(
+                (knownHost) => knownHost.hostname.equals('legacy.example.com'),
+              ))
+              .getSingle();
+      expect(storedKnownHost.port, 2222);
+      expect(storedKnownHost.keyType, 'ssh-ed25519');
+      expect(storedKnownHost.fingerprint, importedFingerprint);
+      expect(storedKnownHost.hostKey, isEmpty);
+      expect(storedKnownHost.firstSeen.toUtc(), importedFirstSeen);
+      expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
+    });
+
+    test(
+      'merge import falls back to fingerprint-only trust for malformed host keys',
+      () async {
+        final existingFirstSeen = DateTime.utc(2024);
+        final existingLastSeen = DateTime.utc(2024, 1, 2);
+        final existingKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [1, 2, 3, 4],
+          firstSeen: existingFirstSeen,
+          lastSeen: existingLastSeen,
+        );
+        await db.into(db.knownHosts).insert(existingKnownHost.toCompanion());
+
+        const importedFingerprint = 'SHA256:malformedImportedHostKey';
+        final importedFirstSeen = DateTime.utc(2024, 2);
+        final importedLastSeen = DateTime.utc(2024, 2, 2);
+
+        await transferService.importFullMigrationPayload(
+          payload: TransferPayload(
+            type: TransferPayloadType.fullMigration,
+            schemaVersion: 1,
+            createdAt: DateTime.now().toUtc(),
+            data: {
+              'knownHosts': [
+                {
+                  'hostname': 'shared.example.com',
+                  'port': 22,
+                  'keyType': 'ssh-ed25519',
+                  'fingerprint': importedFingerprint,
+                  'hostKey': 'not base64',
+                  'firstSeen': importedFirstSeen.toIso8601String(),
+                  'lastSeen': importedLastSeen.toIso8601String(),
+                },
+              ],
+            },
+          ),
+          mode: MigrationImportMode.merge,
+        );
+
+        final storedKnownHost =
+            await (db.select(db.knownHosts)..where(
+                  (knownHost) =>
+                      knownHost.hostname.equals('shared.example.com'),
+                ))
+                .getSingle();
+        expect(storedKnownHost.keyType, 'ssh-ed25519');
+        expect(storedKnownHost.fingerprint, importedFingerprint);
+        expect(storedKnownHost.hostKey, isEmpty);
+        expect(storedKnownHost.firstSeen.toUtc(), importedFirstSeen);
+        expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
+      },
+    );
+
+    test(
+      'merge import falls back to fingerprint-only trust for non-host-key base64 blobs',
+      () async {
+        final existingFirstSeen = DateTime.utc(2024);
+        final existingLastSeen = DateTime.utc(2024, 1, 2);
+        final existingKnownHost = _knownHostRecord(
+          hostname: 'shared.example.com',
+          keyData: const [1, 2, 3, 4],
+          firstSeen: existingFirstSeen,
+          lastSeen: existingLastSeen,
+        );
+        await db.into(db.knownHosts).insert(existingKnownHost.toCompanion());
+
+        const importedFingerprint = 'SHA256:decodableButNotHostKey';
+        final importedFirstSeen = DateTime.utc(2024, 2);
+        final importedLastSeen = DateTime.utc(2024, 2, 2);
+
+        await transferService.importFullMigrationPayload(
+          payload: TransferPayload(
+            type: TransferPayloadType.fullMigration,
+            schemaVersion: 1,
+            createdAt: DateTime.now().toUtc(),
+            data: {
+              'knownHosts': [
+                {
+                  'hostname': 'shared.example.com',
+                  'port': 22,
+                  'keyType': 'ssh-ed25519',
+                  'fingerprint': importedFingerprint,
+                  'hostKey': base64.encode(utf8.encode('not-an-ssh-host-key')),
+                  'firstSeen': importedFirstSeen.toIso8601String(),
+                  'lastSeen': importedLastSeen.toIso8601String(),
+                },
+              ],
+            },
+          ),
+          mode: MigrationImportMode.merge,
+        );
+
+        final storedKnownHost =
+            await (db.select(db.knownHosts)..where(
+                  (knownHost) =>
+                      knownHost.hostname.equals('shared.example.com'),
+                ))
+                .getSingle();
+        expect(storedKnownHost.keyType, 'ssh-ed25519');
+        expect(storedKnownHost.fingerprint, importedFingerprint);
+        expect(storedKnownHost.hostKey, isEmpty);
+        expect(storedKnownHost.firstSeen.toUtc(), importedFirstSeen);
+        expect(storedKnownHost.lastSeen.toUtc(), importedLastSeen);
+      },
+    );
+
     test('encrypts and imports key payload roundtrip', () async {
       final keyId = await db
           .into(db.sshKeys)
@@ -757,4 +997,82 @@ void main() {
       },
     );
   });
+}
+
+_KnownHostFixture _knownHostRecord({
+  required String hostname,
+  required List<int> keyData,
+  required DateTime firstSeen,
+  required DateTime lastSeen,
+  int port = 22,
+  String keyType = 'ssh-ed25519',
+}) {
+  final hostKeyBytes = _ed25519HostKeyBlob(keyData);
+  final hostKey = base64.encode(hostKeyBytes);
+  return _KnownHostFixture(
+    hostname: hostname,
+    port: port,
+    keyType: keyType,
+    fingerprint: formatSshHostKeyFingerprint(hostKeyBytes),
+    hostKey: hostKey,
+    firstSeen: firstSeen,
+    lastSeen: lastSeen,
+  );
+}
+
+Uint8List _ed25519HostKeyBlob(List<int> keyData) {
+  final writer = BytesBuilder(copy: false)
+    ..add(_sshString(utf8.encode('ssh-ed25519')))
+    ..add(_sshString(keyData));
+  return writer.takeBytes();
+}
+
+Uint8List _sshString(List<int> bytes) =>
+    Uint8List.fromList([..._uint32(bytes.length), ...bytes]);
+
+Uint8List _uint32(int value) => Uint8List.fromList([
+  (value >> 24) & 0xFF,
+  (value >> 16) & 0xFF,
+  (value >> 8) & 0xFF,
+  value & 0xFF,
+]);
+
+class _KnownHostFixture {
+  const _KnownHostFixture({
+    required this.hostname,
+    required this.port,
+    required this.keyType,
+    required this.fingerprint,
+    required this.hostKey,
+    required this.firstSeen,
+    required this.lastSeen,
+  });
+
+  final String hostname;
+  final int port;
+  final String keyType;
+  final String fingerprint;
+  final String hostKey;
+  final DateTime firstSeen;
+  final DateTime lastSeen;
+
+  KnownHostsCompanion toCompanion() => KnownHostsCompanion.insert(
+    hostname: hostname,
+    port: port,
+    keyType: keyType,
+    fingerprint: fingerprint,
+    hostKey: hostKey,
+    firstSeen: Value(firstSeen),
+    lastSeen: Value(lastSeen),
+  );
+
+  Map<String, dynamic> toJson() => {
+    'hostname': hostname,
+    'port': port,
+    'keyType': keyType,
+    'fingerprint': fingerprint,
+    'hostKey': hostKey,
+    'firstSeen': firstSeen.toIso8601String(),
+    'lastSeen': lastSeen.toIso8601String(),
+  };
 }
