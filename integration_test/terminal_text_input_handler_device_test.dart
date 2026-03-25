@@ -115,6 +115,100 @@ void main() {
     });
 
     testWidgets(
+      'preserves the separator when swipe typing resumes after an input reset',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B world',
+            selection: TextSelection.collapsed(offset: 8),
+            composing: TextRange(start: 2, end: 8),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B world',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), ' world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'does not duplicate the separator when swipe typing resumes after an input reset',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready ',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B world',
+            selection: TextSelection.collapsed(offset: 8),
+            composing: TextRange(start: 2, end: 8),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B world',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'does not force-resync the IME during replacement after deleting a later word',
       (tester) async {
         final terminalOutput = <String>[];

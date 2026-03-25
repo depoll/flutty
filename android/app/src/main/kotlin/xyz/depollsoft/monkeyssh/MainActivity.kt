@@ -3,8 +3,10 @@ package xyz.depollsoft.monkeyssh
 import android.Manifest
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.provider.OpenableColumns
 import androidx.core.content.ContextCompat
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
@@ -14,11 +16,14 @@ import java.io.ByteArrayOutputStream
 class MainActivity : FlutterActivity() {
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
+        private const val MAX_CLIPBOARD_CONTENT_URI_BYTES = 512 * 1024
     }
 
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
+    private val clipboardChannel = "xyz.depollsoft.monkeyssh/clipboard_content"
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
     private val maxTransferPayloadBytes = 10 * 1024 * 1024
+    private var clipboardMethodChannel: MethodChannel? = null
     private var transferMethodChannel: MethodChannel? = null
     private var pendingTransferPayload: String? = null
     private var hasRequestedNotificationPermission = false
@@ -62,6 +67,32 @@ class MainActivity : FlutterActivity() {
                 }
             }
 
+        clipboardMethodChannel = MethodChannel(
+            flutterEngine.dartExecutor.binaryMessenger,
+            clipboardChannel,
+        )
+        clipboardMethodChannel?.setMethodCallHandler { call, result ->
+            when (call.method) {
+                "readContentUri" -> {
+                    val uriString = call.argument<String>("uri")
+                    if (uriString.isNullOrBlank()) {
+                        result.error("invalid_uri", "Clipboard URI was missing", null)
+                        return@setMethodCallHandler
+                    }
+                    try {
+                        result.success(readClipboardContentUri(Uri.parse(uriString)))
+                    } catch (error: Exception) {
+                        result.error(
+                            "clipboard_read_failed",
+                            error.message ?: "Failed to read clipboard URI",
+                            null,
+                        )
+                    }
+                }
+                else -> result.notImplemented()
+            }
+        }
+
         transferMethodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             transferChannel,
@@ -85,6 +116,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        clipboardMethodChannel?.setMethodCallHandler(null)
+        clipboardMethodChannel = null
         transferMethodChannel?.setMethodCallHandler(null)
         transferMethodChannel = null
         super.onDestroy()
@@ -156,5 +189,71 @@ class MainActivity : FlutterActivity() {
     private fun notifyIncomingTransferPayload() {
         val payload = pendingTransferPayload ?: return
         transferMethodChannel?.invokeMethod("onIncomingTransferPayload", payload)
+    }
+
+    private fun readClipboardContentUri(uri: Uri): Map<String, Any> {
+        val displayName = resolveDisplayName(uri) ?: "clipboard-file"
+        val contentLength = resolveContentLength(uri)
+        if (contentLength != null && contentLength > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
+            throw IllegalStateException(
+                "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
+            )
+        }
+        val bytes = contentResolver.openInputStream(uri)?.use { stream ->
+            val buffer = ByteArray(8192)
+            val output = ByteArrayOutputStream()
+            var bytesRead: Int
+            var totalBytes = 0
+            while (stream.read(buffer).also { bytesRead = it } != -1) {
+                totalBytes += bytesRead
+                if (totalBytes > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
+                    throw IllegalStateException(
+                        "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
+                    )
+                }
+                output.write(buffer, 0, bytesRead)
+            }
+            output.toByteArray()
+        } ?: throw IllegalStateException("Could not open clipboard URI")
+        return mapOf(
+            "name" to displayName,
+            "bytes" to bytes,
+        )
+    }
+
+    private fun resolveContentLength(uri: Uri): Long? {
+        if (uri.scheme == "content") {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.SIZE),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val columnIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (columnIndex >= 0 && cursor.moveToFirst() && !cursor.isNull(columnIndex)) {
+                    return cursor.getLong(columnIndex)
+                }
+            }
+        }
+        return null
+    }
+
+    private fun resolveDisplayName(uri: Uri): String? {
+        if (uri.scheme == "content") {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.DISPLAY_NAME),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val columnIndex = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
+                if (columnIndex >= 0 && cursor.moveToFirst()) {
+                    return cursor.getString(columnIndex)
+                }
+            }
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')
     }
 }

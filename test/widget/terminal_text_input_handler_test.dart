@@ -157,6 +157,70 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'preserves the swipe separator after an input reset when text already exists',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+
+        expect(_terminalTextFromEvents(terminalOutput), ' world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a duplicate swipe separator after an input reset when text already ends with whitespace',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready ',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'world');
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('preserves leading spaces for first non-swipe commit', (
       tester,
     ) async {
