@@ -1235,29 +1235,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
-          if (statusChips.isNotEmpty)
-            IconButton(
-              icon: Icon(
-                _showsTerminalMetadata ? Icons.info : Icons.info_outline,
-              ),
-              onPressed: () => setState(
-                () => _showsTerminalMetadata = !_showsTerminalMetadata,
-              ),
-              tooltip: _showsTerminalMetadata
-                  ? 'Hide terminal info'
-                  : 'Show terminal info',
-            ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             onPressed: _connectionId == null
                 ? null
                 : _openConnectionFileBrowser,
             tooltip: 'Browse files',
-          ),
-          IconButton(
-            icon: const Icon(Icons.palette_outlined),
-            onPressed: _showThemePicker,
-            tooltip: 'Change theme',
           ),
           if (isMobile)
             IconButton(
@@ -1282,6 +1265,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
+              const PopupMenuItem(
+                value: 'change_theme',
+                child: Text('Change Theme'),
+              ),
+              if (statusChips.isNotEmpty)
+                PopupMenuItem(
+                  value: 'toggle_terminal_info',
+                  child: Text(
+                    _showsTerminalMetadata
+                        ? 'Hide Terminal Info'
+                        : 'Show Terminal Info',
+                  ),
+                ),
               const PopupMenuDivider(),
               if (!isMobile)
                 PopupMenuItem(
@@ -1717,6 +1713,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     switch (action) {
       case 'snippets':
         await _showSnippetPicker();
+        break;
+      case 'change_theme':
+        unawaited(_showThemePicker());
+        break;
+      case 'toggle_terminal_info':
+        setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
