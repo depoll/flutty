@@ -217,6 +217,17 @@ void main() {
   });
 
   group('shouldShowNativeSelectionOverlay', () {
+    test('keeps overlay hidden until native selection mode is entered', () {
+      expect(
+        shouldShowNativeSelectionOverlay(
+          isNativeSelectionMode: false,
+          routesTouchScrollToTerminal: false,
+          revealOverlayInTouchScrollMode: false,
+        ),
+        isFalse,
+      );
+    });
+
     test(
       'shows overlay when touch scrolling is not routed to the terminal',
       () {
@@ -258,5 +269,43 @@ void main() {
         );
       },
     );
+  });
+
+  group('resolveNativeSelectionOverlayChange', () {
+    test('exits mobile selection mode when selection collapses', () {
+      expect(
+        resolveNativeSelectionOverlayChange(
+          isMobilePlatform: true,
+          isNativeSelectionMode: true,
+          revealOverlayInTouchScrollMode: false,
+          selection: const TextSelection.collapsed(offset: 3),
+        ),
+        NativeSelectionOverlayChange.exitSelectionMode,
+      );
+    });
+
+    test('hides only the temporary tmux overlay when selection collapses', () {
+      expect(
+        resolveNativeSelectionOverlayChange(
+          isMobilePlatform: true,
+          isNativeSelectionMode: true,
+          revealOverlayInTouchScrollMode: true,
+          selection: const TextSelection.collapsed(offset: 3),
+        ),
+        NativeSelectionOverlayChange.hideTemporaryOverlay,
+      );
+    });
+
+    test('keeps overlay state when selection remains expanded', () {
+      expect(
+        resolveNativeSelectionOverlayChange(
+          isMobilePlatform: true,
+          isNativeSelectionMode: true,
+          revealOverlayInTouchScrollMode: false,
+          selection: const TextSelection(baseOffset: 1, extentOffset: 4),
+        ),
+        NativeSelectionOverlayChange.none,
+      );
+    });
   });
 }

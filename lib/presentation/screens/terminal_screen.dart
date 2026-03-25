@@ -276,6 +276,42 @@ bool shouldShowNativeSelectionOverlay({
     isNativeSelectionMode &&
     (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
 
+/// How a native selection change should update the mobile overlay state.
+@visibleForTesting
+enum NativeSelectionOverlayChange {
+  /// Leaves the current overlay and selection mode state unchanged.
+  none,
+
+  /// Hides only the temporary overlay used during tmux touch-selection flows.
+  hideTemporaryOverlay,
+
+  /// Leaves native selection mode entirely so terminal input becomes editable.
+  exitSelectionMode,
+}
+
+/// Resolves how collapsed mobile selections should unwind overlay state.
+@visibleForTesting
+NativeSelectionOverlayChange resolveNativeSelectionOverlayChange({
+  required bool isMobilePlatform,
+  required bool isNativeSelectionMode,
+  required bool revealOverlayInTouchScrollMode,
+  required TextSelection selection,
+}) {
+  if (!isNativeSelectionMode || !selection.isCollapsed) {
+    return NativeSelectionOverlayChange.none;
+  }
+
+  if (revealOverlayInTouchScrollMode) {
+    return NativeSelectionOverlayChange.hideTemporaryOverlay;
+  }
+
+  if (isMobilePlatform) {
+    return NativeSelectionOverlayChange.exitSelectionMode;
+  }
+
+  return NativeSelectionOverlayChange.none;
+}
+
 String? _describeMouseMode(
   MouseMode mouseMode,
   MouseReportMode mouseReportMode,
@@ -488,10 +524,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
     _nativeSelectionController = TextEditingController();
-    _isNativeSelectionMode = _isMobilePlatform;
-    if (_isNativeSelectionMode) {
-      _refreshNativeOverlayText(preserveSelection: false);
-    }
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
@@ -1316,7 +1348,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
-    _dismissTemporaryNativeSelectionOverlay();
+    if (!mounted) {
+      return;
+    }
+    _dismissNativeSelectionOverlayForEditing();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -1910,14 +1945,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TextSelection selection,
     SelectionChangedCause? cause,
   ) {
-    if (!_revealsNativeSelectionOverlayInTouchScrollMode ||
-        !selection.isCollapsed ||
-        !mounted) {
+    if (!mounted) {
       return;
     }
-    setState(() {
-      _revealsNativeSelectionOverlayInTouchScrollMode = false;
-    });
+
+    switch (resolveNativeSelectionOverlayChange(
+      isMobilePlatform: _isMobilePlatform,
+      isNativeSelectionMode: _isNativeSelectionMode,
+      revealOverlayInTouchScrollMode:
+          _revealsNativeSelectionOverlayInTouchScrollMode,
+      selection: selection,
+    )) {
+      case NativeSelectionOverlayChange.none:
+        return;
+      case NativeSelectionOverlayChange.hideTemporaryOverlay:
+        setState(() {
+          _revealsNativeSelectionOverlayInTouchScrollMode = false;
+        });
+        return;
+      case NativeSelectionOverlayChange.exitSelectionMode:
+        _dismissNativeSelectionOverlayForEditing();
+        return;
+    }
   }
 
   void _dismissTemporaryNativeSelectionOverlay() {
@@ -1934,6 +1983,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  void _dismissNativeSelectionOverlayForEditing() {
+    if (!mounted) {
+      return;
+    }
+
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+
+    if (_revealsNativeSelectionOverlayInTouchScrollMode) {
+      _dismissTemporaryNativeSelectionOverlay();
+      return;
+    }
+
+    if (!_isMobilePlatform) {
+      return;
+    }
+
+    _nativeSelectionController.clear();
+    _terminalController.clearSelection();
+    setState(() {
+      _isNativeSelectionMode = false;
+      _hasTerminalSelection = false;
       _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
   }
