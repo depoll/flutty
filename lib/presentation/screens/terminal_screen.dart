@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -7,10 +8,14 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:pasteboard/pasteboard.dart';
+import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
+import '../../app/routes.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
@@ -18,6 +23,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
@@ -33,6 +39,9 @@ const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
 const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
+const _clipboardContentChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/clipboard_content',
+);
 final _terminalLinkPattern = RegExp(
   r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
@@ -412,6 +421,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _isMobilePlatform =>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
+
+  bool get _isAndroidPlatform =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
@@ -1255,22 +1267,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
-          if (statusChips.isNotEmpty)
-            IconButton(
-              icon: Icon(
-                _showsTerminalMetadata ? Icons.info : Icons.info_outline,
-              ),
-              onPressed: () => setState(
-                () => _showsTerminalMetadata = !_showsTerminalMetadata,
-              ),
-              tooltip: _showsTerminalMetadata
-                  ? 'Hide terminal info'
-                  : 'Show terminal info',
-            ),
           IconButton(
-            icon: const Icon(Icons.palette_outlined),
-            onPressed: _showThemePicker,
-            tooltip: 'Change theme',
+            icon: const Icon(Icons.folder_outlined),
+            onPressed: _connectionId == null
+                ? null
+                : _openConnectionFileBrowser,
+            tooltip: 'Browse files',
           ),
           if (isMobile)
             IconButton(
@@ -1295,6 +1297,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
+              const PopupMenuItem(
+                value: 'change_theme',
+                child: Text('Change Theme'),
+              ),
+              if (statusChips.isNotEmpty)
+                PopupMenuItem(
+                  value: 'toggle_terminal_info',
+                  child: Text(
+                    _showsTerminalMetadata
+                        ? 'Hide Terminal Info'
+                        : 'Show Terminal Info',
+                  ),
+                ),
               const PopupMenuDivider(),
               if (!isMobile)
                 PopupMenuItem(
@@ -1717,10 +1732,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _ => null,
       };
 
+  void _openConnectionFileBrowser() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    context.pushNamed(
+      Routes.sftp,
+      pathParameters: {'hostId': widget.hostId.toString()},
+      queryParameters: {'connectionId': connectionId.toString()},
+    );
+  }
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
         await _showSnippetPicker();
+        break;
+      case 'change_theme':
+        unawaited(_showThemePicker());
+        break;
+      case 'toggle_terminal_info':
+        setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
@@ -2244,6 +2277,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(const SnackBar(content: Text('Copied')));
   }
 
+  void _showClipboardMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _copyWorkingDirectory() async {
     final path = _workingDirectoryPath;
     if (path == null || path.isEmpty) {
@@ -2262,35 +2304,294 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(const SnackBar(content: Text('Copied current directory')));
   }
 
+  SshSession? _activeSession() {
+    final connectionId = _connectionId;
+    final sessionsNotifier = _sessionsNotifier;
+    if (connectionId == null || sessionsNotifier == null) {
+      return null;
+    }
+    return sessionsNotifier.getSession(connectionId);
+  }
+
   Future<void> _pasteClipboard() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text;
-    if (text == null || text.isEmpty) {
-      _restoreTerminalFocus();
-      return;
+    try {
+      if (_isAndroidPlatform) {
+        final imageBytes = await Pasteboard.image;
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          await _pasteClipboardImage(imageBytes);
+          return;
+        }
+      }
+
+      final clipboardFiles = await Pasteboard.files();
+      if (clipboardFiles.isNotEmpty) {
+        await _pasteClipboardFiles(clipboardFiles);
+        return;
+      }
+
+      if (!_isAndroidPlatform) {
+        final imageBytes = await Pasteboard.image;
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          await _pasteClipboardImage(imageBytes);
+          return;
+        }
+      }
+
+      final text = await Pasteboard.text;
+      if (text == null || text.isEmpty) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage('Clipboard is empty');
+        return;
+      }
+
+      final shouldPaste = await _confirmTerminalInsertionIfNeeded(
+        insertedText: text,
+        buildReview: (commandText) => assessClipboardPasteCommand(
+          commandText,
+          bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+        ),
+        title: 'Review clipboard paste',
+        messageBuilder: (review) => review.bracketedPasteModeEnabled
+            ? 'This clipboard content looks risky even with bracketed paste enabled.'
+            : 'This clipboard content could execute multiple or reshaped commands.',
+        confirmLabel: 'Paste anyway',
+      );
+      if (!shouldPaste) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+
+      _followLiveOutput();
+      _terminal.paste(text);
+      _terminalController.clearSelection();
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    } on PlatformException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        'Clipboard access failed: ${error.message ?? error.code}',
+      );
+    } on FileSystemException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        error.message.isEmpty
+            ? 'Clipboard file upload failed'
+            : 'Clipboard file upload failed: ${error.message}',
+      );
+    } on SftpError catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Remote upload failed: ${error.message}');
+    } on Object catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Clipboard upload failed: $error');
+    }
+  }
+
+  Future<T> _withClipboardSftp<T>(
+    Future<T> Function(SftpClient sftp, RemoteFileService remoteFileService)
+    action,
+  ) async {
+    final session = _activeSession();
+    if (session == null) {
+      throw StateError('Connection is not ready yet');
     }
 
-    final shouldPaste = await _confirmTerminalInsertionIfNeeded(
-      insertedText: text,
-      buildReview: (commandText) => assessClipboardPasteCommand(
-        commandText,
-        bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
-      ),
-      title: 'Review clipboard paste',
-      messageBuilder: (review) => review.bracketedPasteModeEnabled
-          ? 'This clipboard content looks risky even with bracketed paste enabled.'
-          : 'This clipboard content could execute multiple or reshaped commands.',
-      confirmLabel: 'Paste anyway',
+    final remoteFileService = ref.read(remoteFileServiceProvider);
+    final sftp = await session.sftp();
+    try {
+      await remoteFileService.ensureDirectoryExists(
+        sftp,
+        remoteClipboardUploadDirectory,
+      );
+      return await action(sftp, remoteFileService);
+    } finally {
+      sftp.close();
+    }
+  }
+
+  Future<({String name, Uint8List bytes})> _readAndroidClipboardContentUri(
+    String uri,
+  ) async {
+    final response = await _clipboardContentChannel.invokeMethod<Object>(
+      'readContentUri',
+      {'uri': uri},
     );
-    if (!shouldPaste) {
+    if (response is! Map<Object?, Object?>) {
+      throw PlatformException(
+        code: 'invalid_clipboard_content',
+        message: 'Unexpected clipboard content response',
+      );
+    }
+
+    final name = response['name'];
+    final bytes = response['bytes'];
+    if (name is! String || bytes is! Uint8List) {
+      throw PlatformException(
+        code: 'invalid_clipboard_content',
+        message: 'Clipboard content response was incomplete',
+      );
+    }
+
+    return (name: name, bytes: bytes);
+  }
+
+  Future<bool> _confirmClipboardUpload({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    List<String> details = const [],
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message),
+              if (details.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                for (final detail in details)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('\u2022 $detail'),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload clipboard files?',
+      message:
+          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory on the connected host and paste their remote paths into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: [
+        for (var index = 0; index < clipboardFiles.length; index++)
+          clipboardFiles[index].startsWith('content://')
+              ? 'Clipboard file ${index + 1}'
+              : path.basename(clipboardFiles[index]),
+      ],
+    );
+    if (!shouldUpload) {
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       return;
     }
 
+    final timestamp = DateTime.now();
+    final remotePaths = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePaths = <String>[];
+      for (var index = 0; index < clipboardFiles.length; index++) {
+        final localPath = clipboardFiles[index];
+        final isContentUri = localPath.startsWith('content://');
+        late final String sourceName;
+        late final String remotePath;
+
+        if (isContentUri) {
+          if (!_isAndroidPlatform) {
+            throw const FileSystemException(
+              'Clipboard file URIs are not supported on this platform yet',
+            );
+          }
+          final clipboardFile = await _readAndroidClipboardContentUri(
+            localPath,
+          );
+          sourceName = clipboardFile.name;
+          remotePath = joinRemotePath(
+            remoteClipboardUploadDirectory,
+            buildClipboardUploadFileName(
+              sourceName,
+              timestamp,
+              sequence: index,
+            ),
+          );
+          await remoteFileService.uploadBytes(
+            sftp: sftp,
+            remotePath: remotePath,
+            bytes: clipboardFile.bytes,
+          );
+        } else {
+          sourceName = path.basename(localPath);
+          remotePath = joinRemotePath(
+            remoteClipboardUploadDirectory,
+            buildClipboardUploadFileName(
+              sourceName,
+              timestamp,
+              sequence: index,
+            ),
+          );
+          await remoteFileService.uploadStream(
+            sftp: sftp,
+            remotePath: remotePath,
+            stream: File(localPath).openRead(),
+          );
+        }
+        remotePaths.add(remotePath);
+      }
+      return remotePaths;
+    });
+
     _followLiveOutput();
-    _terminal.paste(text);
+    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage(
+      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory',
+    );
+  }
+
+  Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload clipboard image?',
+      message:
+          'This will upload the clipboard image to $remoteClipboardUploadDirectory on the connected host and paste its remote path into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: const ['image.png'],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    final remotePath = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePath = joinRemotePath(
+        remoteClipboardUploadDirectory,
+        buildClipboardImageFileName(DateTime.now()),
+      );
+      await remoteFileService.uploadBytes(
+        sftp: sftp,
+        remotePath: remotePath,
+        bytes: imageBytes,
+      );
+      return remotePath;
+    });
+    _followLiveOutput();
+    _terminal.paste('${shellEscapePosix(remotePath)} ');
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage('Uploaded clipboard image to $remotePath');
   }
 
   Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
