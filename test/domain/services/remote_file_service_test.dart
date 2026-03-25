@@ -1,7 +1,11 @@
 import 'dart:typed_data';
 
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/services/remote_file_service.dart';
+
+class _MockSftpClient extends Mock implements SftpClient {}
 
 void main() {
   group('remote file helpers', () {
@@ -11,7 +15,47 @@ void main() {
         joinRemotePath('/tmp/monkeyssh', 'example.txt'),
         '/tmp/monkeyssh/example.txt',
       );
+      expect(
+        joinRemotePath('/tmp/monkeyssh/', '/nested/example.txt'),
+        '/tmp/monkeyssh/nested/example.txt',
+      );
+      expect(joinRemotePath('', 'example.txt'), '/example.txt');
     });
+
+    test(
+      'tolerates concurrent mkdir races when ensuring directories',
+      () async {
+        const remotePath = '/tmp/monkeyssh';
+        const service = RemoteFileService();
+        final sftp = _MockSftpClient();
+        var statCalls = 0;
+
+        when(() => sftp.stat(remotePath)).thenAnswer((_) {
+          statCalls++;
+          if (statCalls == 1) {
+            return Future<SftpFileAttrs>.error(
+              SftpStatusError(SftpStatusCode.noSuchFile, 'missing'),
+            );
+          }
+          return Future<SftpFileAttrs>.value(
+            SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+          );
+        });
+        when(() => sftp.stat('/tmp')).thenAnswer(
+          (_) async => SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+        );
+        when(() => sftp.mkdir(remotePath)).thenAnswer(
+          (_) => Future<void>.error(
+            SftpStatusError(SftpStatusCode.failure, 'already exists'),
+          ),
+        );
+
+        await service.ensureDirectoryExists(sftp, remotePath);
+
+        verify(() => sftp.mkdir(remotePath)).called(1);
+        expect(statCalls, 2);
+      },
+    );
 
     test('sanitizes upload file names', () {
       expect(

@@ -15,6 +15,7 @@ import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
+import '../../app/routes.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
@@ -1706,7 +1707,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     context.pushNamed(
-      'sftp',
+      Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
       queryParameters: {'connectionId': connectionId.toString()},
     );
@@ -2355,7 +2356,66 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return (name: name, bytes: bytes);
   }
 
+  Future<bool> _confirmClipboardUpload({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    List<String> details = const [],
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message),
+              if (details.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                for (final detail in details)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('\u2022 $detail'),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
   Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload clipboard files?',
+      message:
+          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory on the connected host and paste their remote paths into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: [
+        for (var index = 0; index < clipboardFiles.length; index++)
+          clipboardFiles[index].startsWith('content://')
+              ? 'Clipboard file ${index + 1}'
+              : path.basename(clipboardFiles[index]),
+      ],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
     final timestamp = DateTime.now();
     final remotePaths = await _withClipboardSftp((
       sftp,
@@ -2412,23 +2472,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return remotePaths;
     });
 
-    final shouldPaste = await _confirmTerminalInsertionIfNeeded(
-      insertedText: buildTerminalUploadInsertion(remotePaths),
-      buildReview: (commandText) => assessClipboardPasteCommand(
-        commandText,
-        bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
-      ),
-      title: 'Review clipboard paste',
-      messageBuilder: (review) => review.bracketedPasteModeEnabled
-          ? 'This clipboard content looks risky even with bracketed paste enabled.'
-          : 'This clipboard content could execute multiple or reshaped commands.',
-      confirmLabel: 'Paste anyway',
-    );
-    if (!shouldPaste) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      return;
-    }
-
     _followLiveOutput();
     _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
     _terminalController.clearSelection();
@@ -2439,6 +2482,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload clipboard image?',
+      message:
+          'This will upload the clipboard image to $remoteClipboardUploadDirectory on the connected host and paste its remote path into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: const ['image.png'],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
     final remotePath = await _withClipboardSftp((
       sftp,
       remoteFileService,

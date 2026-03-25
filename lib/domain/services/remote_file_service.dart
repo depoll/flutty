@@ -10,10 +10,11 @@ const remoteClipboardUploadDirectory = '/tmp/monkeyssh';
 
 /// Joins a remote directory and child name into a normalized absolute path.
 String joinRemotePath(String directory, String name) {
-  if (directory == '/') {
-    return '/$name';
-  }
-  return '$directory/$name';
+  final cleanName = name.replaceFirst(RegExp('^/+'), '');
+  final baseDirectory = directory.isEmpty ? '/' : directory;
+  final joined = path.posix.join(baseDirectory, cleanName);
+  final normalized = path.posix.normalize(joined);
+  return normalized.startsWith('/') ? normalized : '/$normalized';
 }
 
 /// Sanitizes a filename for remote uploads.
@@ -103,7 +104,19 @@ class RemoteFileService {
     if (parentPath != remotePath) {
       await ensureDirectoryExists(sftp, parentPath);
     }
-    await sftp.mkdir(remotePath);
+    try {
+      await sftp.mkdir(remotePath);
+    } on SftpStatusError catch (error, stackTrace) {
+      try {
+        final stat = await sftp.stat(remotePath);
+        if (stat.isDirectory) {
+          return;
+        }
+      } on SftpStatusError {
+        Error.throwWithStackTrace(error, stackTrace);
+      }
+      Error.throwWithStackTrace(error, stackTrace);
+    }
   }
 
   /// Downloads a remote file to a local path.

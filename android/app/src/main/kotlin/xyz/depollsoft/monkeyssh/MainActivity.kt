@@ -16,6 +16,7 @@ import java.io.ByteArrayOutputStream
 class MainActivity : FlutterActivity() {
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
+        private const val MAX_CLIPBOARD_CONTENT_URI_BYTES = 512 * 1024
     }
 
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
@@ -192,13 +193,50 @@ class MainActivity : FlutterActivity() {
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {
         val displayName = resolveDisplayName(uri) ?: "clipboard-file"
+        val contentLength = resolveContentLength(uri)
+        if (contentLength != null && contentLength > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
+            throw IllegalStateException(
+                "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
+            )
+        }
         val bytes = contentResolver.openInputStream(uri)?.use { stream ->
-            stream.readBytes()
+            val buffer = ByteArray(8192)
+            val output = ByteArrayOutputStream()
+            var bytesRead: Int
+            var totalBytes = 0
+            while (stream.read(buffer).also { bytesRead = it } != -1) {
+                totalBytes += bytesRead
+                if (totalBytes > MAX_CLIPBOARD_CONTENT_URI_BYTES) {
+                    throw IllegalStateException(
+                        "Clipboard content exceeds ${MAX_CLIPBOARD_CONTENT_URI_BYTES / 1024} KB limit",
+                    )
+                }
+                output.write(buffer, 0, bytesRead)
+            }
+            output.toByteArray()
         } ?: throw IllegalStateException("Could not open clipboard URI")
         return mapOf(
             "name" to displayName,
             "bytes" to bytes,
         )
+    }
+
+    private fun resolveContentLength(uri: Uri): Long? {
+        if (uri.scheme == "content") {
+            contentResolver.query(
+                uri,
+                arrayOf(OpenableColumns.SIZE),
+                null,
+                null,
+                null,
+            )?.use { cursor ->
+                val columnIndex = cursor.getColumnIndex(OpenableColumns.SIZE)
+                if (columnIndex >= 0 && cursor.moveToFirst() && !cursor.isNull(columnIndex)) {
+                    return cursor.getLong(columnIndex)
+                }
+            }
+        }
+        return null
     }
 
     private fun resolveDisplayName(uri: Uri): String? {

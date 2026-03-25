@@ -1,15 +1,42 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as path;
 
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/ssh_service.dart';
+
+/// Returns the parent directory for a POSIX remote path.
+@visibleForTesting
+String parentRemotePath(String remotePath) {
+  final parent = path.posix.dirname(remotePath);
+  return parent.isEmpty || parent == '.' ? '/' : parent;
+}
+
+/// Appends a visited remote path to browser history without duplicating the top.
+@visibleForTesting
+List<String> pushSftpPathHistory(List<String> history, String remotePath) {
+  final nextHistory = List<String>.from(history);
+  if (nextHistory.isEmpty || nextHistory.last != remotePath) {
+    nextHistory.add(remotePath);
+  }
+  return nextHistory;
+}
+
+/// Pops browser history while always retaining at least one location.
+@visibleForTesting
+List<String> popSftpPathHistory(List<String> history) {
+  if (history.length <= 1) {
+    return history.isEmpty ? ['/'] : List<String>.from(history);
+  }
+  return List<String>.from(history)..removeLast();
+}
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
@@ -87,10 +114,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final initialPath = await remoteFileService.resolveInitialDirectory(
         _sftp!,
       );
-      _pathHistory
-        ..clear()
-        ..add(initialPath);
-      await _loadDirectory(initialPath);
+      await _loadDirectory(initialPath, nextHistory: [initialPath]);
     } on Exception catch (e) {
       setState(() {
         _isLoading = false;
@@ -99,13 +123,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  Future<void> _loadDirectory(String path) async {
-    if (_sftp == null) return;
+  Future<void> _loadDirectory(String path, {List<String>? nextHistory}) async {
+    if (_sftp == null) {
+      return;
+    }
 
     setState(() => _isLoading = true);
 
     try {
       final items = await _sftp!.listdir(path);
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _currentPath = path;
         _files = items
@@ -117,10 +146,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             if (!aIsDir && bIsDir) return 1;
             return a.filename.compareTo(b.filename);
           });
+        if (nextHistory != null) {
+          _pathHistory
+            ..clear()
+            ..addAll(nextHistory);
+        }
         _isLoading = false;
         _error = null;
       });
     } on Exception catch (e) {
+      if (!mounted) {
+        return;
+      }
       setState(() {
         _isLoading = false;
         _error = 'Failed to list directory: $e';
@@ -128,55 +165,69 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  void _navigateTo(String path) {
-    _pathHistory.add(path);
-    _loadDirectory(path);
-  }
-
-  void _navigateUp() {
-    if (_currentPath == '/') return;
-    final parts = _currentPath.split('/')..removeLast();
-    final parentPath = parts.isEmpty ? '/' : parts.join('/');
-    _pathHistory.add(parentPath);
-    _loadDirectory(parentPath);
-  }
-
-  void _goBack() {
-    if (_pathHistory.length > 1) {
-      _pathHistory.removeLast();
-      final previousPath = _pathHistory.last;
-      _loadDirectory(previousPath);
+  Future<void> _navigateTo(String path) async {
+    if (path == _currentPath) {
+      return;
     }
+    await _loadDirectory(
+      path,
+      nextHistory: pushSftpPathHistory(_pathHistory, path),
+    );
+  }
+
+  Future<void> _navigateUp() async {
+    if (_currentPath == '/') {
+      return;
+    }
+    final parentPath = parentRemotePath(_currentPath);
+    await _loadDirectory(
+      parentPath,
+      nextHistory: pushSftpPathHistory(_pathHistory, parentPath),
+    );
+  }
+
+  Future<void> _goBack() async {
+    if (_pathHistory.length <= 1) {
+      return;
+    }
+    final nextHistory = popSftpPathHistory(_pathHistory);
+    await _loadDirectory(nextHistory.last, nextHistory: nextHistory);
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: Text(_hostLabel == null ? 'Files' : 'Files - $_hostLabel'),
-      actions: [
-        IconButton(
-          icon: const Icon(Icons.refresh),
-          onPressed: () => _loadDirectory(_currentPath),
-          tooltip: 'Refresh',
-        ),
-        IconButton(
-          icon: const Icon(Icons.create_new_folder),
-          onPressed: _showCreateDirectoryDialog,
-          tooltip: 'New folder',
-        ),
-      ],
-    ),
-    body: Column(
-      children: [
-        // Breadcrumb navigation
-        _buildBreadcrumbs(),
-        // File list
-        Expanded(child: _buildFileList()),
-      ],
-    ),
-    floatingActionButton: FloatingActionButton(
-      onPressed: _showUploadDialog,
-      child: const Icon(Icons.upload_file),
+  Widget build(BuildContext context) => PopScope(
+    canPop: _pathHistory.length <= 1,
+    onPopInvokedWithResult: (didPop, result) {
+      if (!didPop && _pathHistory.length > 1) {
+        unawaited(_goBack());
+      }
+    },
+    child: Scaffold(
+      appBar: AppBar(
+        title: Text(_hostLabel == null ? 'Files' : 'Files - $_hostLabel'),
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.refresh),
+            onPressed: () => _loadDirectory(_currentPath),
+            tooltip: 'Refresh',
+          ),
+          IconButton(
+            icon: const Icon(Icons.create_new_folder),
+            onPressed: _showCreateDirectoryDialog,
+            tooltip: 'New folder',
+          ),
+        ],
+      ),
+      body: Column(
+        children: [
+          _buildBreadcrumbs(),
+          Expanded(child: _buildFileList()),
+        ],
+      ),
+      floatingActionButton: FloatingActionButton(
+        onPressed: _showUploadDialog,
+        child: const Icon(Icons.upload_file),
+      ),
     ),
   );
 
@@ -197,12 +248,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         children: [
           IconButton(
             icon: const Icon(Icons.arrow_back, size: 20),
-            onPressed: _pathHistory.length > 1 ? _goBack : null,
+            onPressed: _pathHistory.length > 1
+                ? () => unawaited(_goBack())
+                : null,
             tooltip: 'Back',
           ),
           IconButton(
             icon: const Icon(Icons.arrow_upward, size: 20),
-            onPressed: _currentPath != '/' ? _navigateUp : null,
+            onPressed: _currentPath != '/'
+                ? () => unawaited(_navigateUp())
+                : null,
             tooltip: 'Up',
           ),
           const SizedBox(width: 8),
@@ -212,7 +267,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
               child: Row(
                 children: [
                   InkWell(
-                    onTap: () => _loadDirectory('/'),
+                    onTap: () => unawaited(_navigateTo('/')),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 4, vertical: 8),
                       child: Text('/'),
@@ -227,7 +282,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                     InkWell(
                       onTap: () {
                         final path = '/${parts.sublist(0, i + 1).join('/')}';
-                        _loadDirectory(path);
+                        unawaited(_navigateTo(path));
                       },
                       child: Padding(
                         padding: const EdgeInsets.symmetric(
@@ -321,7 +376,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   void _handleFileTap(SftpName file) {
     if (file.attr.isDirectory) {
-      _navigateTo(_joinRemotePath(_currentPath, file.filename));
+      unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
     } else {
       _showFileOptions(file);
     }
