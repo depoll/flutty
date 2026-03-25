@@ -1099,26 +1099,34 @@ class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   if (_wrapLines) {
-                    return editor;
+                    return SizedBox(
+                      width: constraints.maxWidth,
+                      height: constraints.maxHeight,
+                      child: editor,
+                    );
                   }
 
-                  return ClipRect(
-                    child: Scrollbar(
-                      controller: _horizontalScrollController,
-                      thumbVisibility: true,
-                      notificationPredicate: (notification) =>
-                          notification.metrics.axis == Axis.horizontal,
-                      child: SingleChildScrollView(
+                  return SizedBox(
+                    width: constraints.maxWidth,
+                    height: constraints.maxHeight,
+                    child: ClipRect(
+                      child: Scrollbar(
                         controller: _horizontalScrollController,
-                        scrollDirection: Axis.horizontal,
-                        child: ConstrainedBox(
-                          constraints: BoxConstraints(
-                            minWidth: constraints.maxWidth,
-                          ),
-                          child: IntrinsicWidth(
-                            child: SizedBox(
-                              height: constraints.maxHeight,
-                              child: editor,
+                        thumbVisibility: true,
+                        notificationPredicate: (notification) =>
+                            notification.metrics.axis == Axis.horizontal,
+                        child: SingleChildScrollView(
+                          controller: _horizontalScrollController,
+                          scrollDirection: Axis.horizontal,
+                          child: ConstrainedBox(
+                            constraints: BoxConstraints(
+                              minWidth: constraints.maxWidth,
+                            ),
+                            child: IntrinsicWidth(
+                              child: SizedBox(
+                                height: constraints.maxHeight,
+                                child: editor,
+                              ),
                             ),
                           ),
                         ),
