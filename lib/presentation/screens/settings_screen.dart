@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import '../../app/app_metadata.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -697,36 +698,53 @@ class _TerminalSection extends ConsumerWidget {
   }
 }
 
-class _AboutSection extends StatelessWidget {
+class _AboutSection extends ConsumerWidget {
   const _AboutSection();
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const _SectionHeader(title: 'About'),
-      const ListTile(
-        leading: Icon(Icons.info_outline),
-        title: Text('App version'),
-        subtitle: Text('0.1.0'),
-      ),
-      ListTile(
-        leading: const Icon(Icons.code),
-        title: const Text('GitHub'),
-        subtitle: const Text('View source code'),
-        onTap: () => _showGitHubInfo(context),
-      ),
-      ListTile(
-        leading: const Icon(Icons.description_outlined),
-        title: const Text('Licenses'),
-        subtitle: const Text('Open source licenses'),
-        onTap: () => showLicensePage(
-          context: context,
-          applicationName: 'MonkeySSH',
-          applicationVersion: '0.1.0',
+  Widget build(BuildContext context, WidgetRef ref) {
+    final appMetadata = ref.watch(appMetadataProvider);
+    final previewBuildLabel = appMetadata.asData?.value.pullRequestLabel;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(title: 'About'),
+        ListTile(
+          leading: const Icon(Icons.info_outline),
+          title: const Text('App version'),
+          subtitle: Text(_versionLabel(appMetadata)),
         ),
-      ),
-    ],
+        if (previewBuildLabel != null)
+          ListTile(
+            leading: const Icon(Icons.merge_type_outlined),
+            title: const Text('Preview build'),
+            subtitle: Text(previewBuildLabel),
+          ),
+        ListTile(
+          leading: const Icon(Icons.code),
+          title: const Text('GitHub'),
+          subtitle: const Text('View source code'),
+          onTap: () => _showGitHubInfo(context),
+        ),
+        ListTile(
+          leading: const Icon(Icons.description_outlined),
+          title: const Text('Licenses'),
+          subtitle: const Text('Open source licenses'),
+          onTap: () => showLicensePage(
+            context: context,
+            applicationName: 'MonkeySSH',
+            applicationVersion: _versionLabel(appMetadata),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _versionLabel(AsyncValue<AppMetadata> appMetadata) => appMetadata.when(
+    data: (value) => value.versionLabel,
+    loading: () => 'Loading...',
+    error: (_, _) => 'Unavailable',
   );
 
   void _showGitHubInfo(BuildContext context) {

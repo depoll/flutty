@@ -54,6 +54,7 @@ jobs:
     outputs:
       pr-head-sha: ${{ steps.validate.outputs.pr-head-sha }}
       deploy-sha: ${{ steps.validate.outputs.deploy-sha }}
+      pr-title: ${{ steps.validate.outputs.pr-title }}
     steps:
       - name: Validate PR is safe to deploy
         id: validate
@@ -99,6 +100,7 @@ jobs:
 
             core.setOutput('pr-head-sha', pr.head.sha);
             core.setOutput('deploy-sha', deploySha);
+            core.setOutput('pr-title', pr.title);
 
   compute-version:
     name: Compute Version
@@ -129,7 +131,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      # GitHub requires pull-requests: write to create/update PR comments from this workflow.
+      pull-requests: write
     steps:
       - name: Mark deploy as running
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -140,6 +143,7 @@ jobs:
             const issueNumber = Number('${{ inputs.pr-number }}');
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const statusMarker = '<!-- preview-deploy-status -->';
+            const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
@@ -171,8 +175,10 @@ jobs:
               '${{ inputs.request-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-request-comment-url');
             const previewCommentUrl =
-              '${{ inputs.request-preview-comment-url }}' ||
-              readMeta(existingBody, 'preview-deploy-preview-comment-url');
+              '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
+                ? ''
+                : '${{ inputs.request-preview-comment-url }}' ||
+                  readMeta(existingBody, 'preview-deploy-preview-comment-url');
             const deploySha =
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha');
@@ -219,15 +225,14 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
-              return;
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
             }
-
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: issueNumber,
-              body,
-            });
 
   deploy:
     name: Deploy to TestFlight & Play Internal
@@ -236,6 +241,8 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      pr-number: ${{ inputs.pr-number }}
+      pr-title: ${{ needs.validate-pr.outputs.pr-title }}
       flavor: private
       source-ref: ${{ needs.validate-pr.outputs.deploy-sha }}
       deploy-ios-to: testflight
@@ -299,7 +306,8 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
-      pull-requests: read
+      # GitHub requires pull-requests: write to create/update PR comments from this workflow.
+      pull-requests: write
     steps:
       - name: Mark deploy as complete
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -310,6 +318,7 @@ jobs:
             const issueNumber = Number('${{ inputs.pr-number }}');
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const statusMarker = '<!-- preview-deploy-status -->';
+            const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
@@ -341,8 +350,10 @@ jobs:
               '${{ inputs.request-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-request-comment-url');
             const previewCommentUrl =
-              '${{ inputs.request-preview-comment-url }}' ||
-              readMeta(existingBody, 'preview-deploy-preview-comment-url');
+              '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
+                ? ''
+                : '${{ inputs.request-preview-comment-url }}' ||
+                  readMeta(existingBody, 'preview-deploy-preview-comment-url');
             const deploySha =
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha') ||
@@ -350,6 +361,61 @@ jobs:
             const requestDetails = requestCommentId
               ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
+
+            const replaceEyesReactionWithRocket = async () => {
+              if (!requestCommentId) {
+                return;
+              }
+
+              const commentId = Number(requestCommentId);
+              const reactions = await github.paginate(
+                'GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
+                {
+                  owner,
+                  repo,
+                  comment_id: commentId,
+                  per_page: 100,
+                  headers: {accept: 'application/vnd.github+json'},
+                },
+              );
+              const botEyesReactions = reactions.filter(
+                (reaction) =>
+                  reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]',
+              );
+
+              for (const reaction of botEyesReactions) {
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner,
+                    repo,
+                    comment_id: commentId,
+                    reaction_id: reaction.id,
+                    headers: {accept: 'application/vnd.github+json'},
+                  },
+                );
+              }
+
+              if (
+                reactions.some(
+                  (reaction) =>
+                    reaction.content === 'rocket' && reaction.user?.login === 'github-actions[bot]',
+                )
+              ) {
+                return;
+              }
+
+              await github.request(
+                'POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
+                {
+                  owner,
+                  repo,
+                  comment_id: commentId,
+                  content: 'rocket',
+                  headers: {accept: 'application/vnd.github+json'},
+                },
+              );
+            };
 
             const validationResult = '${{ needs.validate-pr.result }}';
             const deployResult = '${{ needs.deploy.result }}';
@@ -423,12 +489,17 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
-              return;
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
             }
 
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: issueNumber,
-              body,
-            });
+            try {
+              await replaceEyesReactionWithRocket();
+            } catch (error) {
+              core.warning(`Failed to update deploy reaction: ${String(error)}`);
+            }

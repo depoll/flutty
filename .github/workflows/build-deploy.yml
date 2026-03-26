@@ -11,6 +11,16 @@ on:
         required: true
         type: string
         description: 'Build number (integer, monotonically increasing)'
+      pr-number:
+        required: false
+        type: string
+        default: ''
+        description: 'Pull request number for preview-derived builds'
+      pr-title:
+        required: false
+        type: string
+        default: ''
+        description: 'Pull request title for preview-derived builds'
       flavor:
         required: true
         type: string
@@ -87,6 +97,9 @@ jobs:
     name: Build & Deploy Android (${{ inputs.flavor }})
     if: inputs.build-android
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    env:
+      FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
+      FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
       source-sha: ${{ steps.source-sha.outputs.value }}
@@ -177,7 +190,9 @@ jobs:
             --flavor ${{ inputs.flavor }} \
             --release \
             --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }}
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Build release APK
         if: inputs.deploy-android-to != 'none'
@@ -186,7 +201,9 @@ jobs:
             --flavor ${{ inputs.flavor }} \
             --release \
             --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }}
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Build debug APK
         if: inputs.deploy-android-to == 'none'
@@ -195,7 +212,9 @@ jobs:
             --flavor ${{ inputs.flavor }} \
             --debug \
             --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }}
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Upload AAB artifact
         if: inputs.deploy-android-to != 'none'
@@ -253,6 +272,9 @@ jobs:
     name: Build & Deploy iOS (${{ inputs.flavor }})
     if: inputs.build-ios
     runs-on: macos-26
+    env:
+      FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
+      FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
     outputs:
       source-sha: ${{ steps.source-sha.outputs.value }}
     steps:
@@ -310,7 +332,9 @@ jobs:
             --release \
             --no-codesign \
             --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }}
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Archive, sign & deploy via Fastlane
         if: inputs.deploy-ios-to != 'none'
