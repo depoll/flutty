@@ -30,6 +30,7 @@ jobs:
             const commandBody = context.payload.comment.body.trim();
             const requester = context.payload.comment.user.login;
             const requestCommentId = String(context.payload.comment.id);
+            const requestCommentNumber = Number(requestCommentId);
             const requestCommentUrl = context.payload.comment.html_url;
             const requestCreatedAt = context.payload.comment.created_at;
             const authorAssociation = context.payload.comment.author_association;
@@ -55,6 +56,79 @@ jobs:
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
               return body.match(pattern)?.[1] ?? '';
+            };
+
+            const listRequestCommentReactions = async () =>
+              github.paginate('GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+                owner,
+                repo,
+                comment_id: requestCommentNumber,
+                per_page: 100,
+                headers: {accept: 'application/vnd.github+json'},
+              });
+
+            const ensureRequestCommentReaction = async (content) => {
+              const reactions = await listRequestCommentReactions();
+              if (
+                reactions.some(
+                  (reaction) =>
+                    reaction.content === content && reaction.user?.login === 'github-actions[bot]',
+                )
+              ) {
+                return;
+              }
+
+              await github.request(
+                'POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
+                {
+                  owner,
+                  repo,
+                  comment_id: requestCommentNumber,
+                  content,
+                  headers: {accept: 'application/vnd.github+json'},
+                },
+              );
+            };
+
+            const replaceEyesReactionWithRocket = async () => {
+              const reactions = await listRequestCommentReactions();
+              const botEyesReactions = reactions.filter(
+                (reaction) =>
+                  reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]',
+              );
+
+              for (const reaction of botEyesReactions) {
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner,
+                    repo,
+                    comment_id: requestCommentNumber,
+                    reaction_id: reaction.id,
+                    headers: {accept: 'application/vnd.github+json'},
+                  },
+                );
+              }
+
+              if (
+                reactions.some(
+                  (reaction) =>
+                    reaction.content === 'rocket' && reaction.user?.login === 'github-actions[bot]',
+                )
+              ) {
+                return;
+              }
+
+              await github.request(
+                'POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
+                {
+                  owner,
+                  repo,
+                  comment_id: requestCommentNumber,
+                  content: 'rocket',
+                  headers: {accept: 'application/vnd.github+json'},
+                },
+              );
             };
 
             const upsertStatusComment = async (comments, body) => {
@@ -190,6 +264,9 @@ jobs:
               note: queuedNote,
             });
 
+            await ensureRequestCommentReaction('eyes');
+
+            let dispatched = false;
             try {
               await github.rest.actions.createWorkflowDispatch({
                 owner,
@@ -206,9 +283,14 @@ jobs:
                   'request-preview-comment-url': previewComment?.html_url ?? noPreviewCommentUrl,
                 },
               });
+              dispatched = true;
 
               await upsertStatusComment(comments, queuedBody);
             } catch (error) {
+              if (!dispatched) {
+                await replaceEyesReactionWithRocket();
+              }
+
               const failureBody = renderStatusComment({
                 status: '❌ Failed to dispatch `Deploy PR Preview`',
                 workflow: 'Dispatch did not start; check the command workflow logs',
