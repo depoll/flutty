@@ -16,6 +16,7 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 
@@ -33,6 +34,10 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -43,6 +48,13 @@ void main() {
       expect(find.text('Settings'), findsOneWidget);
       expect(find.text('Appearance'), findsOneWidget);
       expect(find.text('Security'), findsOneWidget);
+      expect(find.text('Sync'), findsOneWidget);
+      await tester.scrollUntilVisible(
+        find.text('Terminal'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
       expect(find.text('Terminal'), findsOneWidget);
 
       // Scroll to find About section
@@ -65,6 +77,10 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -86,11 +102,22 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
       );
 
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Font size'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('Font size'), findsOneWidget);
@@ -107,11 +134,22 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
       );
 
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Font family'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('Font family'), findsOneWidget);
@@ -128,11 +166,22 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
       );
 
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Cursor style'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('Cursor style'), findsOneWidget);
@@ -149,11 +198,22 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
       );
 
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Bell sound'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
       await tester.pumpAndSettle();
 
       expect(find.text('Bell sound'), findsOneWidget);
@@ -171,6 +231,10 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -202,6 +266,10 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),
@@ -214,6 +282,31 @@ void main() {
       expect(find.text('Auto-lock timeout'), findsOneWidget);
     });
 
+    testWidgets('displays encrypted sync setup actions', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(_FakeAuthService()),
+            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      expect(find.text('Create encrypted sync vault'), findsOneWidget);
+      expect(find.text('Connect to existing vault'), findsOneWidget);
+    });
+
     testWidgets('has scrollable ListView', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -224,6 +317,10 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) async =>
+                  const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
+            ),
           ],
           child: const MaterialApp(home: SettingsScreen()),
         ),

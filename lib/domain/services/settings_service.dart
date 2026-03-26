@@ -54,6 +54,24 @@ abstract final class SettingKeys {
 
   /// Auto-lock timeout in minutes.
   static const autoLockTimeout = 'auto_lock_timeout';
+
+  /// Whether the optional encrypted sync vault is enabled on this device.
+  static const syncVaultEnabled = 'sync_vault_enabled';
+
+  /// Linked encrypted sync vault file path.
+  static const syncVaultPath = 'sync_vault_path';
+
+  /// Last successful encrypted sync timestamp.
+  static const syncVaultLastSyncedAt = 'sync_vault_last_synced_at';
+
+  /// Last synced snapshot hash shared with the encrypted sync vault.
+  static const syncVaultLastSnapshotHash = 'sync_vault_last_snapshot_hash';
+
+  /// Last sync-related error shown for the encrypted sync vault.
+  static const syncVaultLastError = 'sync_vault_last_error';
+
+  /// Stable identifier for this device in encrypted sync metadata.
+  static const syncVaultDeviceId = 'sync_vault_device_id';
 }
 
 /// Service for managing app settings.

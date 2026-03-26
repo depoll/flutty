@@ -198,6 +198,21 @@ class SecureTransferService {
   Future<String> createFullMigrationPayload({
     required String transferPassphrase,
   }) async {
+    final payload = TransferPayload(
+      type: TransferPayloadType.fullMigration,
+      schemaVersion: _schemaVersion,
+      createdAt: DateTime.now().toUtc(),
+      data: await createMigrationData(),
+    );
+
+    return _encryptPayload(payload, transferPassphrase);
+  }
+
+  /// Creates canonical migration data that can be reused by sync flows.
+  Future<Map<String, dynamic>> createMigrationData({
+    Set<String>? allowedSettingsKeys,
+    bool includeKnownHosts = true,
+  }) async {
     final settings = await _db.select(_db.settings).get();
     final groups = await _db.select(_db.groups).get();
     final keys = await _keyRepository.getAll();
@@ -205,35 +220,31 @@ class SecureTransferService {
     final snippetFolders = await _db.select(_db.snippetFolders).get();
     final snippets = await _db.select(_db.snippets).get();
     final portForwards = await _db.select(_db.portForwards).get();
-    final knownHosts = await _db.select(_db.knownHosts).get();
+    final knownHosts = includeKnownHosts
+        ? await _db.select(_db.knownHosts).get()
+        : const <KnownHost>[];
+    final rawSettings = <String, String>{
+      for (final setting in settings) setting.key: setting.value,
+    };
+    final filteredSettings = _filterSettings(rawSettings, allowedSettingsKeys);
 
-    final payload = TransferPayload(
-      type: TransferPayloadType.fullMigration,
-      schemaVersion: _schemaVersion,
-      createdAt: DateTime.now().toUtc(),
-      data: {
-        'settings': {
-          for (final setting in settings) setting.key: setting.value,
-        },
-        'groups': groups.map((item) => item.toJson()).toList(growable: false),
-        'keys': keys.map((item) => item.toJson()).toList(growable: false),
-        'hosts': hosts.map((item) => item.toJson()).toList(growable: false),
-        'snippetFolders': snippetFolders
-            .map((item) => item.toJson())
-            .toList(growable: false),
-        'snippets': snippets
-            .map((item) => item.toJson())
-            .toList(growable: false),
-        'portForwards': portForwards
-            .map((item) => item.toJson())
-            .toList(growable: false),
-        'knownHosts': knownHosts
-            .map((item) => item.toJson())
-            .toList(growable: false),
-      },
-    );
-
-    return _encryptPayload(payload, transferPassphrase);
+    return {
+      'settings': filteredSettings,
+      'groups': _sortedJsonRecords(groups.map((item) => item.toJson())),
+      'keys': _sortedJsonRecords(keys.map((item) => item.toJson())),
+      'hosts': _sortedJsonRecords(hosts.map((item) => item.toJson())),
+      'snippetFolders': _sortedJsonRecords(
+        snippetFolders.map((item) => item.toJson()),
+      ),
+      'snippets': _sortedJsonRecords(snippets.map((item) => item.toJson())),
+      'portForwards': _sortedJsonRecords(
+        portForwards.map((item) => item.toJson()),
+      ),
+      if (includeKnownHosts)
+        'knownHosts': _sortedJsonRecords(
+          knownHosts.map((item) => item.toJson()),
+        ),
+    };
   }
 
   /// Decrypts and parses an encrypted payload.
@@ -408,18 +419,28 @@ class SecureTransferService {
       throw const FormatException('Payload is not a full migration transfer');
     }
 
-    final settingsMap = payload.data['settings'];
+    return previewMigrationData(payload.data);
+  }
+
+  /// Produces a migration preview from raw migration data.
+  MigrationPreview previewMigrationData(
+    Map<String, dynamic> data, {
+    bool includeKnownHosts = true,
+  }) {
+    final settingsMap = data['settings'];
     final settingsCount = settingsMap is Map ? settingsMap.length : 0;
 
     return MigrationPreview(
       settingsCount: settingsCount,
-      hostCount: _listFromData(payload.data, 'hosts').length,
-      keyCount: _listFromData(payload.data, 'keys').length,
-      groupCount: _listFromData(payload.data, 'groups').length,
-      snippetCount: _listFromData(payload.data, 'snippets').length,
-      snippetFolderCount: _listFromData(payload.data, 'snippetFolders').length,
-      portForwardCount: _listFromData(payload.data, 'portForwards').length,
-      knownHostCount: _listFromData(payload.data, 'knownHosts').length,
+      hostCount: _listFromData(data, 'hosts').length,
+      keyCount: _listFromData(data, 'keys').length,
+      groupCount: _listFromData(data, 'groups').length,
+      snippetCount: _listFromData(data, 'snippets').length,
+      snippetFolderCount: _listFromData(data, 'snippetFolders').length,
+      portForwardCount: _listFromData(data, 'portForwards').length,
+      knownHostCount: includeKnownHosts
+          ? _listFromData(data, 'knownHosts').length
+          : 0,
     );
   }
 
@@ -432,31 +453,37 @@ class SecureTransferService {
       throw const FormatException('Payload is not a full migration transfer');
     }
 
+    await importMigrationData(data: payload.data, mode: mode);
+  }
+
+  /// Imports canonical migration data for migration or sync flows.
+  Future<void> importMigrationData({
+    required Map<String, dynamic> data,
+    required MigrationImportMode mode,
+    Set<String>? allowedSettingsKeys,
+    bool includeKnownHosts = true,
+  }) async {
     await _db.transaction(() async {
       var deferForeignKeysEnabled = false;
       try {
         if (mode == MigrationImportMode.replace) {
           await _db.customStatement('PRAGMA defer_foreign_keys = ON');
           deferForeignKeysEnabled = true;
-          await _clearMigrationTables();
+          await _clearMigrationTables(clearKnownHosts: includeKnownHosts);
         }
 
-        final groupMapping = await _importGroups(
-          _listFromData(payload.data, 'groups'),
-        );
-        final keyMapping = await _importKeys(
-          _listFromData(payload.data, 'keys'),
-        );
+        final groupMapping = await _importGroups(_listFromData(data, 'groups'));
+        final keyMapping = await _importKeys(_listFromData(data, 'keys'));
         final snippetFolderMapping = await _importSnippetFolders(
-          _listFromData(payload.data, 'snippetFolders'),
+          _listFromData(data, 'snippetFolders'),
         );
-        final rawHosts = _listFromData(payload.data, 'hosts');
+        final rawHosts = _listFromData(data, 'hosts');
         final importedAutoConnectSnippetIds = rawHosts
             .map((host) => _optionalInt(host['autoConnectSnippetId']))
             .whereType<int>()
             .toSet();
         final snippetMapping = await _importSnippets(
-          _listFromData(payload.data, 'snippets'),
+          _listFromData(data, 'snippets'),
           snippetFolderMapping: snippetFolderMapping,
           autoConnectSnippetIds: importedAutoConnectSnippetIds,
         );
@@ -467,16 +494,19 @@ class SecureTransferService {
           snippetMapping: snippetMapping,
         );
         await _importPortForwards(
-          _listFromData(payload.data, 'portForwards'),
+          _listFromData(data, 'portForwards'),
           hostMapping: hostMapping,
         );
-        await _importKnownHosts(
-          _listFromData(payload.data, 'knownHosts'),
-          mode: mode,
-        );
+        if (includeKnownHosts) {
+          await _importKnownHosts(
+            _listFromData(data, 'knownHosts'),
+            mode: mode,
+          );
+        }
         await _importSettings(
-          _settingsFromData(payload.data),
+          _settingsFromData(data),
           clearExisting: mode == MigrationImportMode.replace,
+          allowedSettingsKeys: allowedSettingsKeys,
         );
       } finally {
         if (deferForeignKeysEnabled) {
@@ -587,14 +617,16 @@ class SecureTransferService {
     return createdKey;
   }
 
-  Future<void> _clearMigrationTables() async {
+  Future<void> _clearMigrationTables({required bool clearKnownHosts}) async {
     await _db.customStatement('DELETE FROM port_forwards');
     await _db.customStatement('DELETE FROM snippets');
     await _db.customStatement('DELETE FROM snippet_folders');
     await _db.customStatement('DELETE FROM hosts');
     await _db.customStatement('DELETE FROM ssh_keys');
     await _db.customStatement('DELETE FROM groups');
-    await _db.customStatement('DELETE FROM known_hosts');
+    if (clearKnownHosts) {
+      await _db.customStatement('DELETE FROM known_hosts');
+    }
   }
 
   Future<Map<int, int>> _importGroups(
@@ -979,11 +1011,21 @@ class SecureTransferService {
   Future<void> _importSettings(
     Map<String, String> settings, {
     required bool clearExisting,
+    Set<String>? allowedSettingsKeys,
   }) async {
+    final filteredSettings = _filterSettings(settings, allowedSettingsKeys);
     if (clearExisting) {
-      await _db.customStatement('DELETE FROM settings');
+      if (allowedSettingsKeys == null) {
+        await _db.customStatement('DELETE FROM settings');
+      } else {
+        for (final key in allowedSettingsKeys) {
+          await (_db.delete(
+            _db.settings,
+          )..where((s) => s.key.equals(key))).go();
+        }
+      }
     }
-    for (final entry in settings.entries) {
+    for (final entry in filteredSettings.entries) {
       await _db
           .into(_db.settings)
           .insertOnConflictUpdate(
@@ -1022,6 +1064,58 @@ class SecureTransferService {
       }
     }
     return result;
+  }
+
+  Map<String, String> _filterSettings(
+    Map<String, String> settings,
+    Set<String>? allowedSettingsKeys,
+  ) {
+    if (allowedSettingsKeys == null) {
+      return _sortedStringMap(settings);
+    }
+    return _sortedStringMap(
+      Map<String, String>.fromEntries(
+        settings.entries.where(
+          (entry) => allowedSettingsKeys.contains(entry.key),
+        ),
+      ),
+    );
+  }
+
+  Map<String, String> _sortedStringMap(Map<String, String> settings) =>
+      Map<String, String>.fromEntries(
+        settings.entries.toList(growable: false)
+          ..sort((first, second) => first.key.compareTo(second.key)),
+      );
+
+  List<Map<String, dynamic>> _sortedJsonRecords(
+    Iterable<Map<String, dynamic>> records,
+  ) {
+    final normalized = records
+        .map(
+          (record) =>
+              Map<String, dynamic>.from(_canonicalizeJsonValue(record)! as Map),
+        )
+        .toList(growable: false);
+    normalized.sort(
+      (first, second) => jsonEncode(first).compareTo(jsonEncode(second)),
+    );
+    return normalized;
+  }
+
+  Object? _canonicalizeJsonValue(Object? value) {
+    if (value is Map) {
+      final entries = value.entries.toList(growable: false)
+        ..sort((first, second) => '${first.key}'.compareTo('${second.key}'));
+      return <String, dynamic>{
+        for (final entry in entries)
+          '${entry.key}': _canonicalizeJsonValue(entry.value),
+      };
+    }
+    if (value is List) {
+      return value.map(_canonicalizeJsonValue).toList(growable: false);
+    }
+    return value;
   }
 
   String _requiredString(Map<String, dynamic> data, String key) {
