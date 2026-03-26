@@ -1020,11 +1020,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _handleTrackedConnectionStateChange(
+    Map<int, SshConnectionState>? previous,
+    Map<int, SshConnectionState> next,
+  ) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+
+    final previousState =
+        previous?[connectionId] ?? SshConnectionState.disconnected;
+    final nextState = next[connectionId] ?? SshConnectionState.disconnected;
+    if (previousState == nextState ||
+        nextState != SshConnectionState.disconnected) {
+      return;
+    }
+
+    _shell = null;
+    unawaited(_doneSubscription?.cancel());
+    _doneSubscription = null;
+    if (_wasBackgrounded) {
+      _connectionLostWhileBackgrounded = true;
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+    setState(() {
+      _isConnecting = false;
+      _error ??= 'Connection closed';
+    });
+  }
+
   void _handleShellClosed() {
     final connectionId = _connectionId;
+    _shell = null;
+    unawaited(_doneSubscription?.cancel());
+    _doneSubscription = null;
     if (!mounted) {
       if (connectionId != null) {
-        unawaited(_sessionsNotifier?.disconnect(connectionId));
+        unawaited(
+          _sessionsNotifier?.handleUnexpectedDisconnect(
+            connectionId,
+            message: 'Connection closed',
+          ),
+        );
       }
       return;
     }
@@ -1034,24 +1078,51 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _connectionLostWhileBackgrounded = true;
     } else {
       setState(() {
+        _isConnecting = false;
         _error = 'Connection closed';
       });
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+      _terminalFocusNode.unfocus();
     }
     // Clean up the session state regardless of background/foreground.
     if (connectionId != null) {
-      unawaited(_sessionsNotifier?.disconnect(connectionId));
+      unawaited(
+        _sessionsNotifier?.handleUnexpectedDisconnect(
+          connectionId,
+          message: 'Connection closed',
+        ),
+      );
     }
   }
 
   Future<void> _disconnect() async {
+    final connectionId = _connectionId;
+    _connectionId = null;
     await _doneSubscription?.cancel();
     _doneSubscription = null;
-    if (_connectionId != null) {
-      await _sessionsNotifier?.disconnect(_connectionId!);
+    _shell = null;
+    if (connectionId != null) {
+      await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
       Navigator.of(context).pop();
     }
+  }
+
+  Future<void> _reconnect() async {
+    final previousConnectionId = _connectionId;
+    _connectionId = null;
+    _connectionLostWhileBackgrounded = false;
+    await _doneSubscription?.cancel();
+    _doneSubscription = null;
+    _shell = null;
+    if (previousConnectionId != null) {
+      await _sessionsNotifier?.disconnect(previousConnectionId);
+    }
+    if (!mounted) {
+      return;
+    }
+    await _connect(forceNew: true);
   }
 
   @override
@@ -1085,7 +1156,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
-        _connect();
+        _reconnect();
       }
     }
   }
@@ -1179,12 +1250,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<Map<int, SshConnectionState>>(
+      activeSessionsProvider,
+      _handleTrackedConnectionStateChange,
+    );
     final theme = Theme.of(context);
+    final connectionStates = ref.watch(activeSessionsProvider);
     final isDark = theme.brightness == Brightness.dark;
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final connectionState = _connectionId == null
+        ? SshConnectionState.disconnected
+        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
+    final showsDisconnectedOverlay =
+        _connectionId != null &&
+        !_isConnecting &&
+        connectionState == SshConnectionState.disconnected;
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
@@ -1245,7 +1328,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         actions: [
           IconButton(
             icon: const Icon(Icons.folder_outlined),
-            onPressed: _connectionId == null
+            onPressed:
+                _connectionId == null ||
+                    connectionState != SshConnectionState.connected
                 ? null
                 : _openConnectionFileBrowser,
             tooltip: 'Browse files',
@@ -1316,7 +1401,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard && (!_isNativeSelectionMode || _isMobilePlatform))
+          if (_showKeyboard &&
+              !showsDisconnectedOverlay &&
+              (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
               controller: _toolbarController,
               terminal: _terminal,
@@ -1470,8 +1557,78 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Widget _buildConnectionIssueOverlay({
+    required ThemeData theme,
+    required Widget child,
+    required String message,
+    required bool showsDisconnectedOverlay,
+  }) => Stack(
+    fit: StackFit.expand,
+    children: [
+      AbsorbPointer(child: child),
+      Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Card(
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.wifi_off_rounded,
+                      size: 48,
+                      color: theme.colorScheme.error,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      showsDisconnectedOverlay
+                          ? 'Disconnected'
+                          : 'Connection Error',
+                      style: theme.textTheme.titleLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      message,
+                      style: theme.textTheme.bodyMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: _reconnect,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Reconnect'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+
   Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
     final theme = Theme.of(context);
+    final connectionStates = ref.watch(activeSessionsProvider);
+    final connectionAttempt = ref
+        .read(activeSessionsProvider.notifier)
+        .getConnectionAttempt(widget.hostId);
+    final connectionState = _connectionId == null
+        ? SshConnectionState.disconnected
+        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
+    final showsDisconnectedOverlay =
+        _connectionId != null &&
+        !_isConnecting &&
+        connectionState == SshConnectionState.disconnected;
+    final overlayMessage = showsDisconnectedOverlay
+        ? connectionAttempt?.latestMessage ?? _error ?? 'Connection closed'
+        : _error;
 
     if (_isConnecting) {
       return const Center(
@@ -1486,7 +1643,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    if (_error != null) {
+    if (overlayMessage != null && _connectionId == null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -1505,15 +1662,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                _error!,
+                overlayMessage,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 24),
-              ElevatedButton(
-                onPressed: () => _connect(preferredConnectionId: _connectionId),
-                child: const Text('Retry'),
-              ),
+              ElevatedButton(onPressed: _reconnect, child: const Text('Retry')),
             ],
           ),
         ),
@@ -1566,7 +1720,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: isMobile ? null : _pasteClipboard,
     );
 
-    if (!isMobile) return terminalView;
+    if (!isMobile) {
+      return overlayMessage == null
+          ? terminalView
+          : _buildConnectionIssueOverlay(
+              theme: theme,
+              child: terminalView,
+              message: overlayMessage,
+              showsDisconnectedOverlay: showsDisconnectedOverlay,
+            );
+    }
 
     Widget mobileTerminalView = terminalView;
 
@@ -1627,7 +1790,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    return TerminalTextInputHandler(
+    Widget terminalViewWithInput = TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       controller: _terminalTextInputController,
@@ -1636,7 +1799,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
-      readOnly: _showsNativeSelectionOverlay,
+      readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -1645,6 +1808,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         child: mobileTerminalView,
       ),
     );
+
+    if (overlayMessage != null) {
+      terminalViewWithInput = _buildConnectionIssueOverlay(
+        theme: theme,
+        child: terminalViewWithInput,
+        message: overlayMessage,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+      );
+    }
+
+    return terminalViewWithInput;
   }
 
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
