@@ -451,9 +451,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   String _extractInputText(String text) {
     final extractedText = _extractRawInputText(text);
-    if (_lastSentText.isNotEmpty) {
-      return extractedText;
-    }
     final sanitizedText = extractedText.replaceFirst(
       _leadingSwipeNewlineArtifactPattern,
       '',
@@ -498,6 +495,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     _lastSentText = currentText;
     return '\n'.allMatches(appendedText).length;
+  }
+
+  void _resetCommittedInputState({int pendingEnterSuppressions = 0}) {
+    _lastSentText = '';
+    _pendingEnterActionSuppressions = pendingEnterSuppressions;
+    _syncEditingStateWithUserText('');
   }
 
   ({int deletedCount, String appendedText}) _computeTextDelta(
@@ -735,9 +738,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.backspace);
       _sawImeComposition = false;
-      _lastSentText = '';
-      _pendingEnterActionSuppressions = 0;
-      _syncEditingStateWithUserText('');
+      _resetCommittedInputState();
       return;
     }
 
@@ -758,7 +759,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (currentText != _lastSentText) {
       _notifyUserInput();
     }
-    _pendingEnterActionSuppressions += _sendInputDelta(currentText);
+    final newlineCount = _sendInputDelta(currentText);
+    if (newlineCount > 0) {
+      _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
+      _sawImeComposition = false;
+      return;
+    }
     _syncEditingStateWithUserText(currentText, sourceValue: value);
     _sawImeComposition = false;
   }
@@ -774,6 +780,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.enter);
+      _resetCommittedInputState();
+      _sawImeComposition = false;
     }
   }
 

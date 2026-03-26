@@ -132,6 +132,7 @@ class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
 
 class _FakeActiveSessionsSshService extends SshService {
   final Map<int, SshSession> _sessions = {};
+  final Map<int, Completer<void>> _clientDoneCompleters = {};
   int _nextConnectionId = 1;
 
   @override
@@ -143,10 +144,14 @@ class _FakeActiveSessionsSshService extends SshService {
     ConnectionProgressCallback? onProgress,
   }) async {
     final connectionId = _nextConnectionId++;
+    final client = _MockSshClient();
+    final clientDoneCompleter = Completer<void>();
+    _clientDoneCompleters[connectionId] = clientDoneCompleter;
+    when(() => client.done).thenAnswer((_) => clientDoneCompleter.future);
     final session = SshSession(
       connectionId: connectionId,
       hostId: hostId,
-      client: _MockSshClient(),
+      client: client,
       config: SshConnectionConfig(
         hostname: 'host-$hostId.example.com',
         port: 22,
@@ -160,15 +165,24 @@ class _FakeActiveSessionsSshService extends SshService {
   @override
   Future<void> disconnect(int connectionId) async {
     _sessions.remove(connectionId);
+    _clientDoneCompleters.remove(connectionId);
   }
 
   @override
   Future<void> disconnectAll() async {
     _sessions.clear();
+    _clientDoneCompleters.clear();
   }
 
   @override
   SshSession? getSession(int connectionId) => _sessions[connectionId];
+
+  void completeConnection(int connectionId) {
+    final completer = _clientDoneCompleters[connectionId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
+  }
 }
 
 void main() {
@@ -651,6 +665,26 @@ void main() {
 
       expect(updateCallCount, 2);
       expect(maxConcurrentCalls, 1);
+    });
+
+    test('removes sessions that close unexpectedly', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      expect(result.connectionId, isNotNull);
+
+      final connectionId = result.connectionId!;
+      fakeSshService.completeConnection(connectionId);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(notifier.getSession(connectionId), isNull);
+      expect(container.read(activeSessionsProvider)[connectionId], isNull);
+      expect(
+        notifier.getConnectionAttempt(42)?.latestMessage,
+        'Connection closed',
+      );
     });
   });
 

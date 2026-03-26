@@ -1723,6 +1723,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
+  final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -1730,7 +1731,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
-    ref.onDispose(() => _previewStateRefreshTimer?.cancel());
+    ref.onDispose(() {
+      _previewStateRefreshTimer?.cancel();
+      for (final subscription in _disconnectSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _disconnectSubscriptions.clear();
+    });
     _connectionHostIds.clear();
     _connectionAttempts.clear();
     return {};
@@ -1772,7 +1779,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       _connectionHostIds[connectionId] = hostId;
       final session = _sshService.getSession(connectionId);
       if (session != null) {
-        _attachSessionPreviewListener(session);
+        _attachSessionListeners(session);
       }
       state = {...state, connectionId: SshConnectionState.connected};
       _updateConnectionAttempt(
@@ -1798,9 +1805,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
-    _sshService
-        .getSession(connectionId)
-        ?.removePreviewListener(_schedulePreviewStateRefresh);
+    _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
@@ -1811,7 +1816,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
     for (final session in _sshService.sessions.values) {
-      session.removePreviewListener(_schedulePreviewStateRefresh);
+      _detachSessionListeners(session.connectionId, session: session);
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
@@ -1930,10 +1935,42 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
   }
 
-  void _attachSessionPreviewListener(SshSession session) {
+  void _attachSessionListeners(SshSession session) {
     session
       ..removePreviewListener(_schedulePreviewStateRefresh)
       ..addPreviewListener(_schedulePreviewStateRefresh);
+    final existingSubscription = _disconnectSubscriptions.remove(
+      session.connectionId,
+    );
+    if (existingSubscription != null) {
+      unawaited(existingSubscription.cancel());
+    }
+    _disconnectSubscriptions[session.connectionId] = session.client.done
+        .asStream()
+        .listen(
+          (_) => unawaited(
+            handleUnexpectedDisconnect(
+              session.connectionId,
+              message: 'Connection closed',
+            ),
+          ),
+          onError: (Object error, StackTrace _) => unawaited(
+            handleUnexpectedDisconnect(
+              session.connectionId,
+              message: 'Connection lost: $error',
+            ),
+          ),
+        );
+  }
+
+  void _detachSessionListeners(int connectionId, {SshSession? session}) {
+    (session ?? _sshService.getSession(connectionId))?.removePreviewListener(
+      _schedulePreviewStateRefresh,
+    );
+    final subscription = _disconnectSubscriptions.remove(connectionId);
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
   }
 
   void _schedulePreviewStateRefresh() {
@@ -1984,6 +2021,30 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         message: message,
       ),
     );
+  }
+
+  /// Remove a connection that closed outside the normal user disconnect path.
+  Future<void> handleUnexpectedDisconnect(
+    int connectionId, {
+    required String message,
+  }) async {
+    final hostId = _connectionHostIds[connectionId];
+    final session = _sshService.getSession(connectionId);
+    if (hostId == null && session == null && !state.containsKey(connectionId)) {
+      return;
+    }
+
+    _detachSessionListeners(connectionId, session: session);
+    await _sshService.disconnect(connectionId);
+    _connectionHostIds.remove(connectionId);
+    final next = {...state}..remove(connectionId);
+    state = next;
+    if (hostId != null) {
+      reportConnectionAttemptError(hostId, message);
+    } else {
+      state = {...state};
+    }
+    await _queueBackgroundStatusSync();
   }
 
   /// Update the session-specific terminal theme for an active connection.

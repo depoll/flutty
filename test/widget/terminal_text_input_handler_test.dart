@@ -157,6 +157,44 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('drops a leading swipe space after a committed newline', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho hi\n',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+      await tester.pump();
+
+      await _commitSwipeText(tester, '$_deleteDetectionMarker next');
+
+      expect(terminalOutput.join(), 'echo hi\nnext');
+
+      focusNode.dispose();
+    });
+
     testWidgets(
       'preserves the swipe separator after an input reset when text already exists',
       (tester) async {
@@ -520,6 +558,53 @@ void main() {
           ),
           isEmpty,
         );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a stray leading space when replacing a word after deleting a later word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker the ');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
 
         focusNode.dispose();
       },
