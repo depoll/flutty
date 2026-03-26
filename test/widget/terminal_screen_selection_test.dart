@@ -195,6 +195,38 @@ void main() {
       );
     });
 
+    test('detects paths split across indented continuation lines', () {
+      const text =
+          'Open /srv/app/lib/presentation/\n'
+          '    screens/terminal_screen.dart next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('screens'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('ignores colored guide prefixes in continuation indentation', () {
+      const text =
+          'Open /srv/app/lib/presentation/\n'
+          '│   screens/terminal_screen.dart next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('screens'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
     test('keeps suffix taps inside the hit-test range for stack traces', () {
       const line = 'Error in /srv/app/lib/main.dart:42:7';
       final detectedPath = detectTerminalFilePathAtTextOffset(

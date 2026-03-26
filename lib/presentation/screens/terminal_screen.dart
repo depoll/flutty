@@ -183,68 +183,99 @@ bool isSupportedTerminalFilePath(String path) {
 bool _isTerminalFilePathBodyCharacter(String character) =>
     character.isNotEmpty && !RegExp(r'''[\s<>"'$#]''').hasMatch(character);
 
-bool _isWrappedTerminalPathBreak(String text, int index) {
-  if ((text[index] != '\n' && text[index] != '\r') ||
-      index <= 0 ||
-      index >= text.length - 1) {
-    return false;
-  }
+bool _isTerminalPathContinuationDecorationCharacter(String character) =>
+    character == ' ' || character == '\t' || '│┃║╎┆┊|'.contains(character);
 
-  return _isTerminalFilePathBodyCharacter(text[index - 1]) &&
-      _isTerminalFilePathBodyCharacter(text[index + 1]);
+String _trimTerminalPathContinuationPrefix(String text) {
+  var index = 0;
+  while (index < text.length &&
+      _isTerminalPathContinuationDecorationCharacter(text[index])) {
+    index++;
+  }
+  return text.substring(index);
 }
 
-bool _isTerminalFilePathCandidateCharacter(String text, int index) {
-  final character = text[index];
-  if (character == '\n' || character == '\r') {
-    return _isWrappedTerminalPathBreak(text, index);
-  }
-  return _isTerminalFilePathBodyCharacter(character);
-}
-
-({String path, int start, int end})? _detectWrappedTerminalFilePathAtTextOffset(
+({
   String text,
-  int offset,
-) {
-  if (!text.contains('\n') && !text.contains('\r')) {
-    return null;
+  List<int> originalToNormalizedOffsets,
+  List<int> normalizedToOriginalStarts,
+  List<int> normalizedToOriginalEnds,
+})
+_normalizeTerminalFilePathDetectionText(String text) {
+  final normalizedCharacters = <String>[];
+  final originalToNormalizedOffsets = List<int>.filled(text.length + 1, 0);
+  final normalizedToOriginalStarts = <int>[];
+  final normalizedToOriginalEnds = <int>[];
+  var index = 0;
+
+  while (index < text.length) {
+    final character = text[index];
+    if (character == '\r' || character == '\n') {
+      var lineBreakEnd = index + 1;
+      if (character == '\r' &&
+          lineBreakEnd < text.length &&
+          text[lineBreakEnd] == '\n') {
+        lineBreakEnd++;
+      }
+
+      var continuationEnd = lineBreakEnd;
+      while (continuationEnd < text.length &&
+          _isTerminalPathContinuationDecorationCharacter(
+            text[continuationEnd],
+          )) {
+        continuationEnd++;
+      }
+
+      final previousCharacter = normalizedCharacters.isEmpty
+          ? null
+          : normalizedCharacters.last;
+      final nextCharacter = continuationEnd < text.length
+          ? text[continuationEnd]
+          : null;
+      final isPathContinuation =
+          previousCharacter != null &&
+          nextCharacter != null &&
+          _isTerminalFilePathBodyCharacter(previousCharacter) &&
+          _isTerminalFilePathBodyCharacter(nextCharacter);
+      if (isPathContinuation) {
+        for (
+          var skippedIndex = index;
+          skippedIndex < continuationEnd;
+          skippedIndex++
+        ) {
+          originalToNormalizedOffsets[skippedIndex] =
+              normalizedCharacters.length;
+        }
+        index = continuationEnd;
+        continue;
+      }
+
+      final normalizedIndex = normalizedCharacters.length;
+      for (var sourceIndex = index; sourceIndex < lineBreakEnd; sourceIndex++) {
+        originalToNormalizedOffsets[sourceIndex] = normalizedIndex;
+      }
+      normalizedCharacters.add('\n');
+      normalizedToOriginalStarts.add(index);
+      normalizedToOriginalEnds.add(lineBreakEnd);
+      index = lineBreakEnd;
+      continue;
+    }
+
+    final normalizedIndex = normalizedCharacters.length;
+    originalToNormalizedOffsets[index] = normalizedIndex;
+    normalizedCharacters.add(character);
+    normalizedToOriginalStarts.add(index);
+    normalizedToOriginalEnds.add(index + 1);
+    index++;
   }
 
-  var candidateOffset = offset;
-  if (candidateOffset >= text.length) {
-    candidateOffset = text.length - 1;
-  }
-  if (candidateOffset < 0 ||
-      !_isTerminalFilePathCandidateCharacter(text, candidateOffset)) {
-    return null;
-  }
-
-  var start = candidateOffset;
-  while (start > 0 && _isTerminalFilePathCandidateCharacter(text, start - 1)) {
-    start--;
-  }
-
-  var end = candidateOffset + 1;
-  while (end < text.length &&
-      _isTerminalFilePathCandidateCharacter(text, end)) {
-    end++;
-  }
-
-  final previousCharacter = start == 0
-      ? null
-      : text.substring(start - 1, start);
-  if (!isTerminalFilePathBoundary(previousCharacter)) {
-    return null;
-  }
-
-  final candidate = trimTerminalFilePathCandidate(
-    text.substring(start, end).replaceAll('\r', '').replaceAll('\n', ''),
+  originalToNormalizedOffsets[text.length] = normalizedCharacters.length;
+  return (
+    text: normalizedCharacters.join(),
+    originalToNormalizedOffsets: originalToNormalizedOffsets,
+    normalizedToOriginalStarts: normalizedToOriginalStarts,
+    normalizedToOriginalEnds: normalizedToOriginalEnds,
   );
-  if (!isSupportedTerminalFilePath(candidate)) {
-    return null;
-  }
-
-  return (path: candidate, start: start, end: end);
 }
 
 /// Resolves a tappable terminal file path at the given text offset, if present.
@@ -253,15 +284,16 @@ bool _isTerminalFilePathCandidateCharacter(String text, int index) {
   String text,
   int offset,
 ) {
-  final wrappedPath = _detectWrappedTerminalFilePathAtTextOffset(text, offset);
-  if (wrappedPath != null) {
-    return wrappedPath;
-  }
+  final normalizedText = _normalizeTerminalFilePathDetectionText(text);
+  final normalizedOffset =
+      normalizedText.originalToNormalizedOffsets[offset.clamp(0, text.length)];
 
-  for (final match in _terminalFilePathPattern.allMatches(text)) {
+  for (final match in _terminalFilePathPattern.allMatches(
+    normalizedText.text,
+  )) {
     final previousCharacter = match.start == 0
         ? null
-        : text.substring(match.start - 1, match.start);
+        : normalizedText.text.substring(match.start - 1, match.start);
     if (!isTerminalFilePathBoundary(previousCharacter)) {
       continue;
     }
@@ -272,8 +304,12 @@ bool _isTerminalFilePathCandidateCharacter(String text, int index) {
     }
 
     final hitTestEnd = match.end;
-    if (offset >= match.start && offset < hitTestEnd) {
-      return (path: candidate, start: match.start, end: hitTestEnd);
+    if (normalizedOffset >= match.start && normalizedOffset < hitTestEnd) {
+      final originalStart =
+          normalizedText.normalizedToOriginalStarts[match.start];
+      final originalEnd =
+          normalizedText.normalizedToOriginalEnds[hitTestEnd - 1];
+      return (path: candidate, start: originalStart, end: originalEnd);
     }
   }
 
@@ -2369,25 +2405,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
-    if (snapshot == null) {
+    final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
+    if (wrappedSnapshot == null) {
       return null;
     }
 
-    final rowIndex = row - snapshot.startRow;
+    final rowIndex = row - wrappedSnapshot.startRow;
     final textOffset =
-        snapshot.rowStarts[rowIndex] + snapshot.columnOffsets[rowIndex][column];
+        wrappedSnapshot.rowStarts[rowIndex] +
+        wrappedSnapshot.columnOffsets[rowIndex][column];
     final detectedLink = detectTerminalLinkAtTextOffset(
-      snapshot.text,
+      wrappedSnapshot.text,
       textOffset,
     );
     if (detectedLink != null) {
       return detectedLink.uri.toString();
     }
 
+    final pathSnapshot = _buildTerminalPathTapSnapshot(row);
+    if (pathSnapshot == null) {
+      return null;
+    }
+
+    final pathRowIndex = row - pathSnapshot.startRow;
+    final pathTextOffset =
+        pathSnapshot.rowStarts[pathRowIndex] +
+        pathSnapshot.columnOffsets[pathRowIndex][column];
     final detectedPath = detectTerminalFilePathAtTextOffset(
-      snapshot.text,
-      textOffset,
+      pathSnapshot.text,
+      pathTextOffset,
     );
     if (detectedPath == null) {
       return null;
@@ -2437,6 +2483,94 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       rowStarts: rowStarts,
       columnOffsets: columnOffsets,
     );
+  }
+
+  ({
+    String text,
+    int startRow,
+    List<int> rowStarts,
+    List<List<int>> columnOffsets,
+  })?
+  _buildTerminalPathTapSnapshot(int row) {
+    final buffer = _terminal.buffer;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    String lineTextAt(int lineIndex) => _buildNativeSelectionLineSnapshot(
+      buffer.lines[lineIndex],
+      buffer.viewWidth,
+    ).text;
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    while (startRow > 0 &&
+        _isIndentedTerminalPathContinuation(
+          previousLineText: lineTextAt(startRow - 1),
+          nextLineText: lineTextAt(startRow),
+        )) {
+      startRow--;
+    }
+
+    while (endRow + 1 < buffer.height &&
+        _isIndentedTerminalPathContinuation(
+          previousLineText: lineTextAt(endRow),
+          nextLineText: lineTextAt(endRow + 1),
+        )) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+      if (lineIndex < endRow) {
+        builder.write('\n');
+      }
+    }
+
+    return (
+      text: builder.toString(),
+      startRow: startRow,
+      rowStarts: rowStarts,
+      columnOffsets: columnOffsets,
+    );
+  }
+
+  bool _isIndentedTerminalPathContinuation({
+    required String previousLineText,
+    required String nextLineText,
+  }) {
+    final previousText = trimTerminalLinePadding(previousLineText);
+    final nextText = trimTerminalLinePadding(nextLineText);
+    final nextWithoutIndentation = _trimTerminalPathContinuationPrefix(
+      nextText,
+    );
+    if (previousText.isEmpty ||
+        nextWithoutIndentation.isEmpty ||
+        nextWithoutIndentation.length == nextText.length) {
+      return false;
+    }
+
+    return _isTerminalFilePathBodyCharacter(
+          previousText[previousText.length - 1],
+        ) &&
+        _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0]);
   }
 
   ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
@@ -2490,7 +2624,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleTerminalLinkTap(String link) {
     if (link.startsWith(_terminalSftpPathPrefix)) {
-      _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length));
+      unawaited(
+        _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length)),
+      );
       return;
     }
 
@@ -2532,7 +2668,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _showTerminalLinkMessage('Could not open $link');
   }
 
-  void _openTerminalFilePath(String path) {
+  Future<void> _openTerminalFilePath(String path) async {
     final normalizedPath = trimTerminalFilePathCandidate(path);
     if (!isSupportedTerminalFilePath(normalizedPath)) {
       _showTerminalLinkMessage('Could not open $path');
@@ -2543,17 +2679,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ? null
         : {'cwd': _workingDirectoryPath!};
 
-    unawaited(
-      context.pushNamed(
-        Routes.sftp,
-        pathParameters: {'hostId': widget.hostId.toString()},
-        queryParameters: {
-          if (connectionId != null) 'connectionId': connectionId.toString(),
-          'path': normalizedPath,
-          ...?workingDirectoryQueryParameters,
-        },
-      ),
+    final result = await context.pushNamed<String>(
+      Routes.sftp,
+      pathParameters: {'hostId': widget.hostId.toString()},
+      queryParameters: {
+        if (connectionId != null) 'connectionId': connectionId.toString(),
+        'path': normalizedPath,
+        ...?workingDirectoryQueryParameters,
+      },
     );
+    if (!mounted || result == null) {
+      return;
+    }
+
+    _showTerminalLinkMessage(result);
   }
 
   Widget get _selectionActions => Material(

@@ -316,10 +316,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final requestedPath = _pendingInitialPath;
       if (requestedPath != null) {
         _pendingInitialPath = null;
-        await _openRequestedPath(
-          requestedPath,
-          fallbackDirectory: _fallbackDirectoryPath,
-        );
+        await _openRequestedPath(requestedPath);
         return;
       }
       if (await _loadDirectory(
@@ -483,22 +480,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     await _loadDirectory(nextHistory.last, nextHistory: nextHistory);
   }
 
-  Future<bool> _openRequestedPath(
-    String requestedPath, {
-    String? fallbackDirectory,
-  }) async {
+  Future<bool> _openRequestedPath(String requestedPath) async {
     final normalizedPath = resolveRequestedSftpPath(
       requestedPath,
       workingDirectory: widget.initialWorkingDirectory,
       homeDirectory: await _resolveHomeDirectoryPath(),
     );
     if (normalizedPath == null) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not resolve "$requestedPath" in SFTP')),
-        );
-      }
-      await _openFallbackDirectory(preferredPath: fallbackDirectory);
+      _closeRequestedPathWithError(
+        'Could not open "$requestedPath" in SFTP: path does not exist',
+      );
       return false;
     }
 
@@ -520,6 +511,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             nextHistory: [parentPath],
             showError: false,
           )) {
+        final pathExists = _files.any((entry) => entry.filename == fileName);
+        if (!pathExists) {
+          _closeRequestedPathWithError(
+            'Could not open "$normalizedPath" in SFTP: path does not exist',
+          );
+          return false;
+        }
         if (!mounted) {
           return true;
         }
@@ -527,20 +525,21 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           _highlightedDirectoryPath = parentPath;
           _highlightedFileName = fileName;
         });
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Opened $parentPath (missing "$fileName")')),
-        );
         return true;
       }
     }
 
-    if (mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not open "$normalizedPath" in SFTP')),
-      );
-    }
-    await _openFallbackDirectory(preferredPath: fallbackDirectory);
+    _closeRequestedPathWithError(
+      'Could not open "$normalizedPath" in SFTP: path does not exist',
+    );
     return false;
+  }
+
+  void _closeRequestedPathWithError(String message) {
+    if (!mounted) {
+      return;
+    }
+    Navigator.of(context).pop(message);
   }
 
   String? _sanitizeRequestedPath(String? path) {
