@@ -174,29 +174,19 @@ jobs:
             const previewComment = [...comments].reverse().find((comment) =>
               comment.body?.includes(previewMarker),
             );
-
-            if (!previewComment) {
-              const body = renderStatusComment({
-                status: '❌ No preview build comment found yet',
-                workflow: 'Waiting for `PR Preview` to post artifacts',
-                previewSha: pr.head.sha,
-                state: 'failed',
-                note: '> Retry with `/deploy` after the sticky preview comment appears.',
-              });
-              await upsertStatusComment(comments, body);
-              return;
-            }
-
             const previewSha =
-              previewComment.body.match(/Build triggered by ([0-9a-f]{7,40})/i)?.[1] ??
+              previewComment?.body.match(/Build triggered by ([0-9a-f]{7,40})/i)?.[1] ??
               pr.head.sha;
+            const queuedNote = previewComment
+              ? '> Duplicate requests stay locked out while this deploy is queued or running.'
+              : '> Preview artifacts comment is unavailable, so this deploy is using the current PR head SHA directly. Duplicate requests stay locked out while this deploy is queued or running.';
             const queuedBody = renderStatusComment({
               status: '🔒 Lock acquired — queued for deploy',
               workflow: 'Waiting for `Deploy PR Preview` to start',
               previewSha,
-              previewCommentUrl: previewComment.html_url,
+              previewCommentUrl: previewComment?.html_url ?? '',
               state: 'queued',
-              note: '> Duplicate requests stay locked out while this deploy is queued or running.',
+              note: queuedNote,
             });
 
             try {
@@ -212,7 +202,7 @@ jobs:
                   'request-comment-at': requestCreatedAt,
                   'request-comment-user': requester,
                   'request-comment-url': requestCommentUrl,
-                  'request-preview-comment-url': previewComment.html_url,
+                  'request-preview-comment-url': previewComment?.html_url ?? '',
                 },
               });
 
