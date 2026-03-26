@@ -596,6 +596,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
   Offset? _terminalPathIndicatorOffset;
+  CellOffset? _lastHoveredTerminalPathOffset;
+  String? _lastHoveredTerminalPath;
 
   // Theme state
   Host? _host;
@@ -2692,7 +2694,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final offset = terminalViewState.renderTerminal.getCellOffset(
       terminalLocalPosition,
     );
-    final detectedPath = _resolveTerminalFilePathAtOffset(offset);
+    final isSameHoveredCell =
+        _lastHoveredTerminalPathOffset?.x == offset.x &&
+        _lastHoveredTerminalPathOffset?.y == offset.y;
+    final detectedPath = isSameHoveredCell
+        ? _lastHoveredTerminalPath
+        : _resolveTerminalFilePathAtOffset(offset);
+    if (!isSameHoveredCell) {
+      _lastHoveredTerminalPathOffset = offset;
+      _lastHoveredTerminalPath = detectedPath;
+    }
     if (detectedPath == null || !_shouldShowTerminalPathBadge(detectedPath)) {
       _clearTerminalPathIndicator();
       return;
@@ -2706,6 +2717,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _clearTerminalPathIndicator() {
+    _lastHoveredTerminalPathOffset = null;
+    _lastHoveredTerminalPath = null;
     if (_terminalPathIndicatorOffset == null || !mounted) {
       return;
     }

@@ -428,12 +428,6 @@ final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
 
-/// Provider for terminal file path links setting.
-final terminalPathLinksProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(SettingKeys.terminalPathLinks, defaultValue: true);
-});
-
 /// Notifier for terminal file path links with write capability.
 class TerminalPathLinksNotifier extends Notifier<bool> {
   late final SettingsService _settings;
@@ -468,15 +462,6 @@ final terminalPathLinksNotifierProvider =
     NotifierProvider<TerminalPathLinksNotifier, bool>(
       TerminalPathLinksNotifier.new,
     );
-
-/// Provider for terminal file path badges setting.
-final terminalPathLinkBadgesProvider = FutureProvider<bool>((ref) async {
-  final settings = ref.watch(settingsServiceProvider);
-  return settings.getBool(
-    SettingKeys.terminalPathLinkBadges,
-    defaultValue: true,
-  );
-});
 
 /// Notifier for terminal file path badges with write capability.
 class TerminalPathLinkBadgesNotifier extends Notifier<bool> {

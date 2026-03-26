@@ -276,13 +276,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     try {
       final resolvedPath = normalizeSftpAbsolutePath(
-        await _sftp!.absolute('.'),
+        await _sftp!.absolute('.').timeout(_requestedPathLookupTimeout),
       );
       if (resolvedPath != null) {
         _homeDirectoryPath = resolvedPath;
       }
       return resolvedPath;
-    } on Exception {
+    } on TimeoutException {
+      return null;
+    } on SftpStatusError {
       return null;
     }
   }
@@ -416,7 +418,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     );
     if (normalizedPath == null) {
       _closeRequestedPathWithError(
-        'Could not open "$requestedPath" in SFTP: path does not exist',
+        'Could not open "$requestedPath" in SFTP: could not resolve path',
       );
       return false;
     }
@@ -507,7 +509,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     if (!mounted) {
       return;
     }
-    Navigator.of(context).pop(message);
+
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop(message);
+      return;
+    }
+
+    setState(() {
+      _error = message;
+    });
+    unawaited(_openFallbackDirectory(preferredPath: _currentPath));
   }
 
   String? _sanitizeRequestedPath(String? path) {
