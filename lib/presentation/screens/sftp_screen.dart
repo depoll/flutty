@@ -164,17 +164,7 @@ String? resolveRequestedSftpPath(
       joinSftpPath(normalizedHomeDirectory, trimmedPath.substring(2)),
     );
   }
-
-  final normalizedWorkingDirectory = normalizeSftpAbsolutePath(
-    workingDirectory,
-  );
-  if (normalizedWorkingDirectory == null) {
-    return null;
-  }
-
-  return normalizeSftpAbsolutePath(
-    joinSftpPath(normalizedWorkingDirectory, trimmedPath),
-  );
+  return null;
 }
 
 /// SFTP file browser screen.
@@ -488,9 +478,62 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     );
     if (normalizedPath == null) {
       _closeRequestedPathWithError(
-        'Could not open "$requestedPath" in SFTP: path does not exist',
+        requestedPath.startsWith('/') || requestedPath.startsWith('~')
+            ? 'Could not open "$requestedPath" in SFTP: path does not exist'
+            : 'Only /... and ~/... terminal paths can be opened in SFTP',
       );
       return false;
+    }
+
+    if (normalizedPath == '/') {
+      if (await _loadDirectory(
+        normalizedPath,
+        nextHistory: [normalizedPath],
+        showError: false,
+      )) {
+        return true;
+      }
+      _closeRequestedPathWithError(
+        'Could not open "$normalizedPath" in SFTP: path does not exist',
+      );
+      return false;
+    }
+
+    final parentPath = parentRemotePath(normalizedPath);
+    final fileName = path.posix.basename(normalizedPath);
+    if (fileName.isNotEmpty &&
+        await _loadDirectory(
+          parentPath,
+          nextHistory: [parentPath],
+          showError: false,
+        )) {
+      SftpName? matchingEntry;
+      for (final entry in _files) {
+        if (entry.filename == fileName) {
+          matchingEntry = entry;
+          break;
+        }
+      }
+      if (matchingEntry != null) {
+        if (matchingEntry.attr.isDirectory) {
+          if (await _loadDirectory(
+            normalizedPath,
+            nextHistory: [normalizedPath],
+            showError: false,
+          )) {
+            return true;
+          }
+        } else {
+          if (!mounted) {
+            return true;
+          }
+          setState(() {
+            _highlightedDirectoryPath = parentPath;
+            _highlightedFileName = fileName;
+          });
+          return true;
+        }
+      }
     }
 
     if (await _loadDirectory(
@@ -499,34 +542,6 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       showError: false,
     )) {
       return true;
-    }
-
-    if (normalizedPath != '/') {
-      final parentPath = parentRemotePath(normalizedPath);
-      final fileName = path.posix.basename(normalizedPath);
-      if (fileName.isNotEmpty &&
-          fileName != '/' &&
-          await _loadDirectory(
-            parentPath,
-            nextHistory: [parentPath],
-            showError: false,
-          )) {
-        final pathExists = _files.any((entry) => entry.filename == fileName);
-        if (!pathExists) {
-          _closeRequestedPathWithError(
-            'Could not open "$normalizedPath" in SFTP: path does not exist',
-          );
-          return false;
-        }
-        if (!mounted) {
-          return true;
-        }
-        setState(() {
-          _highlightedDirectoryPath = parentPath;
-          _highlightedFileName = fileName;
-        });
-        return true;
-      }
     }
 
     _closeRequestedPathWithError(

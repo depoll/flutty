@@ -47,7 +47,7 @@ final _terminalLinkPattern = RegExp(
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#]+)?|\.\.?/[^\s<>"'$#]+|(?:[^/\s<>"'$#]+/)+[^\s<>"'$#]+|/[^\s<>"'$#]+)''',
+  r'''(?:~(?:/[^\s<>"'$#]+)?|/[^\s<>"'$#]+)''',
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 
@@ -171,13 +171,7 @@ bool isSupportedTerminalFilePath(String path) {
   if (path.isEmpty || path == '.' || path == '..' || path.startsWith('//')) {
     return false;
   }
-  if (path.startsWith('/') || path == '~' || path.startsWith('~/')) {
-    return true;
-  }
-  if (path.startsWith('./') || path.startsWith('../')) {
-    return true;
-  }
-  return path.contains('/');
+  return path.startsWith('/') || path == '~' || path.startsWith('~/');
 }
 
 bool _isTerminalFilePathBodyCharacter(String character) =>

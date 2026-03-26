@@ -153,19 +153,6 @@ void main() {
       expect(detectedPath!.path, '/srv/app/lib/main.dart');
     });
 
-    test('detects relative paths with directory segments', () {
-      final detectedPath = detectTerminalFilePathAtTextOffset(
-        'Inspect lib/presentation/screens/terminal_screen.dart next.',
-        12,
-      );
-
-      expect(detectedPath, isNotNull);
-      expect(
-        detectedPath!.path,
-        'lib/presentation/screens/terminal_screen.dart',
-      );
-    });
-
     test('detects absolute paths split across wrapped lines', () {
       const text =
           'Open /srv/app/lib/presentation/screens/\nterminal_screen.dart next.';
@@ -178,20 +165,6 @@ void main() {
       expect(
         detectedPath!.path,
         '/srv/app/lib/presentation/screens/terminal_screen.dart',
-      );
-    });
-
-    test('detects relative paths split across wrapped lines', () {
-      const text = 'Inspect lib/presentation/\nscreens/terminal_screen.dart.';
-      final detectedPath = detectTerminalFilePathAtTextOffset(
-        text,
-        text.indexOf('screens'),
-      );
-
-      expect(detectedPath, isNotNull);
-      expect(
-        detectedPath!.path,
-        'lib/presentation/screens/terminal_screen.dart',
       );
     });
 
@@ -246,6 +219,16 @@ void main() {
       );
     });
 
+    test('ignores relative paths with directory segments', () {
+      expect(
+        detectTerminalFilePathAtTextOffset(
+          'Inspect lib/presentation/screens/terminal_screen.dart next.',
+          12,
+        ),
+        isNull,
+      );
+    });
+
     test('returns null when the tapped offset is outside the path', () {
       expect(
         detectTerminalFilePathAtTextOffset(
@@ -289,11 +272,11 @@ void main() {
   });
 
   group('isSupportedTerminalFilePath', () {
-    test('allows absolute, relative, and tilde-prefixed remote paths', () {
+    test('allows only absolute and tilde-prefixed remote paths', () {
       expect(isSupportedTerminalFilePath('/var/log/app.log'), isTrue);
-      expect(isSupportedTerminalFilePath('lib/main.dart'), isTrue);
-      expect(isSupportedTerminalFilePath('../lib/main.dart'), isTrue);
       expect(isSupportedTerminalFilePath('~/.ssh/config'), isTrue);
+      expect(isSupportedTerminalFilePath('lib/main.dart'), isFalse);
+      expect(isSupportedTerminalFilePath('../lib/main.dart'), isFalse);
       expect(isSupportedTerminalFilePath('//example.com/path'), isFalse);
     });
   });

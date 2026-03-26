@@ -20,21 +20,15 @@ void main() {
       );
     });
 
-    test('resolves relative paths against the terminal working directory', () {
+    test('returns null for relative paths', () {
       expect(
         resolveRequestedSftpPath(
           '../logs/app.log',
           workingDirectory: '/home/depoll/project/lib',
         ),
-        '/home/depoll/project/logs/app.log',
+        isNull,
       );
+      expect(resolveRequestedSftpPath('lib/main.dart'), isNull);
     });
-
-    test(
-      'returns null for relative paths without working-directory context',
-      () {
-        expect(resolveRequestedSftpPath('lib/main.dart'), isNull);
-      },
-    );
   });
 }
