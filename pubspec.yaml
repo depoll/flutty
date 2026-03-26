@@ -58,6 +58,7 @@ dependencies:
   json_annotation: ^4.11.0
   pasteboard: ^0.5.0
   url_launcher: ^6.3.2
+  package_info_plus: ^9.0.0
 
 dev_dependencies:
   flutter_test:
