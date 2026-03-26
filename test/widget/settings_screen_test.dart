@@ -290,8 +290,8 @@ void main() {
         ProviderScope(
           overrides: [
             databaseProvider.overrideWithValue(db),
-            authServiceProvider.overrideWithValue(_FakeAuthService()),
-            authStateProvider.overrideWith(_MockAuthStateNotifier.new),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
             syncVaultStatusProvider.overrideWith(
               (ref) async =>
                   const SyncVaultStatus(enabled: false, hasRecoveryKey: false),
@@ -416,15 +416,21 @@ void main() {
       final initialKeyBuilds = keyBuilds;
       final initialGroupBuilds = groupBuilds;
 
+      final importMigrationButton = find.text('Import migration package');
+      final importMigrationTile = find.widgetWithText(
+        ListTile,
+        'Import migration package',
+      );
       await tester.scrollUntilVisible(
-        find.text('Import migration package'),
+        importMigrationButton,
         300,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('Import migration package'));
+      tester.widget<ListTile>(importMigrationTile).onTap!.call();
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).last, '1234');
+      expect(find.byType(TextField), findsOneWidget);
+      await tester.enterText(find.byType(EditableText).last, '1234');
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
 

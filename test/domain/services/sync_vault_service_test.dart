@@ -134,6 +134,37 @@ void main() {
         expect(labels, {'Server A', 'Server A2'});
       },
     );
+
+    test(
+      'does not report changes after downloading identical vault data',
+      () async {
+        final deviceA = await _createFixture();
+        final deviceB = await _createFixture();
+        addTearDown(deviceA.close);
+        addTearDown(deviceB.close);
+
+        await _insertHost(deviceA.hostRepository, label: 'Server A');
+        final provisioning = await deviceA.syncService.prepareNewVault();
+        final vaultFile = File('${tempDir.path}/no-churn.monkeysync');
+        await vaultFile.writeAsString(provisioning.encryptedVault, flush: true);
+        await deviceA.syncService.enablePreparedVault(
+          vaultPath: vaultFile.path,
+          provisioning: provisioning,
+        );
+
+        await deviceB.syncService.linkExistingVault(
+          vaultPath: vaultFile.path,
+          encryptedVault: await vaultFile.readAsString(),
+          recoveryKey: provisioning.recoveryKey,
+        );
+
+        final initialDownload = await deviceB.syncService.syncNow();
+        expect(initialDownload.outcome, SyncVaultSyncOutcome.downloadedRemote);
+
+        final secondSync = await deviceB.syncService.syncNow();
+        expect(secondSync.outcome, SyncVaultSyncOutcome.noChanges);
+      },
+    );
   });
 }
 

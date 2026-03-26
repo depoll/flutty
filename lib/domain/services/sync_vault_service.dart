@@ -1029,7 +1029,7 @@ class SyncVaultService {
     return <String, dynamic>{
       for (final entry in entries)
         entry.key: switch (entry.value) {
-          Map<String, dynamic> value => _canonicalizeScalarMap(value),
+          final Map<String, dynamic> value => _canonicalizeScalarMap(value),
           _ => entry.value,
         },
     };
@@ -1067,7 +1067,7 @@ class SyncVaultService {
     try {
       await tempFile.rename(vaultFile.path);
     } on FileSystemException {
-      if (await vaultFile.exists()) {
+      if (vaultFile.existsSync()) {
         await vaultFile.delete();
       }
       await tempFile.rename(vaultFile.path);

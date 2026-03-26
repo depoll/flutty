@@ -806,6 +806,7 @@ class _SyncSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to enable encrypted sync',
     );
     if (!context.mounted || !isAuthorized) {
@@ -852,6 +853,7 @@ class _SyncSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to connect encrypted sync on this device',
     );
     if (!context.mounted || !isAuthorized) {
@@ -908,6 +910,7 @@ class _SyncSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to reveal your sync recovery key',
     );
     if (!context.mounted || !isAuthorized) {
@@ -975,6 +978,7 @@ class _SyncSection extends ConsumerWidget {
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
+      readAuthState: () => ref.read(authStateProvider),
       reason: 'Authenticate to disable encrypted sync',
     );
     if (!context.mounted || !isAuthorized) {

@@ -161,7 +161,7 @@ Future<void> _writeBytesAtomically(File targetFile, Uint8List bytes) async {
   try {
     await tempFile.rename(targetFile.path);
   } on FileSystemException {
-    if (await targetFile.exists()) {
+    if (targetFile.existsSync()) {
       await targetFile.delete();
     }
     await tempFile.rename(targetFile.path);

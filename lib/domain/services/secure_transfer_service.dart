@@ -1090,18 +1090,16 @@ class SecureTransferService {
 
   List<Map<String, dynamic>> _sortedJsonRecords(
     Iterable<Map<String, dynamic>> records,
-  ) {
-    final normalized = records
-        .map(
-          (record) =>
-              Map<String, dynamic>.from(_canonicalizeJsonValue(record)! as Map),
-        )
-        .toList(growable: false);
-    normalized.sort(
-      (first, second) => jsonEncode(first).compareTo(jsonEncode(second)),
-    );
-    return normalized;
-  }
+  ) =>
+      records
+          .map((record) {
+            final canonicalRecord = _canonicalizeJsonValue(record)! as Map;
+            return Map<String, dynamic>.from(canonicalRecord);
+          })
+          .toList(growable: false)
+        ..sort(
+          (first, second) => jsonEncode(first).compareTo(jsonEncode(second)),
+        );
 
   Object? _canonicalizeJsonValue(Object? value) {
     if (value is Map) {
