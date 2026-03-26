@@ -34,6 +34,12 @@ abstract final class SettingKeys {
   /// Terminal bell sound enabled.
   static const bellSound = 'bell_sound';
 
+  /// Enable tapping terminal file paths to open SFTP.
+  static const terminalPathLinks = 'terminal_path_links';
+
+  /// Show badges for clickable terminal file paths.
+  static const terminalPathLinkBadges = 'terminal_path_link_badges';
+
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
 
@@ -421,6 +427,91 @@ class BellSoundNotifier extends Notifier<bool> {
 final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
+
+/// Provider for terminal file path links setting.
+final terminalPathLinksProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(SettingKeys.terminalPathLinks, defaultValue: true);
+});
+
+/// Notifier for terminal file path links with write capability.
+class TerminalPathLinksNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalPathLinks,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal file path linking.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.terminalPathLinks, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal file path links with write capability.
+final terminalPathLinksNotifierProvider =
+    NotifierProvider<TerminalPathLinksNotifier, bool>(
+      TerminalPathLinksNotifier.new,
+    );
+
+/// Provider for terminal file path badges setting.
+final terminalPathLinkBadgesProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(
+    SettingKeys.terminalPathLinkBadges,
+    defaultValue: true,
+  );
+});
+
+/// Notifier for terminal file path badges with write capability.
+class TerminalPathLinkBadgesNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalPathLinkBadges,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal file path badges.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.terminalPathLinkBadges, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal file path badges with write capability.
+final terminalPathLinkBadgesNotifierProvider =
+    NotifierProvider<TerminalPathLinkBadgesNotifier, bool>(
+      TerminalPathLinkBadgesNotifier.new,
+    );
 
 /// State for terminal theme settings (light and dark).
 class TerminalThemeSettings {

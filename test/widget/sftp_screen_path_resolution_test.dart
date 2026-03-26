@@ -1,5 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
-import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
+import 'package:monkeyssh/domain/services/remote_file_service.dart';
 
 void main() {
   group('resolveRequestedSftpPath', () {
@@ -20,15 +20,21 @@ void main() {
       );
     });
 
-    test('returns null for relative paths', () {
+    test('resolves relative paths against the working directory', () {
       expect(
         resolveRequestedSftpPath(
           '../logs/app.log',
           workingDirectory: '/home/depoll/project/lib',
         ),
-        isNull,
+        '/home/depoll/project/logs/app.log',
       );
-      expect(resolveRequestedSftpPath('lib/main.dart'), isNull);
+      expect(
+        resolveRequestedSftpPath(
+          'lib/main.dart',
+          workingDirectory: '/home/depoll/project',
+        ),
+        '/home/depoll/project/lib/main.dart',
+      );
     });
   });
 }

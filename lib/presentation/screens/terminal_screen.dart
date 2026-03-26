@@ -47,9 +47,10 @@ final _terminalLinkPattern = RegExp(
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#]+)?|/[^\s<>"'$#]+)''',
+  r'''(?:~(?:/[^\s<>"'$#]+)?|/(?:[^\s<>"'$#]+)|\.\.?/(?:[^\s<>"'$#]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
+const _terminalPathVerificationTimeout = Duration(seconds: 5);
 
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
@@ -171,7 +172,33 @@ bool isSupportedTerminalFilePath(String path) {
   if (path.isEmpty || path == '.' || path == '..' || path.startsWith('//')) {
     return false;
   }
-  return path.startsWith('/') || path == '~' || path.startsWith('~/');
+  return isExplicitTerminalFilePath(path) ||
+      isRelativeTerminalFilePathCandidate(path);
+}
+
+/// Whether a terminal path is anchored to `/` or `~`.
+@visibleForTesting
+bool isExplicitTerminalFilePath(String path) =>
+    path.startsWith('/') || path == '~' || path.startsWith('~/');
+
+/// Whether a relative terminal path looks file-like enough to probe safely.
+@visibleForTesting
+bool isRelativeTerminalFilePathCandidate(String path) {
+  if (isExplicitTerminalFilePath(path) ||
+      path.isEmpty ||
+      path == '.' ||
+      path == '..' ||
+      path.startsWith('//') ||
+      !path.contains('/')) {
+    return false;
+  }
+
+  if (path.startsWith('./') || path.startsWith('../')) {
+    return true;
+  }
+
+  final basename = path.split('/').last;
+  return basename.contains('.');
 }
 
 bool _isTerminalFilePathBodyCharacter(String character) =>
@@ -537,6 +564,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
+  final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
@@ -566,6 +594,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
+  final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
+  Offset? _terminalPathIndicatorOffset;
 
   // Theme state
   Host? _host;
@@ -1876,8 +1906,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminalTextStyle,
     );
     final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
+    final terminalPathLinksEnabled = ref.watch(
+      terminalPathLinksNotifierProvider,
+    );
+    final terminalPathLinkBadgesEnabled = ref.watch(
+      terminalPathLinkBadgesNotifierProvider,
+    );
 
-    final terminalView = MonkeyTerminalView(
+    Widget terminalView = MonkeyTerminalView(
+      key: _terminalViewKey,
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
@@ -1904,6 +1941,60 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: isMobile ? null : _pasteClipboard,
     );
 
+    final showsTerminalPathBadges =
+        !isMobile && terminalPathLinksEnabled && terminalPathLinkBadgesEnabled;
+    if (!showsTerminalPathBadges && _terminalPathIndicatorOffset != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _terminalPathIndicatorOffset == null) {
+          return;
+        }
+        setState(() => _terminalPathIndicatorOffset = null);
+      });
+    }
+    if (showsTerminalPathBadges) {
+      terminalView = MouseRegion(
+        onHover: _handleTerminalPathHover,
+        onExit: (_) => _clearTerminalPathIndicator(),
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            terminalView,
+            if (_terminalPathIndicatorOffset != null)
+              Positioned(
+                left: _terminalPathIndicatorOffset!.dx + 8,
+                top: (_terminalPathIndicatorOffset!.dy - 24).clamp(
+                  8.0,
+                  double.infinity,
+                ),
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.surfaceContainerHighest,
+                      borderRadius: BorderRadius.circular(999),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withValues(alpha: 0.18),
+                          blurRadius: 8,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Padding(
+                      padding: const EdgeInsets.all(6),
+                      child: Icon(
+                        Icons.folder_open_outlined,
+                        size: 14,
+                        color: theme.colorScheme.primary,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      );
+    }
+
     if (!isMobile) {
       return overlayMessage == null
           ? terminalView
@@ -1915,7 +2006,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
     }
 
-    Widget mobileTerminalView = terminalView;
+    var mobileTerminalView = terminalView;
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
@@ -2416,6 +2507,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return detectedLink.uri.toString();
     }
 
+    if (!ref.read(terminalPathLinksNotifierProvider)) {
+      return null;
+    }
+
+    final detectedPath = _resolveTerminalFilePathAtOffset(offset);
+    if (detectedPath == null) {
+      return null;
+    }
+
+    return '$_terminalSftpPathPrefix$detectedPath';
+  }
+
+  String? _resolveTerminalFilePathAtOffset(CellOffset offset) {
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    final line = _terminal.buffer.lines[row];
+    if (line.getCodePoint(column) == 0) {
+      return null;
+    }
+
     final pathSnapshot = _buildTerminalPathTapSnapshot(row);
     if (pathSnapshot == null) {
       return null;
@@ -2433,7 +2544,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    return '$_terminalSftpPathPrefix${detectedPath.path}';
+    return detectedPath.path;
   }
 
   ({
@@ -2567,6 +2678,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0]);
   }
 
+  void _handleTerminalPathHover(PointerHoverEvent event) {
+    final terminalViewState = _terminalViewKey.currentState;
+    if (terminalViewState == null ||
+        !ref.read(terminalPathLinksNotifierProvider) ||
+        !ref.read(terminalPathLinkBadgesNotifierProvider)) {
+      _clearTerminalPathIndicator();
+      return;
+    }
+
+    final terminalLocalPosition = terminalViewState.renderTerminal
+        .globalToLocal(event.position);
+    final offset = terminalViewState.renderTerminal.getCellOffset(
+      terminalLocalPosition,
+    );
+    final detectedPath = _resolveTerminalFilePathAtOffset(offset);
+    if (detectedPath == null || !_shouldShowTerminalPathBadge(detectedPath)) {
+      _clearTerminalPathIndicator();
+      return;
+    }
+
+    final nextOffset = event.localPosition;
+    if (_terminalPathIndicatorOffset == nextOffset) {
+      return;
+    }
+    setState(() => _terminalPathIndicatorOffset = nextOffset);
+  }
+
+  void _clearTerminalPathIndicator() {
+    if (_terminalPathIndicatorOffset == null || !mounted) {
+      return;
+    }
+    setState(() => _terminalPathIndicatorOffset = null);
+  }
+
+  bool _shouldShowTerminalPathBadge(String path) =>
+      isExplicitTerminalFilePath(path) ||
+      _verifiedTerminalPathCache.containsKey(_terminalPathCacheKey(path));
+
   ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
     final buffer = _terminal.buffer;
     final row = buffer.absoluteCursorY;
@@ -2668,18 +2817,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _showTerminalLinkMessage('Could not open $path');
       return;
     }
-    final connectionId = _connectionId;
-    final workingDirectoryQueryParameters = _workingDirectoryPath == null
-        ? null
-        : {'cwd': _workingDirectoryPath!};
 
+    final verifiedPath = await _resolveVerifiedTerminalFilePath(normalizedPath);
+    if (!mounted || verifiedPath == null) {
+      return;
+    }
+
+    final connectionId = _connectionId;
     final result = await context.pushNamed<String>(
       Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
       queryParameters: {
         if (connectionId != null) 'connectionId': connectionId.toString(),
-        'path': normalizedPath,
-        ...?workingDirectoryQueryParameters,
+        'path': verifiedPath,
       },
     );
     if (!mounted || result == null) {
@@ -2799,6 +2949,70 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
     return sessionsNotifier.getSession(connectionId);
+  }
+
+  String _terminalPathCacheKey(String terminalPath) =>
+      '${widget.hostId}:${_connectionId ?? 0}:${_workingDirectoryPath ?? ''}:$terminalPath';
+
+  Future<String?> _resolveVerifiedTerminalFilePath(String terminalPath) async {
+    final cacheKey = _terminalPathCacheKey(terminalPath);
+    final cachedPath = _verifiedTerminalPathCache[cacheKey];
+    if (cachedPath != null) {
+      return cachedPath;
+    }
+
+    final session = _activeSession();
+    final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
+    if (session == null) {
+      if (isExplicitPath) {
+        _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
+      }
+      return null;
+    }
+
+    SftpClient? sftp;
+    try {
+      sftp = await session.sftp().timeout(_terminalPathVerificationTimeout);
+      final homeDirectory = terminalPath == '~' || terminalPath.startsWith('~/')
+          ? normalizeSftpAbsolutePath(
+              await sftp
+                  .absolute('.')
+                  .timeout(_terminalPathVerificationTimeout),
+            )
+          : null;
+      final resolvedPath = resolveRequestedSftpPath(
+        terminalPath,
+        workingDirectory: _workingDirectoryPath,
+        homeDirectory: homeDirectory,
+      );
+      if (resolvedPath == null) {
+        if (isExplicitPath) {
+          _showTerminalLinkMessage(
+            'Could not open "$terminalPath" in SFTP: path does not exist',
+          );
+        }
+        return null;
+      }
+
+      await sftp.stat(resolvedPath).timeout(_terminalPathVerificationTimeout);
+      _verifiedTerminalPathCache[cacheKey] = resolvedPath;
+      return resolvedPath;
+    } on TimeoutException {
+      if (isExplicitPath) {
+        _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
+      }
+      return null;
+    } on SftpStatusError catch (error) {
+      if (isExplicitPath) {
+        final message = error.code == SftpStatusCode.noSuchFile
+            ? 'Could not open "$terminalPath" in SFTP: path does not exist'
+            : 'Could not open "$terminalPath" in SFTP';
+        _showTerminalLinkMessage(message);
+      }
+      return null;
+    } finally {
+      sftp?.close();
+    }
   }
 
   Future<void> _pasteClipboard() async {

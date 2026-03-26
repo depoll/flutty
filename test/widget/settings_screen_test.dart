@@ -161,6 +161,35 @@ void main() {
       expect(find.byType(SwitchListTile), findsWidgets);
     });
 
+    testWidgets('displays terminal path link toggles', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      expect(find.text('Clickable file paths'), findsOneWidget);
+      expect(
+        find.text('Tap terminal file paths to open them in SFTP'),
+        findsOneWidget,
+      );
+      expect(find.text('Path link badges'), findsOneWidget);
+      expect(
+        find.text('Show a badge for clickable terminal file paths'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('displays about section with version', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -319,12 +348,15 @@ void main() {
       final initialKeyBuilds = keyBuilds;
       final initialGroupBuilds = groupBuilds;
 
+      final importMigrationFinder = find.text('Import migration package');
       await tester.scrollUntilVisible(
-        find.text('Import migration package'),
+        importMigrationFinder,
         300,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.text('Import migration package'));
+      await tester.ensureVisible(importMigrationFinder);
+      await tester.pumpAndSettle();
+      await tester.tap(importMigrationFinder, warnIfMissed: false);
       await tester.pumpAndSettle();
 
       await tester.enterText(find.byType(TextField).last, '1234');

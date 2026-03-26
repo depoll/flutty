@@ -219,10 +219,36 @@ void main() {
       );
     });
 
-    test('ignores relative paths with directory segments', () {
+    test(
+      'detects verified-looking relative paths with file-like basenames',
+      () {
+        final detectedPath = detectTerminalFilePathAtTextOffset(
+          'Inspect lib/presentation/screens/terminal_screen.dart next.',
+          12,
+        );
+
+        expect(detectedPath, isNotNull);
+        expect(
+          detectedPath!.path,
+          'lib/presentation/screens/terminal_screen.dart',
+        );
+      },
+    );
+
+    test('detects dot-relative paths', () {
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        'Inspect ../lib/main.dart next.',
+        12,
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '../lib/main.dart');
+    });
+
+    test('ignores branch-like slash paths without a file-like basename', () {
       expect(
         detectTerminalFilePathAtTextOffset(
-          'Inspect lib/presentation/screens/terminal_screen.dart next.',
+          'Inspect feature/sftp-browser next.',
           12,
         ),
         isNull,
@@ -272,11 +298,12 @@ void main() {
   });
 
   group('isSupportedTerminalFilePath', () {
-    test('allows only absolute and tilde-prefixed remote paths', () {
+    test('allows explicit paths and conservative relative file paths', () {
       expect(isSupportedTerminalFilePath('/var/log/app.log'), isTrue);
       expect(isSupportedTerminalFilePath('~/.ssh/config'), isTrue);
-      expect(isSupportedTerminalFilePath('lib/main.dart'), isFalse);
-      expect(isSupportedTerminalFilePath('../lib/main.dart'), isFalse);
+      expect(isSupportedTerminalFilePath('lib/main.dart'), isTrue);
+      expect(isSupportedTerminalFilePath('../lib/main.dart'), isTrue);
+      expect(isSupportedTerminalFilePath('feature/sftp-browser'), isFalse);
       expect(isSupportedTerminalFilePath('//example.com/path'), isFalse);
     });
   });

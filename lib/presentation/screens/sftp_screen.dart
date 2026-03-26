@@ -17,6 +17,7 @@ import '../../domain/services/ssh_service.dart';
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
 const _unwrappedEditorTrailingSlack = 24.0;
+const _requestedPathLookupTimeout = Duration(seconds: 5);
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -102,69 +103,6 @@ double measureUnwrappedEditorContentWidth({
   }
 
   return hasVisibleText ? maxWidth + trailingSlack : 0;
-}
-
-/// Normalizes an absolute remote path by collapsing `.`, `..`, and extra `/`.
-@visibleForTesting
-String? normalizeSftpAbsolutePath(String? path) {
-  final trimmedPath = path?.trim();
-  if (trimmedPath == null ||
-      trimmedPath.isEmpty ||
-      !trimmedPath.startsWith('/')) {
-    return null;
-  }
-
-  final segments = <String>[];
-  for (final segment in trimmedPath.split('/')) {
-    if (segment.isEmpty || segment == '.') {
-      continue;
-    }
-    if (segment == '..') {
-      if (segments.isNotEmpty) {
-        segments.removeLast();
-      }
-      continue;
-    }
-    segments.add(segment);
-  }
-
-  return segments.isEmpty ? '/' : '/${segments.join('/')}';
-}
-
-/// Joins a remote directory and child path using POSIX separators.
-@visibleForTesting
-String joinSftpPath(String directory, String name) =>
-    joinRemotePath(directory, name);
-
-/// Resolves a requested SFTP path against terminal context.
-@visibleForTesting
-String? resolveRequestedSftpPath(
-  String? requestedPath, {
-  String? workingDirectory,
-  String? homeDirectory,
-}) {
-  final trimmedPath = requestedPath?.trim();
-  if (trimmedPath == null || trimmedPath.isEmpty) {
-    return null;
-  }
-
-  if (trimmedPath.startsWith('/')) {
-    return normalizeSftpAbsolutePath(trimmedPath);
-  }
-
-  if (trimmedPath == '~' || trimmedPath.startsWith('~/')) {
-    final normalizedHomeDirectory = normalizeSftpAbsolutePath(homeDirectory);
-    if (normalizedHomeDirectory == null) {
-      return null;
-    }
-    if (trimmedPath == '~') {
-      return normalizedHomeDirectory;
-    }
-    return normalizeSftpAbsolutePath(
-      joinSftpPath(normalizedHomeDirectory, trimmedPath.substring(2)),
-    );
-  }
-  return null;
 }
 
 /// SFTP file browser screen.
@@ -478,9 +416,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     );
     if (normalizedPath == null) {
       _closeRequestedPathWithError(
-        requestedPath.startsWith('/') || requestedPath.startsWith('~')
-            ? 'Could not open "$requestedPath" in SFTP: path does not exist'
-            : 'Only /... and ~/... terminal paths can be opened in SFTP',
+        'Could not open "$requestedPath" in SFTP: path does not exist',
       );
       return false;
     }
@@ -499,14 +435,46 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return false;
     }
 
+    late final SftpFileAttrs requestedPathStat;
+    try {
+      requestedPathStat = await _sftp!
+          .stat(normalizedPath)
+          .timeout(_requestedPathLookupTimeout);
+    } on TimeoutException {
+      _closeRequestedPathWithError(
+        'Timed out opening "$normalizedPath" in SFTP',
+      );
+      return false;
+    } on SftpStatusError catch (error) {
+      if (error.code == SftpStatusCode.noSuchFile) {
+        _closeRequestedPathWithError(
+          'Could not open "$normalizedPath" in SFTP: path does not exist',
+        );
+        return false;
+      }
+      _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
+      return false;
+    }
+
+    if (requestedPathStat.isDirectory) {
+      if (await _loadDirectory(
+        normalizedPath,
+        nextHistory: [normalizedPath],
+        showError: false,
+      )) {
+        return true;
+      }
+      _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
+      return false;
+    }
+
     final parentPath = parentRemotePath(normalizedPath);
     final fileName = path.posix.basename(normalizedPath);
-    if (fileName.isNotEmpty &&
-        await _loadDirectory(
-          parentPath,
-          nextHistory: [parentPath],
-          showError: false,
-        )) {
+    if (await _loadDirectory(
+      parentPath,
+      nextHistory: [parentPath],
+      showError: false,
+    )) {
       SftpName? matchingEntry;
       for (final entry in _files) {
         if (entry.filename == fileName) {
@@ -514,39 +482,24 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           break;
         }
       }
-      if (matchingEntry != null) {
-        if (matchingEntry.attr.isDirectory) {
-          if (await _loadDirectory(
-            normalizedPath,
-            nextHistory: [normalizedPath],
-            showError: false,
-          )) {
-            return true;
-          }
-        } else {
-          if (!mounted) {
-            return true;
-          }
-          setState(() {
-            _highlightedDirectoryPath = parentPath;
-            _highlightedFileName = fileName;
-          });
-          return true;
-        }
+      if (matchingEntry == null) {
+        _closeRequestedPathWithError(
+          'Could not open "$normalizedPath" in SFTP: path does not exist',
+        );
+        return false;
       }
-    }
 
-    if (await _loadDirectory(
-      normalizedPath,
-      nextHistory: [normalizedPath],
-      showError: false,
-    )) {
+      if (!mounted) {
+        return true;
+      }
+      setState(() {
+        _highlightedDirectoryPath = parentPath;
+        _highlightedFileName = fileName;
+      });
       return true;
     }
 
-    _closeRequestedPathWithError(
-      'Could not open "$normalizedPath" in SFTP: path does not exist',
-    );
+    _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
     return false;
   }
 

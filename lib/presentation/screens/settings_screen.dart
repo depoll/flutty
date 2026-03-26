@@ -319,6 +319,10 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final terminalPathLinks = ref.watch(terminalPathLinksNotifierProvider);
+    final terminalPathLinkBadges = ref.watch(
+      terminalPathLinkBadgesNotifierProvider,
+    );
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
 
     final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
@@ -368,6 +372,32 @@ class _TerminalSection extends ConsumerWidget {
                 .read(bellSoundNotifierProvider.notifier)
                 .setEnabled(enabled: value);
           },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.folder_open_outlined),
+          title: const Text('Clickable file paths'),
+          subtitle: const Text('Tap terminal file paths to open them in SFTP'),
+          value: terminalPathLinks,
+          onChanged: (value) {
+            ref
+                .read(terminalPathLinksNotifierProvider.notifier)
+                .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.link_outlined),
+          title: const Text('Path link badges'),
+          subtitle: const Text(
+            'Show a badge for clickable terminal file paths',
+          ),
+          value: terminalPathLinks && terminalPathLinkBadges,
+          onChanged: terminalPathLinks
+              ? (value) {
+                  ref
+                      .read(terminalPathLinkBadgesNotifierProvider.notifier)
+                      .setEnabled(enabled: value);
+                }
+              : null,
         ),
       ],
     );
