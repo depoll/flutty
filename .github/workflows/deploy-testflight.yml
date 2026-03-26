@@ -494,4 +494,8 @@ jobs:
               });
             }
 
-            await replaceEyesReactionWithRocket();
+            try {
+              await replaceEyesReactionWithRocket();
+            } catch (error) {
+              core.warning(`Failed to update deploy reaction: ${String(error)}`);
+            }

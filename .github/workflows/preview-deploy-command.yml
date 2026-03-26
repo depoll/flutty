@@ -90,14 +90,14 @@ jobs:
               );
             };
 
-            const replaceEyesReactionWithRocket = async () => {
+            const removeRequestCommentReaction = async (content) => {
               const reactions = await listRequestCommentReactions();
-              const botEyesReactions = reactions.filter(
+              const botReactionsToDelete = reactions.filter(
                 (reaction) =>
-                  reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]',
+                  reaction.content === content && reaction.user?.login === 'github-actions[bot]',
               );
 
-              for (const reaction of botEyesReactions) {
+              for (const reaction of botReactionsToDelete) {
                 await github.request(
                   'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
                   {
@@ -109,26 +109,6 @@ jobs:
                   },
                 );
               }
-
-              if (
-                reactions.some(
-                  (reaction) =>
-                    reaction.content === 'rocket' && reaction.user?.login === 'github-actions[bot]',
-                )
-              ) {
-                return;
-              }
-
-              await github.request(
-                'POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
-                {
-                  owner,
-                  repo,
-                  comment_id: requestCommentNumber,
-                  content: 'rocket',
-                  headers: {accept: 'application/vnd.github+json'},
-                },
-              );
             };
 
             const upsertStatusComment = async (comments, body) => {
@@ -264,7 +244,11 @@ jobs:
               note: queuedNote,
             });
 
-            await ensureRequestCommentReaction('eyes');
+            try {
+              await ensureRequestCommentReaction('eyes');
+            } catch (error) {
+              core.warning(`Failed to add deploy reaction: ${String(error)}`);
+            }
 
             let dispatched = false;
             try {
@@ -288,7 +272,11 @@ jobs:
               await upsertStatusComment(comments, queuedBody);
             } catch (error) {
               if (!dispatched) {
-                await replaceEyesReactionWithRocket();
+                try {
+                  await removeRequestCommentReaction('eyes');
+                } catch (reactionError) {
+                  core.warning(`Failed to clear deploy reaction: ${String(reactionError)}`);
+                }
               }
 
               const failureBody = renderStatusComment({
