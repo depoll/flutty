@@ -211,9 +211,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   void _replacePathHistory(String path) {
-    _pathHistory
-      ..clear()
-      ..add(path);
+    if (!mounted) {
+      _pathHistory
+        ..clear()
+        ..add(path);
+      return;
+    }
+
+    setState(() {
+      _pathHistory
+        ..clear()
+        ..add(path);
+    });
   }
 
   String? _normalizeRequestedPath(String? path) {

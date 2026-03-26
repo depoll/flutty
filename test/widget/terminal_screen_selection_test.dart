@@ -136,6 +136,18 @@ void main() {
       expect(detectedPath!.path, '/srv/app/lib/main.dart');
     });
 
+    test('keeps suffix taps inside the hit-test range for stack traces', () {
+      const line = 'Error in /srv/app/lib/main.dart:42:7';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        line,
+        line.indexOf('42'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/srv/app/lib/main.dart');
+      expect(detectedPath.end, line.length);
+    });
+
     test('ignores relative paths embedded in words', () {
       expect(
         detectTerminalFilePathAtTextOffset('Inspect lib/main.dart next.', 12),

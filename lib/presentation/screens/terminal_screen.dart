@@ -177,9 +177,9 @@ bool isSupportedTerminalFilePath(String path) =>
       continue;
     }
 
-    final end = match.start + candidate.length;
-    if (offset >= match.start && offset < end) {
-      return (path: candidate, start: match.start, end: end);
+    final hitTestEnd = match.end;
+    if (offset >= match.start && offset < hitTestEnd) {
+      return (path: candidate, start: match.start, end: hitTestEnd);
     }
   }
 
