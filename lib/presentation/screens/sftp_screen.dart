@@ -432,7 +432,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return true;
       }
       _closeRequestedPathWithError(
-        'Could not open "$normalizedPath" in SFTP: path does not exist',
+        'Could not open "$normalizedPath" in SFTP: failed to list directory',
       );
       return false;
     }
