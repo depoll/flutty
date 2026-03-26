@@ -38,7 +38,9 @@ final _terminalLinkPattern = RegExp(
   r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
 );
-final _terminalFilePathPattern = RegExp(r'''/[^\s<>"'$#]+''');
+final _terminalFilePathPattern = RegExp(
+  r'''(?:~(?:/[^\s<>"'$#]+)?|\.\.?/[^\s<>"'$#]+|(?:[^/\s<>"'$#]+/)+[^\s<>"'$#]+|/[^\s<>"'$#]+)''',
+);
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 
 /// Padding around the terminal viewport.
@@ -155,8 +157,18 @@ bool isTerminalFilePathBoundary(String? character) =>
 
 /// Whether a terminal path can be opened in the remote SFTP browser.
 @visibleForTesting
-bool isSupportedTerminalFilePath(String path) =>
-    path.startsWith('/') && !path.startsWith('//') && path.length > 1;
+bool isSupportedTerminalFilePath(String path) {
+  if (path.isEmpty || path == '.' || path == '..' || path.startsWith('//')) {
+    return false;
+  }
+  if (path.startsWith('/') || path == '~' || path.startsWith('~/')) {
+    return true;
+  }
+  if (path.startsWith('./') || path.startsWith('../')) {
+    return true;
+  }
+  return path.contains('/');
+}
 
 /// Resolves a tappable terminal file path at the given text offset, if present.
 @visibleForTesting
@@ -1959,12 +1971,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _showTerminalLinkMessage('Could not open $path');
       return;
     }
+    final workingDirectoryQueryParameters = _workingDirectoryPath == null
+        ? null
+        : {'cwd': _workingDirectoryPath!};
 
     unawaited(
       context.pushNamed(
         'sftp',
         pathParameters: {'hostId': widget.hostId.toString()},
-        queryParameters: {'path': normalizedPath},
+        queryParameters: {
+          'path': normalizedPath,
+          ...?workingDirectoryQueryParameters,
+        },
       ),
     );
   }

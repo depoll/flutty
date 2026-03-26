@@ -1,25 +1,110 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
-import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/services/ssh_service.dart';
 
+/// Normalizes an absolute remote path by collapsing `.`, `..`, and extra `/`.
+@visibleForTesting
+String? normalizeSftpAbsolutePath(String? path) {
+  final trimmedPath = path?.trim();
+  if (trimmedPath == null ||
+      trimmedPath.isEmpty ||
+      !trimmedPath.startsWith('/')) {
+    return null;
+  }
+
+  final segments = <String>[];
+  for (final segment in trimmedPath.split('/')) {
+    if (segment.isEmpty || segment == '.') {
+      continue;
+    }
+    if (segment == '..') {
+      if (segments.isNotEmpty) {
+        segments.removeLast();
+      }
+      continue;
+    }
+    segments.add(segment);
+  }
+
+  return segments.isEmpty ? '/' : '/${segments.join('/')}';
+}
+
+/// Joins a remote directory and child path using POSIX separators.
+@visibleForTesting
+String joinSftpPath(String directory, String name) {
+  if (directory == '/') {
+    return '/$name';
+  }
+  return '$directory/$name';
+}
+
+/// Resolves a requested SFTP path against terminal context.
+@visibleForTesting
+String? resolveRequestedSftpPath(
+  String? requestedPath, {
+  String? workingDirectory,
+  String? homeDirectory,
+}) {
+  final trimmedPath = requestedPath?.trim();
+  if (trimmedPath == null || trimmedPath.isEmpty) {
+    return null;
+  }
+
+  if (trimmedPath.startsWith('/')) {
+    return normalizeSftpAbsolutePath(trimmedPath);
+  }
+
+  if (trimmedPath == '~' || trimmedPath.startsWith('~/')) {
+    final normalizedHomeDirectory = normalizeSftpAbsolutePath(homeDirectory);
+    if (normalizedHomeDirectory == null) {
+      return null;
+    }
+    if (trimmedPath == '~') {
+      return normalizedHomeDirectory;
+    }
+    return normalizeSftpAbsolutePath(
+      joinSftpPath(normalizedHomeDirectory, trimmedPath.substring(2)),
+    );
+  }
+
+  final normalizedWorkingDirectory = normalizeSftpAbsolutePath(
+    workingDirectory,
+  );
+  if (normalizedWorkingDirectory == null) {
+    return null;
+  }
+
+  return normalizeSftpAbsolutePath(
+    joinSftpPath(normalizedWorkingDirectory, trimmedPath),
+  );
+}
+
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
-  const SftpScreen({required this.hostId, this.initialPath, super.key});
+  const SftpScreen({
+    required this.hostId,
+    this.initialPath,
+    this.initialWorkingDirectory,
+    super.key,
+  });
 
   /// The host ID to connect to.
   final int hostId;
 
   /// Optional remote path to open when the browser loads.
   final String? initialPath;
+
+  /// Optional terminal working directory used to resolve relative paths.
+  final String? initialWorkingDirectory;
 
   @override
   ConsumerState<SftpScreen> createState() => _SftpScreenState();
@@ -35,11 +120,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   String? _pendingInitialPath;
   String? _highlightedDirectoryPath;
   String? _highlightedFileName;
+  String? _homeDirectoryPath;
 
   @override
   void initState() {
     super.initState();
-    _pendingInitialPath = _normalizeRequestedPath(widget.initialPath);
+    _pendingInitialPath = _sanitizeRequestedPath(widget.initialPath);
     _connect();
   }
 
@@ -47,8 +133,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   void didUpdateWidget(covariant SftpScreen oldWidget) {
     super.didUpdateWidget(oldWidget);
 
-    final nextInitialPath = _normalizeRequestedPath(widget.initialPath);
-    if (oldWidget.initialPath == widget.initialPath) {
+    final nextInitialPath = _sanitizeRequestedPath(widget.initialPath);
+    if (oldWidget.initialPath == widget.initialPath &&
+        oldWidget.initialWorkingDirectory == widget.initialWorkingDirectory) {
       return;
     }
 
@@ -100,15 +187,83 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       await sessionsNotifier.syncBackgroundStatus();
       _sftp = await session.sftp();
       final requestedPath = _pendingInitialPath;
-      if (requestedPath != null && await _openRequestedPath(requestedPath)) {
+      if (requestedPath != null) {
         _pendingInitialPath = null;
+        await _openRequestedPath(requestedPath);
         return;
       }
-      await _loadDirectory(_currentPath);
+      if (await _loadDirectory(_currentPath)) {
+        return;
+      }
+      final homeDirectoryPath = await _resolveHomeDirectoryPath();
+      if (homeDirectoryPath != null &&
+          await _loadDirectory(homeDirectoryPath, showError: false)) {
+        _replacePathHistory(homeDirectoryPath);
+        return;
+      }
+      if (mounted) {
+        setState(() {
+          _isLoading = false;
+          _error = 'Failed to open SFTP browser';
+        });
+      }
     } on Exception catch (e) {
       setState(() {
         _isLoading = false;
         _error = 'SFTP connection failed: $e';
+      });
+    }
+  }
+
+  Future<String?> _resolveHomeDirectoryPath() async {
+    if (_homeDirectoryPath != null) {
+      return _homeDirectoryPath;
+    }
+    if (_sftp == null) {
+      return null;
+    }
+
+    try {
+      final resolvedPath = normalizeSftpAbsolutePath(
+        await _sftp!.absolute('.'),
+      );
+      if (resolvedPath != null) {
+        _homeDirectoryPath = resolvedPath;
+      }
+      return resolvedPath;
+    } on Exception {
+      return null;
+    }
+  }
+
+  Future<void> _openFallbackDirectory() async {
+    final candidatePaths = <String>[];
+
+    void addCandidate(String? path) {
+      final normalizedPath = normalizeSftpAbsolutePath(path);
+      if (normalizedPath == null || candidatePaths.contains(normalizedPath)) {
+        return;
+      }
+      candidatePaths.add(normalizedPath);
+    }
+
+    addCandidate(widget.initialWorkingDirectory);
+    addCandidate(_currentPath);
+    addCandidate(await _resolveHomeDirectoryPath());
+    addCandidate('/');
+
+    for (final candidatePath in candidatePaths) {
+      if (await _loadDirectory(candidatePath, showError: false)) {
+        _replacePathHistory(candidatePath);
+        _pendingInitialPath = null;
+        return;
+      }
+    }
+
+    if (mounted) {
+      setState(() {
+        _isLoading = false;
+        _error = 'Failed to open SFTP browser';
       });
     }
   }
@@ -174,8 +329,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<bool> _openRequestedPath(String requestedPath) async {
-    final normalizedPath = _normalizeRequestedPath(requestedPath);
+    final normalizedPath = resolveRequestedSftpPath(
+      requestedPath,
+      workingDirectory: widget.initialWorkingDirectory,
+      homeDirectory: await _resolveHomeDirectoryPath(),
+    );
     if (normalizedPath == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not resolve "$requestedPath" in SFTP')),
+        );
+      }
+      await _openFallbackDirectory();
       return false;
     }
 
@@ -187,6 +352,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     final parentPath = _parentRemotePath(normalizedPath);
     final fileName = _basename(normalizedPath);
     if (parentPath == null || fileName == null) {
+      await _openFallbackDirectory();
       return false;
     }
 
@@ -207,6 +373,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         SnackBar(content: Text('Could not open "$normalizedPath" in SFTP')),
       );
     }
+    await _openFallbackDirectory();
     return false;
   }
 
@@ -225,48 +392,42 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     });
   }
 
-  String? _normalizeRequestedPath(String? path) {
+  String? _sanitizeRequestedPath(String? path) {
     if (path == null) {
       return null;
     }
 
     final trimmedPath = path.trim();
-    if (trimmedPath.isEmpty || !trimmedPath.startsWith('/')) {
+    if (trimmedPath.isEmpty) {
       return null;
     }
-
-    if (trimmedPath.length == 1) {
-      return trimmedPath;
-    }
-
-    return trimmedPath.replaceFirst(RegExp(r'/+$'), '');
+    return trimmedPath;
   }
 
   String? _parentRemotePath(String path) {
-    if (path == '/') {
+    final normalizedPath = normalizeSftpAbsolutePath(path);
+    if (normalizedPath == null || normalizedPath == '/') {
       return null;
     }
 
-    final lastSlash = path.lastIndexOf('/');
-    if (lastSlash < 0) {
-      return null;
-    }
-    if (lastSlash == 0) {
+    final lastSlash = normalizedPath.lastIndexOf('/');
+    if (lastSlash <= 0) {
       return '/';
     }
-    return path.substring(0, lastSlash);
+    return normalizedPath.substring(0, lastSlash);
   }
 
   String? _basename(String path) {
-    if (path == '/') {
+    final normalizedPath = normalizeSftpAbsolutePath(path);
+    if (normalizedPath == null || normalizedPath == '/') {
       return null;
     }
 
-    final lastSlash = path.lastIndexOf('/');
-    if (lastSlash < 0 || lastSlash == path.length - 1) {
+    final lastSlash = normalizedPath.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == normalizedPath.length - 1) {
       return null;
     }
-    return path.substring(lastSlash + 1);
+    return normalizedPath.substring(lastSlash + 1);
   }
 
   @override
@@ -889,12 +1050,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  String _joinRemotePath(String directory, String name) {
-    if (directory == '/') {
-      return '/$name';
-    }
-    return '$directory/$name';
-  }
+  String _joinRemotePath(String directory, String name) =>
+      joinSftpPath(directory, name);
 
   bool _looksBinary(Uint8List bytes) {
     final sample = bytes.length > 1024 ? bytes.sublist(0, 1024) : bytes;

@@ -68,6 +68,13 @@ void main() {
         '/var/log/app.log',
       );
     });
+
+    test('drops stack-trace suffixes from relative paths too', () {
+      expect(
+        trimTerminalFilePathCandidate('../lib/main.dart:42:7'),
+        '../lib/main.dart',
+      );
+    });
   });
 
   group('detectTerminalLinkAtTextOffset', () {
@@ -126,6 +133,16 @@ void main() {
       expect(detectedPath!.path, '/var/log/nginx/access.log');
     });
 
+    test('detects tilde-prefixed paths at the tapped offset', () {
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        'Open ~/.config/ghostty/config in SFTP.',
+        10,
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '~/.config/ghostty/config');
+    });
+
     test('normalizes stack-trace line suffixes before navigation', () {
       final detectedPath = detectTerminalFilePathAtTextOffset(
         'Error in /srv/app/lib/main.dart:42:7',
@@ -134,6 +151,19 @@ void main() {
 
       expect(detectedPath, isNotNull);
       expect(detectedPath!.path, '/srv/app/lib/main.dart');
+    });
+
+    test('detects relative paths with directory segments', () {
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        'Inspect lib/presentation/screens/terminal_screen.dart next.',
+        12,
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        'lib/presentation/screens/terminal_screen.dart',
+      );
     });
 
     test('keeps suffix taps inside the hit-test range for stack traces', () {
@@ -148,9 +178,9 @@ void main() {
       expect(detectedPath.end, line.length);
     });
 
-    test('ignores relative paths embedded in words', () {
+    test('ignores plain filenames without any path context', () {
       expect(
-        detectTerminalFilePathAtTextOffset('Inspect lib/main.dart next.', 12),
+        detectTerminalFilePathAtTextOffset('Inspect main.dart next.', 12),
         isNull,
       );
     });
@@ -198,8 +228,11 @@ void main() {
   });
 
   group('isSupportedTerminalFilePath', () {
-    test('allows absolute remote paths and rejects URL-like doubles', () {
+    test('allows absolute, relative, and tilde-prefixed remote paths', () {
       expect(isSupportedTerminalFilePath('/var/log/app.log'), isTrue);
+      expect(isSupportedTerminalFilePath('lib/main.dart'), isTrue);
+      expect(isSupportedTerminalFilePath('../lib/main.dart'), isTrue);
+      expect(isSupportedTerminalFilePath('~/.ssh/config'), isTrue);
       expect(isSupportedTerminalFilePath('//example.com/path'), isFalse);
     });
   });
