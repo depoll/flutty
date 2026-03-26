@@ -160,7 +160,7 @@ String trimTerminalFilePathCandidate(String text) => trimTerminalLinkCandidate(
   text.trim(),
 ).replaceFirst(RegExp(r':\d+(?::\d+)?$'), '');
 
-/// Whether a character can safely appear before an absolute terminal path.
+/// Whether a character can safely appear before a supported terminal path.
 @visibleForTesting
 bool isTerminalFilePathBoundary(String? character) =>
     character == null ||
