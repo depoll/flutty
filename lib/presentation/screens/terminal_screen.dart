@@ -2675,34 +2675,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveSingleInteractiveTerminalFilePathOnRow(int row) {
-    final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
-    String? matchedPath;
-    final relativeCandidatesToPrime = <String>{};
-    for (var column = 0; column < _terminal.buffer.viewWidth; column++) {
-      final path = _detectTerminalFilePathAtCell(
-        CellOffset(column, clampedRow),
-      );
-      if (path == null) {
-        continue;
-      }
-      if (_isInteractiveTerminalFilePath(path)) {
-        if (matchedPath == null || matchedPath == path) {
-          matchedPath = path;
-          continue;
-        }
-        return null;
-      }
-      if (isRelativeTerminalFilePathCandidate(path)) {
-        relativeCandidatesToPrime.add(path);
-      }
-    }
-    for (final path in relativeCandidatesToPrime) {
-      _primeRelativeTerminalFilePathVerification(path);
-    }
-    return matchedPath;
+    final segment = _resolveInteractiveTerminalPathSegmentOnRow(row);
+    return segment?.path;
   }
 
   String? _detectTerminalFilePathAtCell(CellOffset offset) {
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final pathSnapshot = _buildTerminalPathTapSnapshot(row);
+    if (pathSnapshot == null) {
+      return null;
+    }
+
+    return _detectTerminalFilePathInSnapshotAtCell(pathSnapshot, offset);
+  }
+
+  String? _detectTerminalFilePathInSnapshotAtCell(
+    ({
+      String text,
+      int startRow,
+      List<int> rowStarts,
+      List<List<int>> columnOffsets,
+    })
+    pathSnapshot,
+    CellOffset offset,
+  ) {
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);
     final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
     final line = _terminal.buffer.lines[row];
@@ -2710,15 +2706,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    final pathSnapshot = _buildTerminalPathTapSnapshot(row);
-    if (pathSnapshot == null) {
+    final pathRowIndex = row - pathSnapshot.startRow;
+    if (pathRowIndex < 0 || pathRowIndex >= pathSnapshot.columnOffsets.length) {
       return null;
     }
 
-    final pathRowIndex = row - pathSnapshot.startRow;
+    final rowColumnOffsets = pathSnapshot.columnOffsets[pathRowIndex];
+    if (column >= rowColumnOffsets.length) {
+      return null;
+    }
+
     final pathTextOffset =
-        pathSnapshot.rowStarts[pathRowIndex] +
-        pathSnapshot.columnOffsets[pathRowIndex][column];
+        pathSnapshot.rowStarts[pathRowIndex] + rowColumnOffsets[column];
     final detectedPath = detectTerminalFilePathAtTextOffset(
       pathSnapshot.text,
       pathTextOffset,
@@ -3036,12 +3035,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ({String path, int endColumn})? _resolveInteractiveTerminalPathSegmentOnRow(
     int row,
   ) {
+    final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
+    final pathSnapshot = _buildTerminalPathTapSnapshot(clampedRow);
+    if (pathSnapshot == null) {
+      return null;
+    }
+
     final relativeCandidatesToPrime = <String>{};
     String? matchedPath;
     int? endColumn;
 
     for (var column = 0; column < _terminal.buffer.viewWidth; column++) {
-      final path = _detectTerminalFilePathAtCell(CellOffset(column, row));
+      final path = _detectTerminalFilePathInSnapshotAtCell(
+        pathSnapshot,
+        CellOffset(column, clampedRow),
+      );
       if (path == null) {
         continue;
       }

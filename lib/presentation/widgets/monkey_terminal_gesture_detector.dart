@@ -89,9 +89,12 @@ class _MonkeyTerminalGestureDetectorState
   void _handleTapDown(TapDownDetails details) {
     widget.onTapDown?.call(details);
     final shouldBypassDoubleTap = widget.shouldBypassDoubleTap?.call() ?? false;
+    if (shouldBypassDoubleTap) {
+      _clearDoubleTapState();
+      return;
+    }
 
-    if (!shouldBypassDoubleTap &&
-        _doubleTapTimer != null &&
+    if (_doubleTapTimer != null &&
         _isWithinDoubleTapTolerance(details.globalPosition)) {
       // If there was already a previous tap, the second down hold/tap is a
       // double tap down.
@@ -107,9 +110,16 @@ class _MonkeyTerminalGestureDetectorState
     if (!_isDoubleTap) {
       widget.onSingleTapUp?.call(details);
       _lastTapOffset = details.globalPosition;
+      _doubleTapTimer?.cancel();
       _doubleTapTimer = Timer(kDoubleTapTimeout, _doubleTapTimeout);
     }
     _isDoubleTap = false;
+  }
+
+  void _clearDoubleTapState() {
+    _doubleTapTimer?.cancel();
+    _doubleTapTimer = null;
+    _lastTapOffset = null;
   }
 
   void _doubleTapTimeout() {
@@ -124,6 +134,12 @@ class _MonkeyTerminalGestureDetectorState
 
     final difference = secondTapOffset - _lastTapOffset!;
     return difference.distance <= kDoubleTapSlop;
+  }
+
+  @override
+  void dispose() {
+    _doubleTapTimer?.cancel();
+    super.dispose();
   }
 
   @override

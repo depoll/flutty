@@ -1,5 +1,4 @@
-import 'dart:ui' show PointerDeviceKind;
-
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.dart';
@@ -239,5 +238,40 @@ void main() {
     await tester.pump(const Duration(milliseconds: 400));
 
     expect(openedLinks, ['sftp://link', 'sftp://link']);
+  });
+
+  testWidgets('bypassed taps clear stale double-tap timers', (tester) async {
+    var shouldBypassDoubleTap = false;
+    var doubleTapDowns = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalGestureDetector(
+            shouldBypassDoubleTap: () => shouldBypassDoubleTap,
+            onDoubleTapDown: (_) => doubleTapDowns += 1,
+            child: const ColoredBox(color: Colors.transparent),
+          ),
+        ),
+      ),
+    );
+
+    const firstTap = Offset(10, 10);
+    const secondTap = Offset(20, 10);
+
+    await tester.tapAt(firstTap);
+    await tester.pump(const Duration(milliseconds: 100));
+
+    shouldBypassDoubleTap = true;
+    await tester.tapAt(secondTap);
+    await tester.pump(kDoubleTapTimeout - const Duration(milliseconds: 50));
+
+    shouldBypassDoubleTap = false;
+    await tester.tapAt(secondTap);
+    await tester.pump();
+
+    expect(doubleTapDowns, 1);
   });
 }
