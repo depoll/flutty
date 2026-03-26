@@ -54,6 +54,7 @@ jobs:
     outputs:
       pr-head-sha: ${{ steps.validate.outputs.pr-head-sha }}
       deploy-sha: ${{ steps.validate.outputs.deploy-sha }}
+      pr-title: ${{ steps.validate.outputs.pr-title }}
     steps:
       - name: Validate PR is safe to deploy
         id: validate
@@ -99,6 +100,7 @@ jobs:
 
             core.setOutput('pr-head-sha', pr.head.sha);
             core.setOutput('deploy-sha', deploySha);
+            core.setOutput('pr-title', pr.title);
 
   compute-version:
     name: Compute Version
@@ -239,6 +241,8 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      pr-number: ${{ inputs.pr-number }}
+      pr-title: ${{ needs.validate-pr.outputs.pr-title }}
       flavor: private
       source-ref: ${{ needs.validate-pr.outputs.deploy-sha }}
       deploy-ios-to: testflight

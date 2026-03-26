@@ -48,6 +48,8 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      pr-number: ${{ github.event.pull_request.number }}
+      pr-title: ${{ github.event.pull_request.title }}
       flavor: private
       deploy-ios-to: none
       deploy-android-to: none
@@ -62,6 +64,8 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      pr-number: ${{ github.event.pull_request.number }}
+      pr-title: ${{ github.event.pull_request.title }}
       flavor: private
       deploy-ios-to: none
       deploy-android-to: none
