@@ -28,6 +28,7 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.onDoubleTapDown,
+    this.shouldBypassDoubleTap,
   });
 
   final Widget? child;
@@ -45,6 +46,10 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   final GestureTapUpCallback? onSecondaryTapUp;
 
   final GestureTapDownCallback? onDoubleTapDown;
+
+  /// Returns true when the current tap should not be treated as part of a
+  /// double tap gesture even if it falls within the standard slop window.
+  final bool Function()? shouldBypassDoubleTap;
 
   final GestureTapDownCallback? onTertiaryTapDown;
 
@@ -83,8 +88,10 @@ class _MonkeyTerminalGestureDetectorState
   // run before a long press success.
   void _handleTapDown(TapDownDetails details) {
     widget.onTapDown?.call(details);
+    final shouldBypassDoubleTap = widget.shouldBypassDoubleTap?.call() ?? false;
 
-    if (_doubleTapTimer != null &&
+    if (!shouldBypassDoubleTap &&
+        _doubleTapTimer != null &&
         _isWithinDoubleTapTolerance(details.globalPosition)) {
       // If there was already a previous tap, the second down hold/tap is a
       // double tap down.

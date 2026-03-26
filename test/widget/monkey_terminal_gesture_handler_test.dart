@@ -193,4 +193,51 @@ void main() {
     expect(tapUps, 1);
     expect(touchScrollStarts, 1);
   });
+
+  testWidgets('nearby consecutive link taps still open links', (tester) async {
+    final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            key: terminalViewKey,
+            Terminal(),
+            readOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    final terminalViewState = terminalViewKey.currentState!;
+    final openedLinks = <String>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalGestureHandler(
+            terminalView: terminalViewState,
+            terminalController: TerminalController(),
+            readOnly: true,
+            resolveLinkTap: (_) => 'sftp://link',
+            onLinkTap: openedLinks.add,
+            child: const ColoredBox(color: Colors.transparent),
+          ),
+        ),
+      ),
+    );
+
+    final handlerFinder = find.byType(MonkeyTerminalGestureHandler);
+    final topLeft = tester.getTopLeft(handlerFinder);
+    await tester.tapAt(topLeft + const Offset(10, 10));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tapAt(topLeft + const Offset(10, 20));
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(openedLinks, ['sftp://link', 'sftp://link']);
+  });
 }

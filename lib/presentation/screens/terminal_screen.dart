@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -175,6 +176,15 @@ bool isSupportedTerminalFilePath(String path) {
   return isExplicitTerminalFilePath(path) ||
       isRelativeTerminalFilePathCandidate(path);
 }
+
+/// Whether a detected terminal path should currently behave like a link.
+@visibleForTesting
+bool shouldActivateTerminalFilePath(
+  String path, {
+  required bool hasVerifiedRelativePath,
+}) =>
+    isExplicitTerminalFilePath(path) ||
+    (hasVerifiedRelativePath && isRelativeTerminalFilePathCandidate(path));
 
 /// Whether a terminal path is anchored to `/` or `~`.
 @visibleForTesting
@@ -474,6 +484,12 @@ bool shouldShowNativeSelectionOverlay({
     isNativeSelectionMode &&
     (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
 
+/// Whether terminal tap links should be resolved for the current overlay state.
+@visibleForTesting
+bool shouldResolveTerminalTapLinks({
+  required bool showsNativeSelectionOverlay,
+}) => !showsNativeSelectionOverlay;
+
 /// How a native selection change should update the mobile overlay state.
 @visibleForTesting
 enum NativeSelectionOverlayChange {
@@ -595,9 +611,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
   final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
+  final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   Offset? _terminalPathIndicatorOffset;
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
+  Timer? _terminalPathIndicatorClearTimer;
 
   // Theme state
   Host? _host;
@@ -1341,6 +1359,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _terminalPathIndicatorClearTimer?.cancel();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
@@ -1944,7 +1963,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     final showsTerminalPathBadges =
-        !isMobile && terminalPathLinksEnabled && terminalPathLinkBadgesEnabled;
+        terminalPathLinksEnabled && terminalPathLinkBadgesEnabled;
     if (!showsTerminalPathBadges && _terminalPathIndicatorOffset != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _terminalPathIndicatorOffset == null) {
@@ -1954,45 +1973,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       });
     }
     if (showsTerminalPathBadges) {
-      terminalView = MouseRegion(
-        onHover: _handleTerminalPathHover,
-        onExit: (_) => _clearTerminalPathIndicator(),
-        child: Stack(
-          fit: StackFit.expand,
-          children: [
-            terminalView,
-            if (_terminalPathIndicatorOffset != null)
-              Positioned(
-                left: _terminalPathIndicatorOffset!.dx + 8,
-                top: (_terminalPathIndicatorOffset!.dy - 24).clamp(
-                  8.0,
-                  double.infinity,
-                ),
-                child: IgnorePointer(
-                  child: DecoratedBox(
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest,
-                      borderRadius: BorderRadius.circular(999),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.18),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
+      terminalView = Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: _handleTerminalPathPointerDown,
+        child: MouseRegion(
+          onHover: _handleTerminalPathHover,
+          onExit: (_) => _clearTerminalPathIndicator(),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              terminalView,
+              if (_terminalPathIndicatorOffset != null)
+                Positioned(
+                  left: _terminalPathIndicatorOffset!.dx + 8,
+                  top: (_terminalPathIndicatorOffset!.dy - 24).clamp(
+                    8.0,
+                    double.infinity,
+                  ),
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(999),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.18),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: Icon(
+                          Icons.folder_open_outlined,
+                          size: 14,
+                          color: theme.colorScheme.primary,
                         ),
-                      ],
-                    ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(6),
-                      child: Icon(
-                        Icons.folder_open_outlined,
-                        size: 14,
-                        color: theme.colorScheme.primary,
                       ),
                     ),
                   ),
                 ),
-              ),
-          ],
+            ],
+          ),
         ),
       );
     }
@@ -2476,7 +2499,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    if (!_routesTouchScrollToTerminal || _showsNativeSelectionOverlay) {
+    if (!shouldResolveTerminalTapLinks(
+      showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
+    )) {
       return null;
     }
 
@@ -2513,7 +2538,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    final detectedPath = _resolveTerminalFilePathAtOffset(offset);
+    final detectedPath = _resolveTerminalFilePathAtOffset(
+      offset,
+      forgiving: _isMobilePlatform,
+    );
     if (detectedPath == null) {
       return null;
     }
@@ -2521,7 +2549,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return '$_terminalSftpPathPrefix$detectedPath';
   }
 
-  String? _resolveTerminalFilePathAtOffset(CellOffset offset) {
+  String? _resolveTerminalFilePathAtOffset(
+    CellOffset offset, {
+    bool forgiving = false,
+  }) {
+    final directHit = _resolveTerminalFilePathAtCell(offset);
+    if (directHit != null || !forgiving) {
+      return directHit;
+    }
+
+    for (final delta in const [-1, 1, -2, 2]) {
+      final nearbyHit = _resolveTerminalFilePathAtCell(
+        CellOffset(offset.x + delta, offset.y),
+      );
+      if (nearbyHit != null) {
+        return nearbyHit;
+      }
+    }
+
+    return null;
+  }
+
+  String? _resolveTerminalFilePathAtCell(CellOffset offset) {
+    final detectedPath = _detectTerminalFilePathAtCell(offset);
+    if (detectedPath == null) {
+      return null;
+    }
+
+    if (_isInteractiveTerminalFilePath(detectedPath)) {
+      return detectedPath;
+    }
+
+    _primeRelativeTerminalFilePathVerification(detectedPath);
+    return null;
+  }
+
+  String? _detectTerminalFilePathAtCell(CellOffset offset) {
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);
     final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
     final line = _terminal.buffer.lines[row];
@@ -2709,14 +2772,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final nextOffset = event.localPosition;
-    if (_terminalPathIndicatorOffset == nextOffset) {
+    _showTerminalPathIndicator(event.localPosition);
+  }
+
+  void _handleTerminalPathPointerDown(PointerDownEvent event) {
+    final terminalViewState = _terminalViewKey.currentState;
+    if (terminalViewState == null ||
+        !ref.read(terminalPathLinkBadgesNotifierProvider)) {
+      _clearTerminalPathIndicator();
       return;
     }
-    setState(() => _terminalPathIndicatorOffset = nextOffset);
+
+    final terminalLocalPosition = terminalViewState.renderTerminal
+        .globalToLocal(event.position);
+    final offset = terminalViewState.renderTerminal.getCellOffset(
+      terminalLocalPosition,
+    );
+    final candidatePath = _detectTerminalFilePathAtCell(offset);
+    if (candidatePath != null &&
+        !_isInteractiveTerminalFilePath(candidatePath)) {
+      _primeRelativeTerminalFilePathVerification(candidatePath);
+    }
+    final detectedPath = _resolveTerminalFilePathAtOffset(
+      offset,
+      forgiving: event.kind == PointerDeviceKind.touch,
+    );
+    if (detectedPath == null || !_shouldShowTerminalPathBadge(detectedPath)) {
+      _clearTerminalPathIndicator();
+      return;
+    }
+
+    final clearAfter = event.kind == PointerDeviceKind.touch
+        ? const Duration(milliseconds: 1200)
+        : null;
+    _showTerminalPathIndicator(event.localPosition, clearAfter: clearAfter);
+  }
+
+  void _showTerminalPathIndicator(Offset offset, {Duration? clearAfter}) {
+    _terminalPathIndicatorClearTimer?.cancel();
+    if (_terminalPathIndicatorOffset != offset) {
+      setState(() => _terminalPathIndicatorOffset = offset);
+    }
+    if (clearAfter != null) {
+      _terminalPathIndicatorClearTimer = Timer(
+        clearAfter,
+        _clearTerminalPathIndicator,
+      );
+    }
   }
 
   void _clearTerminalPathIndicator() {
+    _terminalPathIndicatorClearTimer?.cancel();
+    _terminalPathIndicatorClearTimer = null;
     _lastHoveredTerminalPathOffset = null;
     _lastHoveredTerminalPath = null;
     if (_terminalPathIndicatorOffset == null || !mounted) {
@@ -2779,6 +2886,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalLinkTap(String link) {
+    _clearTerminalPathIndicator();
     if (link.startsWith(_terminalSftpPathPrefix)) {
       unawaited(
         _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length)),
@@ -2966,6 +3074,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   String _terminalPathCacheKey(String terminalPath) =>
       '${widget.hostId}:${_connectionId ?? 0}:${_workingDirectoryPath ?? ''}:$terminalPath';
+
+  bool _hasVerifiedRelativeTerminalPath(String terminalPath) =>
+      _verifiedTerminalPathCache.containsKey(
+        _terminalPathCacheKey(terminalPath),
+      );
+
+  bool _isInteractiveTerminalFilePath(String terminalPath) =>
+      shouldActivateTerminalFilePath(
+        terminalPath,
+        hasVerifiedRelativePath: _hasVerifiedRelativeTerminalPath(terminalPath),
+      );
+
+  void _primeRelativeTerminalFilePathVerification(String terminalPath) {
+    if (!isRelativeTerminalFilePathCandidate(terminalPath)) {
+      return;
+    }
+
+    final cacheKey = _terminalPathCacheKey(terminalPath);
+    if (_verifiedTerminalPathCache.containsKey(cacheKey) ||
+        _verifyingTerminalPathCacheKeys.contains(cacheKey)) {
+      return;
+    }
+
+    _verifyingTerminalPathCacheKeys.add(cacheKey);
+    unawaited(() async {
+      try {
+        final verifiedPath = await _resolveVerifiedTerminalFilePath(
+          terminalPath,
+        );
+        if (!mounted || verifiedPath == null) {
+          return;
+        }
+        setState(() {});
+      } finally {
+        _verifyingTerminalPathCacheKeys.remove(cacheKey);
+      }
+    }());
+  }
 
   Future<String?> _resolveVerifiedTerminalFilePath(String terminalPath) async {
     final cacheKey = _terminalPathCacheKey(terminalPath);

@@ -308,6 +308,72 @@ void main() {
     });
   });
 
+  group('shouldActivateTerminalFilePath', () {
+    test('always activates explicit paths', () {
+      expect(
+        shouldActivateTerminalFilePath(
+          '/var/log/app.log',
+          hasVerifiedRelativePath: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          '~/.ssh/config',
+          hasVerifiedRelativePath: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('only activates conservative relative paths after verification', () {
+      expect(
+        shouldActivateTerminalFilePath(
+          'lib/main.dart',
+          hasVerifiedRelativePath: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          'lib/main.dart',
+          hasVerifiedRelativePath: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          '../lib/main.dart',
+          hasVerifiedRelativePath: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldActivateTerminalFilePath(
+          '../lib/main.dart',
+          hasVerifiedRelativePath: true,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('shouldResolveTerminalTapLinks', () {
+    test('allows link taps when the native selection overlay is hidden', () {
+      expect(
+        shouldResolveTerminalTapLinks(showsNativeSelectionOverlay: false),
+        isTrue,
+      );
+    });
+
+    test('blocks link taps while the native selection overlay is visible', () {
+      expect(
+        shouldResolveTerminalTapLinks(showsNativeSelectionOverlay: true),
+        isFalse,
+      );
+    });
+  });
+
   group('selectedNativeOverlayText', () {
     test('returns the selected overlay substring', () {
       expect(
