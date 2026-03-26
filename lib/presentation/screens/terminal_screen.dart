@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
@@ -37,6 +38,8 @@ final _terminalLinkPattern = RegExp(
   r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
 );
+final _terminalFilePathPattern = RegExp(r'''/[^\s<>"'$#]+''');
+const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 
 /// Padding around the terminal viewport.
 ///
@@ -135,6 +138,52 @@ String normalizeTerminalLinkCandidate(String text) {
     return 'https://$candidate';
   }
   return candidate;
+}
+
+/// Trims terminal-rendered file paths before SFTP navigation.
+@visibleForTesting
+String trimTerminalFilePathCandidate(String text) => trimTerminalLinkCandidate(
+  text.trim(),
+).replaceFirst(RegExp(r':\d+(?::\d+)?$'), '');
+
+/// Whether a character can safely appear before an absolute terminal path.
+@visibleForTesting
+bool isTerminalFilePathBoundary(String? character) =>
+    character == null ||
+    character.trim().isEmpty ||
+    '([{"\'`=:,'.contains(character);
+
+/// Whether a terminal path can be opened in the remote SFTP browser.
+@visibleForTesting
+bool isSupportedTerminalFilePath(String path) =>
+    path.startsWith('/') && !path.startsWith('//') && path.length > 1;
+
+/// Resolves a tappable terminal file path at the given text offset, if present.
+@visibleForTesting
+({String path, int start, int end})? detectTerminalFilePathAtTextOffset(
+  String text,
+  int offset,
+) {
+  for (final match in _terminalFilePathPattern.allMatches(text)) {
+    final previousCharacter = match.start == 0
+        ? null
+        : text.substring(match.start - 1, match.start);
+    if (!isTerminalFilePathBoundary(previousCharacter)) {
+      continue;
+    }
+
+    final candidate = trimTerminalFilePathCandidate(match.group(0)!);
+    if (!isSupportedTerminalFilePath(candidate)) {
+      continue;
+    }
+
+    final end = match.start + candidate.length;
+    if (offset >= match.start && offset < end) {
+      return (path: candidate, start: match.start, end: end);
+    }
+  }
+
+  return null;
 }
 
 /// Resolves a tappable terminal link at the given text offset, if present.
@@ -1798,10 +1847,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final rowIndex = row - snapshot.startRow;
     final textOffset =
         snapshot.rowStarts[rowIndex] + snapshot.columnOffsets[rowIndex][column];
-    return detectTerminalLinkAtTextOffset(
+    final detectedLink = detectTerminalLinkAtTextOffset(
       snapshot.text,
       textOffset,
-    )?.uri.toString();
+    );
+    if (detectedLink != null) {
+      return detectedLink.uri.toString();
+    }
+
+    final detectedPath = detectTerminalFilePathAtTextOffset(
+      snapshot.text,
+      textOffset,
+    );
+    if (detectedPath == null) {
+      return null;
+    }
+
+    return '$_terminalSftpPathPrefix${detectedPath.path}';
   }
 
   ({
@@ -1848,6 +1910,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalLinkTap(String link) {
+    if (link.startsWith(_terminalSftpPathPrefix)) {
+      _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length));
+      return;
+    }
+
     unawaited(_openTerminalLink(link));
   }
 
@@ -1884,6 +1951,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _showTerminalLinkMessage('Could not open $link');
+  }
+
+  void _openTerminalFilePath(String path) {
+    final normalizedPath = trimTerminalFilePathCandidate(path);
+    if (!isSupportedTerminalFilePath(normalizedPath)) {
+      _showTerminalLinkMessage('Could not open $path');
+      return;
+    }
+
+    unawaited(
+      context.pushNamed(
+        'sftp',
+        pathParameters: {'hostId': widget.hostId.toString()},
+        queryParameters: {'path': normalizedPath},
+      ),
+    );
   }
 
   Widget get _selectionActions => Material(

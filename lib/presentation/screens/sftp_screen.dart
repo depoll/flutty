@@ -13,10 +13,13 @@ import '../../domain/services/ssh_service.dart';
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
-  const SftpScreen({required this.hostId, super.key});
+  const SftpScreen({required this.hostId, this.initialPath, super.key});
 
   /// The host ID to connect to.
   final int hostId;
+
+  /// Optional remote path to open when the browser loads.
+  final String? initialPath;
 
   @override
   ConsumerState<SftpScreen> createState() => _SftpScreenState();
@@ -29,11 +32,30 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   bool _isLoading = true;
   String? _error;
   final List<String> _pathHistory = ['/'];
+  String? _pendingInitialPath;
+  String? _highlightedDirectoryPath;
+  String? _highlightedFileName;
 
   @override
   void initState() {
     super.initState();
+    _pendingInitialPath = _normalizeRequestedPath(widget.initialPath);
     _connect();
+  }
+
+  @override
+  void didUpdateWidget(covariant SftpScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    final nextInitialPath = _normalizeRequestedPath(widget.initialPath);
+    if (oldWidget.initialPath == widget.initialPath) {
+      return;
+    }
+
+    _pendingInitialPath = nextInitialPath;
+    if (_sftp != null && nextInitialPath != null) {
+      unawaited(_openRequestedPath(nextInitialPath));
+    }
   }
 
   Future<void> _connect() async {
@@ -77,6 +99,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
       await sessionsNotifier.syncBackgroundStatus();
       _sftp = await session.sftp();
+      final requestedPath = _pendingInitialPath;
+      if (requestedPath != null && await _openRequestedPath(requestedPath)) {
+        _pendingInitialPath = null;
+        return;
+      }
       await _loadDirectory(_currentPath);
     } on Exception catch (e) {
       setState(() {
@@ -86,8 +113,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  Future<void> _loadDirectory(String path) async {
-    if (_sftp == null) return;
+  Future<bool> _loadDirectory(String path, {bool showError = true}) async {
+    if (_sftp == null) {
+      return false;
+    }
 
     setState(() => _isLoading = true);
 
@@ -106,12 +135,20 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           });
         _isLoading = false;
         _error = null;
+        if (_highlightedDirectoryPath != path) {
+          _highlightedDirectoryPath = null;
+          _highlightedFileName = null;
+        }
       });
+      return true;
     } on Exception catch (e) {
       setState(() {
         _isLoading = false;
-        _error = 'Failed to list directory: $e';
+        if (showError) {
+          _error = 'Failed to list directory: $e';
+        }
       });
+      return false;
     }
   }
 
@@ -134,6 +171,93 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final previousPath = _pathHistory.last;
       _loadDirectory(previousPath);
     }
+  }
+
+  Future<bool> _openRequestedPath(String requestedPath) async {
+    final normalizedPath = _normalizeRequestedPath(requestedPath);
+    if (normalizedPath == null) {
+      return false;
+    }
+
+    if (await _loadDirectory(normalizedPath, showError: false)) {
+      _replacePathHistory(normalizedPath);
+      return true;
+    }
+
+    final parentPath = _parentRemotePath(normalizedPath);
+    final fileName = _basename(normalizedPath);
+    if (parentPath == null || fileName == null) {
+      return false;
+    }
+
+    if (await _loadDirectory(parentPath, showError: false)) {
+      _replacePathHistory(parentPath);
+      if (!mounted) {
+        return true;
+      }
+      setState(() {
+        _highlightedDirectoryPath = parentPath;
+        _highlightedFileName = fileName;
+      });
+      return true;
+    }
+
+    if (mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not open "$normalizedPath" in SFTP')),
+      );
+    }
+    return false;
+  }
+
+  void _replacePathHistory(String path) {
+    _pathHistory
+      ..clear()
+      ..add(path);
+  }
+
+  String? _normalizeRequestedPath(String? path) {
+    if (path == null) {
+      return null;
+    }
+
+    final trimmedPath = path.trim();
+    if (trimmedPath.isEmpty || !trimmedPath.startsWith('/')) {
+      return null;
+    }
+
+    if (trimmedPath.length == 1) {
+      return trimmedPath;
+    }
+
+    return trimmedPath.replaceFirst(RegExp(r'/+$'), '');
+  }
+
+  String? _parentRemotePath(String path) {
+    if (path == '/') {
+      return null;
+    }
+
+    final lastSlash = path.lastIndexOf('/');
+    if (lastSlash < 0) {
+      return null;
+    }
+    if (lastSlash == 0) {
+      return '/';
+    }
+    return path.substring(0, lastSlash);
+  }
+
+  String? _basename(String path) {
+    if (path == '/') {
+      return null;
+    }
+
+    final lastSlash = path.lastIndexOf('/');
+    if (lastSlash < 0 || lastSlash == path.length - 1) {
+      return null;
+    }
+    return path.substring(lastSlash + 1);
   }
 
   @override
@@ -298,6 +422,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           }
           return _FileListTile(
             file: file,
+            isHighlighted:
+                _highlightedDirectoryPath == _currentPath &&
+                _highlightedFileName == file.filename,
             onTap: () => _handleFileTap(file),
             onLongPress: () => _showFileOptions(file),
           );
@@ -778,11 +905,13 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 class _FileListTile extends StatelessWidget {
   const _FileListTile({
     required this.file,
+    required this.isHighlighted,
     required this.onTap,
     required this.onLongPress,
   });
 
   final SftpName file;
+  final bool isHighlighted;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
 
@@ -798,6 +927,8 @@ class _FileListTile extends StatelessWidget {
             ? theme.colorScheme.primary
             : theme.colorScheme.onSurfaceVariant,
       ),
+      selected: isHighlighted,
+      selectedTileColor: theme.colorScheme.secondaryContainer,
       title: Text(file.filename),
       subtitle: isDirectory
           ? null

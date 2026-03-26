@@ -54,6 +54,22 @@ void main() {
     });
   });
 
+  group('trimTerminalFilePathCandidate', () {
+    test('drops stack-trace line and column suffixes', () {
+      expect(
+        trimTerminalFilePathCandidate('/var/log/app.log:42:7'),
+        '/var/log/app.log',
+      );
+    });
+
+    test('drops trailing punctuation around file paths', () {
+      expect(
+        trimTerminalFilePathCandidate('/var/log/app.log).'),
+        '/var/log/app.log',
+      );
+    });
+  });
+
   group('detectTerminalLinkAtTextOffset', () {
     test('detects an https link at the tapped offset', () {
       final detectedLink = detectTerminalLinkAtTextOffset(
@@ -99,6 +115,45 @@ void main() {
     });
   });
 
+  group('detectTerminalFilePathAtTextOffset', () {
+    test('detects an absolute remote path at the tapped offset', () {
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        'Open /var/log/nginx/access.log in SFTP.',
+        12,
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/var/log/nginx/access.log');
+    });
+
+    test('normalizes stack-trace line suffixes before navigation', () {
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        'Error in /srv/app/lib/main.dart:42:7',
+        15,
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/srv/app/lib/main.dart');
+    });
+
+    test('ignores relative paths embedded in words', () {
+      expect(
+        detectTerminalFilePathAtTextOffset('Inspect lib/main.dart next.', 12),
+        isNull,
+      );
+    });
+
+    test('returns null when the tapped offset is outside the path', () {
+      expect(
+        detectTerminalFilePathAtTextOffset(
+          'Open /var/log/nginx/access.log in SFTP.',
+          2,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('normalizeTerminalLinkCandidate', () {
     test('prepends https for uppercase www links', () {
       expect(
@@ -127,6 +182,13 @@ void main() {
         isLaunchableTerminalUri(Uri.parse('intent://example.com')),
         isFalse,
       );
+    });
+  });
+
+  group('isSupportedTerminalFilePath', () {
+    test('allows absolute remote paths and rejects URL-like doubles', () {
+      expect(isSupportedTerminalFilePath('/var/log/app.log'), isTrue);
+      expect(isSupportedTerminalFilePath('//example.com/path'), isFalse);
     });
   });
 

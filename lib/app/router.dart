@@ -111,10 +111,11 @@ final routerProvider = Provider<GoRouter>((ref) {
         name: 'sftp',
         builder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
+          final initialPath = state.uri.queryParameters['path'];
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
-          return SftpScreen(hostId: hostId);
+          return SftpScreen(hostId: hostId, initialPath: initialPath);
         },
       ),
       GoRoute(
