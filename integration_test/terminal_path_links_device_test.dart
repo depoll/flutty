@@ -80,15 +80,8 @@ class _TerminalPathLinkHarnessState extends State<_TerminalPathLinkHarness> {
   }
 
   String? _resolveLinkTap(CellOffset offset) {
-    final directHit = _resolveLinkTapAtCell(offset);
-    if (directHit != null) {
-      return directHit;
-    }
-
-    for (final delta in const [-1, 1, -2, 2]) {
-      final nearbyHit = _resolveLinkTapAtCell(
-        CellOffset(offset.x + delta, offset.y),
-      );
+    for (final candidateOffset in resolveForgivingTerminalTapOffsets(offset)) {
+      final nearbyHit = _resolveLinkTapAtCell(candidateOffset);
       if (nearbyHit != null) {
         return nearbyHit;
       }
@@ -131,7 +124,7 @@ class _TerminalPathLinkHarnessState extends State<_TerminalPathLinkHarness> {
   }) {
     final endColumn = startColumn + length;
     for (var column = startColumn; column < endColumn; column++) {
-      if (_resolveLinkTap(CellOffset(column, row)) != null) {
+      if (_resolveLinkTapAtCell(CellOffset(column, row)) != null) {
         return column;
       }
     }
@@ -235,6 +228,34 @@ void main() {
           );
           expect(tapOffset, isNull);
           expect(harnessKey.currentState!._openedLinks.value, isEmpty);
+        });
+
+        testWidgets('opens paths from nearby touch targets', (tester) async {
+          final harnessKey = GlobalKey<_TerminalPathLinkHarnessState>();
+          await _pumpHarness(
+            tester,
+            harnessKey,
+            touchScrollToTerminal: touchScrollToTerminal,
+          );
+
+          final tapOffset = harnessKey.currentState!.tapOffsetFor(
+            _absolutePath,
+          );
+          expect(tapOffset, isNotNull);
+          final cellWidth = harnessKey
+              .currentState!
+              ._terminalViewKey
+              .currentState!
+              .renderTerminal
+              .cellSize
+              .width;
+
+          await tester.tapAt(tapOffset! + Offset(cellWidth * 2.5, 0));
+          await tester.pumpAndSettle();
+
+          expect(harnessKey.currentState!._openedLinks.value, <String>[
+            _absolutePath,
+          ]);
         });
       },
     );

@@ -1,6 +1,7 @@
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:xterm/xterm.dart';
 
 void main() {
   group('trimTerminalSelectionText', () {
@@ -354,6 +355,24 @@ void main() {
           hasVerifiedRelativePath: true,
         ),
         isTrue,
+      );
+    });
+  });
+
+  group('resolveForgivingTerminalTapOffsets', () {
+    test('checks nearby horizontal and adjacent-row cells first', () {
+      expect(
+        resolveForgivingTerminalTapOffsets(const CellOffset(10, 5)).take(8),
+        const [
+          CellOffset(10, 5),
+          CellOffset(9, 5),
+          CellOffset(11, 5),
+          CellOffset(8, 5),
+          CellOffset(12, 5),
+          CellOffset(7, 5),
+          CellOffset(13, 5),
+          CellOffset(6, 5),
+        ],
       );
     });
   });
