@@ -36,6 +36,7 @@ jobs:
             const previewMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
             const statusMarker = '<!-- preview-deploy-status -->';
             const workflowId = 'deploy-testflight.yml';
+            const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
             const activeLockTimeoutMs = 30 * 60 * 1000;
             const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
@@ -202,7 +203,7 @@ jobs:
                   'request-comment-at': requestCreatedAt,
                   'request-comment-user': requester,
                   'request-comment-url': requestCommentUrl,
-                  'request-preview-comment-url': previewComment?.html_url ?? '',
+                  'request-preview-comment-url': previewComment?.html_url ?? noPreviewCommentUrl,
                 },
               });
 
@@ -212,7 +213,7 @@ jobs:
                 status: '❌ Failed to dispatch `Deploy PR Preview`',
                 workflow: 'Dispatch did not start; check the command workflow logs',
                 previewSha,
-                previewCommentUrl: previewComment.html_url,
+                previewCommentUrl: previewComment?.html_url ?? '',
                 state: 'failed',
                 note: '> Add a new `/deploy` comment if you want to retry.',
               });

@@ -129,6 +129,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      # GitHub requires pull-requests: write to create/update PR comments from this workflow.
       pull-requests: write
     steps:
       - name: Mark deploy as running
@@ -140,6 +141,7 @@ jobs:
             const issueNumber = Number('${{ inputs.pr-number }}');
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const statusMarker = '<!-- preview-deploy-status -->';
+            const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
@@ -171,8 +173,10 @@ jobs:
               '${{ inputs.request-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-request-comment-url');
             const previewCommentUrl =
-              '${{ inputs.request-preview-comment-url }}' ||
-              readMeta(existingBody, 'preview-deploy-preview-comment-url');
+              '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
+                ? ''
+                : '${{ inputs.request-preview-comment-url }}' ||
+                  readMeta(existingBody, 'preview-deploy-preview-comment-url');
             const deploySha =
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha');
@@ -299,6 +303,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       issues: write
+      # GitHub requires pull-requests: write to create/update PR comments from this workflow.
       pull-requests: write
     steps:
       - name: Mark deploy as complete
@@ -310,6 +315,7 @@ jobs:
             const issueNumber = Number('${{ inputs.pr-number }}');
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
             const statusMarker = '<!-- preview-deploy-status -->';
+            const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
@@ -341,8 +347,10 @@ jobs:
               '${{ inputs.request-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-request-comment-url');
             const previewCommentUrl =
-              '${{ inputs.request-preview-comment-url }}' ||
-              readMeta(existingBody, 'preview-deploy-preview-comment-url');
+              '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
+                ? ''
+                : '${{ inputs.request-preview-comment-url }}' ||
+                  readMeta(existingBody, 'preview-deploy-preview-comment-url');
             const deploySha =
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha') ||
