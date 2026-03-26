@@ -87,6 +87,11 @@ class _TerminalPathLinkHarnessState extends State<_TerminalPathLinkHarness> {
       }
     }
 
+    final rowFallback = _resolveSingleLinkTapOnRow(offset.y);
+    if (rowFallback != null) {
+      return rowFallback;
+    }
+
     return null;
   }
 
@@ -129,6 +134,23 @@ class _TerminalPathLinkHarnessState extends State<_TerminalPathLinkHarness> {
       }
     }
     return null;
+  }
+
+  String? _resolveSingleLinkTapOnRow(int row) {
+    final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
+    String? matchedPath;
+    for (var column = 0; column < _terminal.buffer.viewWidth; column++) {
+      final path = _resolveLinkTapAtCell(CellOffset(column, clampedRow));
+      if (path == null) {
+        continue;
+      }
+      if (matchedPath == null || matchedPath == path) {
+        matchedPath = path;
+        continue;
+      }
+      return null;
+    }
+    return matchedPath;
   }
 
   @override
@@ -251,6 +273,32 @@ void main() {
               .width;
 
           await tester.tapAt(tapOffset! + Offset(cellWidth * 2.5, 0));
+          await tester.pumpAndSettle();
+
+          expect(harnessKey.currentState!._openedLinks.value, <String>[
+            _absolutePath,
+          ]);
+        });
+
+        testWidgets('opens a single-path row even from a loose same-row tap', (
+          tester,
+        ) async {
+          final harnessKey = GlobalKey<_TerminalPathLinkHarnessState>();
+          await _pumpHarness(
+            tester,
+            harnessKey,
+            touchScrollToTerminal: touchScrollToTerminal,
+          );
+
+          final tapOffset = harnessKey.currentState!.tapOffsetFor(
+            _absolutePath,
+          );
+          expect(tapOffset, isNotNull);
+          final terminalTopLeft = tester.getTopLeft(
+            find.byType(MonkeyTerminalView),
+          );
+
+          await tester.tapAt(Offset(terminalTopLeft.dx + 18, tapOffset!.dy));
           await tester.pumpAndSettle();
 
           expect(harnessKey.currentState!._openedLinks.value, <String>[

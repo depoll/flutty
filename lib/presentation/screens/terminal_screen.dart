@@ -643,9 +643,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   Offset? _terminalPathIndicatorOffset;
+  List<Offset> _visibleTerminalPathBadgeOffsets = const <Offset>[];
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   Timer? _terminalPathIndicatorClearTimer;
+  bool _isTerminalPathBadgeRefreshQueued = false;
 
   // Theme state
   Host? _host;
@@ -792,6 +794,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
+    _queueVisibleTerminalPathBadgeRefresh();
+
     if (_shouldFollowLiveOutput) {
       _queueTerminalScrollToBottom();
     }
@@ -843,6 +847,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : 0,
     );
     _syncNativeScrollFromTerminal();
+    _queueVisibleTerminalPathBadgeRefresh();
   }
 
   void _followLiveOutput() {
@@ -2002,6 +2007,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() => _terminalPathIndicatorOffset = null);
       });
     }
+    if (!showsTerminalPathBadges &&
+        _isMobilePlatform &&
+        _visibleTerminalPathBadgeOffsets.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _visibleTerminalPathBadgeOffsets.isEmpty) {
+          return;
+        }
+        setState(() => _visibleTerminalPathBadgeOffsets = const <Offset>[]);
+      });
+    }
     if (terminalPathLinksEnabled) {
       terminalView = Listener(
         behavior: HitTestBehavior.translucent,
@@ -2010,20 +2025,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
     if (showsTerminalPathBadges) {
-      terminalView = MouseRegion(
-        onHover: _handleTerminalPathHover,
-        onExit: (_) => _clearTerminalPathIndicator(),
-        child: Stack(
+      if (_isMobilePlatform) {
+        _queueVisibleTerminalPathBadgeRefresh();
+        terminalView = Stack(
           fit: StackFit.expand,
           children: [
             terminalView,
-            if (_terminalPathIndicatorOffset != null)
+            for (final badgeOffset in _visibleTerminalPathBadgeOffsets)
               Positioned(
-                left: _terminalPathIndicatorOffset!.dx + 8,
-                top: (_terminalPathIndicatorOffset!.dy - 24).clamp(
-                  8.0,
-                  double.infinity,
-                ),
+                left: badgeOffset.dx,
+                top: badgeOffset.dy,
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
@@ -2049,8 +2060,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
           ],
-        ),
-      );
+        );
+      } else {
+        terminalView = MouseRegion(
+          onHover: _handleTerminalPathHover,
+          onExit: (_) => _clearTerminalPathIndicator(),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              terminalView,
+              if (_terminalPathIndicatorOffset != null)
+                Positioned(
+                  left: _terminalPathIndicatorOffset!.dx + 8,
+                  top: (_terminalPathIndicatorOffset!.dy - 24).clamp(
+                    8.0,
+                    double.infinity,
+                  ),
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.surfaceContainerHighest,
+                        borderRadius: BorderRadius.circular(999),
+                        boxShadow: [
+                          BoxShadow(
+                            color: Colors.black.withValues(alpha: 0.18),
+                            blurRadius: 8,
+                            offset: const Offset(0, 2),
+                          ),
+                        ],
+                      ),
+                      child: Padding(
+                        padding: const EdgeInsets.all(6),
+                        child: Icon(
+                          Icons.folder_open_outlined,
+                          size: 14,
+                          color: theme.colorScheme.primary,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      }
     }
 
     if (!isMobile) {
@@ -2615,7 +2668,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return detectedPath;
       }
     }
+    if (forgiving) {
+      return _resolveSingleInteractiveTerminalFilePathOnRow(offset.y);
+    }
     return null;
+  }
+
+  String? _resolveSingleInteractiveTerminalFilePathOnRow(int row) {
+    final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
+    String? matchedPath;
+    final relativeCandidatesToPrime = <String>{};
+    for (var column = 0; column < _terminal.buffer.viewWidth; column++) {
+      final path = _detectTerminalFilePathAtCell(
+        CellOffset(column, clampedRow),
+      );
+      if (path == null) {
+        continue;
+      }
+      if (_isInteractiveTerminalFilePath(path)) {
+        if (matchedPath == null || matchedPath == path) {
+          matchedPath = path;
+          continue;
+        }
+        return null;
+      }
+      if (isRelativeTerminalFilePathCandidate(path)) {
+        relativeCandidatesToPrime.add(path);
+      }
+    }
+    for (final path in relativeCandidatesToPrime) {
+      _primeRelativeTerminalFilePathVerification(path);
+    }
+    return matchedPath;
   }
 
   String? _detectTerminalFilePathAtCell(CellOffset offset) {
@@ -2881,6 +2965,108 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _shouldShowTerminalPathBadge(String path) =>
       isExplicitTerminalFilePath(path) ||
       _verifiedTerminalPathCache.containsKey(_terminalPathCacheKey(path));
+
+  void _queueVisibleTerminalPathBadgeRefresh() {
+    if (!_isMobilePlatform || _isTerminalPathBadgeRefreshQueued || !mounted) {
+      return;
+    }
+
+    _isTerminalPathBadgeRefreshQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalPathBadgeRefreshQueued = false;
+      if (!mounted) {
+        return;
+      }
+      _refreshVisibleTerminalPathBadges();
+    });
+  }
+
+  void _refreshVisibleTerminalPathBadges() {
+    final terminalViewState = _terminalViewKey.currentState;
+    final showsBadges =
+        ref.read(terminalPathLinksNotifierProvider) &&
+        ref.read(terminalPathLinkBadgesNotifierProvider);
+    if (!_isMobilePlatform || !showsBadges || terminalViewState == null) {
+      if (_visibleTerminalPathBadgeOffsets.isNotEmpty) {
+        setState(() => _visibleTerminalPathBadgeOffsets = const <Offset>[]);
+      }
+      return;
+    }
+
+    final renderTerminal = terminalViewState.renderTerminal;
+    final lineHeight = renderTerminal.lineHeight;
+    if (lineHeight <= 0) {
+      return;
+    }
+
+    final maxRow = _terminal.buffer.height - 1;
+    final topRow = _terminalScrollController.hasClients
+        ? (_terminalScrollController.offset / lineHeight).floor().clamp(
+            0,
+            maxRow,
+          )
+        : 0;
+    final bottomRow = (topRow + _terminal.viewHeight + 1).clamp(0, maxRow);
+    final seenPaths = <String>{};
+    final badgeOffsets = <Offset>[];
+
+    for (var row = topRow; row <= bottomRow; row++) {
+      final segment = _resolveInteractiveTerminalPathSegmentOnRow(row);
+      if (segment == null || !seenPaths.add(segment.path)) {
+        continue;
+      }
+      final badgeCell = CellOffset(
+        (segment.endColumn + 1).clamp(0, _terminal.buffer.viewWidth),
+        row,
+      );
+      final badgeOrigin = renderTerminal.getOffset(badgeCell);
+      final left = (badgeOrigin.dx + 6).clamp(
+        4.0,
+        renderTerminal.size.width - 26,
+      );
+      final top = badgeOrigin.dy.clamp(4.0, renderTerminal.size.height - 26);
+      badgeOffsets.add(Offset(left, top));
+    }
+
+    if (!listEquals(_visibleTerminalPathBadgeOffsets, badgeOffsets)) {
+      setState(() => _visibleTerminalPathBadgeOffsets = badgeOffsets);
+    }
+  }
+
+  ({String path, int endColumn})? _resolveInteractiveTerminalPathSegmentOnRow(
+    int row,
+  ) {
+    final relativeCandidatesToPrime = <String>{};
+    String? matchedPath;
+    int? endColumn;
+
+    for (var column = 0; column < _terminal.buffer.viewWidth; column++) {
+      final path = _detectTerminalFilePathAtCell(CellOffset(column, row));
+      if (path == null) {
+        continue;
+      }
+      if (_isInteractiveTerminalFilePath(path)) {
+        if (matchedPath == null || matchedPath == path) {
+          matchedPath = path;
+          endColumn = column;
+          continue;
+        }
+        return null;
+      }
+      if (isRelativeTerminalFilePathCandidate(path)) {
+        relativeCandidatesToPrime.add(path);
+      }
+    }
+
+    for (final path in relativeCandidatesToPrime) {
+      _primeRelativeTerminalFilePathVerification(path);
+    }
+
+    if (matchedPath == null || endColumn == null) {
+      return null;
+    }
+    return (path: matchedPath, endColumn: endColumn);
+  }
 
   ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
     final buffer = _terminal.buffer;
