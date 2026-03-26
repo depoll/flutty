@@ -1954,7 +1954,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
               message: 'Connection closed',
             ),
           ),
-          onError: (Object error, StackTrace stackTrace) => unawaited(
+          onError: (Object error, StackTrace _) => unawaited(
             handleUnexpectedDisconnect(
               session.connectionId,
               message: 'Connection lost: $error',

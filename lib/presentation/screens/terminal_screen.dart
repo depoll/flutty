@@ -1110,19 +1110,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _reconnect() async {
+    if (_isConnecting) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _isConnecting = true;
+        _error = null;
+      });
+    } else {
+      _isConnecting = true;
+      _error = null;
+    }
+
     final previousConnectionId = _connectionId;
     _connectionId = null;
     _connectionLostWhileBackgrounded = false;
-    await _doneSubscription?.cancel();
-    _doneSubscription = null;
-    _shell = null;
-    if (previousConnectionId != null) {
-      await _sessionsNotifier?.disconnect(previousConnectionId);
+    try {
+      await _doneSubscription?.cancel();
+      _doneSubscription = null;
+      _shell = null;
+      if (previousConnectionId != null) {
+        await _sessionsNotifier?.disconnect(previousConnectionId);
+      }
+      if (!mounted) {
+        return;
+      }
+      await _connect(forceNew: true);
+    } finally {
+      if (!mounted) {
+        _isConnecting = false;
+      }
     }
-    if (!mounted) {
-      return;
-    }
-    await _connect(forceNew: true);
   }
 
   @override
@@ -1599,7 +1618,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ),
                     const SizedBox(height: 16),
                     FilledButton.icon(
-                      onPressed: _reconnect,
+                      onPressed: _isConnecting ? null : _reconnect,
                       icon: const Icon(Icons.refresh),
                       label: const Text('Reconnect'),
                     ),
@@ -1667,7 +1686,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 24),
-              ElevatedButton(onPressed: _reconnect, child: const Text('Retry')),
+              ElevatedButton(
+                onPressed: _isConnecting ? null : _reconnect,
+                child: const Text('Retry'),
+              ),
             ],
           ),
         ),
