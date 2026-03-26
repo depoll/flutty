@@ -223,15 +223,14 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
-              return;
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
             }
-
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: issueNumber,
-              body,
-            });
 
   deploy:
     name: Deploy to TestFlight & Play Internal
@@ -359,6 +358,61 @@ jobs:
               ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
 
+            const replaceEyesReactionWithRocket = async () => {
+              if (!requestCommentId) {
+                return;
+              }
+
+              const commentId = Number(requestCommentId);
+              const reactions = await github.paginate(
+                'GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
+                {
+                  owner,
+                  repo,
+                  comment_id: commentId,
+                  per_page: 100,
+                  headers: {accept: 'application/vnd.github+json'},
+                },
+              );
+              const botEyesReactions = reactions.filter(
+                (reaction) =>
+                  reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]',
+              );
+
+              for (const reaction of botEyesReactions) {
+                await github.request(
+                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                  {
+                    owner,
+                    repo,
+                    comment_id: commentId,
+                    reaction_id: reaction.id,
+                    headers: {accept: 'application/vnd.github+json'},
+                  },
+                );
+              }
+
+              if (
+                reactions.some(
+                  (reaction) =>
+                    reaction.content === 'rocket' && reaction.user?.login === 'github-actions[bot]',
+                )
+              ) {
+                return;
+              }
+
+              await github.request(
+                'POST /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions',
+                {
+                  owner,
+                  repo,
+                  comment_id: commentId,
+                  content: 'rocket',
+                  headers: {accept: 'application/vnd.github+json'},
+                },
+              );
+            };
+
             const validationResult = '${{ needs.validate-pr.result }}';
             const deployResult = '${{ needs.deploy.result }}';
             const verifyResult = '${{ needs.verify-pr-source.result }}';
@@ -431,12 +485,17 @@ jobs:
                 comment_id: existing.id,
                 body,
               });
-              return;
+            } else {
+              await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
             }
 
-            await github.rest.issues.createComment({
-              owner,
-              repo,
-              issue_number: issueNumber,
-              body,
-            });
+            try {
+              await replaceEyesReactionWithRocket();
+            } catch (error) {
+              core.warning(`Failed to update deploy reaction: ${String(error)}`);
+            }
