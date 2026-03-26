@@ -66,7 +66,7 @@ keytool -genkey -v \
   -alias upload
 ```
 
-For local development, create `android/app/key.properties` (see `key.properties.example`).
+Signed Android release builds require `android/app/key.properties` (see `key.properties.example`) and the real upload keystore. Debug builds for local development do not require release signing material.
 
 ## GitHub Secrets
 
@@ -99,7 +99,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 
 Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
 - **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
-- **Android**: Builds APK for direct download (linked in PR comment)
+- **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
 
 ### Deploy Private (`develop.yml`)
 
@@ -132,6 +132,8 @@ Builds the **production** flavor and deploys to:
 - **Android**: Play Store production track
 
 Metadata (description, icons, etc.) is synced automatically on release deploys.
+
+Android release workflows fail early if the signing secrets or local `android/app/key.properties` configuration are missing or incomplete. This prevents release builds from silently falling back to the debug keystore.
 
 ### Sync Metadata (`sync-metadata.yml`)
 

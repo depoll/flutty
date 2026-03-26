@@ -105,6 +105,9 @@ class HostRepository {
         terminalFontFamily: Value(host.terminalFontFamily),
         autoConnectCommand: Value(host.autoConnectCommand),
         autoConnectSnippetId: Value(host.autoConnectSnippetId),
+        autoConnectRequiresConfirmation: Value(
+          host.autoConnectRequiresConfirmation,
+        ),
       ),
     );
 

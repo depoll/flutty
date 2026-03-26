@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
@@ -10,7 +11,10 @@ import 'package:xterm/xterm.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../data/repositories/known_hosts_repository.dart';
 import 'background_ssh_service.dart';
+import 'host_key_prompt_handler_provider.dart';
+import 'host_key_verification.dart';
 import 'terminal_hyperlink_tracker.dart';
 
 /// Connection state for an SSH session.
@@ -258,6 +262,40 @@ class SshConnectionResult {
 typedef ConnectionProgressCallback =
     void Function(ConnectionProgressUpdate update);
 
+/// Connects a raw SSH socket for the requested host.
+typedef SshSocketConnector =
+    Future<SSHSocket> Function(String host, int port, {Duration? timeout});
+
+/// Creates an [SSHClient] for a prepared socket.
+typedef SshClientFactory =
+    SSHClient Function(
+      SSHSocket socket, {
+      required String username,
+      SSHHostkeyVerifyHandler? onVerifyHostKey,
+      SSHPasswordRequestHandler? onPasswordRequest,
+      List<SSHKeyPair>? identities,
+      Duration? keepAliveInterval,
+    });
+
+/// Exposes the raw SSH host key bytes observed during the handshake.
+abstract interface class HostKeySource {
+  /// Completes with the raw SSH wire-format host key.
+  Future<Uint8List> get hostKeyBytes;
+}
+
+/// Captures a host key from fragmented SSH handshake chunks using the real
+/// socket wrapper and parser path.
+@visibleForTesting
+Future<Uint8List> captureHostKeyFromHandshakeChunksForTesting(
+  Iterable<Uint8List> chunks,
+) async {
+  final capturingSocket = _HostKeyCapturingSocket(
+    _FiniteChunkSshSocket(chunks),
+  );
+  unawaited(capturingSocket.stream.drain<void>());
+  return capturingSocket.hostKeyBytes;
+}
+
 /// A single progress update emitted while an SSH connection is being created.
 class ConnectionProgressUpdate {
   /// Creates a [ConnectionProgressUpdate].
@@ -302,7 +340,15 @@ class ConnectionAttemptStatus {
 /// Service for managing SSH connections.
 class SshService {
   /// Creates a new [SshService].
-  SshService({this.hostRepository, this.keyRepository});
+  SshService({
+    this.hostRepository,
+    this.keyRepository,
+    this.knownHostsRepository,
+    this.hostKeyPromptHandler,
+    SshSocketConnector? socketConnector,
+    SshClientFactory? clientFactory,
+  }) : _socketConnector = socketConnector ?? _connectWithKeepAlive,
+       _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
   ///
@@ -315,6 +361,15 @@ class SshService {
 
   /// Key repository for looking up keys.
   final KeyRepository? keyRepository;
+
+  /// Repository for trusted SSH host keys.
+  final KnownHostsRepository? knownHostsRepository;
+
+  /// UI callback used for TOFU and changed-key prompts.
+  final HostKeyPromptHandler? hostKeyPromptHandler;
+
+  final SshSocketConnector _socketConnector;
+  final SshClientFactory _clientFactory;
 
   final Map<int, SshSession> _sessions = {};
   int _nextConnectionId = 1;
@@ -478,20 +533,78 @@ class SshService {
               ? 'Opening jump host connection…'
               : 'Opening network connection…',
         );
-        socket = await _connectWithKeepAlive(
+        socket = await _socketConnector(
           config.hostname,
           config.port,
           timeout: config.connectionTimeout,
         );
       }
 
+      final verificationSocket = socket is HostKeySource
+          ? socket
+          : _HostKeyCapturingSocket(socket);
+      final hostKeySource = verificationSocket as HostKeySource;
+      PendingHostTrustUpdate? pendingHostTrustUpdate;
+
       report(
         SshConnectionState.authenticating,
         isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
       );
-      client = SSHClient(
-        socket,
+      client = _clientFactory(
+        verificationSocket,
         username: config.username,
+        onVerifyHostKey: (type, fingerprint) async {
+          report(
+            SshConnectionState.connecting,
+            isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
+          );
+          final verificationService = knownHostsRepository == null
+              ? null
+              : HostKeyVerificationService(
+                  knownHostsRepository: knownHostsRepository!,
+                  promptHandler: hostKeyPromptHandler,
+                );
+          if (verificationService == null) {
+            throw HostKeyVerificationException(
+              'SSH host key verification is unavailable for '
+              '${config.hostname}:${config.port}.',
+            );
+          }
+
+          final hostKeyBytes = await hostKeySource.hostKeyBytes.timeout(
+            config.connectionTimeout,
+            onTimeout: () => throw HostKeyVerificationException(
+              'Timed out while reading the host key for '
+              '${config.hostname}:${config.port}.',
+            ),
+          );
+          final presentedHostKey = VerifiedHostKey(
+            hostname: config.hostname,
+            port: config.port,
+            keyType: type,
+            hostKeyBytes: hostKeyBytes,
+          );
+          final legacyFingerprint = formatLegacySshHostKeyFingerprint(
+            hostKeyBytes,
+          );
+          final callbackFingerprint = fingerprint
+              .map((value) => value.toRadixString(16).padLeft(2, '0'))
+              .join(':');
+          if (legacyFingerprint != callbackFingerprint) {
+            throw HostKeyVerificationException(
+              'Failed to confirm the presented host key for '
+              '${config.hostname}:${config.port}.',
+            );
+          }
+
+          pendingHostTrustUpdate = await verificationService.verify(
+            presentedHostKey,
+          );
+          await pendingHostTrustUpdate!.persistTrustDecision(
+            knownHostsRepository!,
+          );
+          return true;
+        },
         onPasswordRequest: config.password != null
             ? () => config.password!
             : null,
@@ -513,11 +626,27 @@ class SshService {
         SshConnectionState.connected,
         isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
       );
+      if (pendingHostTrustUpdate != null && knownHostsRepository != null) {
+        await pendingHostTrustUpdate!.commitAfterAuthentication(
+          knownHostsRepository!,
+        );
+      }
 
       return SshConnectionResult(
         success: true,
         client: client,
         dependentClients: dependentClients,
+      );
+    } on HostKeyVerificationException catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
+      return SshConnectionResult(success: false, error: e.message);
+    } on SSHHostkeyError catch (e) {
+      client?.close();
+      _closeClients(dependentClients);
+      return SshConnectionResult(
+        success: false,
+        error: 'Host key verification failed: ${e.message}',
       );
     } on SSHAuthFailError catch (e) {
       client?.close();
@@ -608,6 +737,22 @@ class SshService {
     }
   }
 
+  static SSHClient _defaultClientFactory(
+    SSHSocket socket, {
+    required String username,
+    SSHHostkeyVerifyHandler? onVerifyHostKey,
+    SSHPasswordRequestHandler? onPasswordRequest,
+    List<SSHKeyPair>? identities,
+    Duration? keepAliveInterval,
+  }) => SSHClient(
+    socket,
+    username: username,
+    onVerifyHostKey: onVerifyHostKey,
+    onPasswordRequest: onPasswordRequest,
+    identities: identities,
+    keepAliveInterval: keepAliveInterval,
+  );
+
   /// Connects a TCP socket with OS-level keepalive enabled so the connection
   /// survives brief periods in the background without the OS tearing it down.
   static Future<SSHSocket> _connectWithKeepAlive(
@@ -681,6 +826,222 @@ class _KeepAliveSSHSocket implements SSHSocket {
 
   @override
   void destroy() => _socket.destroy();
+}
+
+class _FiniteChunkSshSocket implements SSHSocket {
+  _FiniteChunkSshSocket(Iterable<Uint8List> chunks)
+    : _stream = Stream<Uint8List>.fromIterable(chunks);
+
+  final Stream<Uint8List> _stream;
+  final _sinkController = StreamController<List<int>>();
+
+  @override
+  Stream<Uint8List> get stream => _stream;
+
+  @override
+  StreamSink<List<int>> get sink => _sinkController.sink;
+
+  @override
+  Future<void> close() => _sinkController.close();
+
+  @override
+  Future<void> get done async {}
+
+  @override
+  void destroy() {}
+}
+
+class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
+  _HostKeyCapturingSocket(this._delegate)
+    : _hostKeyParser = _SshHostKeyParser() {
+    _stream = _delegate.stream.map((chunk) {
+      _hostKeyParser.addChunk(chunk);
+      return chunk;
+    });
+  }
+
+  final SSHSocket _delegate;
+  final _SshHostKeyParser _hostKeyParser;
+  late final Stream<Uint8List> _stream;
+
+  @override
+  Future<Uint8List> get hostKeyBytes => _hostKeyParser.hostKeyBytes;
+
+  @override
+  Stream<Uint8List> get stream => _stream;
+
+  @override
+  StreamSink<List<int>> get sink => _delegate.sink;
+
+  @override
+  Future<void> close() => _delegate.close();
+
+  @override
+  Future<void> get done => _delegate.done;
+
+  @override
+  void destroy() => _delegate.destroy();
+}
+
+class _SshHostKeyParser {
+  static const _maxBufferedBytes = 256 * 1024;
+
+  final BytesBuilder _buffer = BytesBuilder(copy: false);
+  final Completer<Uint8List> _hostKeyBytes = Completer<Uint8List>();
+  final BytesBuilder _versionBuffer = BytesBuilder(copy: false);
+  bool _versionSeen = false;
+
+  Future<Uint8List> get hostKeyBytes => _hostKeyBytes.future;
+
+  void addChunk(Uint8List chunk) {
+    if (_hostKeyBytes.isCompleted) {
+      return;
+    }
+
+    if (!_versionSeen) {
+      _consumeVersionBytes(chunk);
+      return;
+    }
+
+    _buffer.add(chunk);
+    _failIfBufferLimitExceeded(
+      _buffer.length,
+      context:
+          'SSH handshake packet buffer exceeded '
+          '$_maxBufferedBytes bytes before the host key was parsed.',
+    );
+    _parsePackets();
+  }
+
+  void _consumeVersionBytes(Uint8List chunk) {
+    _versionBuffer.add(chunk);
+    _failIfBufferLimitExceeded(
+      _versionBuffer.length,
+      context:
+          'SSH identification exchange exceeded $_maxBufferedBytes bytes '
+          'before a protocol version line was received.',
+    );
+    final bytes = _versionBuffer.takeBytes();
+    var searchStart = 0;
+    while (true) {
+      final newlineIndex = bytes.indexOf(0x0A, searchStart);
+      if (newlineIndex == -1) {
+        _versionBuffer.add(bytes.sublist(searchStart));
+        return;
+      }
+
+      final lineBytes = bytes.sublist(searchStart, newlineIndex + 1);
+      final line = utf8.decode(lineBytes, allowMalformed: true).trim();
+      searchStart = newlineIndex + 1;
+      if (!line.startsWith('SSH-')) {
+        continue;
+      }
+
+      _versionSeen = true;
+      if (searchStart < bytes.length) {
+        _buffer.add(bytes.sublist(searchStart));
+        _parsePackets();
+      }
+      return;
+    }
+  }
+
+  void _parsePackets() {
+    final data = _buffer.takeBytes();
+    var offset = 0;
+    while (!_hostKeyBytes.isCompleted && data.length - offset >= 5) {
+      final packetLength = _readUint32(data, offset);
+      if (packetLength + 4 > _maxBufferedBytes) {
+        _fail(
+          'SSH handshake packet length $packetLength exceeds the '
+          '$_maxBufferedBytes-byte host-key capture limit.',
+        );
+        return;
+      }
+      if (packetLength < 1 || data.length - offset < packetLength + 4) {
+        break;
+      }
+
+      final paddingLength = data[offset + 4];
+      final payloadLength = packetLength - paddingLength - 1;
+      if (payloadLength > 0) {
+        final payloadStart = offset + 5;
+        final payloadEnd = payloadStart + payloadLength;
+        final payload = Uint8List.sublistView(data, payloadStart, payloadEnd);
+        _tryCaptureHostKey(payload);
+      }
+
+      offset += packetLength + 4;
+    }
+
+    if (offset < data.length) {
+      _buffer.add(data.sublist(offset));
+    }
+  }
+
+  void _failIfBufferLimitExceeded(int length, {required String context}) {
+    if (length > _maxBufferedBytes) {
+      _fail(context);
+    }
+  }
+
+  void _fail(String message) {
+    if (_hostKeyBytes.isCompleted) {
+      return;
+    }
+    _hostKeyBytes.completeError(HostKeyVerificationException(message));
+  }
+
+  void _tryCaptureHostKey(Uint8List payload) {
+    if (payload.isEmpty) {
+      return;
+    }
+
+    final messageId = payload[0];
+    if (messageId != 31 && messageId != 33) {
+      return;
+    }
+
+    final hostKey = _readSshString(payload, 1);
+    if (hostKey == null || !_looksLikeHostKeyBlob(hostKey)) {
+      return;
+    }
+
+    _hostKeyBytes.complete(Uint8List.fromList(hostKey));
+  }
+
+  bool _looksLikeHostKeyBlob(Uint8List hostKey) {
+    final typeBytes = _readSshString(hostKey, 0);
+    if (typeBytes == null) {
+      return false;
+    }
+
+    final type = utf8.decode(typeBytes, allowMalformed: true);
+    return type == 'ssh-rsa' ||
+        type == 'ssh-ed25519' ||
+        type.startsWith('ecdsa-sha2-');
+  }
+
+  static int _readUint32(Uint8List bytes, int offset) =>
+      (bytes[offset] << 24) |
+      (bytes[offset + 1] << 16) |
+      (bytes[offset + 2] << 8) |
+      bytes[offset + 3];
+
+  static Uint8List? _readSshString(Uint8List bytes, int offset) {
+    if (bytes.length - offset < 4) {
+      return null;
+    }
+
+    final length = _readUint32(bytes, offset);
+    final start = offset + 4;
+    final end = start + length;
+    if (length < 0 || end > bytes.length) {
+      return null;
+    }
+
+    return Uint8List.sublistView(bytes, start, end);
+  }
 }
 
 /// An active SSH session.
@@ -1344,6 +1705,8 @@ final sshServiceProvider = Provider<SshService>(
   (ref) => SshService(
     hostRepository: ref.watch(hostRepositoryProvider),
     keyRepository: ref.watch(keyRepositoryProvider),
+    knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
+    hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
   ),
 );
 
@@ -1360,6 +1723,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
+  final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -1367,7 +1731,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
-    ref.onDispose(() => _previewStateRefreshTimer?.cancel());
+    ref.onDispose(() {
+      _previewStateRefreshTimer?.cancel();
+      for (final subscription in _disconnectSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _disconnectSubscriptions.clear();
+    });
     _connectionHostIds.clear();
     _connectionAttempts.clear();
     return {};
@@ -1409,7 +1779,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       _connectionHostIds[connectionId] = hostId;
       final session = _sshService.getSession(connectionId);
       if (session != null) {
-        _attachSessionPreviewListener(session);
+        _attachSessionListeners(session);
       }
       state = {...state, connectionId: SshConnectionState.connected};
       _updateConnectionAttempt(
@@ -1435,9 +1805,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
-    _sshService
-        .getSession(connectionId)
-        ?.removePreviewListener(_schedulePreviewStateRefresh);
+    _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
@@ -1448,7 +1816,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
     for (final session in _sshService.sessions.values) {
-      session.removePreviewListener(_schedulePreviewStateRefresh);
+      _detachSessionListeners(session.connectionId, session: session);
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
@@ -1567,10 +1935,42 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
   }
 
-  void _attachSessionPreviewListener(SshSession session) {
+  void _attachSessionListeners(SshSession session) {
     session
       ..removePreviewListener(_schedulePreviewStateRefresh)
       ..addPreviewListener(_schedulePreviewStateRefresh);
+    final existingSubscription = _disconnectSubscriptions.remove(
+      session.connectionId,
+    );
+    if (existingSubscription != null) {
+      unawaited(existingSubscription.cancel());
+    }
+    _disconnectSubscriptions[session.connectionId] = session.client.done
+        .asStream()
+        .listen(
+          (_) => unawaited(
+            handleUnexpectedDisconnect(
+              session.connectionId,
+              message: 'Connection closed',
+            ),
+          ),
+          onError: (Object error, StackTrace _) => unawaited(
+            handleUnexpectedDisconnect(
+              session.connectionId,
+              message: 'Connection lost: $error',
+            ),
+          ),
+        );
+  }
+
+  void _detachSessionListeners(int connectionId, {SshSession? session}) {
+    (session ?? _sshService.getSession(connectionId))?.removePreviewListener(
+      _schedulePreviewStateRefresh,
+    );
+    final subscription = _disconnectSubscriptions.remove(connectionId);
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
   }
 
   void _schedulePreviewStateRefresh() {
@@ -1621,6 +2021,30 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
         message: message,
       ),
     );
+  }
+
+  /// Remove a connection that closed outside the normal user disconnect path.
+  Future<void> handleUnexpectedDisconnect(
+    int connectionId, {
+    required String message,
+  }) async {
+    final hostId = _connectionHostIds[connectionId];
+    final session = _sshService.getSession(connectionId);
+    if (hostId == null && session == null && !state.containsKey(connectionId)) {
+      return;
+    }
+
+    _detachSessionListeners(connectionId, session: session);
+    await _sshService.disconnect(connectionId);
+    _connectionHostIds.remove(connectionId);
+    final next = {...state}..remove(connectionId);
+    state = next;
+    if (hostId != null) {
+      reportConnectionAttemptError(hostId, message);
+    } else {
+      state = {...state};
+    }
+    await _queueBackgroundStatusSync();
   }
 
   /// Update the session-specific terminal theme for an active connection.

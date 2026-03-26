@@ -1,4 +1,4 @@
-# Android release signing configuration
+# Android release signing configuration (required for signed release builds)
 # Copy this file to key.properties and fill in your values.
 # DO NOT commit key.properties to source control.
 

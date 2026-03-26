@@ -18,40 +18,26 @@ import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 import '../presentation/screens/theme_editor_screen.dart';
+import 'routes.dart';
+
+/// Root navigator key used for global modal prompts.
+final appNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'appNavigator');
 
 /// Provider for the app router.
 final routerProvider = Provider<GoRouter>((ref) {
   final authState = ref.watch(authStateProvider);
 
   return GoRouter(
+    navigatorKey: appNavigatorKey,
     initialLocation: '/',
-    redirect: (context, state) {
-      final isLocked = authState == AuthState.locked;
-      final isNotConfigured = authState == AuthState.notConfigured;
-      final isOnLockScreen = state.matchedLocation == '/lock';
-      final isOnSetupScreen = state.matchedLocation == '/auth-setup';
-
-      if (isLocked && !isOnLockScreen) {
-        return '/lock';
-      }
-
-      if (isNotConfigured && !isOnSetupScreen && !isOnLockScreen) {
-        // Allow skipping setup, so don't force redirect
-        return null;
-      }
-
-      if (!isLocked &&
-          !isNotConfigured &&
-          (isOnLockScreen || isOnSetupScreen)) {
-        return '/';
-      }
-
-      return null;
-    },
+    redirect: (context, state) => redirectForAuthState(
+      authState: authState,
+      matchedLocation: state.matchedLocation,
+    ),
     routes: [
       GoRoute(
         path: '/',
-        name: 'home',
+        name: Routes.home,
         builder: (context, state) => const HomeScreen(),
       ),
       GoRoute(
@@ -66,7 +52,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/terminal/:hostId',
-        name: 'terminal',
+        name: Routes.terminal,
         builder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
           final connectionId = int.tryParse(
@@ -80,7 +66,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/hosts',
-        name: 'hosts',
+        name: Routes.hosts,
         builder: (context, state) => const HostsScreen(),
       ),
       GoRoute(
@@ -98,7 +84,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/keys',
-        name: 'keys',
+        name: Routes.keys,
         builder: (context, state) => const KeysScreen(),
       ),
       GoRoute(
@@ -108,9 +94,12 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/sftp/:hostId',
-        name: 'sftp',
+        name: Routes.sftp,
         builder: (context, state) {
           final hostId = int.tryParse(state.pathParameters['hostId'] ?? '');
+          final connectionId = int.tryParse(
+            state.uri.queryParameters['connectionId'] ?? '',
+          );
           final initialPath = state.uri.queryParameters['path'];
           final initialWorkingDirectory = state.uri.queryParameters['cwd'];
           if (hostId == null) {
@@ -118,6 +107,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           }
           return SftpScreen(
             hostId: hostId,
+            connectionId: connectionId,
             initialPath: initialPath,
             initialWorkingDirectory: initialWorkingDirectory,
           );
@@ -125,7 +115,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/snippets',
-        name: 'snippets',
+        name: Routes.snippets,
         builder: (context, state) => const SnippetsScreen(),
       ),
       GoRoute(
@@ -145,7 +135,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/port-forwards',
-        name: 'port-forwards',
+        name: Routes.portForwards,
         builder: (context, state) => const PortForwardsScreen(),
       ),
       GoRoute(
@@ -163,17 +153,17 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/settings',
-        name: 'settings',
+        name: Routes.settings,
         builder: (context, state) => const SettingsScreen(),
       ),
       GoRoute(
         path: '/theme-editor',
-        name: 'theme-editor-new',
+        name: Routes.themeEditorNew,
         builder: (context, state) => const ThemeEditorScreen(),
       ),
       GoRoute(
         path: '/theme-editor/:themeId',
-        name: 'theme-editor',
+        name: Routes.themeEditor,
         builder: (context, state) {
           final themeId = state.pathParameters['themeId'];
           return ThemeEditorScreen(themeId: themeId);
@@ -183,38 +173,28 @@ final routerProvider = Provider<GoRouter>((ref) {
   );
 });
 
-/// Route names for type-safe navigation.
-abstract final class Routes {
-  /// Home screen route.
-  static const home = 'home';
+/// Computes the route redirect for the given authentication state.
+String? redirectForAuthState({
+  required AuthState authState,
+  required String matchedLocation,
+}) {
+  final isBlocked =
+      authState == AuthState.unknown || authState == AuthState.locked;
+  final isNotConfigured = authState == AuthState.notConfigured;
+  final isOnLockScreen = matchedLocation == '/lock';
+  final isOnSetupScreen = matchedLocation == '/auth-setup';
 
-  /// Hosts list route.
-  static const hosts = 'hosts';
+  if (isBlocked) {
+    return isOnLockScreen ? null : '/lock';
+  }
 
-  /// Host detail/edit route.
-  static const hostDetail = 'host-detail';
+  if (isNotConfigured && isOnLockScreen) {
+    return '/';
+  }
 
-  /// Terminal session route.
-  static const terminal = 'terminal';
+  if (!isNotConfigured && (isOnLockScreen || isOnSetupScreen)) {
+    return '/';
+  }
 
-  /// SFTP browser route.
-  static const sftp = 'sftp';
-
-  /// Keys management route.
-  static const keys = 'keys';
-
-  /// Snippets route.
-  static const snippets = 'snippets';
-
-  /// Port forwards route.
-  static const portForwards = 'port-forwards';
-
-  /// Settings route.
-  static const settings = 'settings';
-
-  /// Theme editor route.
-  static const themeEditor = 'theme-editor';
-
-  /// Theme editor route for new theme.
-  static const themeEditorNew = 'theme-editor-new';
+  return null;
 }

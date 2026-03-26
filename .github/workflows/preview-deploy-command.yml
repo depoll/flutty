@@ -1,0 +1,235 @@
+name: Preview Deploy Commands
+
+on:
+  issue_comment:
+    types: [created]
+
+concurrency:
+  group: preview-deploy-command-${{ github.event.issue.number }}
+  cancel-in-progress: false
+
+jobs:
+  dispatch:
+    name: Handle /deploy command
+    if: github.event.issue.pull_request
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Dispatch preview deploy request
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const defaultBranch = context.payload.repository?.default_branch ?? 'main';
+            const issueNumber = context.payload.issue.number;
+            const commandBody = context.payload.comment.body.trim();
+            const requester = context.payload.comment.user.login;
+            const requestCommentId = String(context.payload.comment.id);
+            const requestCommentUrl = context.payload.comment.html_url;
+            const requestCreatedAt = context.payload.comment.created_at;
+            const authorAssociation = context.payload.comment.author_association;
+            const previewMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
+            const statusMarker = '<!-- preview-deploy-status -->';
+            const workflowId = 'deploy-testflight.yml';
+            const activeLockTimeoutMs = 30 * 60 * 1000;
+            const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+
+            if (commandBody !== '/deploy') {
+              core.info(`Ignoring PR comment without exact /deploy command: ${commandBody}`);
+              return;
+            }
+
+            if (!allowedAssociations.has(authorAssociation)) {
+              core.info(
+                `Ignoring /deploy from ${requester} with association ${authorAssociation}.`,
+              );
+              return;
+            }
+
+            const readMeta = (body, key) => {
+              const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
+              return body.match(pattern)?.[1] ?? '';
+            };
+
+            const upsertStatusComment = async (comments, body) => {
+              const existing = comments.find((comment) =>
+                comment.body?.includes(statusMarker),
+              );
+
+              if (existing) {
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: existing.id,
+                  body,
+                });
+                return existing.id;
+              }
+
+              const {data: created} = await github.rest.issues.createComment({
+                owner,
+                repo,
+                issue_number: issueNumber,
+                body,
+              });
+              return created.id;
+            };
+
+            const renderStatusComment = ({
+              status,
+              workflow,
+              previewSha = '',
+              previewCommentUrl = '',
+              state,
+              note,
+            }) =>
+              [
+                '## 🚀 Preview Deploy',
+                '',
+                '| | Details |',
+                '|---|---|',
+                `| **Status** | ${status} |`,
+                `| **Requested by** | @${requester} via \`/deploy\` comment |`,
+                previewSha ? `| **Preview SHA** | \`${previewSha}\` |` : null,
+                `| **Request** | [View /deploy comment](${requestCommentUrl}) |`,
+                previewCommentUrl
+                  ? `| **Preview Comment** | [View preview artifacts](${previewCommentUrl}) |`
+                  : null,
+                `| **Requested at** | ${requestCreatedAt} |`,
+                `| **Workflow** | ${workflow} |`,
+                '',
+                note,
+                statusMarker,
+                `<!-- preview-deploy-state:${state} -->`,
+                `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
+                `<!-- preview-deploy-requested-by:${requester} -->`,
+                `<!-- preview-deploy-requested-at:${requestCreatedAt} -->`,
+                `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
+                `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
+                `<!-- preview-deploy-source-sha:${previewSha} -->`,
+              ]
+                .filter(Boolean)
+                .join('\n');
+
+            const {data: pr} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: issueNumber,
+            });
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const statusComment = comments.find((comment) =>
+              comment.body?.includes(statusMarker),
+            );
+            const statusBody = statusComment?.body ?? '';
+            const currentState = readMeta(statusBody, 'preview-deploy-state');
+            const lastCommandCommentId = readMeta(
+              statusBody,
+              'preview-deploy-last-command-comment-id',
+            );
+            const statusUpdatedAt = statusComment
+              ? new Date(statusComment.updated_at ?? statusComment.created_at)
+              : null;
+            const activeLock =
+              currentState === 'queued' || currentState === 'in_progress';
+            const staleLock =
+              activeLock &&
+              statusUpdatedAt &&
+              Date.now() - statusUpdatedAt.getTime() > activeLockTimeoutMs;
+
+            if (activeLock && !staleLock) {
+              core.info(
+                `PR #${issueNumber}: deploy already ${currentState}; ignoring duplicate /deploy request.`,
+              );
+              return;
+            }
+
+            if (lastCommandCommentId === requestCommentId && !staleLock) {
+              core.info(`PR #${issueNumber}: /deploy comment ${requestCommentId} already handled.`);
+              return;
+            }
+
+            if (pr.head.repo?.full_name !== `${owner}/${repo}`) {
+              const body = renderStatusComment({
+                status: '❌ PR preview deploys only support branches in this repository',
+                workflow: 'Dispatch skipped',
+                previewSha: pr.head.sha,
+                state: 'failed',
+                note: '> This PR comes from a fork, so `/deploy` was ignored.',
+              });
+              await upsertStatusComment(comments, body);
+              return;
+            }
+
+            const previewComment = [...comments].reverse().find((comment) =>
+              comment.body?.includes(previewMarker),
+            );
+
+            if (!previewComment) {
+              const body = renderStatusComment({
+                status: '❌ No preview build comment found yet',
+                workflow: 'Waiting for `PR Preview` to post artifacts',
+                previewSha: pr.head.sha,
+                state: 'failed',
+                note: '> Retry with `/deploy` after the sticky preview comment appears.',
+              });
+              await upsertStatusComment(comments, body);
+              return;
+            }
+
+            const previewSha =
+              previewComment.body.match(/Build triggered by ([0-9a-f]{7,40})/i)?.[1] ??
+              pr.head.sha;
+            const queuedBody = renderStatusComment({
+              status: '🔒 Lock acquired — queued for deploy',
+              workflow: 'Waiting for `Deploy PR Preview` to start',
+              previewSha,
+              previewCommentUrl: previewComment.html_url,
+              state: 'queued',
+              note: '> Duplicate requests stay locked out while this deploy is queued or running.',
+            });
+
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner,
+                repo,
+                workflow_id: workflowId,
+                ref: defaultBranch,
+                inputs: {
+                  'pr-number': String(issueNumber),
+                  'source-sha': previewSha,
+                  'request-comment-id': requestCommentId,
+                  'request-comment-at': requestCreatedAt,
+                  'request-comment-user': requester,
+                  'request-comment-url': requestCommentUrl,
+                  'request-preview-comment-url': previewComment.html_url,
+                },
+              });
+
+              await upsertStatusComment(comments, queuedBody);
+            } catch (error) {
+              const failureBody = renderStatusComment({
+                status: '❌ Failed to dispatch `Deploy PR Preview`',
+                workflow: 'Dispatch did not start; check the command workflow logs',
+                previewSha,
+                previewCommentUrl: previewComment.html_url,
+                state: 'failed',
+                note: '> Add a new `/deploy` comment if you want to retry.',
+              });
+              await upsertStatusComment(comments, failureBody);
+              throw error;
+            }
+
+            core.notice(
+              `Dispatched preview deploy workflow for PR #${issueNumber} from /deploy comment ${requestCommentId}.`,
+            );

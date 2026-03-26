@@ -1,23 +1,31 @@
 #!/bin/bash
 # Pre-commit hook for Flutty
-# Install: cp scripts/pre-commit .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit
+# Install via scripts/setup.sh or copy into "$(git rev-parse --git-path hooks)".
 
-set -e
+set -euo pipefail
 
-echo "Running pre-commit checks..."
+REPO_ROOT=$(git rev-parse --show-toplevel)
 
-# Check if there are any staged Dart files
-STAGED_DART_FILES=$(git diff --cached --name-only --diff-filter=ACM | grep '\.dart$' || true)
+cd "$REPO_ROOT"
 
-if [ -n "$STAGED_DART_FILES" ]; then
-    echo "Checking formatting..."
-    dart format --set-exit-if-changed $STAGED_DART_FILES
-    
-    echo "Running analyzer..."
-    flutter analyze --fatal-infos --no-pub
-    
-    echo "Running tests..."
-    flutter test --no-pub
+echo 'Running pre-commit checks...'
+
+staged_dart_files=()
+while IFS= read -r file; do
+    staged_dart_files+=("$file")
+done < <(git diff --cached --name-only --diff-filter=ACM -- '*.dart')
+
+if [ "${#staged_dart_files[@]}" -eq 0 ]; then
+    echo 'No staged Dart files; skipping Dart checks.'
+    echo 'Pre-commit checks passed!'
+    exit 0
 fi
 
-echo "Pre-commit checks passed!"
+echo 'Checking formatting...'
+dart format --output=none --set-exit-if-changed -- "${staged_dart_files[@]}"
+
+echo 'Running analyzer on staged Dart files...'
+flutter analyze --fatal-warnings --fatal-infos --no-pub -- "${staged_dart_files[@]}"
+
+echo 'Skipping tests in pre-commit; full checks run in pre-push.'
+echo 'Pre-commit checks passed!'

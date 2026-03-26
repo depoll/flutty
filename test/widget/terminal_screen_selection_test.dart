@@ -166,6 +166,35 @@ void main() {
       );
     });
 
+    test('detects absolute paths split across wrapped lines', () {
+      const text =
+          'Open /srv/app/lib/presentation/screens/\nterminal_screen.dart next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/srv/app/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('detects relative paths split across wrapped lines', () {
+      const text = 'Inspect lib/presentation/\nscreens/terminal_screen.dart.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('screens'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        'lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
     test('keeps suffix taps inside the hit-test range for stack traces', () {
       const line = 'Error in /srv/app/lib/main.dart:42:7';
       final detectedPath = detectTerminalFilePathAtTextOffset(
@@ -263,7 +292,78 @@ void main() {
     });
   });
 
+  group('applyTerminalCursorInsertion', () {
+    test('appends inserted text at the current cursor offset', () {
+      final nextValue = applyTerminalCursorInsertion(
+        currentText: 'echo ready &',
+        cursorOffset: 12,
+        insertedText: ' echo done',
+      );
+
+      expect(nextValue, 'echo ready & echo done');
+    });
+
+    test('inserts text in the middle of the current terminal input', () {
+      final nextValue = applyTerminalCursorInsertion(
+        currentText: 'echo done',
+        cursorOffset: 5,
+        insertedText: 'ready && ',
+      );
+
+      expect(nextValue, 'echo ready && done');
+    });
+  });
+
+  group('applyTerminalInputDelta', () {
+    test('applies backspaces before inserting committed text', () {
+      expect(
+        applyTerminalInputDelta(
+          currentText: 'teh ',
+          cursorOffset: 4,
+          deletedCount: 3,
+          appendedText: 'he ',
+        ),
+        'the ',
+      );
+    });
+  });
+
+  group('resolveTerminalLineSnapshotTextLength', () {
+    test('preserves trailing spaces through the cursor offset', () {
+      expect(
+        resolveTerminalLineSnapshotTextLength(
+          text: 'cat     ',
+          preserveOffset: 4,
+          preserveTrailingPadding: false,
+        ),
+        4,
+      );
+    });
+
+    test('keeps full wrapped-row padding when requested', () {
+      expect(
+        resolveTerminalLineSnapshotTextLength(
+          text: 'cat     ',
+          preserveOffset: 0,
+          preserveTrailingPadding: true,
+        ),
+        8,
+      );
+    });
+  });
+
   group('shouldShowNativeSelectionOverlay', () {
+    test('keeps overlay hidden until native selection mode is entered', () {
+      expect(
+        shouldShowNativeSelectionOverlay(
+          isNativeSelectionMode: false,
+          routesTouchScrollToTerminal: false,
+          revealOverlayInTouchScrollMode: false,
+        ),
+        isFalse,
+      );
+    });
+
     test(
       'shows overlay when touch scrolling is not routed to the terminal',
       () {
@@ -305,5 +405,43 @@ void main() {
         );
       },
     );
+  });
+
+  group('resolveNativeSelectionOverlayChange', () {
+    test('exits mobile selection mode when selection collapses', () {
+      expect(
+        resolveNativeSelectionOverlayChange(
+          isMobilePlatform: true,
+          isNativeSelectionMode: true,
+          revealOverlayInTouchScrollMode: false,
+          selection: const TextSelection.collapsed(offset: 3),
+        ),
+        NativeSelectionOverlayChange.exitSelectionMode,
+      );
+    });
+
+    test('hides only the temporary tmux overlay when selection collapses', () {
+      expect(
+        resolveNativeSelectionOverlayChange(
+          isMobilePlatform: true,
+          isNativeSelectionMode: true,
+          revealOverlayInTouchScrollMode: true,
+          selection: const TextSelection.collapsed(offset: 3),
+        ),
+        NativeSelectionOverlayChange.hideTemporaryOverlay,
+      );
+    });
+
+    test('keeps overlay state when selection remains expanded', () {
+      expect(
+        resolveNativeSelectionOverlayChange(
+          isMobilePlatform: true,
+          isNativeSelectionMode: true,
+          revealOverlayInTouchScrollMode: false,
+          selection: const TextSelection(baseOffset: 1, extentOffset: 4),
+        ),
+        NativeSelectionOverlayChange.none,
+      );
+    });
   });
 }

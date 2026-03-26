@@ -1,9 +1,13 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/auto_connect_command.dart';
+import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
@@ -152,6 +156,108 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets('drops a leading swipe space after a committed newline', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho hi\n',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+      await tester.pump();
+
+      await _commitSwipeText(tester, '$_deleteDetectionMarker next');
+
+      expect(terminalOutput.join(), 'echo hi\nnext');
+
+      focusNode.dispose();
+    });
+
+    testWidgets(
+      'preserves the swipe separator after an input reset when text already exists',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+
+        expect(_terminalTextFromEvents(terminalOutput), ' world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a duplicate swipe separator after an input reset when text already ends with whitespace',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready ',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'world');
+
+        focusNode.dispose();
+      },
+    );
 
     testWidgets('preserves leading spaces for first non-swipe commit', (
       tester,
@@ -452,6 +558,53 @@ void main() {
           ),
           isEmpty,
         );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a stray leading space when replacing a word after deleting a later word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker the ');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
 
         focusNode.dispose();
       },
@@ -893,6 +1046,526 @@ void main() {
 
         expect(focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isFalse);
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('reviews suspicious multi-character IME insertion', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final decision = Completer<bool>();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) {
+                reviews.add(review);
+                return decision.future;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho ready; rm -rf /',
+          selection: TextSelection.collapsed(offset: 21),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(reviews.single.command, 'echo ready; rm -rf /');
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(terminalOutput, isEmpty);
+
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'echo ready; rm -rf /');
+
+      focusNode.dispose();
+    });
+
+    testWidgets(
+      'reviews a suspicious committed IME payload after composition ends',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+            composing: TextRange(start: 2, end: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, isEmpty);
+        expect(terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, 'echo ready; rm -rf /');
+        expect(terminalOutput, isEmpty);
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(terminalOutput.join(), 'echo ready; rm -rf /');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('reviews a committed IME payload with a standalone ampersand', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final decision = Completer<bool>();
+      final reviews = <TerminalCommandReview>[];
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (review) {
+                reviews.add(review);
+                return decision.future;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho ready & echo done',
+          selection: TextSelection.collapsed(offset: 24),
+        ),
+      );
+      await tester.pump();
+
+      expect(reviews, hasLength(1));
+      expect(reviews.single.command, 'echo ready & echo done');
+      expect(
+        reviews.single.reasons,
+        contains(TerminalCommandReviewReason.shellChaining),
+      );
+      expect(terminalOutput, isEmpty);
+
+      decision.complete(true);
+      await tester.pump();
+      await tester.pump();
+
+      expect(terminalOutput.join(), 'echo ready & echo done');
+
+      focusNode.dispose();
+    });
+
+    testWidgets(
+      'reviews a suspicious committed IME payload while keeping its selection',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        const suspiciousUserText = 'echo ready; rm -rf /';
+        const suspiciousText = '\u200B\u200Becho ready; rm -rf /';
+        const suspiciousSelection = TextSelection(
+          baseOffset: _deleteDetectionMarker.length,
+          extentOffset: suspiciousText.length,
+        );
+
+        tester.testTextInput.log.clear();
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: suspiciousText,
+            selection: suspiciousSelection,
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, suspiciousUserText);
+        expect(
+          reviews.single.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+        expect(terminalOutput, isEmpty);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), suspiciousUserText);
+
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: suspiciousText,
+            selection: suspiciousSelection,
+          ),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('rejects suspicious IME insertion until the user approves', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              onReviewInsertedText: (_) async => false,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho ready\necho deploy',
+          selection: TextSelection.collapsed(offset: 24),
+        ),
+      );
+      await tester.pump();
+      await tester.pump();
+
+      final client =
+          tester.state(find.byType(TerminalTextInputHandler))
+              as TextInputClient;
+      expect(terminalOutput, isEmpty);
+      expect(client.currentTextEditingValue?.text, _deleteDetectionMarker);
+
+      focusNode.dispose();
+    });
+
+    testWidgets(
+      'reviews IME insertions against the full terminal line context',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) async {
+                  reviews.add(review);
+                  return false;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        const existingCommand = 'echo ready &';
+        for (var index = 1; index <= existingCommand.length; index++) {
+          final currentCommand = existingCommand.substring(0, index);
+          tester.testTextInput.updateEditingValue(
+            TextEditingValue(
+              text: '$_deleteDetectionMarker$currentCommand',
+              selection: TextSelection.collapsed(
+                offset: _deleteDetectionMarker.length + currentCommand.length,
+              ),
+            ),
+          );
+          await tester.pump();
+        }
+
+        reviews.clear();
+
+        const combinedCommand = '$existingCommand echo done';
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker$combinedCommand',
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length + combinedCommand.length,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), existingCommand);
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, combinedCommand);
+        expect(
+          reviews.single.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'ignores stale review approvals when a newer editing value arrives',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(terminalOutput, isEmpty);
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bls',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(terminalOutput, isEmpty);
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(terminalOutput.join(), 'ls');
+
+        final client =
+            tester.state(find.byType(TerminalTextInputHandler))
+                as TextInputClient;
+        expect(
+          client.currentTextEditingValue?.text,
+          '${_deleteDetectionMarker}ls',
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'reviews IME insertions against terminal state after input resets',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final reviews = <TerminalCommandReview>[];
+        var readOnly = false;
+
+        Widget buildHandler() => MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              readOnly: readOnly,
+              buildReviewTextForInsertedText: (delta, currentText) =>
+                  applyTerminalInputDelta(
+                    currentText: _terminalTextFromEvents(terminalOutput),
+                    cursorOffset: _terminalTextFromEvents(
+                      terminalOutput,
+                    ).length,
+                    deletedCount: delta.deletedCount,
+                    appendedText: delta.appendedText,
+                  ),
+              onReviewInsertedText: (review) async {
+                reviews.add(review);
+                return false;
+              },
+              child: const SizedBox.expand(),
+            ),
+          ),
+        );
+
+        await tester.pumpWidget(buildHandler());
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        const existingCommand = 'echo ready &';
+        for (var index = 1; index <= existingCommand.length; index++) {
+          final currentCommand = existingCommand.substring(0, index);
+          tester.testTextInput.updateEditingValue(
+            TextEditingValue(
+              text: '$_deleteDetectionMarker$currentCommand',
+              selection: TextSelection.collapsed(
+                offset: _deleteDetectionMarker.length + currentCommand.length,
+              ),
+            ),
+          );
+          await tester.pump();
+        }
+
+        readOnly = true;
+        await tester.pumpWidget(buildHandler());
+        await tester.pump();
+
+        readOnly = false;
+        await tester.pumpWidget(buildHandler());
+        await tester.pump();
+
+        reviews.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker echo done',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(reviews.single.command, 'echo ready & echo done');
+        expect(
+          reviews.single.reasons,
+          contains(TerminalCommandReviewReason.shellChaining),
+        );
+        expect(_terminalTextFromEvents(terminalOutput), existingCommand);
 
         focusNode.dispose();
       },

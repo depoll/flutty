@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -9,9 +10,12 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:pasteboard/pasteboard.dart';
+import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
+import '../../app/routes.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
@@ -19,6 +23,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
@@ -34,6 +39,9 @@ const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
 const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
+const _clipboardContentChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/clipboard_content',
+);
 final _terminalLinkPattern = RegExp(
   r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
@@ -42,6 +50,8 @@ final _terminalFilePathPattern = RegExp(
   r'''(?:~(?:/[^\s<>"'$#]+)?|\.\.?/[^\s<>"'$#]+|(?:[^/\s<>"'$#]+/)+[^\s<>"'$#]+|/[^\s<>"'$#]+)''',
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
+
+enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
 /// Padding around the terminal viewport.
 ///
@@ -170,12 +180,84 @@ bool isSupportedTerminalFilePath(String path) {
   return path.contains('/');
 }
 
+bool _isTerminalFilePathBodyCharacter(String character) =>
+    character.isNotEmpty && !RegExp(r'''[\s<>"'$#]''').hasMatch(character);
+
+bool _isWrappedTerminalPathBreak(String text, int index) {
+  if ((text[index] != '\n' && text[index] != '\r') ||
+      index <= 0 ||
+      index >= text.length - 1) {
+    return false;
+  }
+
+  return _isTerminalFilePathBodyCharacter(text[index - 1]) &&
+      _isTerminalFilePathBodyCharacter(text[index + 1]);
+}
+
+bool _isTerminalFilePathCandidateCharacter(String text, int index) {
+  final character = text[index];
+  if (character == '\n' || character == '\r') {
+    return _isWrappedTerminalPathBreak(text, index);
+  }
+  return _isTerminalFilePathBodyCharacter(character);
+}
+
+({String path, int start, int end})? _detectWrappedTerminalFilePathAtTextOffset(
+  String text,
+  int offset,
+) {
+  if (!text.contains('\n') && !text.contains('\r')) {
+    return null;
+  }
+
+  var candidateOffset = offset;
+  if (candidateOffset >= text.length) {
+    candidateOffset = text.length - 1;
+  }
+  if (candidateOffset < 0 ||
+      !_isTerminalFilePathCandidateCharacter(text, candidateOffset)) {
+    return null;
+  }
+
+  var start = candidateOffset;
+  while (start > 0 && _isTerminalFilePathCandidateCharacter(text, start - 1)) {
+    start--;
+  }
+
+  var end = candidateOffset + 1;
+  while (end < text.length &&
+      _isTerminalFilePathCandidateCharacter(text, end)) {
+    end++;
+  }
+
+  final previousCharacter = start == 0
+      ? null
+      : text.substring(start - 1, start);
+  if (!isTerminalFilePathBoundary(previousCharacter)) {
+    return null;
+  }
+
+  final candidate = trimTerminalFilePathCandidate(
+    text.substring(start, end).replaceAll('\r', '').replaceAll('\n', ''),
+  );
+  if (!isSupportedTerminalFilePath(candidate)) {
+    return null;
+  }
+
+  return (path: candidate, start: start, end: end);
+}
+
 /// Resolves a tappable terminal file path at the given text offset, if present.
 @visibleForTesting
 ({String path, int start, int end})? detectTerminalFilePathAtTextOffset(
   String text,
   int offset,
 ) {
+  final wrappedPath = _detectWrappedTerminalFilePathAtTextOffset(text, offset);
+  if (wrappedPath != null) {
+    return wrappedPath;
+  }
+
   for (final match in _terminalFilePathPattern.allMatches(text)) {
     final previousCharacter = match.start == 0
         ? null
@@ -247,6 +329,51 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
+/// Applies pasted or rendered text at the terminal cursor within a wrapped line.
+@visibleForTesting
+String applyTerminalCursorInsertion({
+  required String currentText,
+  required int cursorOffset,
+  required String insertedText,
+}) => currentText.replaceRange(cursorOffset, cursorOffset, insertedText);
+
+/// Applies terminal-style backspaces before inserting newly committed text.
+@visibleForTesting
+String applyTerminalInputDelta({
+  required String currentText,
+  required int cursorOffset,
+  required int deletedCount,
+  required String appendedText,
+}) {
+  final deleteStart = cursorOffset > deletedCount
+      ? cursorOffset - deletedCount
+      : 0;
+  return currentText.replaceRange(deleteStart, cursorOffset, appendedText);
+}
+
+@visibleForTesting
+/// Resolves how much of a terminal row snapshot should remain after trimming.
+int resolveTerminalLineSnapshotTextLength({
+  required String text,
+  required int preserveOffset,
+  required bool preserveTrailingPadding,
+}) {
+  if (preserveTrailingPadding) {
+    return text.length;
+  }
+
+  final trimmedLength = trimTerminalLinePadding(text).length;
+  var clampedPreserveOffset = preserveOffset;
+  if (clampedPreserveOffset < 0) {
+    clampedPreserveOffset = 0;
+  } else if (clampedPreserveOffset > text.length) {
+    clampedPreserveOffset = text.length;
+  }
+  return trimmedLength >= clampedPreserveOffset
+      ? trimmedLength
+      : clampedPreserveOffset;
+}
+
 /// Whether to let xterm synthesize Up/Down keys for alt-buffer scroll.
 ///
 /// We prefer explicit mouse-wheel reporting from terminal applications like
@@ -289,6 +416,42 @@ bool shouldShowNativeSelectionOverlay({
 }) =>
     isNativeSelectionMode &&
     (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
+
+/// How a native selection change should update the mobile overlay state.
+@visibleForTesting
+enum NativeSelectionOverlayChange {
+  /// Leaves the current overlay and selection mode state unchanged.
+  none,
+
+  /// Hides only the temporary overlay used during tmux touch-selection flows.
+  hideTemporaryOverlay,
+
+  /// Leaves native selection mode entirely so terminal input becomes editable.
+  exitSelectionMode,
+}
+
+/// Resolves how collapsed mobile selections should unwind overlay state.
+@visibleForTesting
+NativeSelectionOverlayChange resolveNativeSelectionOverlayChange({
+  required bool isMobilePlatform,
+  required bool isNativeSelectionMode,
+  required bool revealOverlayInTouchScrollMode,
+  required TextSelection selection,
+}) {
+  if (!isNativeSelectionMode || !selection.isCollapsed) {
+    return NativeSelectionOverlayChange.none;
+  }
+
+  if (revealOverlayInTouchScrollMode) {
+    return NativeSelectionOverlayChange.hideTemporaryOverlay;
+  }
+
+  if (isMobilePlatform) {
+    return NativeSelectionOverlayChange.exitSelectionMode;
+  }
+
+  return NativeSelectionOverlayChange.none;
+}
 
 String? _describeMouseMode(
   MouseMode mouseMode,
@@ -351,7 +514,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final TextEditingController _nativeSelectionController;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
-  final _toolbarKey = GlobalKey<KeyboardToolbarState>();
+  final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
   bool _isConnecting = true;
@@ -391,6 +554,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       defaultTargetPlatform == TargetPlatform.android ||
       defaultTargetPlatform == TargetPlatform.iOS;
 
+  bool get _isAndroidPlatform =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
     isUsingAltBuffer: _isUsingAltBuffer,
@@ -420,6 +586,77 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
 
+  String _terminalCommandAfterInsertion(String insertedText) {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return insertedText;
+    }
+    return applyTerminalCursorInsertion(
+      currentText: snapshot.text,
+      cursorOffset: snapshot.cursorOffset,
+      insertedText: insertedText,
+    );
+  }
+
+  String _terminalCommandAfterInputDelta(
+    ({int deletedCount, String appendedText}) delta,
+    String fallbackText,
+  ) {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return fallbackText;
+    }
+
+    return applyTerminalInputDelta(
+      currentText: snapshot.text,
+      cursorOffset: snapshot.cursorOffset,
+      deletedCount: delta.deletedCount,
+      appendedText: delta.appendedText,
+    );
+  }
+
+  bool _sameTerminalCommandReview(
+    TerminalCommandReview previous,
+    TerminalCommandReview next,
+  ) =>
+      previous.command == next.command &&
+      previous.bracketedPasteModeEnabled == next.bracketedPasteModeEnabled &&
+      listEquals(previous.reasons, next.reasons);
+
+  Future<bool> _confirmTerminalInsertionIfNeeded({
+    required String insertedText,
+    required TerminalCommandReview Function(String commandText) buildReview,
+    required String title,
+    required String Function(TerminalCommandReview review) messageBuilder,
+    required String confirmLabel,
+  }) async {
+    while (mounted) {
+      final review = buildReview(_terminalCommandAfterInsertion(insertedText));
+      if (!review.requiresReview) {
+        return true;
+      }
+
+      final shouldInsert = await _confirmCommandInsertion(
+        title: title,
+        message: messageBuilder(review),
+        confirmLabel: confirmLabel,
+        review: review,
+      );
+      if (!mounted || !shouldInsert) {
+        return false;
+      }
+
+      final latestReview = buildReview(
+        _terminalCommandAfterInsertion(insertedText),
+      );
+      if (_sameTerminalCommandReview(review, latestReview)) {
+        return true;
+      }
+    }
+
+    return false;
+  }
+
   @override
   void initState() {
     super.initState();
@@ -431,10 +668,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
     _nativeSelectionController = TextEditingController();
-    _isNativeSelectionMode = _isMobilePlatform;
-    if (_isNativeSelectionMode) {
-      _refreshNativeOverlayText(preserveSelection: false);
-    }
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
@@ -781,32 +1014,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // Apply toolbar modifier state to system keyboard input.
       // When the user toggles Ctrl on the toolbar then types on the system
       // keyboard, we convert the character to the corresponding control code.
-      final toolbar = _toolbarKey.currentState;
-      if (toolbar != null && output.length == 1) {
-        if (toolbar.isCtrlActive) {
-          final codeUnit = output.codeUnitAt(0);
-          int? ctrlCode;
-          if (codeUnit >= 0x61 && codeUnit <= 0x7A) {
-            // 'a'–'z' → 0x01–0x1A
-            ctrlCode = codeUnit - 0x60;
-          } else if (codeUnit >= 0x40 && codeUnit <= 0x5F) {
-            // '@'–'_' (includes A–Z) → 0x00–0x1F
-            ctrlCode = codeUnit - 0x40;
-          } else if (codeUnit == 0x20) {
-            ctrlCode = 0x00; // Ctrl+Space → NUL
-          } else if (codeUnit == 0x3F) {
-            ctrlCode = 0x7F; // Ctrl+? → DEL
-          }
-          if (ctrlCode != null) {
-            output = String.fromCharCode(ctrlCode);
-          }
-          toolbar.consumeOneShot();
-        } else if (toolbar.isAltActive) {
-          // Alt sends ESC prefix
-          output = '\x1b$output';
-          toolbar.consumeOneShot();
-        }
-      }
+      output = _toolbarController.applySystemKeyboardModifiers(output);
 
       _shell?.write(utf8.encode(output));
     };
@@ -894,6 +1102,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     String? snippetCommand;
+    int? resolvedSnippetId;
     final snippetId = host.autoConnectSnippetId;
     if (snippetId != null) {
       final snippetRepo = ref.read(snippetRepositoryProvider);
@@ -904,7 +1113,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       } else {
         snippetCommand = snippet.command;
-        unawaited(snippetRepo.incrementUsage(snippet.id));
+        resolvedSnippetId = snippet.id;
       }
     }
 
@@ -917,14 +1126,81 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final review = assessAutoConnectCommandExecution(
+      command,
+      importedNeedsReview: host.autoConnectRequiresConfirmation,
+    );
+    if (review.requiresReview) {
+      final decision = await _reviewImportedAutoConnectCommand(review);
+      if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+        return;
+      }
+      if (decision == _AutoConnectReviewDecision.trustAndRun) {
+        final updatedHost = host.copyWith(
+          autoConnectRequiresConfirmation: false,
+        );
+        await ref.read(hostRepositoryProvider).update(updatedHost);
+        _host = updatedHost;
+      }
+    }
+
     shell.write(utf8.encode(formatAutoConnectCommandForShell(command)));
+    if (resolvedSnippetId != null) {
+      unawaited(
+        ref.read(snippetRepositoryProvider).incrementUsage(resolvedSnippetId),
+      );
+    }
+  }
+
+  void _handleTrackedConnectionStateChange(
+    Map<int, SshConnectionState>? previous,
+    Map<int, SshConnectionState> next,
+  ) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+
+    final previousState =
+        previous?[connectionId] ?? SshConnectionState.disconnected;
+    final nextState = next[connectionId] ?? SshConnectionState.disconnected;
+    if (previousState == nextState ||
+        nextState != SshConnectionState.disconnected) {
+      return;
+    }
+
+    _shell = null;
+    unawaited(_doneSubscription?.cancel());
+    _doneSubscription = null;
+    if (_wasBackgrounded) {
+      _connectionLostWhileBackgrounded = true;
+      return;
+    }
+    if (!mounted) {
+      return;
+    }
+
+    unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+    _terminalFocusNode.unfocus();
+    setState(() {
+      _isConnecting = false;
+      _error ??= 'Connection closed';
+    });
   }
 
   void _handleShellClosed() {
     final connectionId = _connectionId;
+    _shell = null;
+    unawaited(_doneSubscription?.cancel());
+    _doneSubscription = null;
     if (!mounted) {
       if (connectionId != null) {
-        unawaited(_sessionsNotifier?.disconnect(connectionId));
+        unawaited(
+          _sessionsNotifier?.handleUnexpectedDisconnect(
+            connectionId,
+            message: 'Connection closed',
+          ),
+        );
       }
       return;
     }
@@ -934,23 +1210,69 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _connectionLostWhileBackgrounded = true;
     } else {
       setState(() {
+        _isConnecting = false;
         _error = 'Connection closed';
       });
+      unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
+      _terminalFocusNode.unfocus();
     }
     // Clean up the session state regardless of background/foreground.
     if (connectionId != null) {
-      unawaited(_sessionsNotifier?.disconnect(connectionId));
+      unawaited(
+        _sessionsNotifier?.handleUnexpectedDisconnect(
+          connectionId,
+          message: 'Connection closed',
+        ),
+      );
     }
   }
 
   Future<void> _disconnect() async {
+    final connectionId = _connectionId;
+    _connectionId = null;
     await _doneSubscription?.cancel();
     _doneSubscription = null;
-    if (_connectionId != null) {
-      await _sessionsNotifier?.disconnect(_connectionId!);
+    _shell = null;
+    if (connectionId != null) {
+      await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
       Navigator.of(context).pop();
+    }
+  }
+
+  Future<void> _reconnect() async {
+    if (_isConnecting) {
+      return;
+    }
+    if (mounted) {
+      setState(() {
+        _isConnecting = true;
+        _error = null;
+      });
+    } else {
+      _isConnecting = true;
+      _error = null;
+    }
+
+    final previousConnectionId = _connectionId;
+    _connectionId = null;
+    _connectionLostWhileBackgrounded = false;
+    try {
+      await _doneSubscription?.cancel();
+      _doneSubscription = null;
+      _shell = null;
+      if (previousConnectionId != null) {
+        await _sessionsNotifier?.disconnect(previousConnectionId);
+      }
+      if (!mounted) {
+        return;
+      }
+      await _connect(forceNew: true);
+    } finally {
+      if (!mounted) {
+        _isConnecting = false;
+      }
     }
   }
 
@@ -971,6 +1293,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController.dispose();
     _doneSubscription?.cancel();
     _terminalFocusNode.dispose();
+    _toolbarController.dispose();
     super.dispose();
   }
 
@@ -984,7 +1307,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
-        _connect();
+        _reconnect();
       }
     }
   }
@@ -1078,12 +1401,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<Map<int, SshConnectionState>>(
+      activeSessionsProvider,
+      _handleTrackedConnectionStateChange,
+    );
     final theme = Theme.of(context);
+    final connectionStates = ref.watch(activeSessionsProvider);
     final isDark = theme.brightness == Brightness.dark;
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
+    final connectionState = _connectionId == null
+        ? SshConnectionState.disconnected
+        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
+    final showsDisconnectedOverlay =
+        _connectionId != null &&
+        !_isConnecting &&
+        connectionState == SshConnectionState.disconnected;
 
     // Use session override, or loaded theme, or fallback
     final terminalTheme =
@@ -1142,22 +1477,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
-          if (statusChips.isNotEmpty)
-            IconButton(
-              icon: Icon(
-                _showsTerminalMetadata ? Icons.info : Icons.info_outline,
-              ),
-              onPressed: () => setState(
-                () => _showsTerminalMetadata = !_showsTerminalMetadata,
-              ),
-              tooltip: _showsTerminalMetadata
-                  ? 'Hide terminal info'
-                  : 'Show terminal info',
-            ),
           IconButton(
-            icon: const Icon(Icons.palette_outlined),
-            onPressed: _showThemePicker,
-            tooltip: 'Change theme',
+            icon: const Icon(Icons.folder_outlined),
+            onPressed:
+                _connectionId == null ||
+                    connectionState != SshConnectionState.connected
+                ? null
+                : _openConnectionFileBrowser,
+            tooltip: 'Browse files',
           ),
           if (isMobile)
             IconButton(
@@ -1182,6 +1509,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
               const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
+              const PopupMenuItem(
+                value: 'change_theme',
+                child: Text('Change Theme'),
+              ),
+              if (statusChips.isNotEmpty)
+                PopupMenuItem(
+                  value: 'toggle_terminal_info',
+                  child: Text(
+                    _showsTerminalMetadata
+                        ? 'Hide Terminal Info'
+                        : 'Show Terminal Info',
+                  ),
+                ),
               const PopupMenuDivider(),
               if (!isMobile)
                 PopupMenuItem(
@@ -1212,9 +1552,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard && (!_isNativeSelectionMode || _isMobilePlatform))
+          if (_showKeyboard &&
+              !showsDisconnectedOverlay &&
+              (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
-              key: _toolbarKey,
+              controller: _toolbarController,
               terminal: _terminal,
               onKeyPressed: _followLiveOutput,
               terminalFocusNode: _terminalFocusNode,
@@ -1235,7 +1577,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
-    _dismissTemporaryNativeSelectionOverlay();
+    if (!mounted) {
+      return;
+    }
+    _dismissNativeSelectionOverlayForEditing();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -1363,8 +1708,78 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Widget _buildConnectionIssueOverlay({
+    required ThemeData theme,
+    required Widget child,
+    required String message,
+    required bool showsDisconnectedOverlay,
+  }) => Stack(
+    fit: StackFit.expand,
+    children: [
+      AbsorbPointer(child: child),
+      Center(
+        child: Padding(
+          padding: const EdgeInsets.all(24),
+          child: ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 360),
+            child: Card(
+              elevation: 4,
+              child: Padding(
+                padding: const EdgeInsets.all(20),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Icon(
+                      Icons.wifi_off_rounded,
+                      size: 48,
+                      color: theme.colorScheme.error,
+                    ),
+                    const SizedBox(height: 12),
+                    Text(
+                      showsDisconnectedOverlay
+                          ? 'Disconnected'
+                          : 'Connection Error',
+                      style: theme.textTheme.titleLarge,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      message,
+                      style: theme.textTheme.bodyMedium,
+                      textAlign: TextAlign.center,
+                    ),
+                    const SizedBox(height: 16),
+                    FilledButton.icon(
+                      onPressed: _isConnecting ? null : _reconnect,
+                      icon: const Icon(Icons.refresh),
+                      label: const Text('Reconnect'),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    ],
+  );
+
   Widget _buildTerminalView(TerminalThemeData terminalTheme, bool isMobile) {
     final theme = Theme.of(context);
+    final connectionStates = ref.watch(activeSessionsProvider);
+    final connectionAttempt = ref
+        .read(activeSessionsProvider.notifier)
+        .getConnectionAttempt(widget.hostId);
+    final connectionState = _connectionId == null
+        ? SshConnectionState.disconnected
+        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
+    final showsDisconnectedOverlay =
+        _connectionId != null &&
+        !_isConnecting &&
+        connectionState == SshConnectionState.disconnected;
+    final overlayMessage = showsDisconnectedOverlay
+        ? connectionAttempt?.latestMessage ?? _error ?? 'Connection closed'
+        : _error;
 
     if (_isConnecting) {
       return const Center(
@@ -1379,7 +1794,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    if (_error != null) {
+    if (overlayMessage != null && _connectionId == null) {
       return Center(
         child: Padding(
           padding: const EdgeInsets.all(24),
@@ -1398,13 +1813,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               ),
               const SizedBox(height: 8),
               Text(
-                _error!,
+                overlayMessage,
                 textAlign: TextAlign.center,
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 24),
               ElevatedButton(
-                onPressed: () => _connect(preferredConnectionId: _connectionId),
+                onPressed: _isConnecting ? null : _reconnect,
                 child: const Text('Retry'),
               ),
             ],
@@ -1455,9 +1870,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         terminalReportsMouseWheel: _terminalReportsMouseWheel,
       ),
       touchScrollToTerminal: routeTouchScrollToTerminal,
+      onInsertText: isMobile ? null : _confirmDesktopInsertedText,
+      onPasteText: isMobile ? null : _pasteClipboard,
     );
 
-    if (!isMobile) return terminalView;
+    if (!isMobile) {
+      return overlayMessage == null
+          ? terminalView
+          : _buildConnectionIssueOverlay(
+              theme: theme,
+              child: terminalView,
+              message: overlayMessage,
+              showsDisconnectedOverlay: showsDisconnectedOverlay,
+            );
+    }
 
     Widget mobileTerminalView = terminalView;
 
@@ -1518,13 +1944,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    return TerminalTextInputHandler(
+    Widget terminalViewWithInput = TerminalTextInputHandler(
       terminal: _terminal,
       focusNode: _terminalFocusNode,
       controller: _terminalTextInputController,
       deleteDetection: true,
       onUserInput: _followLiveOutput,
-      readOnly: _showsNativeSelectionOverlay,
+      onReviewInsertedText: _confirmKeyboardInsertion,
+      buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
+      resolveTextBeforeCursor: _terminalTextBeforeCursor,
+      readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -1533,6 +1962,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         child: mobileTerminalView,
       ),
     );
+
+    if (overlayMessage != null) {
+      terminalViewWithInput = _buildConnectionIssueOverlay(
+        theme: theme,
+        child: terminalViewWithInput,
+        message: overlayMessage,
+        showsDisconnectedOverlay: showsDisconnectedOverlay,
+      );
+    }
+
+    return terminalViewWithInput;
   }
 
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
@@ -1597,10 +2037,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _ => null,
       };
 
+  void _openConnectionFileBrowser() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return;
+    }
+    context.pushNamed(
+      Routes.sftp,
+      pathParameters: {'hostId': widget.hostId.toString()},
+      queryParameters: {'connectionId': connectionId.toString()},
+    );
+  }
+
   Future<void> _handleMenuAction(String action) async {
     switch (action) {
       case 'snippets':
         await _showSnippetPicker();
+        break;
+      case 'change_theme':
+        unawaited(_showThemePicker());
+        break;
+      case 'toggle_terminal_info':
+        setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
@@ -1736,10 +2194,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+  ({String text, List<int> columnOffsets}) _buildTerminalLineSnapshot(
     BufferLine line,
-    int viewWidth,
-  ) {
+    int viewWidth, {
+    required bool preserveTrailingPadding,
+    int preserveOffset = 0,
+  }) {
     final builder = StringBuffer();
     final columnOffsets = List<int>.filled(viewWidth + 1, 0);
     var col = 0;
@@ -1766,18 +2226,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       col += step;
     }
 
-    final trimmedText = trimTerminalLinePadding(builder.toString());
-    if (trimmedText.length == builder.length) {
-      return (text: trimmedText, columnOffsets: columnOffsets);
+    final rawText = builder.toString();
+    final resolvedLength = resolveTerminalLineSnapshotTextLength(
+      text: rawText,
+      preserveOffset: preserveOffset,
+      preserveTrailingPadding: preserveTrailingPadding,
+    );
+    if (resolvedLength == rawText.length) {
+      return (text: rawText, columnOffsets: columnOffsets);
     }
 
     for (var i = 0; i < columnOffsets.length; i++) {
-      if (columnOffsets[i] > trimmedText.length) {
-        columnOffsets[i] = trimmedText.length;
+      if (columnOffsets[i] > resolvedLength) {
+        columnOffsets[i] = resolvedLength;
       }
     }
-    return (text: trimmedText, columnOffsets: columnOffsets);
+    return (
+      text: rawText.substring(0, resolvedLength),
+      columnOffsets: columnOffsets,
+    );
   }
+
+  ({String text, List<int> columnOffsets}) _buildNativeSelectionLineSnapshot(
+    BufferLine line,
+    int viewWidth,
+  ) => _buildTerminalLineSnapshot(
+    line,
+    viewWidth,
+    preserveTrailingPadding: false,
+  );
 
   TextSelection _bufferRangeToTextSelection(
     BufferRange range, {
@@ -1806,14 +2283,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TextSelection selection,
     SelectionChangedCause? cause,
   ) {
-    if (!_revealsNativeSelectionOverlayInTouchScrollMode ||
-        !selection.isCollapsed ||
-        !mounted) {
+    if (!mounted) {
       return;
     }
-    setState(() {
-      _revealsNativeSelectionOverlayInTouchScrollMode = false;
-    });
+
+    switch (resolveNativeSelectionOverlayChange(
+      isMobilePlatform: _isMobilePlatform,
+      isNativeSelectionMode: _isNativeSelectionMode,
+      revealOverlayInTouchScrollMode:
+          _revealsNativeSelectionOverlayInTouchScrollMode,
+      selection: selection,
+    )) {
+      case NativeSelectionOverlayChange.none:
+        return;
+      case NativeSelectionOverlayChange.hideTemporaryOverlay:
+        setState(() {
+          _revealsNativeSelectionOverlayInTouchScrollMode = false;
+        });
+        return;
+      case NativeSelectionOverlayChange.exitSelectionMode:
+        _dismissNativeSelectionOverlayForEditing();
+        return;
+    }
   }
 
   void _dismissTemporaryNativeSelectionOverlay() {
@@ -1830,6 +2321,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() {
+      _revealsNativeSelectionOverlayInTouchScrollMode = false;
+    });
+  }
+
+  void _dismissNativeSelectionOverlayForEditing() {
+    if (!mounted) {
+      return;
+    }
+
+    if (!_isNativeSelectionMode) {
+      return;
+    }
+
+    if (_revealsNativeSelectionOverlayInTouchScrollMode) {
+      _dismissTemporaryNativeSelectionOverlay();
+      return;
+    }
+
+    if (!_isMobilePlatform) {
+      return;
+    }
+
+    _nativeSelectionController.clear();
+    _terminalController.clearSelection();
+    setState(() {
+      _isNativeSelectionMode = false;
+      _hasTerminalSelection = false;
       _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
   }
@@ -1921,6 +2439,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
+    final buffer = _terminal.buffer;
+    final row = buffer.absoluteCursorY;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildTerminalLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+        preserveTrailingPadding: lineIndex < endRow,
+        preserveOffset: lineIndex == row
+            ? buffer.cursorX.clamp(0, buffer.viewWidth)
+            : 0,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+    }
+
+    final rowIndex = row - startRow;
+    final cursorColumn = buffer.cursorX.clamp(0, buffer.viewWidth);
+    final cursorOffset =
+        rowStarts[rowIndex] + columnOffsets[rowIndex][cursorColumn];
+    return (text: builder.toString(), cursorOffset: cursorOffset);
+  }
+
+  String? _terminalTextBeforeCursor() {
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return null;
+    }
+    return snapshot.text.substring(0, snapshot.cursorOffset);
+  }
+
   void _handleTerminalLinkTap(String link) {
     if (link.startsWith(_terminalSftpPathPrefix)) {
       _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length));
@@ -1971,15 +2538,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _showTerminalLinkMessage('Could not open $path');
       return;
     }
+    final connectionId = _connectionId;
     final workingDirectoryQueryParameters = _workingDirectoryPath == null
         ? null
         : {'cwd': _workingDirectoryPath!};
 
     unawaited(
       context.pushNamed(
-        'sftp',
+        Routes.sftp,
         pathParameters: {'hostId': widget.hostId.toString()},
         queryParameters: {
+          if (connectionId != null) 'connectionId': connectionId.toString(),
           'path': normalizedPath,
           ...?workingDirectoryQueryParameters,
         },
@@ -2063,6 +2632,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(const SnackBar(content: Text('Copied')));
   }
 
+  void _showClipboardMessage(String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
   Future<void> _copyWorkingDirectory() async {
     final path = _workingDirectoryPath;
     if (path == null || path.isEmpty) {
@@ -2081,18 +2659,324 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ).showSnackBar(const SnackBar(content: Text('Copied current directory')));
   }
 
+  SshSession? _activeSession() {
+    final connectionId = _connectionId;
+    final sessionsNotifier = _sessionsNotifier;
+    if (connectionId == null || sessionsNotifier == null) {
+      return null;
+    }
+    return sessionsNotifier.getSession(connectionId);
+  }
+
   Future<void> _pasteClipboard() async {
-    final data = await Clipboard.getData(Clipboard.kTextPlain);
-    final text = data?.text;
-    if (text == null || text.isEmpty) {
-      _restoreTerminalFocus();
+    try {
+      if (_isAndroidPlatform) {
+        final imageBytes = await Pasteboard.image;
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          await _pasteClipboardImage(imageBytes);
+          return;
+        }
+      }
+
+      final clipboardFiles = await Pasteboard.files();
+      if (clipboardFiles.isNotEmpty) {
+        await _pasteClipboardFiles(clipboardFiles);
+        return;
+      }
+
+      if (!_isAndroidPlatform) {
+        final imageBytes = await Pasteboard.image;
+        if (imageBytes != null && imageBytes.isNotEmpty) {
+          await _pasteClipboardImage(imageBytes);
+          return;
+        }
+      }
+
+      final text = await Pasteboard.text;
+      if (text == null || text.isEmpty) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        _showClipboardMessage('Clipboard is empty');
+        return;
+      }
+
+      final shouldPaste = await _confirmTerminalInsertionIfNeeded(
+        insertedText: text,
+        buildReview: (commandText) => assessClipboardPasteCommand(
+          commandText,
+          bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+        ),
+        title: 'Review clipboard paste',
+        messageBuilder: (review) => review.bracketedPasteModeEnabled
+            ? 'This clipboard content looks risky even with bracketed paste enabled.'
+            : 'This clipboard content could execute multiple or reshaped commands.',
+        confirmLabel: 'Paste anyway',
+      );
+      if (!shouldPaste) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+
+      _followLiveOutput();
+      _terminal.paste(text);
+      _terminalController.clearSelection();
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    } on PlatformException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        'Clipboard access failed: ${error.message ?? error.code}',
+      );
+    } on FileSystemException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        error.message.isEmpty
+            ? 'Clipboard file upload failed'
+            : 'Clipboard file upload failed: ${error.message}',
+      );
+    } on SftpError catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Remote upload failed: ${error.message}');
+    } on Object catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Clipboard upload failed: $error');
+    }
+  }
+
+  Future<T> _withClipboardSftp<T>(
+    Future<T> Function(SftpClient sftp, RemoteFileService remoteFileService)
+    action,
+  ) async {
+    final session = _activeSession();
+    if (session == null) {
+      throw StateError('Connection is not ready yet');
+    }
+
+    final remoteFileService = ref.read(remoteFileServiceProvider);
+    final sftp = await session.sftp();
+    try {
+      await remoteFileService.ensureDirectoryExists(
+        sftp,
+        remoteClipboardUploadDirectory,
+      );
+      return await action(sftp, remoteFileService);
+    } finally {
+      sftp.close();
+    }
+  }
+
+  Future<({String name, Uint8List bytes})> _readAndroidClipboardContentUri(
+    String uri,
+  ) async {
+    final response = await _clipboardContentChannel.invokeMethod<Object>(
+      'readContentUri',
+      {'uri': uri},
+    );
+    if (response is! Map<Object?, Object?>) {
+      throw PlatformException(
+        code: 'invalid_clipboard_content',
+        message: 'Unexpected clipboard content response',
+      );
+    }
+
+    final name = response['name'];
+    final bytes = response['bytes'];
+    if (name is! String || bytes is! Uint8List) {
+      throw PlatformException(
+        code: 'invalid_clipboard_content',
+        message: 'Clipboard content response was incomplete',
+      );
+    }
+
+    return (name: name, bytes: bytes);
+  }
+
+  Future<bool> _confirmClipboardUpload({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    List<String> details = const [],
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(message),
+              if (details.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                for (final detail in details)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 8),
+                    child: Text('\u2022 $detail'),
+                  ),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Future<void> _pasteClipboardFiles(List<String> clipboardFiles) async {
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload clipboard files?',
+      message:
+          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory on the connected host and paste their remote paths into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: [
+        for (var index = 0; index < clipboardFiles.length; index++)
+          clipboardFiles[index].startsWith('content://')
+              ? 'Clipboard file ${index + 1}'
+              : path.basename(clipboardFiles[index]),
+      ],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       return;
     }
 
+    final timestamp = DateTime.now();
+    final remotePaths = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePaths = <String>[];
+      for (var index = 0; index < clipboardFiles.length; index++) {
+        final localPath = clipboardFiles[index];
+        final isContentUri = localPath.startsWith('content://');
+        late final String sourceName;
+        late final String remotePath;
+
+        if (isContentUri) {
+          if (!_isAndroidPlatform) {
+            throw const FileSystemException(
+              'Clipboard file URIs are not supported on this platform yet',
+            );
+          }
+          final clipboardFile = await _readAndroidClipboardContentUri(
+            localPath,
+          );
+          sourceName = clipboardFile.name;
+          remotePath = joinRemotePath(
+            remoteClipboardUploadDirectory,
+            buildClipboardUploadFileName(
+              sourceName,
+              timestamp,
+              sequence: index,
+            ),
+          );
+          await remoteFileService.uploadBytes(
+            sftp: sftp,
+            remotePath: remotePath,
+            bytes: clipboardFile.bytes,
+          );
+        } else {
+          sourceName = path.basename(localPath);
+          remotePath = joinRemotePath(
+            remoteClipboardUploadDirectory,
+            buildClipboardUploadFileName(
+              sourceName,
+              timestamp,
+              sequence: index,
+            ),
+          );
+          await remoteFileService.uploadStream(
+            sftp: sftp,
+            remotePath: remotePath,
+            stream: File(localPath).openRead(),
+          );
+        }
+        remotePaths.add(remotePath);
+      }
+      return remotePaths;
+    });
+
     _followLiveOutput();
-    _terminal.paste(text);
+    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage(
+      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory',
+    );
+  }
+
+  Future<void> _pasteClipboardImage(Uint8List imageBytes) async {
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload clipboard image?',
+      message:
+          'This will upload the clipboard image to $remoteClipboardUploadDirectory on the connected host and paste its remote path into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: const ['image.png'],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    final remotePath = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePath = joinRemotePath(
+        remoteClipboardUploadDirectory,
+        buildClipboardImageFileName(DateTime.now()),
+      );
+      await remoteFileService.uploadBytes(
+        sftp: sftp,
+        remotePath: remotePath,
+        bytes: imageBytes,
+      );
+      return remotePath;
+    });
+    _followLiveOutput();
+    _terminal.paste('${shellEscapePosix(remotePath)} ');
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage('Uploaded clipboard image to $remotePath');
+  }
+
+  Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
+    final shouldInsert = await _confirmCommandInsertion(
+      title: 'Review keyboard paste',
+      message:
+          'This text inserted from your keyboard could execute multiple or reshaped commands.',
+      confirmLabel: 'Insert anyway',
+      review: review,
+    );
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    return shouldInsert;
+  }
+
+  Future<bool> _confirmDesktopInsertedText(String text) async {
+    if (text.length <= 1) {
+      return true;
+    }
+
+    return _confirmTerminalInsertionIfNeeded(
+      insertedText: text,
+      buildReview: (commandText) => assessClipboardPasteCommand(
+        commandText,
+        bracketedPasteModeEnabled: false,
+      ),
+      title: 'Review keyboard paste',
+      messageBuilder: (_) =>
+          'This text inserted from your keyboard could execute multiple or reshaped commands.',
+      confirmLabel: 'Insert anyway',
+    );
   }
 
   /// Shows snippet picker and inserts selected snippet into terminal.
@@ -2112,7 +2996,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final variablePattern = RegExp(r'\{\{(\w+)\}\}');
 
     final result =
-        await showModalBottomSheet<({String command, int snippetId})>(
+        await showModalBottomSheet<
+          ({String command, bool hadVariableSubstitution, int snippetId})
+        >(
           context: context,
           isScrollControlled: true,
           builder: (context) => DraggableScrollableSheet(
@@ -2182,7 +3068,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                           );
                           if (command != null && context.mounted) {
                             Navigator.pop(context, (
-                              command: command,
+                              command: command.command,
+                              hadVariableSubstitution:
+                                  command.hadVariableSubstitution,
                               snippetId: snippet.id,
                             ));
                           }
@@ -2198,6 +3086,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     if (result != null && result.command.isNotEmpty) {
+      final shouldInsert = await _confirmTerminalInsertionIfNeeded(
+        insertedText: result.command,
+        buildReview: (commandText) => assessSnippetCommandInsertion(
+          commandText,
+          hadVariableSubstitution: result.hadVariableSubstitution,
+        ),
+        title: 'Review snippet command',
+        messageBuilder: (_) =>
+            'Confirm the rendered command before inserting it.',
+        confirmLabel: 'Insert command',
+      );
+      if (!shouldInsert) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
       _followLiveOutput();
       // Insert the command into terminal
       _terminal.paste(result.command);
@@ -2207,16 +3110,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Shows dialog for variable substitution if snippet has variables.
-  Future<String?> _substituteVariables(
-    BuildContext context,
-    Snippet snippet,
-  ) async {
+  Future<({String command, bool hadVariableSubstitution})?>
+  _substituteVariables(BuildContext context, Snippet snippet) async {
     final regex = RegExp(r'\{\{(\w+)\}\}');
     final matches = regex.allMatches(snippet.command);
     final variables = matches.map((m) => m.group(1)!).toSet().toList();
 
     if (variables.isEmpty) {
-      return snippet.command;
+      return (command: snippet.command, hadVariableSubstitution: false);
     }
 
     final controllers = {for (final v in variables) v: TextEditingController()};
@@ -2283,7 +3184,114 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       entry.value.dispose();
     }
 
-    return command;
+    return (command: command, hadVariableSubstitution: true);
+  }
+
+  Future<_AutoConnectReviewDecision> _reviewImportedAutoConnectCommand(
+    TerminalCommandReview review,
+  ) async {
+    final decision = await showDialog<_AutoConnectReviewDecision>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Review imported auto-connect command'),
+        content: _buildCommandReviewContent(
+          review: review,
+          message:
+              'Imported auto-connect commands never run silently. Review this one before letting it execute.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.skip),
+            child: const Text('Skip'),
+          ),
+          TextButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.runOnce),
+            child: const Text('Run once'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.pop(context, _AutoConnectReviewDecision.trustAndRun),
+            child: const Text('Always run'),
+          ),
+        ],
+      ),
+    );
+    return decision ?? _AutoConnectReviewDecision.skip;
+  }
+
+  Future<bool> _confirmCommandInsertion({
+    required String title,
+    required String message,
+    required String confirmLabel,
+    required TerminalCommandReview review,
+  }) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: _buildCommandReviewContent(review: review, message: message),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text(confirmLabel),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
+  Widget _buildCommandReviewContent({
+    required TerminalCommandReview review,
+    required String message,
+  }) {
+    final reasons = describeTerminalCommandReview(review);
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(message),
+          if (reasons.isNotEmpty) ...[
+            const SizedBox(height: 12),
+            for (final reason in reasons)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Padding(
+                      padding: EdgeInsets.only(top: 2),
+                      child: Icon(Icons.warning_amber_rounded, size: 18),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(child: Text(reason)),
+                  ],
+                ),
+              ),
+          ],
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: Theme.of(context).colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: SelectableText(
+              review.command,
+              style: const TextStyle(fontFamily: 'monospace'),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 }
 
