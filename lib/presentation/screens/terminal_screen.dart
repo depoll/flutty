@@ -2929,7 +2929,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
         } else {
           final bytes = file.bytes;
-          if (bytes == null || bytes.isEmpty) {
+          if (bytes == null) {
             throw const FileSystemException('Unable to read selected file');
           }
           await remoteFileService.uploadBytes(
