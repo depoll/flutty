@@ -2639,6 +2639,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         withData: kIsWeb,
         withReadStream: !kIsWeb,
       );
+      if (!mounted) {
+        return;
+      }
       if (result == null || result.files.isEmpty) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
@@ -2724,6 +2727,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String confirmLabel,
     List<String> details = const [],
   }) async {
+    if (!mounted) {
+      return false;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -2883,6 +2889,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String itemLabelSingular,
     required String itemLabelPlural,
   }) async {
+    if (!mounted) {
+      return;
+    }
     final itemLabel = selectedFiles.length == 1
         ? itemLabelSingular
         : itemLabelPlural;
