@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -50,6 +53,58 @@ void main() {
       expect(
         trimTerminalLinkCandidate('https://example.com/path{tmux}}'),
         'https://example.com/path{tmux}',
+      );
+    });
+  });
+
+  group('resolvePickedTerminalUploadFileName', () {
+    test('prefers the picker-provided name when present', () {
+      final file = PlatformFile(name: 'Screenshot.png', size: 0);
+
+      expect(resolvePickedTerminalUploadFileName(file), 'Screenshot.png');
+    });
+
+    test('falls back to the local path basename when needed', () {
+      final file = PlatformFile(
+        name: '   ',
+        path: '/tmp/copilot/screenshot.png',
+        size: 0,
+      );
+
+      expect(resolvePickedTerminalUploadFileName(file), 'screenshot.png');
+    });
+
+    test('uses a stable generated fallback when no name is available', () {
+      final file = PlatformFile(name: '', size: 0);
+
+      expect(
+        resolvePickedTerminalUploadFileName(file, index: 2),
+        'selected-file-3',
+      );
+    });
+  });
+
+  group('resolvePickedTerminalUploadReadStream', () {
+    test('opens a stream from the picked file path when needed', () async {
+      final tempDirectory = await Directory.systemTemp.createTemp(
+        'terminal-upload-test',
+      );
+      addTearDown(() => tempDirectory.delete(recursive: true));
+
+      final fileOnDisk = File('${tempDirectory.path}/notes.txt');
+      await fileOnDisk.writeAsString('copilot');
+
+      final file = PlatformFile(
+        name: 'notes.txt',
+        path: fileOnDisk.path,
+        size: 7,
+      );
+      final stream = resolvePickedTerminalUploadReadStream(file);
+
+      expect(stream, isNotNull);
+      expect(
+        await stream!.transform(const SystemEncoding().decoder).join(),
+        'copilot',
       );
     });
   });
