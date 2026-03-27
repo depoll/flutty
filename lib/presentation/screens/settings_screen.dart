@@ -386,11 +386,9 @@ class _TerminalSection extends ConsumerWidget {
           },
         ),
         SwitchListTile(
-          secondary: const Icon(Icons.link_outlined),
-          title: const Text('Path link badges'),
-          subtitle: const Text(
-            'Show a badge for clickable terminal file paths',
-          ),
+          secondary: const Icon(Icons.format_underline),
+          title: const Text('Path link underlines'),
+          subtitle: const Text('Underline clickable terminal file paths'),
           value: terminalPathLinks && terminalPathLinkBadges,
           onChanged: terminalPathLinks
               ? (value) {

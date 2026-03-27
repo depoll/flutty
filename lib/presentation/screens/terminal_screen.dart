@@ -664,13 +664,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
-  Offset? _terminalPathIndicatorOffset;
-  List<Offset> _visibleTerminalPathBadgeOffsets = const <Offset>[];
+  Rect? _hoveredTerminalPathUnderline;
+  List<Rect> _visibleTerminalPathUnderlines = const <Rect>[];
   bool _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = true;
   bool? _lastShowsTerminalPathBadges;
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
-  Timer? _terminalPathIndicatorClearTimer;
   bool _isTerminalPathBadgeRefreshQueued = false;
 
   // Theme state
@@ -1418,7 +1417,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
-    _terminalPathIndicatorClearTimer?.cancel();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
@@ -2028,22 +2026,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild =
           showsTerminalPathBadges;
     }
-    if (!showsTerminalPathBadges && _terminalPathIndicatorOffset != null) {
+    if (!showsTerminalPathBadges && _hoveredTerminalPathUnderline != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _terminalPathIndicatorOffset == null) {
+        if (!mounted || _hoveredTerminalPathUnderline == null) {
           return;
         }
-        setState(() => _terminalPathIndicatorOffset = null);
+        setState(() => _hoveredTerminalPathUnderline = null);
       });
     }
     if (!showsTerminalPathBadges &&
         _isMobilePlatform &&
-        _visibleTerminalPathBadgeOffsets.isNotEmpty) {
+        _visibleTerminalPathUnderlines.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted || _visibleTerminalPathBadgeOffsets.isEmpty) {
+        if (!mounted || _visibleTerminalPathUnderlines.isEmpty) {
           return;
         }
-        setState(() => _visibleTerminalPathBadgeOffsets = const <Offset>[]);
+        setState(() => _visibleTerminalPathUnderlines = const <Rect>[]);
       });
     }
     if (terminalPathLinksEnabled) {
@@ -2063,30 +2061,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fit: StackFit.expand,
           children: [
             terminalView,
-            for (final badgeOffset in _visibleTerminalPathBadgeOffsets)
+            for (final underline in _visibleTerminalPathUnderlines)
               Positioned(
-                left: badgeOffset.dx,
-                top: badgeOffset.dy,
+                left: underline.left,
+                top: underline.top,
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.surfaceContainerHighest,
+                      color: theme.colorScheme.primary.withValues(alpha: 0.92),
                       borderRadius: BorderRadius.circular(999),
-                      boxShadow: [
-                        BoxShadow(
-                          color: Colors.black.withValues(alpha: 0.18),
-                          blurRadius: 8,
-                          offset: const Offset(0, 2),
-                        ),
-                      ],
                     ),
-                    child: Padding(
-                      padding: const EdgeInsets.all(6),
-                      child: Icon(
-                        Icons.folder_open_outlined,
-                        size: 14,
-                        color: theme.colorScheme.primary,
-                      ),
+                    child: SizedBox(
+                      width: underline.width,
+                      height: underline.height,
                     ),
                   ),
                 ),
@@ -2096,38 +2083,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       } else {
         terminalView = MouseRegion(
           onHover: _handleTerminalPathHover,
-          onExit: (_) => _clearTerminalPathIndicator(),
+          onExit: (_) => _clearHoveredTerminalPathUnderline(),
           child: Stack(
             fit: StackFit.expand,
             children: [
               terminalView,
-              if (_terminalPathIndicatorOffset != null)
+              if (_hoveredTerminalPathUnderline != null)
                 Positioned(
-                  left: _terminalPathIndicatorOffset!.dx + 8,
-                  top: (_terminalPathIndicatorOffset!.dy - 24).clamp(
-                    8.0,
-                    double.infinity,
-                  ),
+                  left: _hoveredTerminalPathUnderline!.left,
+                  top: _hoveredTerminalPathUnderline!.top,
                   child: IgnorePointer(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.surfaceContainerHighest,
-                        borderRadius: BorderRadius.circular(999),
-                        boxShadow: [
-                          BoxShadow(
-                            color: Colors.black.withValues(alpha: 0.18),
-                            blurRadius: 8,
-                            offset: const Offset(0, 2),
-                          ),
-                        ],
-                      ),
-                      child: Padding(
-                        padding: const EdgeInsets.all(6),
-                        child: Icon(
-                          Icons.folder_open_outlined,
-                          size: 14,
-                          color: theme.colorScheme.primary,
+                        color: theme.colorScheme.primary.withValues(
+                          alpha: 0.92,
                         ),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: SizedBox(
+                        width: _hoveredTerminalPathUnderline!.width,
+                        height: _hoveredTerminalPathUnderline!.height,
                       ),
                     ),
                   ),
@@ -2707,8 +2682,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveSingleInteractiveTerminalFilePathOnRow(int row) {
-    final segment = _resolveInteractiveTerminalPathSegmentOnRow(row);
-    return segment?.path;
+    final segments = _resolveInteractiveTerminalPathSegmentsOnRow(row);
+    return segments.length == 1 ? segments.single.path : null;
   }
 
   String? _detectTerminalFilePathAtCell(CellOffset offset) {
@@ -2897,7 +2872,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (terminalViewState == null ||
         !ref.read(terminalPathLinksNotifierProvider) ||
         !ref.read(terminalPathLinkBadgesNotifierProvider)) {
-      _clearTerminalPathIndicator();
+      _clearHoveredTerminalPathUnderline();
       return;
     }
 
@@ -2917,11 +2892,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _lastHoveredTerminalPath = detectedPath;
     }
     if (detectedPath == null || !_shouldShowTerminalPathBadge(detectedPath)) {
-      _clearTerminalPathIndicator();
+      _clearHoveredTerminalPathUnderline();
       return;
     }
-
-    _showTerminalPathIndicator(event.localPosition);
+    final hoveredSegment = _resolveInteractiveTerminalPathSegmentAtOffset(
+      offset,
+      path: detectedPath,
+    );
+    if (hoveredSegment == null) {
+      _clearHoveredTerminalPathUnderline();
+      return;
+    }
+    final underline = _buildTerminalPathUnderlineRect(
+      terminalViewState,
+      row: offset.y,
+      startColumn: hoveredSegment.startColumn,
+      endColumn: hoveredSegment.endColumn,
+    );
+    if (underline == null) {
+      _clearHoveredTerminalPathUnderline();
+      return;
+    }
+    if (_hoveredTerminalPathUnderline == underline) {
+      return;
+    }
+    setState(() => _hoveredTerminalPathUnderline = underline);
   }
 
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
@@ -2929,8 +2924,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final pathLinksEnabled = ref.read(terminalPathLinksNotifierProvider);
     final pathBadgesEnabled = ref.read(terminalPathLinkBadgesNotifierProvider);
     if (terminalViewState == null || !pathLinksEnabled) {
-      if (_terminalPathIndicatorOffset != null) {
-        _clearTerminalPathIndicator();
+      if (_hoveredTerminalPathUnderline != null) {
+        _clearHoveredTerminalPathUnderline();
       }
       return;
     }
@@ -2954,43 +2949,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!pathBadgesEnabled) {
       return;
     }
-    final detectedPath = _resolveTerminalFilePathAtOffset(
-      offset,
-      forgiving: event.kind == PointerDeviceKind.touch,
-    );
-    if (detectedPath == null || !_shouldShowTerminalPathBadge(detectedPath)) {
-      _clearTerminalPathIndicator();
-      return;
-    }
-
-    final clearAfter = event.kind == PointerDeviceKind.touch
-        ? const Duration(milliseconds: 1200)
-        : null;
-    _showTerminalPathIndicator(event.localPosition, clearAfter: clearAfter);
   }
 
-  void _showTerminalPathIndicator(Offset offset, {Duration? clearAfter}) {
-    _terminalPathIndicatorClearTimer?.cancel();
-    if (_terminalPathIndicatorOffset != offset) {
-      setState(() => _terminalPathIndicatorOffset = offset);
-    }
-    if (clearAfter != null) {
-      _terminalPathIndicatorClearTimer = Timer(
-        clearAfter,
-        _clearTerminalPathIndicator,
-      );
-    }
-  }
-
-  void _clearTerminalPathIndicator() {
-    _terminalPathIndicatorClearTimer?.cancel();
-    _terminalPathIndicatorClearTimer = null;
+  void _clearHoveredTerminalPathUnderline() {
     _lastHoveredTerminalPathOffset = null;
     _lastHoveredTerminalPath = null;
-    if (_terminalPathIndicatorOffset == null || !mounted) {
+    if (_hoveredTerminalPathUnderline == null || !mounted) {
       return;
     }
-    setState(() => _terminalPathIndicatorOffset = null);
+    setState(() => _hoveredTerminalPathUnderline = null);
   }
 
   bool _shouldShowTerminalPathBadge(String path) =>
@@ -3018,8 +2985,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref.read(terminalPathLinksNotifierProvider) &&
         ref.read(terminalPathLinkBadgesNotifierProvider);
     if (!_isMobilePlatform || !showsBadges || terminalViewState == null) {
-      if (_visibleTerminalPathBadgeOffsets.isNotEmpty) {
-        setState(() => _visibleTerminalPathBadgeOffsets = const <Offset>[]);
+      if (_visibleTerminalPathUnderlines.isNotEmpty) {
+        setState(() => _visibleTerminalPathUnderlines = const <Rect>[]);
       }
       return;
     }
@@ -3037,74 +3004,111 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final seenPaths = <String>{};
-    final badgeOffsets = <Offset>[];
+    final underlines = <Rect>[];
 
     for (var row = rowRange.topRow; row <= rowRange.bottomRow; row++) {
-      final segment = _resolveInteractiveTerminalPathSegmentOnRow(row);
-      if (segment == null || !seenPaths.add(segment.path)) {
-        continue;
+      final segments = _resolveInteractiveTerminalPathSegmentsOnRow(row);
+      for (final segment in segments) {
+        if (!_shouldShowTerminalPathBadge(segment.path)) {
+          continue;
+        }
+        final underline = _buildTerminalPathUnderlineRect(
+          terminalViewState,
+          row: row,
+          startColumn: segment.startColumn,
+          endColumn: segment.endColumn,
+        );
+        if (underline != null) {
+          underlines.add(underline);
+        }
       }
-      final badgeCell = CellOffset(
-        (segment.endColumn + 1).clamp(0, _terminal.buffer.viewWidth),
-        row,
-      );
-      final badgeOrigin = renderTerminal.getOffset(badgeCell);
-      final left = (badgeOrigin.dx + 6).clamp(
-        4.0,
-        renderTerminal.size.width - 26,
-      );
-      final top = badgeOrigin.dy.clamp(4.0, renderTerminal.size.height - 26);
-      badgeOffsets.add(Offset(left, top));
     }
 
-    if (!listEquals(_visibleTerminalPathBadgeOffsets, badgeOffsets)) {
-      setState(() => _visibleTerminalPathBadgeOffsets = badgeOffsets);
+    if (!listEquals(_visibleTerminalPathUnderlines, underlines)) {
+      setState(() => _visibleTerminalPathUnderlines = underlines);
     }
   }
 
-  ({String path, int endColumn})? _resolveInteractiveTerminalPathSegmentOnRow(
-    int row,
-  ) {
+  Rect? _buildTerminalPathUnderlineRect(
+    MonkeyTerminalViewState terminalViewState, {
+    required int row,
+    required int startColumn,
+    required int endColumn,
+  }) {
+    final renderTerminal = terminalViewState.renderTerminal;
+    final lineTopLeft = renderTerminal.getOffset(CellOffset(startColumn, row));
+    final lineEndOffset = renderTerminal.getOffset(
+      CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
+    );
+    final width = lineEndOffset.dx - lineTopLeft.dx;
+    if (width <= 0) {
+      return null;
+    }
+    final thickness = renderTerminal.cellSize.height.clamp(1.5, 2.5);
+    final top = (lineTopLeft.dy + renderTerminal.cellSize.height - thickness)
+        .clamp(0.0, renderTerminal.size.height - thickness);
+    return Rect.fromLTWH(lineTopLeft.dx, top, width, thickness);
+  }
+
+  ({String path, int startColumn, int endColumn})?
+  _resolveInteractiveTerminalPathSegmentAtOffset(
+    CellOffset offset, {
+    String? path,
+  }) {
+    for (final segment in _resolveInteractiveTerminalPathSegmentsOnRow(
+      offset.y,
+    )) {
+      if (offset.x >= segment.startColumn &&
+          offset.x <= segment.endColumn &&
+          (path == null || segment.path == path)) {
+        return segment;
+      }
+    }
+    return null;
+  }
+
+  List<({String path, int startColumn, int endColumn})>
+  _resolveInteractiveTerminalPathSegmentsOnRow(int row) {
     final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
     final pathSnapshot = _buildTerminalPathTapSnapshot(clampedRow);
     if (pathSnapshot == null) {
-      return null;
+      return const <({String path, int startColumn, int endColumn})>[];
     }
 
     final relativeCandidatesToPrime = <String>{};
-    String? matchedPath;
-    int? endColumn;
-
-    for (var column = 0; column < _terminal.buffer.viewWidth; column++) {
+    final segments = <({String path, int startColumn, int endColumn})>[];
+    var column = 0;
+    while (column < _terminal.buffer.viewWidth) {
       final path = _detectTerminalFilePathInSnapshotAtCell(
         pathSnapshot,
         CellOffset(column, clampedRow),
       );
       if (path == null) {
+        column++;
         continue;
       }
-      if (_isInteractiveTerminalFilePath(path)) {
-        if (matchedPath == null || matchedPath == path) {
-          matchedPath = path;
-          endColumn = column;
-          continue;
-        }
-        return null;
+      var endColumn = column;
+      while (endColumn + 1 < _terminal.buffer.viewWidth &&
+          _detectTerminalFilePathInSnapshotAtCell(
+                pathSnapshot,
+                CellOffset(endColumn + 1, clampedRow),
+              ) ==
+              path) {
+        endColumn++;
       }
-      if (isRelativeTerminalFilePathCandidate(path)) {
+      if (_isInteractiveTerminalFilePath(path)) {
+        segments.add((path: path, startColumn: column, endColumn: endColumn));
+      } else if (isRelativeTerminalFilePathCandidate(path)) {
         relativeCandidatesToPrime.add(path);
       }
+      column = endColumn + 1;
     }
 
     for (final path in relativeCandidatesToPrime) {
       _primeRelativeTerminalFilePathVerification(path);
     }
 
-    if (matchedPath == null || endColumn == null) {
-      return null;
-    }
-    return (path: matchedPath, endColumn: endColumn);
+    return segments;
   }
 
   ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
@@ -3157,7 +3161,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalLinkTap(String link) {
-    _clearTerminalPathIndicator();
+    _clearHoveredTerminalPathUnderline();
     if (link.startsWith(_terminalSftpPathPrefix)) {
       unawaited(
         _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length)),

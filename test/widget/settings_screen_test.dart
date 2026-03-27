@@ -194,9 +194,9 @@ void main() {
         find.text('Tap terminal file paths to open them in SFTP'),
         findsOneWidget,
       );
-      expect(find.text('Path link badges'), findsOneWidget);
+      expect(find.text('Path link underlines'), findsOneWidget);
       expect(
-        find.text('Show a badge for clickable terminal file paths'),
+        find.text('Underline clickable terminal file paths'),
         findsOneWidget,
       );
     });
