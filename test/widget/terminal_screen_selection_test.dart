@@ -377,6 +377,41 @@ void main() {
     });
   });
 
+  group('resolveVisibleTerminalRowRange', () {
+    test('uses rendered viewport height to cover all visible rows', () {
+      expect(
+        resolveVisibleTerminalRowRange(
+          scrollOffset: 24,
+          lineHeight: 12,
+          viewportHeight: 72,
+          bufferHeight: 200,
+        ),
+        (topRow: 2, bottomRow: 8),
+      );
+    });
+
+    test('returns null when layout metrics are not ready', () {
+      expect(
+        resolveVisibleTerminalRowRange(
+          scrollOffset: 0,
+          lineHeight: 0,
+          viewportHeight: 72,
+          bufferHeight: 200,
+        ),
+        isNull,
+      );
+      expect(
+        resolveVisibleTerminalRowRange(
+          scrollOffset: 0,
+          lineHeight: 12,
+          viewportHeight: 0,
+          bufferHeight: 200,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('shouldResolveTerminalTapLinks', () {
     test('allows link taps when the native selection overlay is hidden', () {
       expect(

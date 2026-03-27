@@ -216,6 +216,28 @@ List<CellOffset> resolveForgivingTerminalTapOffsets(CellOffset offset) {
   return offsets;
 }
 
+/// Visible terminal rows for the current scroll offset and rendered viewport.
+@visibleForTesting
+({int topRow, int bottomRow})? resolveVisibleTerminalRowRange({
+  required double scrollOffset,
+  required double lineHeight,
+  required double viewportHeight,
+  required int bufferHeight,
+}) {
+  if (lineHeight <= 0 || viewportHeight <= 0 || bufferHeight <= 0) {
+    return null;
+  }
+
+  final maxRow = bufferHeight - 1;
+  final topRow = (scrollOffset / lineHeight).floor().clamp(0, maxRow);
+  final visibleRows = (viewportHeight / lineHeight).ceil().clamp(
+    1,
+    bufferHeight,
+  );
+  final bottomRow = (topRow + visibleRows).clamp(0, maxRow);
+  return (topRow: topRow, bottomRow: bottomRow);
+}
+
 /// Whether a terminal path is anchored to `/` or `~`.
 @visibleForTesting
 bool isExplicitTerminalFilePath(String path) =>
@@ -2993,23 +3015,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final renderTerminal = terminalViewState.renderTerminal;
-    final lineHeight = renderTerminal.lineHeight;
-    if (lineHeight <= 0) {
+    final rowRange = resolveVisibleTerminalRowRange(
+      scrollOffset: _terminalScrollController.hasClients
+          ? _terminalScrollController.offset
+          : 0,
+      lineHeight: renderTerminal.lineHeight,
+      viewportHeight: renderTerminal.size.height,
+      bufferHeight: _terminal.buffer.height,
+    );
+    if (rowRange == null) {
       return;
     }
 
-    final maxRow = _terminal.buffer.height - 1;
-    final topRow = _terminalScrollController.hasClients
-        ? (_terminalScrollController.offset / lineHeight).floor().clamp(
-            0,
-            maxRow,
-          )
-        : 0;
-    final bottomRow = (topRow + _terminal.viewHeight + 1).clamp(0, maxRow);
     final seenPaths = <String>{};
     final badgeOffsets = <Offset>[];
 
-    for (var row = topRow; row <= bottomRow; row++) {
+    for (var row = rowRange.topRow; row <= rowRange.bottomRow; row++) {
       final segment = _resolveInteractiveTerminalPathSegmentOnRow(row);
       if (segment == null || !seenPaths.add(segment.path)) {
         continue;
