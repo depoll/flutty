@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
 
@@ -38,6 +39,7 @@ import '../widgets/terminal_theme_picker.dart';
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
+const _maxVerifiedTerminalPathCacheEntries = 128;
 const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 const _clipboardContentChannel = MethodChannel(
@@ -663,7 +665,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
   final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
+  final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
+  String? _terminalPathCacheScope;
   Rect? _hoveredTerminalPathUnderline;
   List<Rect> _visibleTerminalPathUnderlines = const <Rect>[];
   bool _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = true;
@@ -856,6 +860,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
+    _syncVerifiedTerminalPathCacheScope();
     setState(() {});
   }
 
@@ -2922,7 +2927,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
     final terminalViewState = _terminalViewKey.currentState;
     final pathLinksEnabled = ref.read(terminalPathLinksNotifierProvider);
-    final pathBadgesEnabled = ref.read(terminalPathLinkBadgesNotifierProvider);
     if (terminalViewState == null || !pathLinksEnabled) {
       if (_hoveredTerminalPathUnderline != null) {
         _clearHoveredTerminalPathUnderline();
@@ -2946,9 +2950,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isInteractiveTerminalFilePath(candidatePath)) {
       _primeRelativeTerminalFilePathVerification(candidatePath);
     }
-    if (!pathBadgesEnabled) {
-      return;
-    }
   }
 
   void _clearHoveredTerminalPathUnderline() {
@@ -2962,7 +2963,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool _shouldShowTerminalPathBadge(String path) =>
       isExplicitTerminalFilePath(path) ||
-      _verifiedTerminalPathCache.containsKey(_terminalPathCacheKey(path));
+      _hasVerifiedRelativeTerminalPath(path);
 
   void _queueVisibleTerminalPathBadgeRefresh() {
     if (!_isMobilePlatform || _isTerminalPathBadgeRefreshQueued || !mounted) {
@@ -3075,25 +3076,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return const <({String path, int startColumn, int endColumn})>[];
     }
 
+    final columnPathCache = <int, String?>{};
+    String? pathAtColumn(int column) => columnPathCache.putIfAbsent(
+      column,
+      () => _detectTerminalFilePathInSnapshotAtCell(
+        pathSnapshot,
+        CellOffset(column, clampedRow),
+      ),
+    );
+
     final relativeCandidatesToPrime = <String>{};
     final segments = <({String path, int startColumn, int endColumn})>[];
     var column = 0;
     while (column < _terminal.buffer.viewWidth) {
-      final path = _detectTerminalFilePathInSnapshotAtCell(
-        pathSnapshot,
-        CellOffset(column, clampedRow),
-      );
+      final path = pathAtColumn(column);
       if (path == null) {
         column++;
         continue;
       }
       var endColumn = column;
       while (endColumn + 1 < _terminal.buffer.viewWidth &&
-          _detectTerminalFilePathInSnapshotAtCell(
-                pathSnapshot,
-                CellOffset(endColumn + 1, clampedRow),
-              ) ==
-              path) {
+          pathAtColumn(endColumn + 1) == path) {
         endColumn++;
       }
       if (_isInteractiveTerminalFilePath(path)) {
@@ -3348,12 +3351,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String _terminalPathCacheKey(String terminalPath) =>
-      '${widget.hostId}:${_connectionId ?? 0}:${_workingDirectoryPath ?? ''}:$terminalPath';
+      '${_currentTerminalPathCacheScope()}:$terminalPath';
 
-  bool _hasVerifiedRelativeTerminalPath(String terminalPath) =>
-      _verifiedTerminalPathCache.containsKey(
-        _terminalPathCacheKey(terminalPath),
-      );
+  String _currentTerminalPathCacheScope() =>
+      '${widget.hostId}:${_connectionId ?? 0}:${_workingDirectoryPath ?? ''}';
+
+  void _syncVerifiedTerminalPathCacheScope() {
+    final nextScope = _currentTerminalPathCacheScope();
+    if (_terminalPathCacheScope == nextScope) {
+      return;
+    }
+    _terminalPathCacheScope = nextScope;
+    _resetVerifiedTerminalPathCache();
+  }
+
+  void _resetVerifiedTerminalPathCache() {
+    _verifiedTerminalPathCache.clear();
+    _verifiedTerminalPathCacheOrder.clear();
+    _verifyingTerminalPathCacheKeys.clear();
+  }
+
+  void _cacheVerifiedTerminalPath(String cacheKey, String resolvedPath) {
+    _verifiedTerminalPathCache.remove(cacheKey);
+    _verifiedTerminalPathCache[cacheKey] = resolvedPath;
+    _verifiedTerminalPathCacheOrder
+      ..remove(cacheKey)
+      ..addLast(cacheKey);
+    while (_verifiedTerminalPathCacheOrder.length >
+        _maxVerifiedTerminalPathCacheEntries) {
+      final evictedKey = _verifiedTerminalPathCacheOrder.removeFirst();
+      _verifiedTerminalPathCache.remove(evictedKey);
+    }
+  }
+
+  bool _hasVerifiedRelativeTerminalPath(String terminalPath) {
+    _syncVerifiedTerminalPathCacheScope();
+    return _verifiedTerminalPathCache.containsKey(
+      _terminalPathCacheKey(terminalPath),
+    );
+  }
 
   bool _isInteractiveTerminalFilePath(String terminalPath) =>
       shouldActivateTerminalFilePath(
@@ -3366,6 +3402,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _syncVerifiedTerminalPathCacheScope();
     final cacheKey = _terminalPathCacheKey(terminalPath);
     if (_verifiedTerminalPathCache.containsKey(cacheKey) ||
         _verifyingTerminalPathCacheKeys.contains(cacheKey)) {
@@ -3389,6 +3426,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<String?> _resolveVerifiedTerminalFilePath(String terminalPath) async {
+    _syncVerifiedTerminalPathCacheScope();
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
@@ -3429,7 +3467,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       await sftp.stat(resolvedPath).timeout(_terminalPathVerificationTimeout);
-      _verifiedTerminalPathCache[cacheKey] = resolvedPath;
+      _cacheVerifiedTerminalPath(cacheKey, resolvedPath);
       return resolvedPath;
     } on TimeoutException {
       if (isExplicitPath) {
