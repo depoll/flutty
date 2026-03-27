@@ -4,6 +4,7 @@ import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -98,6 +99,25 @@ String trimTerminalSelectionText(String text) =>
 @visibleForTesting
 double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
+
+/// Resolves a readable display name for a picked upload file.
+@visibleForTesting
+String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
+  final name = file.name.trim();
+  if (name.isNotEmpty) {
+    return name;
+  }
+  final filePath = file.path;
+  if (filePath != null && filePath.isNotEmpty) {
+    return path.basename(filePath);
+  }
+  return 'selected-file-${index + 1}';
+}
+
+/// Resolves a readable stream for a picked upload file when available.
+@visibleForTesting
+Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) =>
+    file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
 
 /// Trims punctuation that terminals commonly render immediately after a link.
 @visibleForTesting
@@ -1407,6 +1427,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
+              const PopupMenuItem(
+                value: 'paste_image',
+                child: Text('Paste Image'),
+              ),
+              const PopupMenuItem(
+                value: 'paste_file',
+                child: Text('Paste File'),
+              ),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
               const PopupMenuDivider(),
               const PopupMenuItem(
@@ -1939,6 +1967,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'paste':
         await _pasteClipboard();
+        break;
+      case 'paste_image':
+        await _pastePickedImage();
+        break;
+      case 'paste_file':
+        await _pastePickedFiles();
         break;
       case 'clear':
         _terminal.buffer.clear();
@@ -2567,6 +2601,78 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<void> _pastePickedImage() async {
+    await _pickAndPasteFiles(
+      dialogTitle: 'Select image to upload',
+      pickerType: FileType.image,
+      itemLabelSingular: 'image',
+      itemLabelPlural: 'images',
+      allowMultiple: false,
+      failureContext: 'Image picker upload',
+    );
+  }
+
+  Future<void> _pastePickedFiles() async {
+    await _pickAndPasteFiles(
+      dialogTitle: 'Select file to upload',
+      pickerType: FileType.any,
+      itemLabelSingular: 'file',
+      itemLabelPlural: 'files',
+      allowMultiple: true,
+      failureContext: 'File picker upload',
+    );
+  }
+
+  Future<void> _pickAndPasteFiles({
+    required String dialogTitle,
+    required FileType pickerType,
+    required String itemLabelSingular,
+    required String itemLabelPlural,
+    required bool allowMultiple,
+    required String failureContext,
+  }) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        dialogTitle: dialogTitle,
+        type: pickerType,
+        allowMultiple: allowMultiple,
+        withData: kIsWeb,
+        withReadStream: !kIsWeb,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (result == null || result.files.isEmpty) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+
+      await _pasteSelectedFiles(
+        result.files,
+        itemLabelSingular: itemLabelSingular,
+        itemLabelPlural: itemLabelPlural,
+      );
+    } on PlatformException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        '$failureContext failed: ${error.message ?? error.code}',
+      );
+    } on FileSystemException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        error.message.isEmpty
+            ? '$failureContext failed'
+            : '$failureContext failed: ${error.message}',
+      );
+    } on SftpError catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Remote upload failed: ${error.message}');
+    } on Object catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed: $error');
+    }
+  }
+
   Future<T> _withClipboardSftp<T>(
     Future<T> Function(SftpClient sftp, RemoteFileService remoteFileService)
     action,
@@ -2621,6 +2727,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String confirmLabel,
     List<String> details = const [],
   }) async {
+    if (!mounted) {
+      return false;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -2773,6 +2882,83 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage('Uploaded clipboard image to $remotePath');
+  }
+
+  Future<void> _pasteSelectedFiles(
+    List<PlatformFile> selectedFiles, {
+    required String itemLabelSingular,
+    required String itemLabelPlural,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+    final itemLabel = selectedFiles.length == 1
+        ? itemLabelSingular
+        : itemLabelPlural;
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload selected $itemLabel?',
+      message:
+          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $remoteClipboardUploadDirectory on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: [
+        for (var index = 0; index < selectedFiles.length; index++)
+          resolvePickedTerminalUploadFileName(
+            selectedFiles[index],
+            index: index,
+          ),
+      ],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    final timestamp = DateTime.now();
+    final remotePaths = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePaths = <String>[];
+      for (var index = 0; index < selectedFiles.length; index++) {
+        final file = selectedFiles[index];
+        final sourceName = resolvePickedTerminalUploadFileName(
+          file,
+          index: index,
+        );
+        final remotePath = joinRemotePath(
+          remoteClipboardUploadDirectory,
+          buildClipboardUploadFileName(sourceName, timestamp, sequence: index),
+        );
+        final readStream = resolvePickedTerminalUploadReadStream(file);
+        if (readStream != null) {
+          await remoteFileService.uploadStream(
+            sftp: sftp,
+            remotePath: remotePath,
+            stream: readStream,
+          );
+        } else {
+          final bytes = file.bytes;
+          if (bytes == null) {
+            throw const FileSystemException('Unable to read selected file');
+          }
+          await remoteFileService.uploadBytes(
+            sftp: sftp,
+            remotePath: remotePath,
+            bytes: bytes,
+          );
+        }
+        remotePaths.add(remotePath);
+      }
+      return remotePaths;
+    });
+
+    _followLiveOutput();
+    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage(
+      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.length} $itemLabelPlural'} to $remoteClipboardUploadDirectory',
+    );
   }
 
   Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
