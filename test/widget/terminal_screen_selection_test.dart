@@ -386,7 +386,7 @@ void main() {
           viewportHeight: 72,
           bufferHeight: 200,
         ),
-        (topRow: 2, bottomRow: 8),
+        (topRow: 2, bottomRow: 7),
       );
     });
 

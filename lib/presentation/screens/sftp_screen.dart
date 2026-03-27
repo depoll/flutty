@@ -517,6 +517,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     setState(() {
+      _isLoading = false;
       _error = message;
     });
     unawaited(_openFallbackDirectory(preferredPath: _currentPath));
@@ -1240,6 +1241,14 @@ class _FileListTile extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDirectory = file.attr.isDirectory;
+    final iconColor = isHighlighted
+        ? theme.colorScheme.onPrimaryContainer
+        : isDirectory
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
+    final trailingIconColor = isHighlighted
+        ? theme.colorScheme.onPrimaryContainer
+        : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
       visualDensity: VisualDensity.compact,
@@ -1250,9 +1259,7 @@ class _FileListTile extends StatelessWidget {
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       leading: Icon(
         isDirectory ? Icons.folder : _getFileIcon(file.filename),
-        color: isDirectory
-            ? theme.colorScheme.primary
-            : theme.colorScheme.onSurfaceVariant,
+        color: iconColor,
       ),
       title: Text(
         file.filename,
@@ -1277,7 +1284,9 @@ class _FileListTile extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-      trailing: isDirectory ? const Icon(Icons.chevron_right, size: 20) : null,
+      trailing: isDirectory
+          ? Icon(Icons.chevron_right, size: 20, color: trailingIconColor)
+          : null,
       onTap: onTap,
       onLongPress: onLongPress,
     );

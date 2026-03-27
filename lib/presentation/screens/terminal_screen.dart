@@ -234,7 +234,7 @@ List<CellOffset> resolveForgivingTerminalTapOffsets(CellOffset offset) {
     1,
     bufferHeight,
   );
-  final bottomRow = (topRow + visibleRows).clamp(0, maxRow);
+  final bottomRow = (topRow + visibleRows - 1).clamp(0, maxRow);
   return (topRow: topRow, bottomRow: bottomRow);
 }
 
@@ -666,6 +666,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   Offset? _terminalPathIndicatorOffset;
   List<Offset> _visibleTerminalPathBadgeOffsets = const <Offset>[];
+  bool _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = true;
+  bool? _lastShowsTerminalPathBadges;
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   Timer? _terminalPathIndicatorClearTimer;
@@ -2021,6 +2023,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final showsTerminalPathBadges =
         terminalPathLinksEnabled && terminalPathLinkBadgesEnabled;
+    if (_lastShowsTerminalPathBadges != showsTerminalPathBadges) {
+      _lastShowsTerminalPathBadges = showsTerminalPathBadges;
+      _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild =
+          showsTerminalPathBadges;
+    }
     if (!showsTerminalPathBadges && _terminalPathIndicatorOffset != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _terminalPathIndicatorOffset == null) {
@@ -2048,7 +2055,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (showsTerminalPathBadges) {
       if (_isMobilePlatform) {
-        _queueVisibleTerminalPathBadgeRefresh();
+        if (_shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild) {
+          _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = false;
+          _queueVisibleTerminalPathBadgeRefresh();
+        }
         terminalView = Stack(
           fit: StackFit.expand,
           children: [
