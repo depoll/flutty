@@ -467,6 +467,66 @@ void main() {
     });
   });
 
+  group('resolveTerminalPathUnderlineRect', () {
+    test('places the underline at the bottom of the rendered row', () {
+      expect(
+        resolveTerminalPathUnderlineRect(
+          lineTopLeft: const Offset(24, 18),
+          lineEndOffset: const Offset(104, 18),
+          lineHeight: 20,
+          viewportHeight: 300,
+        ),
+        const Rect.fromLTWH(24, 36.4, 80, 1.6),
+      );
+    });
+
+    test('returns null when the underline would have no visible width', () {
+      expect(
+        resolveTerminalPathUnderlineRect(
+          lineTopLeft: const Offset(24, 18),
+          lineEndOffset: const Offset(24, 18),
+          lineHeight: 20,
+          viewportHeight: 300,
+        ),
+        isNull,
+      );
+    });
+  });
+
+  group('resolveTerminalPathTouchTargetRect', () {
+    test('covers the path text with nearby padding', () {
+      expect(
+        resolveTerminalPathTouchTargetRect(
+          lineTopLeft: const Offset(24, 18),
+          lineEndOffset: const Offset(104, 18),
+          lineHeight: 20,
+          viewportHeight: 300,
+        ),
+        const Rect.fromLTRB(14, 10, 114, 46),
+      );
+    });
+  });
+
+  group('resolveTerminalPathTouchTargetTap', () {
+    test('matches touches on the text and nearby surrounding space', () {
+      expect(
+        resolveTerminalPathTouchTargetTap(const Offset(18, 30), const [
+          (path: '/var/log/app.log', touchRect: Rect.fromLTRB(14, 10, 114, 46)),
+        ]),
+        '/var/log/app.log',
+      );
+    });
+
+    test('ignores touches outside every touch target', () {
+      expect(
+        resolveTerminalPathTouchTargetTap(const Offset(160, 80), const [
+          (path: '/var/log/app.log', touchRect: Rect.fromLTRB(14, 10, 114, 46)),
+        ]),
+        isNull,
+      );
+    });
+  });
+
   group('shouldResolveTerminalTapLinks', () {
     test('allows link taps when the native selection overlay is hidden', () {
       expect(
