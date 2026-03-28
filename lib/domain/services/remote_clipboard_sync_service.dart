@@ -75,7 +75,10 @@ fi
       return (supported: false, text: '');
     }
     final decoded = ClipboardSharingService.decodePayload(trimmed);
-    return (supported: true, text: decoded ?? '');
+    if (decoded == null) {
+      return (supported: false, text: '');
+    }
+    return (supported: true, text: decoded);
   }
 
   /// Returns whether a remote write command reported an unsupported clipboard.

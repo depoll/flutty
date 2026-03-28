@@ -37,5 +37,11 @@ void main() {
       expect(result.supported, isFalse);
       expect(result.text, isEmpty);
     });
+
+    test('parseReadOutput treats invalid payload as unsupported', () {
+      final result = RemoteClipboardSyncService.parseReadOutput('not-base64');
+      expect(result.supported, isFalse);
+      expect(result.text, isEmpty);
+    });
   });
 }
