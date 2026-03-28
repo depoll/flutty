@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 
 /// OSC 52 clipboard sharing between local and remote terminals.
@@ -27,6 +28,12 @@ class ClipboardSharingService {
   /// Prevents a malicious server from flooding the clipboard with huge data.
   static const maxPayloadBytes = 1024 * 1024; // 1 MiB
 
+  /// Upper bound on the encoded (base64) length before we attempt to decode.
+  ///
+  /// Base64 encodes 3 bytes into 4 characters, so the encoded ceiling is
+  /// `maxPayloadBytes * 4 / 3` rounded up, plus a small margin for padding.
+  static const maxEncodedLength = (maxPayloadBytes * 4 ~/ 3) + 4;
+
   /// Handles an incoming OSC 52 sequence from the remote terminal.
   ///
   /// [args] is the list produced by xterm's OSC parser, split on `;`.
@@ -36,16 +43,20 @@ class ClipboardSharingService {
   /// Returns an OSC 52 response string to send back through the shell when
   /// the remote queries the clipboard, or `null` when no response is needed.
   Future<String?> handleOsc52(List<String> args) async {
-    final parsed = parseOsc52Args(args);
-    if (parsed == null) return null;
+    try {
+      final parsed = parseOsc52Args(args);
+      if (parsed == null) return null;
 
-    final (target, payload) = parsed;
+      final (target, payload) = parsed;
 
-    if (payload == '?') {
-      return _handleQuery(target);
+      if (payload == '?') {
+        return _handleQuery(target);
+      }
+
+      await _handleSet(payload);
+    } on PlatformException catch (e) {
+      debugPrint('OSC 52 clipboard operation failed: $e');
     }
-
-    await _handleSet(payload);
     return null;
   }
 
@@ -70,8 +81,10 @@ class ClipboardSharingService {
   /// Decodes and validates an OSC 52 base64 payload.
   ///
   /// Returns the decoded text, or `null` if the payload is invalid or too
-  /// large.
+  /// large. Rejects encoded strings that exceed [maxEncodedLength] before
+  /// allocating memory for the decode.
   static String? decodePayload(String base64Payload) {
+    if (base64Payload.length > maxEncodedLength) return null;
     try {
       final bytes = base64Decode(base64Payload);
       if (bytes.length > maxPayloadBytes) return null;
@@ -92,17 +105,15 @@ class ClipboardSharingService {
       '\x1b]52;$target;$base64Data\x07';
 
   Future<String?> _handleQuery(String target) async {
-    try {
-      final data = await Clipboard.getData(Clipboard.kTextPlain);
-      final text = data?.text;
-      if (text == null || text.isEmpty) {
-        return buildOsc52Response(target, '');
-      }
-      return buildOsc52Response(target, encodePayload(text));
-    } on PlatformException {
-      // Clipboard not available (e.g. no window focus on desktop).
-      return null;
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text == null || text.isEmpty) {
+      return buildOsc52Response(target, '');
     }
+    // Enforce the same size limit on outbound responses.
+    final encoded = utf8.encode(text);
+    if (encoded.length > maxPayloadBytes) return null;
+    return buildOsc52Response(target, base64Encode(encoded));
   }
 
   Future<void> _handleSet(String base64Payload) async {

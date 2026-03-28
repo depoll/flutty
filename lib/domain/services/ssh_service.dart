@@ -1373,11 +1373,17 @@ class SshSession {
     if (!clipboardSharingEnabled) return;
 
     unawaited(
-      _clipboardSharingService.handleOsc52(args).then((response) {
-        if (response != null && _shell != null) {
-          _shell!.write(utf8.encode(response));
-        }
-      }),
+      _clipboardSharingService
+          .handleOsc52(args)
+          .then((response) {
+            if (response != null && _shell != null) {
+              _shell!.write(utf8.encode(response));
+            }
+          })
+          .catchError((Object error, StackTrace stackTrace) {
+            debugPrint('Error handling OSC 52 sequence: $error');
+            debugPrint('$stackTrace');
+          }),
     );
   }
 

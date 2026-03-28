@@ -79,6 +79,12 @@ void main() {
       test('returns empty string for empty base64', () {
         expect(ClipboardSharingService.decodePayload(''), '');
       });
+
+      test('rejects encoded strings exceeding maxEncodedLength', () {
+        // Build a base64 string just over the limit without decoding.
+        final oversized = 'A' * (ClipboardSharingService.maxEncodedLength + 1);
+        expect(ClipboardSharingService.decodePayload(oversized), isNull);
+      });
     });
 
     group('encodePayload', () {
