@@ -404,12 +404,15 @@ void main() {
         300,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.ensureVisible(importMigrationFinder);
-      await tester.pumpAndSettle();
-      await tester.tap(importMigrationFinder, warnIfMissed: false);
+      final importTile = tester
+          .widgetList<ListTile>(find.byType(ListTile))
+          .firstWhere(
+            (tile) => (tile.title as Text?)?.data == 'Import migration package',
+          );
+      importTile.onTap?.call();
       await tester.pumpAndSettle();
 
-      await tester.enterText(find.byType(TextField).last, '1234');
+      await tester.enterText(find.byType(EditableText).last, '1234');
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();
 

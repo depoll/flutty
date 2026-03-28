@@ -5,6 +5,7 @@ import 'dart:io';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
@@ -25,6 +26,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -106,6 +108,25 @@ String trimTerminalSelectionText(String text) =>
 @visibleForTesting
 double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
+
+/// Resolves a readable display name for a picked upload file.
+@visibleForTesting
+String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
+  final name = file.name.trim();
+  if (name.isNotEmpty) {
+    return name;
+  }
+  final filePath = file.path;
+  if (filePath != null && filePath.isNotEmpty) {
+    return path.basename(filePath);
+  }
+  return 'selected-file-${index + 1}';
+}
+
+/// Resolves a readable stream for a picked upload file when available.
+@visibleForTesting
+Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) =>
+    file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
 
 /// Trims punctuation that terminals commonly render immediately after a link.
 @visibleForTesting
@@ -634,7 +655,10 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
+  static const _localClipboardSyncInterval = Duration(milliseconds: 750);
+  static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
@@ -675,6 +699,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   bool _isTerminalPathBadgeRefreshQueued = false;
+  late final ProviderSubscription<bool> _sharedClipboardSubscription;
+  Timer? _localClipboardSyncTimer;
+  Timer? _remoteClipboardSyncTimer;
+  bool _isPollingRemoteClipboard = false;
+  bool _isPushingLocalClipboard = false;
+  bool _remoteClipboardUnsupported = false;
+  String? _lastObservedLocalClipboardText;
+  String? _lastObservedRemoteClipboardText;
+  String? _lastAppliedLocalClipboardText;
+  String? _lastAppliedRemoteClipboardText;
 
   // Theme state
   Host? _host;
@@ -800,6 +834,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _sharedClipboardSubscription = ref.listenManual<bool>(
+      sharedClipboardNotifierProvider,
+      (previous, next) =>
+          unawaited(_applySharedClipboardSetting(enabled: next)),
+    );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
@@ -862,6 +901,181 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _syncVerifiedTerminalPathCacheScope();
     setState(() {});
+  }
+
+  Future<void> _applySharedClipboardSetting({
+    required bool enabled,
+    SshSession? session,
+    bool waitForInitialSync = true,
+  }) async {
+    final targetSession =
+        session ??
+        _observedSession ??
+        (_connectionId == null
+            ? null
+            : _sessionsNotifier?.getSession(_connectionId!));
+    if (targetSession == null) {
+      return;
+    }
+
+    targetSession.clipboardSharingEnabled = enabled;
+    if (!enabled) {
+      _stopSharedClipboardSync();
+      return;
+    }
+
+    if (waitForInitialSync) {
+      await _startSharedClipboardSync(targetSession);
+      return;
+    }
+
+    unawaited(_startSharedClipboardSync(targetSession));
+  }
+
+  Future<void> _startSharedClipboardSync(SshSession session) async {
+    _stopSharedClipboardSync();
+    _remoteClipboardUnsupported = false;
+    _lastObservedLocalClipboardText = await _readSystemClipboardText();
+    _lastObservedRemoteClipboardText = await _readRemoteClipboardText(session);
+
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        _remoteClipboardUnsupported) {
+      return;
+    }
+
+    _localClipboardSyncTimer = Timer.periodic(
+      _localClipboardSyncInterval,
+      (_) => unawaited(_syncLocalClipboardToRemote(session)),
+    );
+    if (!_remoteClipboardUnsupported) {
+      _remoteClipboardSyncTimer = Timer.periodic(
+        _remoteClipboardSyncInterval,
+        (_) => unawaited(_syncRemoteClipboardToLocal(session)),
+      );
+    }
+  }
+
+  void _stopSharedClipboardSync() {
+    _localClipboardSyncTimer?.cancel();
+    _localClipboardSyncTimer = null;
+    _remoteClipboardSyncTimer?.cancel();
+    _remoteClipboardSyncTimer = null;
+    _isPollingRemoteClipboard = false;
+    _isPushingLocalClipboard = false;
+  }
+
+  Future<String?> _readSystemClipboardText() async {
+    try {
+      if (_isAndroidPlatform) {
+        return Pasteboard.text;
+      }
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      return data?.text;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  Future<void> _syncLocalClipboardToRemote(SshSession session) async {
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        !identical(_observedSession, session) ||
+        _remoteClipboardUnsupported ||
+        _isPushingLocalClipboard) {
+      return;
+    }
+
+    final localText = await _readSystemClipboardText();
+    if (localText == null ||
+        localText == _lastObservedLocalClipboardText ||
+        localText == _lastObservedRemoteClipboardText ||
+        localText == _lastAppliedLocalClipboardText ||
+        !RemoteClipboardSyncService.canSyncText(localText)) {
+      _lastObservedLocalClipboardText = localText;
+      return;
+    }
+
+    _isPushingLocalClipboard = true;
+    try {
+      final output = await _runRemoteCommand(
+        session,
+        RemoteClipboardSyncService.buildWriteCommand(localText),
+      );
+      if (RemoteClipboardSyncService.outputIndicatesUnsupported(output)) {
+        _remoteClipboardUnsupported = true;
+        _remoteClipboardSyncTimer?.cancel();
+        _remoteClipboardSyncTimer = null;
+        return;
+      }
+      _lastObservedLocalClipboardText = localText;
+      _lastObservedRemoteClipboardText = localText;
+      _lastAppliedRemoteClipboardText = localText;
+    } finally {
+      _isPushingLocalClipboard = false;
+    }
+  }
+
+  Future<void> _syncRemoteClipboardToLocal(SshSession session) async {
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        !identical(_observedSession, session) ||
+        _remoteClipboardUnsupported ||
+        _isPollingRemoteClipboard) {
+      return;
+    }
+
+    _isPollingRemoteClipboard = true;
+    try {
+      final remoteText = await _readRemoteClipboardText(session);
+      if (remoteText == null ||
+          remoteText == _lastObservedRemoteClipboardText ||
+          remoteText == _lastObservedLocalClipboardText ||
+          remoteText == _lastAppliedRemoteClipboardText) {
+        if (remoteText != null) {
+          _lastObservedRemoteClipboardText = remoteText;
+        }
+        return;
+      }
+
+      await Clipboard.setData(ClipboardData(text: remoteText));
+      _lastObservedRemoteClipboardText = remoteText;
+      _lastObservedLocalClipboardText = remoteText;
+      _lastAppliedLocalClipboardText = remoteText;
+    } on PlatformException {
+      return;
+    } finally {
+      _isPollingRemoteClipboard = false;
+    }
+  }
+
+  Future<String?> _readRemoteClipboardText(SshSession session) async {
+    final output = await _runRemoteCommand(
+      session,
+      RemoteClipboardSyncService.buildReadCommand(),
+    );
+    final parsed = RemoteClipboardSyncService.parseReadOutput(output);
+    if (!parsed.supported) {
+      _remoteClipboardUnsupported = true;
+      return null;
+    }
+    return parsed.text;
+  }
+
+  Future<String> _runRemoteCommand(SshSession session, String command) async {
+    final exec = await session.execute(command);
+    final stdout = StringBuffer();
+    final stderr = StringBuffer();
+    final stdoutFuture = exec.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .forEach(stdout.write);
+    final stderrFuture = exec.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .forEach(stderr.write);
+    await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
+    return stdout.toString().isNotEmpty ? stdout.toString() : stderr.toString();
   }
 
   void _handleTerminalScroll() {
@@ -1079,6 +1293,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // scrollback and screen buffer across screen navigations).
       final existingTerminal = session.terminal;
       if (existingTerminal != null) {
+        final sharedClipboardEnabled = await ref.read(
+          sharedClipboardProvider.future,
+        );
+        session.clipboardSharingEnabled = sharedClipboardEnabled;
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -1088,6 +1306,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
+        await _applySharedClipboardSetting(
+          enabled: sharedClipboardEnabled,
+          session: session,
+          waitForInitialSync: false,
+        );
         await _restoreSessionThemeOverride(session);
         setState(() {
           _sessionFontSizeOverride = session.terminalFontSize;
@@ -1099,6 +1322,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // First time opening shell for this session — create terminal in session.
       final sessionTerminal = session.getOrCreateTerminal();
+      final sharedClipboardEnabled = await ref.read(
+        sharedClipboardProvider.future,
+      );
+      session.clipboardSharingEnabled = sharedClipboardEnabled;
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -1115,6 +1342,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
 
       _wireTerminalCallbacks(session);
+      await _applySharedClipboardSetting(
+        enabled: sharedClipboardEnabled,
+        session: session,
+        waitForInitialSync: false,
+      );
 
       if (!mounted) return;
 
@@ -1422,6 +1654,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _sharedClipboardSubscription.close();
+    _stopSharedClipboardSync();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
@@ -1445,8 +1679,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       _wasBackgrounded = true;
+      _stopSharedClipboardSync();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
+      final session = _observedSession;
+      if (session != null && session.clipboardSharingEnabled) {
+        unawaited(_startSharedClipboardSync(session));
+      }
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');
@@ -1682,6 +1921,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               const PopupMenuItem(value: 'copy', child: Text('Copy')),
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
+              const PopupMenuItem(
+                value: 'paste_image',
+                child: Text('Paste Image'),
+              ),
+              const PopupMenuItem(
+                value: 'paste_file',
+                child: Text('Paste File'),
+              ),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
               const PopupMenuDivider(),
               const PopupMenuItem(
@@ -2315,6 +2562,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'paste':
         await _pasteClipboard();
+        break;
+      case 'paste_image':
+        await _pastePickedImage();
+        break;
+      case 'paste_file':
+        await _pastePickedFiles();
         break;
       case 'clear':
         _terminal.buffer.clear();
@@ -3560,6 +3813,78 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  Future<void> _pastePickedImage() async {
+    await _pickAndPasteFiles(
+      dialogTitle: 'Select image to upload',
+      pickerType: FileType.image,
+      itemLabelSingular: 'image',
+      itemLabelPlural: 'images',
+      allowMultiple: false,
+      failureContext: 'Image picker upload',
+    );
+  }
+
+  Future<void> _pastePickedFiles() async {
+    await _pickAndPasteFiles(
+      dialogTitle: 'Select file to upload',
+      pickerType: FileType.any,
+      itemLabelSingular: 'file',
+      itemLabelPlural: 'files',
+      allowMultiple: true,
+      failureContext: 'File picker upload',
+    );
+  }
+
+  Future<void> _pickAndPasteFiles({
+    required String dialogTitle,
+    required FileType pickerType,
+    required String itemLabelSingular,
+    required String itemLabelPlural,
+    required bool allowMultiple,
+    required String failureContext,
+  }) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        dialogTitle: dialogTitle,
+        type: pickerType,
+        allowMultiple: allowMultiple,
+        withData: kIsWeb,
+        withReadStream: !kIsWeb,
+      );
+      if (!mounted) {
+        return;
+      }
+      if (result == null || result.files.isEmpty) {
+        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+        return;
+      }
+
+      await _pasteSelectedFiles(
+        result.files,
+        itemLabelSingular: itemLabelSingular,
+        itemLabelPlural: itemLabelPlural,
+      );
+    } on PlatformException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        '$failureContext failed: ${error.message ?? error.code}',
+      );
+    } on FileSystemException catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage(
+        error.message.isEmpty
+            ? '$failureContext failed'
+            : '$failureContext failed: ${error.message}',
+      );
+    } on SftpError catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Remote upload failed: ${error.message}');
+    } on Object catch (error) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed: $error');
+    }
+  }
+
   Future<T> _withClipboardSftp<T>(
     Future<T> Function(SftpClient sftp, RemoteFileService remoteFileService)
     action,
@@ -3614,6 +3939,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String confirmLabel,
     List<String> details = const [],
   }) async {
+    if (!mounted) {
+      return false;
+    }
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
@@ -3766,6 +4094,83 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage('Uploaded clipboard image to $remotePath');
+  }
+
+  Future<void> _pasteSelectedFiles(
+    List<PlatformFile> selectedFiles, {
+    required String itemLabelSingular,
+    required String itemLabelPlural,
+  }) async {
+    if (!mounted) {
+      return;
+    }
+    final itemLabel = selectedFiles.length == 1
+        ? itemLabelSingular
+        : itemLabelPlural;
+    final shouldUpload = await _confirmClipboardUpload(
+      title: 'Upload selected $itemLabel?',
+      message:
+          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $remoteClipboardUploadDirectory on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
+      confirmLabel: 'Upload and paste',
+      details: [
+        for (var index = 0; index < selectedFiles.length; index++)
+          resolvePickedTerminalUploadFileName(
+            selectedFiles[index],
+            index: index,
+          ),
+      ],
+    );
+    if (!shouldUpload) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    final timestamp = DateTime.now();
+    final remotePaths = await _withClipboardSftp((
+      sftp,
+      remoteFileService,
+    ) async {
+      final remotePaths = <String>[];
+      for (var index = 0; index < selectedFiles.length; index++) {
+        final file = selectedFiles[index];
+        final sourceName = resolvePickedTerminalUploadFileName(
+          file,
+          index: index,
+        );
+        final remotePath = joinRemotePath(
+          remoteClipboardUploadDirectory,
+          buildClipboardUploadFileName(sourceName, timestamp, sequence: index),
+        );
+        final readStream = resolvePickedTerminalUploadReadStream(file);
+        if (readStream != null) {
+          await remoteFileService.uploadStream(
+            sftp: sftp,
+            remotePath: remotePath,
+            stream: readStream,
+          );
+        } else {
+          final bytes = file.bytes;
+          if (bytes == null) {
+            throw const FileSystemException('Unable to read selected file');
+          }
+          await remoteFileService.uploadBytes(
+            sftp: sftp,
+            remotePath: remotePath,
+            bytes: bytes,
+          );
+        }
+        remotePaths.add(remotePath);
+      }
+      return remotePaths;
+    });
+
+    _followLiveOutput();
+    _terminal.paste('${buildTerminalUploadInsertion(remotePaths)} ');
+    _terminalController.clearSelection();
+    _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    _showClipboardMessage(
+      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.length} $itemLabelPlural'} to $remoteClipboardUploadDirectory',
+    );
   }
 
   Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
