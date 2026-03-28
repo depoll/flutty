@@ -54,6 +54,9 @@ abstract final class SettingKeys {
 
   /// Auto-lock timeout in minutes.
   static const autoLockTimeout = 'auto_lock_timeout';
+
+  /// Shared clipboard (OSC 52) enabled.
+  static const sharedClipboard = 'shared_clipboard';
 }
 
 /// Service for managing app settings.
@@ -491,4 +494,43 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
 final terminalThemeSettingsProvider =
     NotifierProvider<TerminalThemeSettingsNotifier, TerminalThemeSettings>(
       TerminalThemeSettingsNotifier.new,
+    );
+
+/// Provider for shared clipboard (OSC 52) setting.
+final sharedClipboardProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(SettingKeys.sharedClipboard);
+});
+
+/// Notifier for shared clipboard (OSC 52) with write capability.
+class SharedClipboardNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return false;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(SettingKeys.sharedClipboard);
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set shared clipboard enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.sharedClipboard, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for shared clipboard with write capability.
+final sharedClipboardNotifierProvider =
+    NotifierProvider<SharedClipboardNotifier, bool>(
+      SharedClipboardNotifier.new,
     );

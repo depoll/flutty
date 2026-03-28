@@ -824,6 +824,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // scrollback and screen buffer across screen navigations).
       final existingTerminal = session.terminal;
       if (existingTerminal != null) {
+        session.clipboardSharingEnabled = ref.read(
+          sharedClipboardNotifierProvider,
+        );
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -844,6 +847,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // First time opening shell for this session — create terminal in session.
       final sessionTerminal = session.getOrCreateTerminal();
+      session.clipboardSharingEnabled = ref.read(
+        sharedClipboardNotifierProvider,
+      );
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
