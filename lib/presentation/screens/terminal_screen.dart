@@ -270,14 +270,18 @@ Rect? resolveTerminalPathUnderlineRect({
   required Offset lineEndOffset,
   required double lineHeight,
   required double viewportHeight,
+  double? rowHeight,
 }) {
   final width = lineEndOffset.dx - lineTopLeft.dx;
   if (width <= 0 || lineHeight <= 0 || viewportHeight <= 0) {
     return null;
   }
 
+  final effectiveRowHeight = (rowHeight ?? lineHeight) < lineHeight
+      ? lineHeight
+      : (rowHeight ?? lineHeight);
   final thickness = (lineHeight * 0.08).clamp(1.5, 2.0);
-  final top = (lineTopLeft.dy + lineHeight - thickness).clamp(
+  final top = (lineTopLeft.dy + effectiveRowHeight - thickness).clamp(
     0.0,
     viewportHeight - thickness,
   );
@@ -446,11 +450,10 @@ _normalizeTerminalFilePathDetectionText(String text) {
   );
 }
 
-/// Resolves all tappable terminal file paths within the given text.
-@visibleForTesting
-List<({String path, int start, int end})> detectTerminalFilePaths(String text) {
+List<({String path, int start, int end, int hitTestEnd})>
+_detectTerminalFilePathMatches(String text) {
   final normalizedText = _normalizeTerminalFilePathDetectionText(text);
-  final detectedPaths = <({String path, int start, int end})>[];
+  final detectedPaths = <({String path, int start, int end, int hitTestEnd})>[];
 
   for (final match in _terminalFilePathPattern.allMatches(
     normalizedText.text,
@@ -467,19 +470,31 @@ List<({String path, int start, int end})> detectTerminalFilePaths(String text) {
       continue;
     }
 
-    final hitTestEnd = match.end;
+    final visualEnd = match.start + candidate.length;
     final originalStart =
         normalizedText.normalizedToOriginalStarts[match.start];
-    final originalEnd = normalizedText.normalizedToOriginalEnds[hitTestEnd - 1];
+    final originalEnd = normalizedText.normalizedToOriginalEnds[visualEnd - 1];
+    final originalHitTestEnd =
+        normalizedText.normalizedToOriginalEnds[match.end - 1];
     detectedPaths.add((
       path: candidate,
       start: originalStart,
       end: originalEnd,
+      hitTestEnd: originalHitTestEnd,
     ));
   }
 
   return detectedPaths;
 }
+
+/// Resolves all tappable terminal file paths within the given text.
+@visibleForTesting
+List<({String path, int start, int end})> detectTerminalFilePaths(
+  String text,
+) => [
+  for (final path in _detectTerminalFilePathMatches(text))
+    (path: path.path, start: path.start, end: path.end),
+];
 
 /// Resolves a tappable terminal file path at the given text offset, if present.
 @visibleForTesting
@@ -488,10 +503,14 @@ List<({String path, int start, int end})> detectTerminalFilePaths(String text) {
   int offset,
 ) {
   final clampedOffset = offset.clamp(0, text.length);
-  for (final detectedPath in detectTerminalFilePaths(text)) {
+  for (final detectedPath in _detectTerminalFilePathMatches(text)) {
     if (clampedOffset >= detectedPath.start &&
-        clampedOffset < detectedPath.end) {
-      return detectedPath;
+        clampedOffset < detectedPath.hitTestEnd) {
+      return (
+        path: detectedPath.path,
+        start: detectedPath.start,
+        end: detectedPath.end,
+      );
     }
   }
 
@@ -3418,6 +3437,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       lineEndOffset: lineEndOffset,
       lineHeight: renderTerminal.lineHeight,
       viewportHeight: renderTerminal.size.height,
+      rowHeight: renderTerminal.cellSize.height,
     );
   }
 

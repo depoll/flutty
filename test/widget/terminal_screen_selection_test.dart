@@ -147,6 +147,10 @@ void main() {
         text.indexOf('/var/log/app.log'),
         text.indexOf('lib/main.dart'),
       ]);
+      expect(
+        text.substring(detectedPaths.first.start, detectedPaths.first.end),
+        '/var/log/app.log',
+      );
     });
   });
 
@@ -282,7 +286,10 @@ void main() {
 
       expect(detectedPath, isNotNull);
       expect(detectedPath!.path, '/srv/app/lib/main.dart');
-      expect(detectedPath.end, line.length);
+      expect(
+        line.substring(detectedPath.start, detectedPath.end),
+        '/srv/app/lib/main.dart',
+      );
     });
 
     test('ignores plain filenames without any path context', () {
@@ -496,6 +503,22 @@ void main() {
         const Rect.fromLTWH(24, 36.4, 80, 1.6),
       );
     });
+
+    test(
+      'uses the rendered row height when it is taller than the line height',
+      () {
+        expect(
+          resolveTerminalPathUnderlineRect(
+            lineTopLeft: const Offset(24, 18),
+            lineEndOffset: const Offset(104, 18),
+            lineHeight: 20,
+            rowHeight: 24,
+            viewportHeight: 300,
+          ),
+          const Rect.fromLTWH(24, 40.4, 80, 1.6),
+        );
+      },
+    );
 
     test('returns null when the underline would have no visible width', () {
       expect(
