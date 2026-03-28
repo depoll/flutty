@@ -500,7 +500,7 @@ void main() {
           lineHeight: 20,
           viewportHeight: 300,
         ),
-        const Rect.fromLTWH(24, 36.4, 80, 1.6),
+        const Rect.fromLTWH(24, 39, 80, 1.6),
       );
     });
 
@@ -515,7 +515,7 @@ void main() {
             rowHeight: 24,
             viewportHeight: 300,
           ),
-          const Rect.fromLTWH(24, 40.4, 80, 1.6),
+          const Rect.fromLTWH(24, 43, 80, 1.6),
         );
       },
     );
