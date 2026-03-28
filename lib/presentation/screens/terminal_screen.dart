@@ -446,15 +446,11 @@ _normalizeTerminalFilePathDetectionText(String text) {
   );
 }
 
-/// Resolves a tappable terminal file path at the given text offset, if present.
+/// Resolves all tappable terminal file paths within the given text.
 @visibleForTesting
-({String path, int start, int end})? detectTerminalFilePathAtTextOffset(
-  String text,
-  int offset,
-) {
+List<({String path, int start, int end})> detectTerminalFilePaths(String text) {
   final normalizedText = _normalizeTerminalFilePathDetectionText(text);
-  final normalizedOffset =
-      normalizedText.originalToNormalizedOffsets[offset.clamp(0, text.length)];
+  final detectedPaths = <({String path, int start, int end})>[];
 
   for (final match in _terminalFilePathPattern.allMatches(
     normalizedText.text,
@@ -472,12 +468,30 @@ _normalizeTerminalFilePathDetectionText(String text) {
     }
 
     final hitTestEnd = match.end;
-    if (normalizedOffset >= match.start && normalizedOffset < hitTestEnd) {
-      final originalStart =
-          normalizedText.normalizedToOriginalStarts[match.start];
-      final originalEnd =
-          normalizedText.normalizedToOriginalEnds[hitTestEnd - 1];
-      return (path: candidate, start: originalStart, end: originalEnd);
+    final originalStart =
+        normalizedText.normalizedToOriginalStarts[match.start];
+    final originalEnd = normalizedText.normalizedToOriginalEnds[hitTestEnd - 1];
+    detectedPaths.add((
+      path: candidate,
+      start: originalStart,
+      end: originalEnd,
+    ));
+  }
+
+  return detectedPaths;
+}
+
+/// Resolves a tappable terminal file path at the given text offset, if present.
+@visibleForTesting
+({String path, int start, int end})? detectTerminalFilePathAtTextOffset(
+  String text,
+  int offset,
+) {
+  final clampedOffset = offset.clamp(0, text.length);
+  for (final detectedPath in detectTerminalFilePaths(text)) {
+    if (clampedOffset >= detectedPath.start &&
+        clampedOffset < detectedPath.end) {
+      return detectedPath;
     }
   }
 
@@ -764,6 +778,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
   bool _isTerminalPathBadgeRefreshQueued = false;
+  SshSession? _terminalPathVerificationSession;
+  Future<SftpClient?>? _terminalPathVerificationSftpFuture;
+  SftpClient? _terminalPathVerificationSftp;
+  String? _terminalPathVerificationHomeDirectory;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
@@ -954,6 +972,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    if (!identical(_terminalPathVerificationSession, session)) {
+      _disposeTerminalPathVerificationSftp();
+    }
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _observedSession = session
       ..removeMetadataListener(_handleSessionMetadataChanged)
@@ -1721,6 +1742,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.removeObserver(this);
     _sharedClipboardSubscription.close();
     _stopSharedClipboardSync();
+    _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
@@ -3443,35 +3465,53 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return const <({String path, int startColumn, int endColumn})>[];
     }
 
-    final columnPathCache = <int, String?>{};
-    String? pathAtColumn(int column) => columnPathCache.putIfAbsent(
-      column,
-      () => _detectTerminalFilePathInSnapshotAtCell(
-        pathSnapshot,
-        CellOffset(column, clampedRow),
-      ),
-    );
+    final rowIndex = clampedRow - pathSnapshot.startRow;
+    if (rowIndex < 0 || rowIndex >= pathSnapshot.columnOffsets.length) {
+      return const <({String path, int startColumn, int endColumn})>[];
+    }
+    final detectedPaths = detectTerminalFilePaths(pathSnapshot.text);
+    if (detectedPaths.isEmpty) {
+      return const <({String path, int startColumn, int endColumn})>[];
+    }
 
+    final rowStart = pathSnapshot.rowStarts[rowIndex];
+    final rowColumnOffsets = pathSnapshot.columnOffsets[rowIndex];
+    final rowEnd = rowStart + rowColumnOffsets.last;
     final relativeCandidatesToPrime = <String>{};
     final segments = <({String path, int startColumn, int endColumn})>[];
-    var column = 0;
-    while (column < _terminal.buffer.viewWidth) {
-      final path = pathAtColumn(column);
-      if (path == null) {
-        column++;
+    for (final detectedPath in detectedPaths) {
+      final segmentStart = detectedPath.start > rowStart
+          ? detectedPath.start
+          : rowStart;
+      final segmentEnd = detectedPath.end < rowEnd ? detectedPath.end : rowEnd;
+      if (segmentStart >= segmentEnd) {
         continue;
       }
-      var endColumn = column;
-      while (endColumn + 1 < _terminal.buffer.viewWidth &&
-          pathAtColumn(endColumn + 1) == path) {
-        endColumn++;
+
+      int? startColumn;
+      int? endColumn;
+      for (var column = 0; column < rowColumnOffsets.length - 1; column++) {
+        final columnOffset = rowStart + rowColumnOffsets[column];
+        if (columnOffset < segmentStart || columnOffset >= segmentEnd) {
+          continue;
+        }
+        startColumn ??= column;
+        endColumn = column;
       }
+      if (startColumn == null || endColumn == null) {
+        continue;
+      }
+
+      final path = detectedPath.path;
       if (_isInteractiveTerminalFilePath(path)) {
-        segments.add((path: path, startColumn: column, endColumn: endColumn));
+        segments.add((
+          path: path,
+          startColumn: startColumn,
+          endColumn: endColumn,
+        ));
       } else if (isRelativeTerminalFilePathCandidate(path)) {
         relativeCandidatesToPrime.add(path);
       }
-      column = endColumn + 1;
     }
 
     for (final path in relativeCandidatesToPrime) {
@@ -3751,6 +3791,72 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _disposeTerminalPathVerificationSftp() {
+    _terminalPathVerificationSftp?.close();
+    _terminalPathVerificationSftp = null;
+    _terminalPathVerificationSftpFuture = null;
+    _terminalPathVerificationSession = null;
+    _terminalPathVerificationHomeDirectory = null;
+  }
+
+  Future<SftpClient?> _resolveTerminalPathVerificationSftp(
+    SshSession session,
+  ) async {
+    if (!identical(_terminalPathVerificationSession, session)) {
+      _disposeTerminalPathVerificationSftp();
+      _terminalPathVerificationSession = session;
+    }
+
+    final cachedSftp = _terminalPathVerificationSftp;
+    if (cachedSftp != null) {
+      return cachedSftp;
+    }
+
+    final inFlight = _terminalPathVerificationSftpFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = session
+        .sftp()
+        .timeout(_terminalPathVerificationTimeout)
+        .then<SftpClient?>((sftp) {
+          if (!identical(_terminalPathVerificationSession, session)) {
+            sftp.close();
+            return null;
+          }
+          _terminalPathVerificationSftp = sftp;
+          return sftp;
+        });
+    _terminalPathVerificationSftpFuture = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_terminalPathVerificationSftpFuture, future)) {
+        _terminalPathVerificationSftpFuture = null;
+      }
+    }
+  }
+
+  Future<String?> _resolveTerminalPathVerificationHomeDirectory(
+    SftpClient sftp,
+    String terminalPath,
+  ) async {
+    if (terminalPath != '~' && !terminalPath.startsWith('~/')) {
+      return null;
+    }
+    final cachedHomeDirectory = _terminalPathVerificationHomeDirectory;
+    if (cachedHomeDirectory != null) {
+      return cachedHomeDirectory;
+    }
+
+    final homeDirectory = normalizeSftpAbsolutePath(
+      await sftp.absolute('.').timeout(_terminalPathVerificationTimeout),
+    );
+    _terminalPathVerificationHomeDirectory = homeDirectory;
+    return homeDirectory;
+  }
+
   bool _hasVerifiedRelativeTerminalPath(String terminalPath) {
     _syncVerifiedTerminalPathCacheScope();
     return _verifiedTerminalPathCache.containsKey(
@@ -3809,16 +3915,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    SftpClient? sftp;
     try {
-      sftp = await session.sftp().timeout(_terminalPathVerificationTimeout);
-      final homeDirectory = terminalPath == '~' || terminalPath.startsWith('~/')
-          ? normalizeSftpAbsolutePath(
-              await sftp
-                  .absolute('.')
-                  .timeout(_terminalPathVerificationTimeout),
-            )
-          : null;
+      final sftp = await _resolveTerminalPathVerificationSftp(session);
+      if (sftp == null) {
+        return null;
+      }
+      final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
+        sftp,
+        terminalPath,
+      );
       final resolvedPath = resolveRequestedSftpPath(
         terminalPath,
         workingDirectory: _workingDirectoryPath,
@@ -3849,8 +3954,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _showTerminalLinkMessage(message);
       }
       return null;
-    } finally {
-      sftp?.close();
     }
   }
 

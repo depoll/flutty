@@ -133,6 +133,23 @@ void main() {
     });
   });
 
+  group('detectTerminalFilePaths', () {
+    test('returns supported file path ranges in text order', () {
+      const text =
+          'Open /var/log/app.log:42:7 and lib/main.dart but not feature/sftp-browser';
+      final detectedPaths = detectTerminalFilePaths(text);
+
+      expect(detectedPaths.map((path) => path.path).toList(), [
+        '/var/log/app.log',
+        'lib/main.dart',
+      ]);
+      expect(detectedPaths.map((path) => path.start).toList(), [
+        text.indexOf('/var/log/app.log'),
+        text.indexOf('lib/main.dart'),
+      ]);
+    });
+  });
+
   group('detectTerminalLinkAtTextOffset', () {
     test('detects an https link at the tapped offset', () {
       final detectedLink = detectTerminalLinkAtTextOffset(
