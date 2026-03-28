@@ -378,7 +378,7 @@ class _TerminalSection extends ConsumerWidget {
           secondary: const Icon(Icons.content_paste_go_outlined),
           title: const Text('Shared clipboard'),
           subtitle: const Text(
-            'Sync clipboard between local and remote via OSC 52',
+            'Sync clipboard between local and remote using OSC 52 and remote clipboard tools when available',
           ),
           value: sharedClipboard,
           onChanged: (value) {
@@ -888,6 +888,7 @@ class _MigrationSection extends ConsumerWidget {
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
         ..invalidate(sharedClipboardNotifierProvider)
+        ..invalidate(sharedClipboardProvider)
         ..invalidate(terminalThemeSettingsProvider);
       invalidateImportedEntityProviders(ref.invalidate);
 

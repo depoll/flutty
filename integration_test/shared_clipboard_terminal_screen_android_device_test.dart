@@ -134,7 +134,7 @@ Future<SSHClient> _connectVerifierClient() async {
   return SSHClient(
     socket,
     username: _testUsername,
-    onVerifyHostKey: (_, fingerprint) => true,
+    onVerifyHostKey: (_, _) => true,
     identities: SSHKeyPair.fromPem(privateKey),
   );
 }

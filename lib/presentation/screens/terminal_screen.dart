@@ -632,6 +632,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _applySharedClipboardSetting({
     required bool enabled,
     SshSession? session,
+    bool waitForInitialSync = true,
   }) async {
     final targetSession =
         session ??
@@ -649,7 +650,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    await _startSharedClipboardSync(targetSession);
+    if (waitForInitialSync) {
+      await _startSharedClipboardSync(targetSession);
+      return;
+    }
+
+    unawaited(_startSharedClipboardSync(targetSession));
   }
 
   Future<void> _startSharedClipboardSync(SshSession session) async {
@@ -658,7 +664,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _lastObservedLocalClipboardText = await _readSystemClipboardText();
     _lastObservedRemoteClipboardText = await _readRemoteClipboardText(session);
 
-    if (!mounted || !session.clipboardSharingEnabled) {
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        _remoteClipboardUnsupported) {
       return;
     }
 
@@ -1026,6 +1034,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         await _applySharedClipboardSetting(
           enabled: sharedClipboardEnabled,
           session: session,
+          waitForInitialSync: false,
         );
         await _restoreSessionThemeOverride(session);
         setState(() {
@@ -1061,6 +1070,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       await _applySharedClipboardSetting(
         enabled: sharedClipboardEnabled,
         session: session,
+        waitForInitialSync: false,
       );
 
       if (!mounted) return;
