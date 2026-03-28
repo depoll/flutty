@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -7,6 +9,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
@@ -320,6 +323,7 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
 
     final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
@@ -368,6 +372,24 @@ class _TerminalSection extends ConsumerWidget {
             ref
                 .read(bellSoundNotifierProvider.notifier)
                 .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.content_paste_go_outlined),
+          title: const Text('Shared clipboard'),
+          subtitle: const Text(
+            'Sync clipboard between local and remote using OSC 52 and remote clipboard tools when available',
+          ),
+          value: sharedClipboard,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(sharedClipboardNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+            ref
+                .read(activeSessionsProvider.notifier)
+                .updateClipboardSharing(enabled: value);
           },
         ),
       ],
@@ -865,6 +887,8 @@ class _MigrationSection extends ConsumerWidget {
         ..invalidate(fontFamilyNotifierProvider)
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
+        ..invalidate(sharedClipboardNotifierProvider)
+        ..invalidate(sharedClipboardProvider)
         ..invalidate(terminalThemeSettingsProvider);
       invalidateImportedEntityProviders(ref.invalidate);
 

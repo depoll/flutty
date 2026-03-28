@@ -24,6 +24,7 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -395,6 +396,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
+  static const _localClipboardSyncInterval = Duration(milliseconds: 750);
+  static const _remoteClipboardSyncInterval = Duration(seconds: 1);
+
   late Terminal _terminal;
   late final TerminalController _terminalController;
   late final ScrollController _terminalScrollController;
@@ -424,6 +428,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
+  late final ProviderSubscription<bool> _sharedClipboardSubscription;
+  Timer? _localClipboardSyncTimer;
+  Timer? _remoteClipboardSyncTimer;
+  bool _isPollingRemoteClipboard = false;
+  bool _isPushingLocalClipboard = false;
+  bool _remoteClipboardUnsupported = false;
+  String? _lastObservedLocalClipboardText;
+  String? _lastObservedRemoteClipboardText;
+  String? _lastAppliedLocalClipboardText;
+  String? _lastAppliedRemoteClipboardText;
 
   // Theme state
   Host? _host;
@@ -549,6 +563,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    _sharedClipboardSubscription = ref.listenManual<bool>(
+      sharedClipboardNotifierProvider,
+      (previous, next) =>
+          unawaited(_applySharedClipboardSetting(enabled: next)),
+    );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
@@ -608,6 +627,181 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() {});
+  }
+
+  Future<void> _applySharedClipboardSetting({
+    required bool enabled,
+    SshSession? session,
+    bool waitForInitialSync = true,
+  }) async {
+    final targetSession =
+        session ??
+        _observedSession ??
+        (_connectionId == null
+            ? null
+            : _sessionsNotifier?.getSession(_connectionId!));
+    if (targetSession == null) {
+      return;
+    }
+
+    targetSession.clipboardSharingEnabled = enabled;
+    if (!enabled) {
+      _stopSharedClipboardSync();
+      return;
+    }
+
+    if (waitForInitialSync) {
+      await _startSharedClipboardSync(targetSession);
+      return;
+    }
+
+    unawaited(_startSharedClipboardSync(targetSession));
+  }
+
+  Future<void> _startSharedClipboardSync(SshSession session) async {
+    _stopSharedClipboardSync();
+    _remoteClipboardUnsupported = false;
+    _lastObservedLocalClipboardText = await _readSystemClipboardText();
+    _lastObservedRemoteClipboardText = await _readRemoteClipboardText(session);
+
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        _remoteClipboardUnsupported) {
+      return;
+    }
+
+    _localClipboardSyncTimer = Timer.periodic(
+      _localClipboardSyncInterval,
+      (_) => unawaited(_syncLocalClipboardToRemote(session)),
+    );
+    if (!_remoteClipboardUnsupported) {
+      _remoteClipboardSyncTimer = Timer.periodic(
+        _remoteClipboardSyncInterval,
+        (_) => unawaited(_syncRemoteClipboardToLocal(session)),
+      );
+    }
+  }
+
+  void _stopSharedClipboardSync() {
+    _localClipboardSyncTimer?.cancel();
+    _localClipboardSyncTimer = null;
+    _remoteClipboardSyncTimer?.cancel();
+    _remoteClipboardSyncTimer = null;
+    _isPollingRemoteClipboard = false;
+    _isPushingLocalClipboard = false;
+  }
+
+  Future<String?> _readSystemClipboardText() async {
+    try {
+      if (_isAndroidPlatform) {
+        return Pasteboard.text;
+      }
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      return data?.text;
+    } on PlatformException {
+      return null;
+    }
+  }
+
+  Future<void> _syncLocalClipboardToRemote(SshSession session) async {
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        !identical(_observedSession, session) ||
+        _remoteClipboardUnsupported ||
+        _isPushingLocalClipboard) {
+      return;
+    }
+
+    final localText = await _readSystemClipboardText();
+    if (localText == null ||
+        localText == _lastObservedLocalClipboardText ||
+        localText == _lastObservedRemoteClipboardText ||
+        localText == _lastAppliedLocalClipboardText ||
+        !RemoteClipboardSyncService.canSyncText(localText)) {
+      _lastObservedLocalClipboardText = localText;
+      return;
+    }
+
+    _isPushingLocalClipboard = true;
+    try {
+      final output = await _runRemoteCommand(
+        session,
+        RemoteClipboardSyncService.buildWriteCommand(localText),
+      );
+      if (RemoteClipboardSyncService.outputIndicatesUnsupported(output)) {
+        _remoteClipboardUnsupported = true;
+        _remoteClipboardSyncTimer?.cancel();
+        _remoteClipboardSyncTimer = null;
+        return;
+      }
+      _lastObservedLocalClipboardText = localText;
+      _lastObservedRemoteClipboardText = localText;
+      _lastAppliedRemoteClipboardText = localText;
+    } finally {
+      _isPushingLocalClipboard = false;
+    }
+  }
+
+  Future<void> _syncRemoteClipboardToLocal(SshSession session) async {
+    if (!mounted ||
+        !session.clipboardSharingEnabled ||
+        !identical(_observedSession, session) ||
+        _remoteClipboardUnsupported ||
+        _isPollingRemoteClipboard) {
+      return;
+    }
+
+    _isPollingRemoteClipboard = true;
+    try {
+      final remoteText = await _readRemoteClipboardText(session);
+      if (remoteText == null ||
+          remoteText == _lastObservedRemoteClipboardText ||
+          remoteText == _lastObservedLocalClipboardText ||
+          remoteText == _lastAppliedRemoteClipboardText) {
+        if (remoteText != null) {
+          _lastObservedRemoteClipboardText = remoteText;
+        }
+        return;
+      }
+
+      await Clipboard.setData(ClipboardData(text: remoteText));
+      _lastObservedRemoteClipboardText = remoteText;
+      _lastObservedLocalClipboardText = remoteText;
+      _lastAppliedLocalClipboardText = remoteText;
+    } on PlatformException {
+      return;
+    } finally {
+      _isPollingRemoteClipboard = false;
+    }
+  }
+
+  Future<String?> _readRemoteClipboardText(SshSession session) async {
+    final output = await _runRemoteCommand(
+      session,
+      RemoteClipboardSyncService.buildReadCommand(),
+    );
+    final parsed = RemoteClipboardSyncService.parseReadOutput(output);
+    if (!parsed.supported) {
+      _remoteClipboardUnsupported = true;
+      return null;
+    }
+    return parsed.text;
+  }
+
+  Future<String> _runRemoteCommand(SshSession session, String command) async {
+    final exec = await session.execute(command);
+    final stdout = StringBuffer();
+    final stderr = StringBuffer();
+    final stdoutFuture = exec.stdout
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .forEach(stdout.write);
+    final stderrFuture = exec.stderr
+        .cast<List<int>>()
+        .transform(utf8.decoder)
+        .forEach(stderr.write);
+    await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
+    return stdout.toString().isNotEmpty ? stdout.toString() : stderr.toString();
   }
 
   void _handleTerminalScroll() {
@@ -824,6 +1018,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // scrollback and screen buffer across screen navigations).
       final existingTerminal = session.terminal;
       if (existingTerminal != null) {
+        final sharedClipboardEnabled = await ref.read(
+          sharedClipboardProvider.future,
+        );
+        session.clipboardSharingEnabled = sharedClipboardEnabled;
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -833,6 +1031,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _terminal.addListener(_onTerminalStateChanged);
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
+        await _applySharedClipboardSetting(
+          enabled: sharedClipboardEnabled,
+          session: session,
+          waitForInitialSync: false,
+        );
         await _restoreSessionThemeOverride(session);
         setState(() {
           _sessionFontSizeOverride = session.terminalFontSize;
@@ -844,6 +1047,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       // First time opening shell for this session — create terminal in session.
       final sessionTerminal = session.getOrCreateTerminal();
+      final sharedClipboardEnabled = await ref.read(
+        sharedClipboardProvider.future,
+      );
+      session.clipboardSharingEnabled = sharedClipboardEnabled;
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -860,6 +1067,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
 
       _wireTerminalCallbacks(session);
+      await _applySharedClipboardSetting(
+        enabled: sharedClipboardEnabled,
+        session: session,
+        waitForInitialSync: false,
+      );
 
       if (!mounted) return;
 
@@ -1167,6 +1379,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _sharedClipboardSubscription.close();
+    _stopSharedClipboardSync();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
@@ -1190,8 +1404,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.inactive) {
       _wasBackgrounded = true;
+      _stopSharedClipboardSync();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
+      final session = _observedSession;
+      if (session != null && session.clipboardSharingEnabled) {
+        unawaited(_startSharedClipboardSync(session));
+      }
       if (_connectionLostWhileBackgrounded && mounted) {
         _connectionLostWhileBackgrounded = false;
         _terminal.write('\r\n[reconnecting...]\r\n');

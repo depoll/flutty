@@ -13,6 +13,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import 'background_ssh_service.dart';
+import 'clipboard_sharing_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'terminal_hyperlink_tracker.dart';
@@ -376,6 +377,9 @@ class SshService {
 
   /// Get all active sessions.
   Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
+
+  /// All active session instances.
+  Iterable<SshSession> get allSessions => _sessions.values;
 
   /// Connect to a host by ID.
   Future<SshConnectionResult> connectToHost(
@@ -1056,6 +1060,7 @@ class SshSession {
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
     this.terminalFontSize,
+    this.clipboardSharingEnabled = false,
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
@@ -1088,8 +1093,14 @@ class SshSession {
   /// Session-specific terminal font size override.
   double? terminalFontSize;
 
+  /// Whether OSC 52 clipboard sharing is enabled for this session.
+  bool clipboardSharingEnabled;
+
   /// When the session was created.
   final DateTime createdAt;
+
+  final ClipboardSharingService _clipboardSharingService =
+      const ClipboardSharingService();
 
   SSHSession? _shell;
   StreamController<String>? _shellStdoutController;
@@ -1337,6 +1348,11 @@ class SshSession {
       return;
     }
 
+    if (code == ClipboardSharingService.oscCode) {
+      _handleOsc52(args);
+      return;
+    }
+
     if (code == '133') {
       final nextShellState = applyTerminalShellIntegrationOsc(
         args,
@@ -1351,6 +1367,24 @@ class SshSession {
       _lastExitCode = nextShellState.lastExitCode;
       _notifyMetadataChanged();
     }
+  }
+
+  void _handleOsc52(List<String> args) {
+    if (!clipboardSharingEnabled) return;
+
+    unawaited(
+      _clipboardSharingService
+          .handleOsc52(args)
+          .then((response) {
+            if (response != null && _shell != null) {
+              _shell!.write(utf8.encode(response));
+            }
+          })
+          .catchError((Object error, StackTrace stackTrace) {
+            debugPrint('Error handling OSC 52 sequence: $error');
+            debugPrint('$stackTrace');
+          }),
+    );
   }
 
   /// Builds a compact plain-text preview from the terminal scrollback.
@@ -2069,6 +2103,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     session.terminalFontSize = fontSize;
     state = {...state};
+  }
+
+  /// Update clipboard sharing on all active sessions.
+  void updateClipboardSharing({required bool enabled}) {
+    for (final session in _sshService.allSessions) {
+      session.clipboardSharingEnabled = enabled;
+    }
   }
 
   Future<void> _syncBackgroundStatus() async {
