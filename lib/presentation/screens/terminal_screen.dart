@@ -685,6 +685,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<String?> _readSystemClipboardText() async {
     try {
+      if (_isAndroidPlatform) {
+        return Pasteboard.text;
+      }
       final data = await Clipboard.getData(Clipboard.kTextPlain);
       return data?.text;
     } on PlatformException {
