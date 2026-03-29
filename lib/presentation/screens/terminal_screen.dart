@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
@@ -283,10 +284,13 @@ Rect? resolveTerminalPathUnderlineRect({
       : (rowHeight ?? lineHeight);
   final thickness = (lineHeight * 0.08).clamp(1.5, 2.0);
   final effectiveTextHeight = textHeight ?? effectiveRowHeight;
-  final top = (lineTopLeft.dy + effectiveTextHeight + 1.0).clamp(
-    0.0,
-    viewportHeight - thickness,
-  );
+  final rowBottom = lineTopLeft.dy + effectiveRowHeight;
+  final preferredTop = lineTopLeft.dy + effectiveTextHeight + 0.25;
+  final maxTopWithinRow = rowBottom - thickness - 0.5;
+  final top = min(
+    preferredTop,
+    maxTopWithinRow,
+  ).clamp(0.0, viewportHeight - thickness);
   return Rect.fromLTWH(lineTopLeft.dx, top, width, thickness);
 }
 
@@ -594,6 +598,9 @@ resolveTerminalFilePathSegmentOnRow({
   for (var column = 0; column < rowColumnOffsets.length - 1; column++) {
     final textStart = rowColumnOffsets[column];
     if (textStart < 0 || textStart >= rowText.length) {
+      if (startColumn != null) {
+        break;
+      }
       continue;
     }
     final textEnd = rowColumnOffsets[column + 1].clamp(
@@ -602,6 +609,9 @@ resolveTerminalFilePathSegmentOnRow({
     );
     final character = rowText.substring(textStart, textEnd);
     if (!_isTerminalFilePathBodyCharacter(character)) {
+      if (startColumn != null) {
+        break;
+      }
       continue;
     }
 
@@ -609,6 +619,9 @@ resolveTerminalFilePathSegmentOnRow({
         originalToNormalizedOffsets[rowStartOffset + textStart];
     if (normalizedOffset < normalizedPathStart ||
         normalizedOffset >= normalizedPathEnd) {
+      if (startColumn != null) {
+        break;
+      }
       continue;
     }
     startColumn ??= column;

@@ -20,6 +20,7 @@ const _unwrappedEditorTrailingSlack = 24.0;
 const _requestedPathLookupTimeout = Duration(seconds: 5);
 const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
+const _sftpBreadcrumbScrollAnimationDuration = Duration(milliseconds: 220);
 const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
@@ -243,6 +244,7 @@ class SftpScreen extends ConsumerStatefulWidget {
 
 class _SftpScreenState extends ConsumerState<SftpScreen> {
   SftpClient? _sftp;
+  final ScrollController _breadcrumbScrollController = ScrollController();
   final ScrollController _fileListScrollController = ScrollController();
   String _currentPath = '/';
   List<SftpName> _files = [];
@@ -283,6 +285,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   @override
   void dispose() {
+    _breadcrumbScrollController.dispose();
     _fileListScrollController.dispose();
     _sftp?.close();
     _sftp = null;
@@ -479,6 +482,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         _isLoading = false;
         _error = null;
       });
+      _queueScrollBreadcrumbTailIntoView();
       return true;
     } on Exception catch (e) {
       if (!mounted) {
@@ -680,6 +684,28 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     });
   }
 
+  void _queueScrollBreadcrumbTailIntoView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_breadcrumbScrollController.hasClients) {
+        return;
+      }
+
+      final position = _breadcrumbScrollController.position;
+      final targetOffset = position.maxScrollExtent;
+      if ((targetOffset - _breadcrumbScrollController.offset).abs() < 0.5) {
+        return;
+      }
+
+      unawaited(
+        _breadcrumbScrollController.animateTo(
+          targetOffset,
+          duration: _sftpBreadcrumbScrollAnimationDuration,
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
+  }
+
   String? _sanitizeRequestedPath(String? path) {
     final trimmedPath = path?.trim();
     if (trimmedPath == null || trimmedPath.isEmpty) {
@@ -757,6 +783,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: SingleChildScrollView(
+              controller: _breadcrumbScrollController,
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [

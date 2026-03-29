@@ -560,7 +560,7 @@ void main() {
           lineHeight: 20,
           viewportHeight: 300,
         ),
-        const Rect.fromLTWH(24, 39, 80, 1.6),
+        const Rect.fromLTWH(24, 35.9, 80, 1.6),
       );
     });
 
@@ -575,7 +575,7 @@ void main() {
             rowHeight: 24,
             viewportHeight: 300,
           ),
-          const Rect.fromLTWH(24, 43, 80, 1.6),
+          const Rect.fromLTWH(24, 39.9, 80, 1.6),
         );
       },
     );
@@ -590,7 +590,7 @@ void main() {
           textHeight: 16,
           viewportHeight: 300,
         ),
-        const Rect.fromLTWH(24, 35, 74, 1.6),
+        const Rect.fromLTWH(24, 34.25, 74, 1.6),
       );
     });
 
