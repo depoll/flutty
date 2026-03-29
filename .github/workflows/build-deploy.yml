@@ -539,12 +539,53 @@ jobs:
           fi
           APP_BUNDLE_NAME=$(basename "$APP_PATH")
 
+          bundle_executable_path() {
+            local bundle_path="$1"
+            local info_plist="$bundle_path/Info.plist"
+            if [ ! -f "$info_plist" ]; then
+              echo "Expected Info.plist at $info_plist" >&2
+              return 1
+            fi
+
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info_plist"
+          }
+
+          add_swift_scan_args() {
+            local bundle_path="$1"
+            local executable_name
+            executable_name=$(bundle_executable_path "$bundle_path")
+            SWIFT_SCAN_ARGS+=("--scan-executable" "$bundle_path/$executable_name")
+
+            if [ -d "$bundle_path/Frameworks" ]; then
+              SWIFT_SCAN_ARGS+=("--scan-folder" "$bundle_path/Frameworks")
+            fi
+          }
+
           rm -rf build/ios/unsigned
           mkdir -p build/ios/unsigned/Payload build/ios/ipa
           ditto "$APP_PATH" "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
+
+          SWIFT_SUPPORT_DIR=build/ios/unsigned/SwiftSupport/iphoneos
+          mkdir -p "$SWIFT_SUPPORT_DIR"
+          declare -a SWIFT_SCAN_ARGS=()
+          add_swift_scan_args "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
+          if [ -d "build/ios/unsigned/Payload/$APP_BUNDLE_NAME/PlugIns" ]; then
+            while IFS= read -r -d '' APPEX_PATH; do
+              add_swift_scan_args "$APPEX_PATH"
+            done < <(find "build/ios/unsigned/Payload/$APP_BUNDLE_NAME/PlugIns" -mindepth 1 -maxdepth 1 -name '*.appex' -type d -print0)
+          fi
+          xcrun swift-stdlib-tool --copy --platform iphoneos --destination "$SWIFT_SUPPORT_DIR" "${SWIFT_SCAN_ARGS[@]}"
+          if ! find "$SWIFT_SUPPORT_DIR" -type f | grep -q .; then
+            rm -rf build/ios/unsigned/SwiftSupport
+          fi
+
           (
             cd build/ios/unsigned
-            zip -qry ../ipa/Runner-unsigned.ipa Payload
+            ZIP_INPUTS=(Payload)
+            if [ -d SwiftSupport ]; then
+              ZIP_INPUTS+=(SwiftSupport)
+            fi
+            zip -qry ../ipa/Runner-unsigned.ipa "${ZIP_INPUTS[@]}"
           )
 
       - name: Download reusable IPA artifact
