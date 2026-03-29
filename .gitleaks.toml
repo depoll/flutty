@@ -4,11 +4,15 @@ title = 'Flutty gitleaks configuration'
 useDefault = true
 
 [allowlist]
-description = 'Ignore CocoaPods checksum false positives in generated lockfiles.'
+description = 'Ignore known false positives in generated Podfile checksums and encryption-key identifier strings.'
+condition = 'AND'
 paths = [
   '''(?:^|/)(?:ios|macos)/Podfile\.lock$''',
+  '''(?:^|/)lib/data/security/secret_encryption_service\.dart$''',
+  '''(?:^|/)test/unit/secret_encryption_service_test\.dart$''',
 ]
 regexTarget = 'line'
 regexes = [
   '''^PODFILE CHECKSUM: [0-9a-f]{40}$''',
+  '''flutty_db_(?:encryption|secret)_key_v1''',
 ]
