@@ -950,11 +950,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   List<({String path, Rect underlineRect, Rect touchRect})>
   _visibleTerminalPathUnderlines =
       const <({String path, Rect underlineRect, Rect touchRect})>[];
-  bool _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = true;
-  bool? _lastShowsTerminalPathBadges;
+  bool _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
+  bool? _lastShowsTerminalPathUnderlines;
   CellOffset? _lastHoveredTerminalPathOffset;
   String? _lastHoveredTerminalPath;
-  bool _isTerminalPathBadgeRefreshQueued = false;
+  bool _isTerminalPathUnderlineRefreshQueued = false;
   SshSession? _terminalPathVerificationSession;
   Future<SftpClient?>? _terminalPathVerificationSftpFuture;
   SftpClient? _terminalPathVerificationSftp;
@@ -1120,7 +1120,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
-    _queueVisibleTerminalPathBadgeRefresh();
+    _queueVisibleTerminalPathUnderlineRefresh();
 
     if (_shouldFollowLiveOutput) {
       _queueTerminalScrollToBottom();
@@ -1352,7 +1352,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : 0,
     );
     _syncNativeScrollFromTerminal();
-    _queueVisibleTerminalPathBadgeRefresh();
+    _queueVisibleTerminalPathUnderlineRefresh();
   }
 
   void _followLiveOutput() {
@@ -2503,8 +2503,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinksEnabled = ref.watch(
       terminalPathLinksNotifierProvider,
     );
-    final terminalPathLinkBadgesEnabled = ref.watch(
-      terminalPathLinkBadgesNotifierProvider,
+    final terminalPathLinkUnderlinesEnabled = ref.watch(
+      terminalPathLinkUnderlinesNotifierProvider,
     );
 
     Widget terminalView = MonkeyTerminalView(
@@ -2535,14 +2535,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: isMobile ? null : _pasteClipboard,
     );
 
-    final showsTerminalPathBadges =
-        terminalPathLinksEnabled && terminalPathLinkBadgesEnabled;
-    if (_lastShowsTerminalPathBadges != showsTerminalPathBadges) {
-      _lastShowsTerminalPathBadges = showsTerminalPathBadges;
-      _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild =
-          showsTerminalPathBadges;
+    final showsTerminalPathUnderlines =
+        terminalPathLinksEnabled && terminalPathLinkUnderlinesEnabled;
+    if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {
+      _lastShowsTerminalPathUnderlines = showsTerminalPathUnderlines;
+      _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild =
+          showsTerminalPathUnderlines;
     }
-    if (!showsTerminalPathBadges && _hoveredTerminalPathUnderline != null) {
+    if (!showsTerminalPathUnderlines && _hoveredTerminalPathUnderline != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted || _hoveredTerminalPathUnderline == null) {
           return;
@@ -2550,7 +2550,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() => _hoveredTerminalPathUnderline = null);
       });
     }
-    if (!showsTerminalPathBadges &&
+    if (!showsTerminalPathUnderlines &&
         _isMobilePlatform &&
         _visibleTerminalPathUnderlines.isNotEmpty) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -2570,11 +2570,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         child: terminalView,
       );
     }
-    if (showsTerminalPathBadges) {
+    if (showsTerminalPathUnderlines) {
       if (_isMobilePlatform) {
-        if (_shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild) {
-          _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = false;
-          _queueVisibleTerminalPathBadgeRefresh();
+        if (_shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild) {
+          _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = false;
+          _queueVisibleTerminalPathUnderlineRefresh();
         }
         terminalView = Stack(
           fit: StackFit.expand,
@@ -3391,7 +3391,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalViewState = _terminalViewKey.currentState;
     if (terminalViewState == null ||
         !ref.read(terminalPathLinksNotifierProvider) ||
-        !ref.read(terminalPathLinkBadgesNotifierProvider)) {
+        !ref.read(terminalPathLinkUnderlinesNotifierProvider)) {
       _clearHoveredTerminalPathUnderline();
       return;
     }
@@ -3496,27 +3496,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isExplicitTerminalFilePath(path) ||
       _hasVerifiedRelativeTerminalPath(path);
 
-  void _queueVisibleTerminalPathBadgeRefresh() {
-    if (!_isMobilePlatform || _isTerminalPathBadgeRefreshQueued || !mounted) {
+  void _queueVisibleTerminalPathUnderlineRefresh() {
+    if (!_isMobilePlatform ||
+        _isTerminalPathUnderlineRefreshQueued ||
+        !mounted) {
       return;
     }
 
-    _isTerminalPathBadgeRefreshQueued = true;
+    _isTerminalPathUnderlineRefreshQueued = true;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      _isTerminalPathBadgeRefreshQueued = false;
+      _isTerminalPathUnderlineRefreshQueued = false;
       if (!mounted) {
         return;
       }
-      _refreshVisibleTerminalPathBadges();
+      _refreshVisibleTerminalPathUnderlines();
     });
   }
 
-  void _refreshVisibleTerminalPathBadges() {
+  void _refreshVisibleTerminalPathUnderlines() {
     final terminalViewState = _terminalViewKey.currentState;
-    final showsBadges =
+    final showsUnderlines =
         ref.read(terminalPathLinksNotifierProvider) &&
-        ref.read(terminalPathLinkBadgesNotifierProvider);
-    if (!_isMobilePlatform || !showsBadges || terminalViewState == null) {
+        ref.read(terminalPathLinkUnderlinesNotifierProvider);
+    if (!_isMobilePlatform || !showsUnderlines || terminalViewState == null) {
       if (_visibleTerminalPathUnderlines.isNotEmpty) {
         setState(
           () => _visibleTerminalPathUnderlines =

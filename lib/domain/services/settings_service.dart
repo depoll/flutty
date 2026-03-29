@@ -37,8 +37,8 @@ abstract final class SettingKeys {
   /// Enable tapping terminal file paths to open SFTP.
   static const terminalPathLinks = 'terminal_path_links';
 
-  /// Show badges for clickable terminal file paths.
-  static const terminalPathLinkBadges = 'terminal_path_link_badges';
+  /// Show underlines for clickable terminal file paths.
+  static const terminalPathLinkUnderlines = 'terminal_path_link_badges';
 
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
@@ -469,8 +469,8 @@ final terminalPathLinksNotifierProvider =
       TerminalPathLinksNotifier.new,
     );
 
-/// Notifier for terminal file path badges with write capability.
-class TerminalPathLinkBadgesNotifier extends Notifier<bool> {
+/// Notifier for terminal file path underlines with write capability.
+class TerminalPathLinkUnderlinesNotifier extends Notifier<bool> {
   late final SettingsService _settings;
   bool _disposed = false;
 
@@ -484,24 +484,27 @@ class TerminalPathLinkBadgesNotifier extends Notifier<bool> {
 
   Future<void> _init() async {
     final value = await _settings.getBool(
-      SettingKeys.terminalPathLinkBadges,
+      SettingKeys.terminalPathLinkUnderlines,
       defaultValue: true,
     );
     if (_disposed) return;
     state = value;
   }
 
-  /// Sets terminal file path badges.
+  /// Sets terminal file path underlines.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.terminalPathLinkBadges, value: enabled);
+    await _settings.setBool(
+      SettingKeys.terminalPathLinkUnderlines,
+      value: enabled,
+    );
     state = enabled;
   }
 }
 
-/// Provider for terminal file path badges with write capability.
-final terminalPathLinkBadgesNotifierProvider =
-    NotifierProvider<TerminalPathLinkBadgesNotifier, bool>(
-      TerminalPathLinkBadgesNotifier.new,
+/// Provider for terminal file path underlines with write capability.
+final terminalPathLinkUnderlinesNotifierProvider =
+    NotifierProvider<TerminalPathLinkUnderlinesNotifier, bool>(
+      TerminalPathLinkUnderlinesNotifier.new,
     );
 
 /// State for terminal theme settings (light and dark).

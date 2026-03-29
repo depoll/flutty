@@ -20,7 +20,7 @@ const _unwrappedEditorTrailingSlack = 24.0;
 const _requestedPathLookupTimeout = Duration(seconds: 5);
 const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
-const _sftpBreadcrumbScrollAnimationDuration = Duration(milliseconds: 220);
+const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
@@ -677,7 +677,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       unawaited(
         _fileListScrollController.animateTo(
           targetOffset,
-          duration: const Duration(milliseconds: 220),
+          duration: _sftpScrollAnimationDuration,
           curve: Curves.easeOutCubic,
         ),
       );
@@ -699,7 +699,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       unawaited(
         _breadcrumbScrollController.animateTo(
           targetOffset,
-          duration: _sftpBreadcrumbScrollAnimationDuration,
+          duration: _sftpScrollAnimationDuration,
           curve: Curves.easeOutCubic,
         ),
       );

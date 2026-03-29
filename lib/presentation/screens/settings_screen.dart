@@ -324,8 +324,8 @@ class _TerminalSection extends ConsumerWidget {
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
     final terminalPathLinks = ref.watch(terminalPathLinksNotifierProvider);
-    final terminalPathLinkBadges = ref.watch(
-      terminalPathLinkBadgesNotifierProvider,
+    final terminalPathLinkUnderlines = ref.watch(
+      terminalPathLinkUnderlinesNotifierProvider,
     );
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
@@ -393,11 +393,11 @@ class _TerminalSection extends ConsumerWidget {
           secondary: const Icon(Icons.format_underline),
           title: const Text('Path link underlines'),
           subtitle: const Text('Underline clickable terminal file paths'),
-          value: terminalPathLinks && terminalPathLinkBadges,
+          value: terminalPathLinks && terminalPathLinkUnderlines,
           onChanged: terminalPathLinks
               ? (value) {
                   ref
-                      .read(terminalPathLinkBadgesNotifierProvider.notifier)
+                      .read(terminalPathLinkUnderlinesNotifierProvider.notifier)
                       .setEnabled(enabled: value);
                 }
               : null,
