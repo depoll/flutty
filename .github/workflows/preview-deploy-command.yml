@@ -229,11 +229,15 @@ jobs:
             const previewComment = [...comments].reverse().find((comment) =>
               comment.body?.includes(previewMarker),
             );
+            const previewCommentBody = previewComment?.body ?? '';
             const previewSha =
-              previewComment?.body.match(/Build triggered by ([0-9a-f]{7,40})/i)?.[1] ??
+              previewCommentBody.match(/Build triggered by ([0-9a-f]{7,40})/i)?.[1] ??
               pr.head.sha;
+            const previewRunId = readMeta(previewCommentBody, 'preview-run-id');
+            const previewBuildName = readMeta(previewCommentBody, 'preview-build-name');
+            const previewBuildNumber = readMeta(previewCommentBody, 'preview-build-number');
             const queuedNote = previewComment
-              ? '> Duplicate requests stay locked out while this deploy is queued or running.'
+              ? '> Duplicate requests stay locked out while this deploy is queued or running. If the matching preview artifacts are still building, this deploy will wait for them before falling back to a rebuild.'
               : '> Preview artifacts comment is unavailable, so this deploy is using the current PR head SHA directly. Duplicate requests stay locked out while this deploy is queued or running.';
             const queuedBody = renderStatusComment({
               status: '🔒 Lock acquired — queued for deploy',
@@ -260,6 +264,9 @@ jobs:
                 inputs: {
                   'pr-number': String(issueNumber),
                   'source-sha': previewSha,
+                  'preview-run-id': previewRunId,
+                  'preview-build-name': previewBuildName,
+                  'preview-build-number': previewBuildNumber,
                   'request-comment-id': requestCommentId,
                   'request-comment-at': requestCreatedAt,
                   'request-comment-user': requester,

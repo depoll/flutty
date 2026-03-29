@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Compute version
         id: version
@@ -51,10 +52,17 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
+      source-ref: ${{ github.event.pull_request.head.sha }}
       deploy-ios-to: none
-      deploy-android-to: none
+      deploy-android-to: internal
       build-ios: false
       build-android: true
+      run-android-deploy: false
+    secrets:
+      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
 
   build-ios:
     name: Build iOS Preview
@@ -67,10 +75,19 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
-      deploy-ios-to: none
+      source-ref: ${{ github.event.pull_request.head.sha }}
+      deploy-ios-to: testflight
       deploy-android-to: none
       build-ios: true
       build-android: false
+      run-ios-deploy: false
+    secrets:
+      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
 
   comment-android:
     name: PR Comment (Android)
@@ -101,7 +118,7 @@ jobs:
               if (!job || job.status !== 'completed') return '⏳ Building';
               switch (job.conclusion) {
                 case 'success':
-                  return '✅ Deployed';
+                  return '✅ Built';
                 case 'skipped':
                   return '⏭️ Skipped';
                 case 'cancelled':
@@ -159,9 +176,13 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. You can still run **Deploy PR Preview** manually from the Actions tab.
+            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. `/deploy` now reuses these preview artifacts when they match the requested SHA, and waits for them if this preview run is still in progress.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
+            <!-- preview-run-id:${{ github.run_id }} -->
+            <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
+            <!-- preview-source-sha:${{ github.event.pull_request.head.sha }} -->
 
   comment-ios:
     name: PR Comment (iOS)
@@ -192,7 +213,7 @@ jobs:
               if (!job || job.status !== 'completed') return '⏳ Building';
               switch (job.conclusion) {
                 case 'success':
-                  return '✅ Deployed';
+                  return '✅ Built';
                 case 'skipped':
                   return '⏭️ Skipped';
                 case 'cancelled':
@@ -249,6 +270,10 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. You can still run **Deploy PR Preview** manually from the Actions tab.
+            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. `/deploy` now reuses these preview artifacts when they match the requested SHA, and waits for them if this preview run is still in progress.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
+            <!-- preview-run-id:${{ github.run_id }} -->
+            <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
+            <!-- preview-source-sha:${{ github.event.pull_request.head.sha }} -->
