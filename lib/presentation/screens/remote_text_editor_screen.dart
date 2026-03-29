@@ -521,10 +521,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                               editorTextStyle,
                               forceStrutHeight: true,
                             ),
-                            decoration: const InputDecoration(
-                              border: InputBorder.none,
-                              isCollapsed: true,
-                            ),
+                            decoration: null,
                           );
 
                           final editorPane = _wrapLines

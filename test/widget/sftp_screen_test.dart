@@ -118,6 +118,7 @@ void main() {
           ),
         );
         expect(horizontalScrollController.offset, greaterThan(0));
+        expect(find.byType(InputDecorator), findsNothing);
       },
     );
 
