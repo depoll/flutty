@@ -1,5 +1,9 @@
 default_platform(:ios)
 
+require 'fileutils'
+require 'shellwords'
+require 'tmpdir'
+
 platform :ios do
   before_all do
     setup_ci if ENV['CI']
@@ -59,9 +63,11 @@ platform :ios do
     )
 
     profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
+                   ENV["sigh_#{app_id}_appstore_profile_name"] ||
                    "match AppStore #{app_id}"
     live_activity_profile_name =
       ENV["sigh_#{live_activity_app_id}_appstore_profile-name"] ||
+      ENV["sigh_#{live_activity_app_id}_appstore_profile_name"] ||
       "match AppStore #{live_activity_app_id}"
 
     update_code_signing_settings(
@@ -99,9 +105,122 @@ platform :ios do
 
   private_lane :resolved_ipa_path do |options|
     provided_ipa_path = options[:ipa_path].to_s
-    return provided_ipa_path unless provided_ipa_path.empty?
+    provided_ipa_path.empty? ? lane_context[SharedValues::IPA_OUTPUT_PATH] : provided_ipa_path
+  end
 
-    lane_context[SharedValues::IPA_OUTPUT_PATH]
+  private_lane :resolved_profile_path do |options|
+    app_id = options[:app_identifier]
+    profile_path = ENV["sigh_#{app_id}_appstore_profile-path"] ||
+                   ENV["sigh_#{app_id}_appstore_profile_path"]
+
+    UI.user_error!("Missing installed provisioning profile path for #{app_id}") if profile_path.to_s.empty?
+    UI.user_error!("Provisioning profile not found at #{profile_path} for #{app_id}") unless File.exist?(profile_path)
+
+    profile_path
+  end
+
+  private_lane :resolved_certificate_name do |options|
+    app_id = options[:app_identifier]
+    certificate_name = ENV["sigh_#{app_id}_appstore_certificate-name"] ||
+                       ENV["sigh_#{app_id}_appstore_certificate_name"]
+
+    UI.user_error!("Missing installed certificate name for #{app_id}") if certificate_name.to_s.empty?
+
+    certificate_name
+  end
+
+  private_lane :extract_profile_entitlements do |options|
+    profile_path = options[:profile_path]
+    output_path = options[:output_path]
+
+    sh(
+      "security cms -D -i #{profile_path.shellescape} | " \
+      "plutil -extract Entitlements xml1 -o #{output_path.shellescape} -",
+    )
+
+    output_path
+  end
+
+  private_lane :bundle_executable_path do |options|
+    bundle_path = options[:bundle_path]
+    info_plist_path = File.join(bundle_path, 'Info.plist')
+    UI.user_error!("Info.plist not found at #{info_plist_path}") unless File.exist?(info_plist_path)
+
+    executable_name = sh(
+      "/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' #{info_plist_path.shellescape}",
+      log: false,
+    ).strip
+    executable_path = File.join(bundle_path, executable_name)
+    UI.user_error!("Bundle executable not found at #{executable_path}") unless File.exist?(executable_path)
+
+    executable_path
+  end
+
+  private_lane :embed_swift_runtime do |options|
+    bundle_path = options[:bundle_path]
+    frameworks_path = File.join(bundle_path, 'Frameworks')
+    FileUtils.mkdir_p(frameworks_path)
+
+    command = [
+      'xcrun',
+      'swift-stdlib-tool',
+      '--copy',
+      '--platform',
+      'iphoneos',
+      '--destination',
+      frameworks_path,
+      '--scan-executable',
+      bundle_executable_path(bundle_path: bundle_path),
+      '--scan-folder',
+      frameworks_path,
+    ]
+    sh(command.map(&:shellescape).join(' '))
+  end
+
+  private_lane :populate_swift_support do |options|
+    app_path = options[:app_path]
+    package_root = options[:package_root]
+    swift_support_dir = File.join(package_root, 'SwiftSupport', 'iphoneos')
+    appex_paths = Dir[File.join(app_path, 'PlugIns', '*.appex')].sort
+
+    embed_swift_runtime(bundle_path: app_path)
+    appex_paths.each do |appex_path|
+      FileUtils.rm_rf(File.join(appex_path, 'Frameworks'))
+    end
+
+    FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
+    FileUtils.mkdir_p(swift_support_dir)
+
+    swift_runtime_paths = Dir[File.join(app_path, 'Frameworks', 'libswift*.dylib')].sort
+
+    swift_runtime_paths
+      .uniq { |path| File.basename(path) }
+      .each do |runtime_path|
+        FileUtils.cp(runtime_path, File.join(swift_support_dir, File.basename(runtime_path)))
+      end
+
+    unless Dir.glob(File.join(swift_support_dir, '*')).any?
+      UI.message('No Swift runtime libraries detected; removing empty SwiftSupport directory.')
+      FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
+    end
+  end
+
+  private_lane :codesign_path do |options|
+    path = options[:path]
+    signing_identity = options[:signing_identity]
+    entitlements_path = options[:entitlements_path].to_s
+
+    command = [
+      'codesign',
+      '--force',
+      '--sign', signing_identity,
+      '--timestamp=none',
+      '--generate-entitlement-der',
+    ]
+    command += ['--entitlements', entitlements_path] unless entitlements_path.empty?
+    command << path
+
+    sh(command.map(&:shellescape).join(' '))
   end
 
   desc 'Setup code signing for CI builds'
@@ -114,6 +233,109 @@ platform :ios do
   lane :build_ipa do |options|
     scheme = options[:scheme] || 'Private'
     build_and_sign(scheme: scheme)
+  end
+
+  desc 'Re-sign an existing IPA for App Store Connect upload'
+  lane :resign_ipa do |options|
+    scheme = options[:scheme] || 'Private'
+    unsigned_ipa_path = options[:unsigned_ipa_path].to_s
+    output_ipa_path = options[:output_ipa_path].to_s
+    supported_schemes = APP_IDS.keys & LIVE_ACTIVITY_APP_IDS.keys
+    unless APP_IDS.key?(scheme) && LIVE_ACTIVITY_APP_IDS.key?(scheme)
+      UI.user_error!("Unknown scheme '#{scheme}'. Supported schemes: #{supported_schemes.join(', ')}")
+    end
+    app_id = APP_IDS[scheme]
+    live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
+
+    UI.user_error!('unsigned_ipa_path is required') if unsigned_ipa_path.empty?
+    unsigned_ipa_path = File.expand_path(unsigned_ipa_path)
+    output_ipa_path = File.expand_path(output_ipa_path) unless output_ipa_path.empty?
+    UI.user_error!("IPA not found at #{unsigned_ipa_path}") unless File.exist?(unsigned_ipa_path)
+
+    sync_certs(
+      app_identifier: [app_id, live_activity_app_id],
+      type: 'appstore',
+      readonly: false,
+    )
+
+    resigned_ipa_path = unsigned_ipa_path
+    unless output_ipa_path.empty?
+      FileUtils.mkdir_p(File.dirname(output_ipa_path))
+      FileUtils.cp(unsigned_ipa_path, output_ipa_path)
+      resigned_ipa_path = output_ipa_path
+    end
+
+    signing_identity = resolved_certificate_name(app_identifier: app_id)
+    app_profile_path = resolved_profile_path(app_identifier: app_id)
+    live_activity_profile_path = resolved_profile_path(app_identifier: live_activity_app_id)
+
+    Dir.mktmpdir('flutty-resign-ipa') do |tmpdir|
+      sh("unzip -q #{resigned_ipa_path.shellescape} -d #{tmpdir.shellescape}")
+
+      payload_dir = File.join(tmpdir, 'Payload')
+      app_paths = Dir[File.join(payload_dir, '*.app')].sort
+      UI.user_error!("Expected exactly one .app in #{payload_dir}, found #{app_paths.size}") unless app_paths.size == 1
+      app_path = app_paths.first
+
+      live_activity_paths = Dir[File.join(app_path, 'PlugIns', 'ConnectionStatusLiveActivityExtension.appex')].sort
+      if live_activity_paths.size != 1
+        live_activity_paths = Dir[File.join(app_path, 'PlugIns', '*.appex')].sort
+      end
+      UI.user_error!("Expected exactly one live activity extension in #{app_path}/PlugIns, found #{live_activity_paths.size}") unless live_activity_paths.size == 1
+      live_activity_path = live_activity_paths.first
+
+      app_entitlements_path = File.join(tmpdir, 'app-entitlements.plist')
+      live_activity_entitlements_path = File.join(tmpdir, 'live-activity-entitlements.plist')
+
+      extract_profile_entitlements(
+        profile_path: app_profile_path,
+        output_path: app_entitlements_path,
+      )
+      extract_profile_entitlements(
+        profile_path: live_activity_profile_path,
+        output_path: live_activity_entitlements_path,
+      )
+
+      FileUtils.cp(app_profile_path, File.join(app_path, 'embedded.mobileprovision'))
+      FileUtils.cp(live_activity_profile_path, File.join(live_activity_path, 'embedded.mobileprovision'))
+
+      populate_swift_support(
+        app_path: app_path,
+        package_root: tmpdir,
+      )
+
+      codesign_path(
+        path: live_activity_path,
+        signing_identity: signing_identity,
+        entitlements_path: live_activity_entitlements_path,
+      )
+
+      Dir[File.join(app_path, 'Frameworks', '*.framework')].sort.each do |framework_path|
+        codesign_path(path: framework_path, signing_identity: signing_identity)
+      end
+      Dir[File.join(app_path, 'Frameworks', '*.dylib')].sort.each do |dylib_path|
+        codesign_path(path: dylib_path, signing_identity: signing_identity)
+      end
+      codesign_path(
+        path: app_path,
+        signing_identity: signing_identity,
+        entitlements_path: app_entitlements_path,
+      )
+
+      temporary_ipa_path = "#{resigned_ipa_path}.tmp"
+      FileUtils.rm_f(temporary_ipa_path)
+      Dir.chdir(tmpdir) do
+        package_entries = Dir.children('.').select do |entry|
+          File.directory?(entry) && entry != '__MACOSX'
+        end
+        UI.user_error!('Expected IPA contents to include Payload') unless package_entries.include?('Payload')
+        sh("zip -qry #{temporary_ipa_path.shellescape} #{package_entries.map(&:shellescape).join(' ')}")
+      end
+      FileUtils.rm_f(resigned_ipa_path)
+      FileUtils.mv(temporary_ipa_path, resigned_ipa_path)
+    end
+
+    resigned_ipa_path
   end
 
   desc 'Build, sign, and upload to TestFlight'

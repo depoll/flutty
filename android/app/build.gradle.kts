@@ -29,11 +29,15 @@ val releaseStoreFile = releaseStoreFilePath?.let { file(it) }
 val hasCompleteReleaseSigningConfig = keystorePropertiesFile.exists() &&
     missingReleaseSigningProperties.isEmpty() &&
     releaseStoreFile?.exists() == true
+val allowUnsignedRelease = providers.environmentVariable("FLUTTY_ALLOW_UNSIGNED_RELEASE")
+    .orElse("false")
+    .map { it.equals("true", ignoreCase = true) }
+    .get()
 val isReleaseBuildRequested = gradle.startParameter.taskNames.any { taskName ->
     taskName.contains("Release", ignoreCase = true)
 }
 
-if (isReleaseBuildRequested) {
+if (isReleaseBuildRequested && !allowUnsignedRelease) {
     when {
         !keystorePropertiesFile.exists() -> throw GradleException(
             "Release builds require Android signing configuration in android/app/key.properties. " +
