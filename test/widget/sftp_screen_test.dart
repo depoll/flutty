@@ -91,7 +91,7 @@ void main() {
                 ),
               )
               .width,
-          closeTo(340, 0.1),
+          closeTo(316, 0.1),
         );
         expect(
           tester
@@ -100,6 +100,22 @@ void main() {
               )
               .width,
           closeTo(396, 0.1),
+        );
+        expect(
+          tester
+              .getTopRight(
+                find.byKey(
+                  const ValueKey<String>('remoteTextEditorNowrapViewport'),
+                ),
+              )
+              .dx,
+          lessThanOrEqualTo(
+            tester
+                .getTopRight(
+                  find.byKey(const ValueKey<String>('remoteTextEditorSurface')),
+                )
+                .dx,
+          ),
         );
         expect(horizontalScrollController.offset, greaterThan(0));
       },

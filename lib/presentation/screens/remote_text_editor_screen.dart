@@ -489,23 +489,10 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
         body: Padding(
           padding: const EdgeInsets.all(12),
           child: SizedBox.expand(
-            child: ClipRRect(
+            child: ClipRect(
               key: _remoteTextEditorSurfaceKey,
-              borderRadius: BorderRadius.circular(16),
-              child: DecoratedBox(
-                decoration: ShapeDecoration(
-                  color: colors.background,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    side: BorderSide(color: colors.border),
-                  ),
-                  shadows: [
-                    BoxShadow(
-                      blurRadius: 18,
-                      color: colors.border.withAlpha(28),
-                    ),
-                  ],
-                ),
+              child: ColoredBox(
+                color: colors.background,
                 child: Column(
                   children: [
                     Expanded(
@@ -544,15 +531,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                               ? SizedBox(
                                   width: viewportWidth,
                                   height: constraints.maxHeight,
-                                  child: Padding(
-                                    padding: const EdgeInsets.fromLTRB(
-                                      12,
-                                      12,
-                                      12,
-                                      0,
-                                    ),
-                                    child: editor,
-                                  ),
+                                  child: editor,
                                 )
                               : _buildNowrapEditorPane(
                                   context,
@@ -562,45 +541,43 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                                   editor,
                                 );
 
-                          return Row(
-                            children: [
-                              if (!_wrapLines)
-                                Container(
-                                  width: gutterWidth,
-                                  height: constraints.maxHeight,
-                                  padding: const EdgeInsets.only(
-                                    left: 12,
-                                    right: 8,
-                                    top: 12,
-                                  ),
-                                  decoration: BoxDecoration(
+                          return Padding(
+                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                            child: Row(
+                              children: [
+                                if (!_wrapLines)
+                                  Container(
+                                    width: gutterWidth,
+                                    height: constraints.maxHeight,
+                                    padding: const EdgeInsets.only(right: 12),
                                     color: colors.gutterBackground,
-                                    borderRadius: const BorderRadius.only(
-                                      topLeft: Radius.circular(16),
-                                    ),
-                                  ),
-                                  child: IgnorePointer(
-                                    child: ListView.builder(
-                                      controller: _lineNumberScrollController,
-                                      physics:
-                                          const NeverScrollableScrollPhysics(),
-                                      itemCount: _lineCount,
-                                      itemExtent: lineHeight,
-                                      itemBuilder: (context, index) => Align(
-                                        alignment: Alignment.centerRight,
-                                        child: Text(
-                                          '${index + 1}',
-                                          style: editorTextStyle.copyWith(
-                                            color: colors.gutterForeground,
-                                            fontSize: _fontSize * 0.88,
+                                    child: IgnorePointer(
+                                      child: ListView.builder(
+                                        controller: _lineNumberScrollController,
+                                        physics:
+                                            const NeverScrollableScrollPhysics(),
+                                        itemCount: _lineCount,
+                                        itemExtent: lineHeight,
+                                        itemBuilder: (context, index) => Align(
+                                          alignment: Alignment.centerRight,
+                                          child: Text(
+                                            '${index + 1}',
+                                            style: editorTextStyle.copyWith(
+                                              color: colors.gutterForeground,
+                                            ),
+                                            strutStyle:
+                                                StrutStyle.fromTextStyle(
+                                                  editorTextStyle,
+                                                  forceStrutHeight: true,
+                                                ),
                                           ),
                                         ),
                                       ),
                                     ),
                                   ),
-                                ),
-                              Expanded(child: editorPane),
-                            ],
+                                Expanded(child: editorPane),
+                              ],
+                            ),
                           );
                         },
                       ),
@@ -612,14 +589,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                         horizontal: 16,
                         vertical: 12,
                       ),
-                      decoration: BoxDecoration(
-                        color: colors.statusBackground,
-                        border: Border(top: BorderSide(color: colors.border)),
-                        borderRadius: const BorderRadius.only(
-                          bottomLeft: Radius.circular(16),
-                          bottomRight: Radius.circular(16),
-                        ),
-                      ),
+                      color: colors.statusBackground,
                       child: Wrap(
                         alignment: WrapAlignment.spaceBetween,
                         runSpacing: 8,
@@ -705,7 +675,6 @@ class _RemoteEditorColors {
   const _RemoteEditorColors({
     required this.background,
     required this.foreground,
-    required this.border,
     required this.cursor,
     required this.selection,
     required this.gutterBackground,
@@ -716,7 +685,6 @@ class _RemoteEditorColors {
 
   final Color background;
   final Color foreground;
-  final Color border;
   final Color cursor;
   final Color selection;
   final Color gutterBackground;
@@ -735,7 +703,6 @@ _RemoteEditorColors _resolveEditorColors(
     return _RemoteEditorColors(
       background: colorScheme.surface,
       foreground: foreground,
-      border: colorScheme.outlineVariant,
       cursor: colorScheme.primary,
       selection: colorScheme.primary.withAlpha(60),
       gutterBackground: colorScheme.surfaceContainerHighest,
@@ -761,10 +728,6 @@ _RemoteEditorColors _resolveEditorColors(
   return _RemoteEditorColors(
     background: surfaceBase,
     foreground: terminalTheme.foreground,
-    border: Color.alphaBlend(
-      terminalTheme.cursor.withAlpha(38),
-      colorScheme.outlineVariant,
-    ),
     cursor: terminalTheme.cursor,
     selection: terminalTheme.selection,
     gutterBackground: gutterBackground,
@@ -795,69 +758,8 @@ List<int> _updateRemoteEditorLineStartOffsets({
   required String nextText,
   required List<int> previousLineStartOffsets,
 }) {
-  if (previousText == null ||
-      previousText.isEmpty ||
-      previousLineStartOffsets.isEmpty) {
-    return computeRemoteEditorLineStartOffsets(nextText);
-  }
-  if (previousText == nextText) {
+  if (previousText == nextText && previousLineStartOffsets.isNotEmpty) {
     return previousLineStartOffsets;
   }
-
-  var prefixLength = 0;
-  final maxPrefixLength = math.min(previousText.length, nextText.length);
-  while (prefixLength < maxPrefixLength &&
-      previousText.codeUnitAt(prefixLength) ==
-          nextText.codeUnitAt(prefixLength)) {
-    prefixLength++;
-  }
-
-  var suffixLength = 0;
-  final maxSuffixLength = math.min(
-    previousText.length - prefixLength,
-    nextText.length - prefixLength,
-  );
-  while (suffixLength < maxSuffixLength &&
-      previousText.codeUnitAt(previousText.length - suffixLength - 1) ==
-          nextText.codeUnitAt(nextText.length - suffixLength - 1)) {
-    suffixLength++;
-  }
-
-  final oldChangedEnd = previousText.length - suffixLength;
-  final newChangedEnd = nextText.length - suffixLength;
-  final changeLineIndex = _resolveRemoteEditorLineIndex(
-    previousLineStartOffsets,
-    prefixLength,
-  );
-  final changeLineStart = previousLineStartOffsets[changeLineIndex];
-  final nextLineStartOffsets = <int>[
-    for (final lineStart in previousLineStartOffsets)
-      if (lineStart < changeLineStart) lineStart,
-  ];
-
-  for (var index = changeLineStart; index < newChangedEnd; index++) {
-    if (index == changeLineStart) {
-      nextLineStartOffsets.add(index);
-      continue;
-    }
-    if (nextText.codeUnitAt(index - 1) == 10) {
-      nextLineStartOffsets.add(index);
-    }
-  }
-  if (nextLineStartOffsets.isEmpty) {
-    nextLineStartOffsets.add(0);
-  }
-
-  final lengthDelta = nextText.length - previousText.length;
-  for (final lineStart in previousLineStartOffsets) {
-    if (lineStart < oldChangedEnd) {
-      continue;
-    }
-    final shiftedLineStart = lineStart + lengthDelta;
-    if (nextLineStartOffsets.last != shiftedLineStart) {
-      nextLineStartOffsets.add(shiftedLineStart);
-    }
-  }
-
-  return nextLineStartOffsets;
+  return computeRemoteEditorLineStartOffsets(nextText);
 }
