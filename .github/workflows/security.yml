@@ -270,13 +270,10 @@ jobs:
 
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
             {
-              echo 'command=git'
-              echo 'log-opts<<EOF'
-              echo "--no-merges ${BASE_SHA}..${HEAD_SHA}"
-              echo 'EOF'
+              echo 'command=dir'
             } >> "$GITHUB_OUTPUT"
             echo 'mode=pull-request' >> "$GITHUB_OUTPUT"
-            echo '- Running OSS Gitleaks against commits introduced by this pull request so new leaks stay blocking without failing on unrelated repository history.' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Running OSS Gitleaks against the current pull request checkout so only leaks present in the proposed changes stay blocking.' >> "$GITHUB_STEP_SUMMARY"
           elif [ "${{ github.event_name }}" = 'push' ]; then
             if [ -n "${PUSH_BEFORE}" ] && [ "${PUSH_BEFORE}" != '0000000000000000000000000000000000000000' ]; then
               {
