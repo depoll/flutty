@@ -19,7 +19,7 @@ permissions:
 jobs:
   dependency-review:
     name: Dependency Review
-    if: github.event_name == 'pull_request'
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -30,10 +30,24 @@ jobs:
       - name: Detect changed dependency lockfiles
         id: changed-deps
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
+          HEAD_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
         run: |
           set -euo pipefail
+
+          if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = '0000000000000000000000000000000000000000' ]; then
+            if git rev-parse "${HEAD_SHA}^" >/dev/null 2>&1; then
+              BASE_SHA=$(git rev-parse "${HEAD_SHA}^")
+            else
+              BASE_SHA=''
+            fi
+          fi
+
+          if [ -z "${BASE_SHA}" ]; then
+            echo '- No baseline commit was available for dependency comparison, so the fallback OSV diff scan was skipped.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'changed=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
 
           mapfile -t detected_targets < <(
             git diff --name-only --diff-filter=ACMR "${BASE_SHA}" "${HEAD_SHA}" | while IFS= read -r path; do
@@ -81,9 +95,9 @@ jobs:
 
           if [ "${#dependency_targets[@]}" -eq 0 ]; then
             if [ "${#unsupported_targets[@]}" -eq 0 ]; then
-              echo '- No supported dependency lockfiles changed in this pull request, so no fallback OSV diff scan was needed.' >> "$GITHUB_STEP_SUMMARY"
+              echo '- No supported dependency lockfiles changed in this comparison range, so no fallback OSV diff scan was needed.' >> "$GITHUB_STEP_SUMMARY"
             else
-              echo '- No OSV-supported dependency lockfiles changed in this pull request, so no fallback OSV diff scan was run.' >> "$GITHUB_STEP_SUMMARY"
+              echo '- No OSV-supported dependency lockfiles changed in this comparison range, so no fallback OSV diff scan was run.' >> "$GITHUB_STEP_SUMMARY"
             fi
             echo 'changed=false' >> "$GITHUB_OUTPUT"
             exit 0
@@ -106,11 +120,15 @@ jobs:
       - name: Compare changed dependencies with OSV
         if: steps.changed-deps.outputs.changed == 'true'
         env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          BASE_SHA: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.sha || github.event.before }}
           CHANGED_FILES: ${{ steps.changed-deps.outputs.files }}
           OSV_SCANNER_IMAGE: ghcr.io/google/osv-scanner:v2.3.3
         run: |
           set -euo pipefail
+
+          if [ -z "${BASE_SHA}" ] || [ "${BASE_SHA}" = '0000000000000000000000000000000000000000' ]; then
+            BASE_SHA=$(git rev-parse "${GITHUB_SHA}^")
+          fi
 
           scan_root="${RUNNER_TEMP}/dependency-review"
           base_root="${scan_root}/base"
@@ -243,6 +261,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -250,28 +270,55 @@ jobs:
 
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
             {
-              echo 'log-opts<<EOF'
-              echo "--no-merges ${BASE_SHA}..${HEAD_SHA}"
-              echo 'EOF'
+              echo 'command=dir'
             } >> "$GITHUB_OUTPUT"
             echo 'mode=pull-request' >> "$GITHUB_OUTPUT"
-            echo '- Running OSS Gitleaks against commits introduced by this pull request so new leaks stay blocking without failing on unrelated repository history.' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Running OSS Gitleaks against the current pull request checkout so only leaks present in the proposed changes stay blocking.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ github.event_name }}" = 'push' ]; then
+            if [ -n "${PUSH_BEFORE}" ] && [ "${PUSH_BEFORE}" != '0000000000000000000000000000000000000000' ]; then
+              {
+                echo 'command=git'
+                echo 'log-opts<<EOF'
+                echo "--no-merges ${PUSH_BEFORE}..${PUSH_AFTER}"
+                echo 'EOF'
+              } >> "$GITHUB_OUTPUT"
+              echo 'mode=push-range' >> "$GITHUB_OUTPUT"
+              echo '- Running OSS Gitleaks against the commits introduced by this push so newly added leaks still block protected branches.' >> "$GITHUB_STEP_SUMMARY"
+            else
+              {
+                echo 'command=git'
+                echo 'log-opts<<EOF'
+                echo "--no-merges ${PUSH_AFTER}"
+                echo 'EOF'
+              } >> "$GITHUB_OUTPUT"
+              echo 'mode=push-history' >> "$GITHUB_OUTPUT"
+              echo '- Running OSS Gitleaks against all commits reachable from the pushed HEAD commit because no prior push base SHA was available.' >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
+            {
+              echo 'command=git'
+              echo 'log-opts<<EOF'
+              echo '--no-merges --all'
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
             echo 'mode=full-history' >> "$GITHUB_OUTPUT"
-            echo '- Running OSS Gitleaks against the full repository history.' >> "$GITHUB_STEP_SUMMARY"
+            echo '- Running OSS Gitleaks against the full git history for scheduled or manually triggered scans.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Scan repository for leaked secrets
         id: gitleaks-scan
         continue-on-error: true
         env:
+          GITLEAKS_COMMAND: ${{ steps.gitleaks-scope.outputs.command }}
           GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1
           GITLEAKS_LOG_OPTS: ${{ steps.gitleaks-scope.outputs.log-opts }}
         run: |
           set -euo pipefail
 
           scan_args=(
-            git
+            "${GITLEAKS_COMMAND}"
+            --config
+            /repo/.gitleaks.toml
             --no-banner
             --redact
             --report-format sarif
@@ -286,6 +333,7 @@ jobs:
 
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/repo" \
+            -w /repo \
             "${GITLEAKS_IMAGE}" \
             "${scan_args[@]}"
 
@@ -332,6 +380,7 @@ jobs:
 
       - name: Run OSV scanner
         id: osv-scan
+        continue-on-error: true
         uses: google/osv-scanner-action/osv-scanner-action@c5996e0193a3df57d695c1b8a1dec2a4c62e8730 # v2.3.3
         with:
           scan-args: |-
@@ -359,7 +408,7 @@ jobs:
         run: |
           echo "## OSV scan" >> "$GITHUB_STEP_SUMMARY"
           if [ "${{ steps.osv-scan.outcome }}" = "failure" ]; then
-            echo "- The OSV scan reported vulnerabilities or failed before completion. Review the job logs and any uploaded SARIF results for details." >> "$GITHUB_STEP_SUMMARY"
+            echo '- The baseline OSV scan reported repository vulnerabilities or failed before completion. Results were uploaded to code scanning, while the dependency review job remains responsible for blocking newly introduced vulnerable lockfile changes.' >> "$GITHUB_STEP_SUMMARY"
           else
             echo "- No vulnerabilities were detected by the baseline OSV scan." >> "$GITHUB_STEP_SUMMARY"
           fi

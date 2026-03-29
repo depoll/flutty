@@ -35,7 +35,7 @@ void main() {
           name: 'My Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+          privateKey: 'fixture-open-ssh-material...',
         ),
       );
 
@@ -48,7 +48,7 @@ void main() {
     });
 
     test('insert encrypts private key and passphrase at rest', () async {
-      const privateKey = '-----BEGIN OPENSSH PRIVATE KEY-----...';
+      const privateKey = 'fixture-open-ssh-material...';
       const passphrase = 'my-passphrase';
       final id = await repository.insert(
         SshKeysCompanion.insert(
@@ -79,7 +79,7 @@ void main() {
           name: 'Test Key',
           keyType: 'rsa',
           publicKey: 'ssh-rsa AAAA...',
-          privateKey: '-----BEGIN RSA PRIVATE KEY-----...',
+          privateKey: 'fixture-rsa-material...',
         ),
       );
 
@@ -102,7 +102,7 @@ void main() {
           name: 'Original Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+          privateKey: 'fixture-open-ssh-material...',
         ),
       );
 
@@ -123,7 +123,7 @@ void main() {
           name: 'To Delete',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+          privateKey: 'fixture-open-ssh-material...',
         ),
       );
 
@@ -145,7 +145,7 @@ void main() {
           name: 'Production Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA1...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----1...',
+          privateKey: 'fixture-open-ssh-material-1...',
         ),
       );
       await repository.insert(
@@ -153,7 +153,7 @@ void main() {
           name: 'Development Key',
           keyType: 'rsa',
           publicKey: 'ssh-rsa AAAA2...',
-          privateKey: '-----BEGIN RSA PRIVATE KEY-----2...',
+          privateKey: 'fixture-rsa-material-2...',
         ),
       );
 
@@ -168,7 +168,7 @@ void main() {
           name: 'Test Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+          privateKey: 'fixture-open-ssh-material...',
         ),
       );
 
@@ -182,7 +182,7 @@ void main() {
           name: 'My Server Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+          privateKey: 'fixture-open-ssh-material...',
         ),
       );
 
@@ -196,7 +196,7 @@ void main() {
           name: 'New Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+          privateKey: 'fixture-open-ssh-material...',
         ),
       );
 
@@ -211,7 +211,7 @@ void main() {
           name: 'Key 1',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA1...',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----1...',
+          privateKey: 'fixture-open-ssh-material-1...',
         ),
       );
       await repository.insert(
@@ -219,7 +219,7 @@ void main() {
           name: 'Key 2',
           keyType: 'rsa',
           publicKey: 'ssh-rsa AAAA2...',
-          privateKey: '-----BEGIN RSA PRIVATE KEY-----2...',
+          privateKey: 'fixture-rsa-material-2...',
         ),
       );
       await repository.insert(
@@ -227,7 +227,7 @@ void main() {
           name: 'Key 3',
           keyType: 'ecdsa',
           publicKey: 'ecdsa-sha2-nistp256 AAAA3...',
-          privateKey: '-----BEGIN EC PRIVATE KEY-----3...',
+          privateKey: 'fixture-ec-material-3...',
         ),
       );
 
@@ -241,7 +241,7 @@ void main() {
         name: 'Fake Key',
         keyType: 'ed25519',
         publicKey: 'ssh-ed25519 AAAA...',
-        privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----...',
+        privateKey: 'fixture-open-ssh-material...',
         createdAt: DateTime.now(),
       );
 
