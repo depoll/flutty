@@ -116,7 +116,7 @@ class _TerminalPathLinkHarnessState extends State<_TerminalPathLinkHarness> {
 
     return shouldActivateTerminalFilePath(
           path,
-          hasVerifiedRelativePath: _verifiedRelativePaths.contains(path),
+          hasVerifiedPath: _verifiedRelativePaths.contains(path),
         )
         ? path
         : null;
