@@ -240,7 +240,7 @@ platform :ios do
     scheme = options[:scheme] || 'Private'
     unsigned_ipa_path = options[:unsigned_ipa_path].to_s
     output_ipa_path = options[:output_ipa_path].to_s
-    supported_schemes = (APP_IDS.keys + LIVE_ACTIVITY_APP_IDS.keys).uniq
+    supported_schemes = APP_IDS.keys & LIVE_ACTIVITY_APP_IDS.keys
     unless APP_IDS.key?(scheme) && LIVE_ACTIVITY_APP_IDS.key?(scheme)
       UI.user_error!("Unknown scheme '#{scheme}'. Supported schemes: #{supported_schemes.join(', ')}")
     end
@@ -248,6 +248,8 @@ platform :ios do
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
     UI.user_error!('unsigned_ipa_path is required') if unsigned_ipa_path.empty?
+    unsigned_ipa_path = File.expand_path(unsigned_ipa_path)
+    output_ipa_path = File.expand_path(output_ipa_path) unless output_ipa_path.empty?
     UI.user_error!("IPA not found at #{unsigned_ipa_path}") unless File.exist?(unsigned_ipa_path)
 
     sync_certs(
@@ -271,11 +273,16 @@ platform :ios do
       sh("unzip -q #{resigned_ipa_path.shellescape} -d #{tmpdir.shellescape}")
 
       payload_dir = File.join(tmpdir, 'Payload')
-      app_path = Dir[File.join(payload_dir, '*.app')].first
-      UI.user_error!("Expected exactly one .app in #{payload_dir}") if app_path.to_s.empty?
+      app_paths = Dir[File.join(payload_dir, '*.app')].sort
+      UI.user_error!("Expected exactly one .app in #{payload_dir}, found #{app_paths.size}") unless app_paths.size == 1
+      app_path = app_paths.first
 
-      live_activity_path = Dir[File.join(app_path, 'PlugIns', '*.appex')].first
-      UI.user_error!("Expected a live activity extension in #{app_path}/PlugIns") if live_activity_path.to_s.empty?
+      live_activity_paths = Dir[File.join(app_path, 'PlugIns', 'ConnectionStatusLiveActivityExtension.appex')].sort
+      if live_activity_paths.size != 1
+        live_activity_paths = Dir[File.join(app_path, 'PlugIns', '*.appex')].sort
+      end
+      UI.user_error!("Expected exactly one live activity extension in #{app_path}/PlugIns, found #{live_activity_paths.size}") unless live_activity_paths.size == 1
+      live_activity_path = live_activity_paths.first
 
       app_entitlements_path = File.join(tmpdir, 'app-entitlements.plist')
       live_activity_entitlements_path = File.join(tmpdir, 'live-activity-entitlements.plist')
@@ -315,14 +322,17 @@ platform :ios do
         entitlements_path: app_entitlements_path,
       )
 
-      FileUtils.rm_f(resigned_ipa_path)
+      temporary_ipa_path = "#{resigned_ipa_path}.tmp"
+      FileUtils.rm_f(temporary_ipa_path)
       Dir.chdir(tmpdir) do
         package_entries = Dir.children('.').select do |entry|
           File.directory?(entry) && entry != '__MACOSX'
         end
         UI.user_error!('Expected IPA contents to include Payload') unless package_entries.include?('Payload')
-        sh("zip -qry #{resigned_ipa_path.shellescape} #{package_entries.map(&:shellescape).join(' ')}")
+        sh("zip -qry #{temporary_ipa_path.shellescape} #{package_entries.map(&:shellescape).join(' ')}")
       end
+      FileUtils.rm_f(resigned_ipa_path)
+      FileUtils.mv(temporary_ipa_path, resigned_ipa_path)
     end
 
     resigned_ipa_path

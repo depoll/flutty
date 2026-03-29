@@ -179,9 +179,14 @@ jobs:
         id: source-sha
         env:
           REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
+          REUSED_SOURCE_SHA: ${{ inputs.android-reuse-source-sha }}
         run: |
-          if [ -n "$REQUESTED_SOURCE_REF" ]; then
-            git fetch --no-tags --depth=1 origin "$REQUESTED_SOURCE_REF"
+          if [ -n "$REUSED_SOURCE_SHA" ]; then
+            echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          elif echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "value=$REQUESTED_SOURCE_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
+            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
             echo "value=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
           else
             echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -291,7 +296,7 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Build unsigned AAB
-        if: inputs.build-android-unsigned-aab
+        if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         env:
           FLUTTY_ALLOW_UNSIGNED_RELEASE: 'true'
         run: |
@@ -377,7 +382,7 @@ jobs:
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload unsigned AAB artifact
-        if: inputs.build-android-unsigned-aab
+        if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
@@ -449,9 +454,14 @@ jobs:
         id: source-sha
         env:
           REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
+          REUSED_SOURCE_SHA: ${{ inputs.ios-reuse-source-sha }}
         run: |
-          if [ -n "$REQUESTED_SOURCE_REF" ]; then
-            git fetch --no-tags --depth=1 origin "$REQUESTED_SOURCE_REF"
+          if [ -n "$REUSED_SOURCE_SHA" ]; then
+            echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          elif echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "value=$REQUESTED_SOURCE_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
+            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
             echo "value=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
           else
             echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
@@ -529,7 +539,7 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Package unsigned IPA
-        if: inputs.build-ios-unsigned-ipa
+        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         run: |
           APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)
           if [ -z "$APP_PATH" ]; then
@@ -653,7 +663,7 @@ jobs:
           path: build/ios/ipa/*.ipa
 
       - name: Upload unsigned IPA artifact
-        if: inputs.build-ios-unsigned-ipa
+        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}

@@ -251,7 +251,7 @@ jobs:
             const finishedRun = await awaitCompletion(prepareRun);
             if (finishedRun.status !== 'completed') {
               core.notice(
-                `Artifact workflow run ${finishedRun.id} did not complete in time; deploy will build fresh artifacts.`,
+                `Preview workflow run ${finishedRun.id} did not complete in time; deploy will build fresh artifacts.`,
               );
               setOutputs({});
               return;
@@ -259,7 +259,7 @@ jobs:
 
             if (finishedRun.conclusion !== 'success') {
               core.notice(
-                `Artifact workflow run ${finishedRun.id} concluded with ${finishedRun.conclusion}; deploy will build fresh artifacts.`,
+                `Preview workflow run ${finishedRun.id} concluded with ${finishedRun.conclusion}; deploy will build fresh artifacts.`,
               );
               setOutputs({});
               return;
