@@ -116,26 +116,43 @@ double resolveUnwrappedEditorSelectionScrollOffset({
 ({int line, int column}) resolveRemoteEditorCaretPosition(
   String text,
   TextSelection selection,
-) {
+) => resolveRemoteEditorCaretPositionFromLineStarts(
+  text: text,
+  selection: selection,
+  lineStartOffsets: computeRemoteEditorLineStartOffsets(text),
+);
+
+/// Computes the text offsets where each logical line begins.
+@visibleForTesting
+List<int> computeRemoteEditorLineStartOffsets(String text) {
+  final lineStartOffsets = <int>[0];
+  for (var index = 0; index < text.length; index++) {
+    if (text.codeUnitAt(index) == 10) {
+      lineStartOffsets.add(index + 1);
+    }
+  }
+  return lineStartOffsets;
+}
+
+/// Resolves the current editor line and column using cached line starts.
+@visibleForTesting
+({int line, int column}) resolveRemoteEditorCaretPositionFromLineStarts({
+  required String text,
+  required TextSelection selection,
+  required List<int> lineStartOffsets,
+}) {
   final rawOffset = selection.isValid ? selection.extentOffset : 0;
   final clampedOffset = rawOffset < 0
       ? 0
       : rawOffset > text.length
       ? text.length
       : rawOffset;
-  var line = 1;
-  var column = 1;
-
-  for (var index = 0; index < clampedOffset; index++) {
-    if (text.codeUnitAt(index) == 10) {
-      line++;
-      column = 1;
-      continue;
-    }
-    column++;
-  }
-
-  return (line: line, column: column);
+  final lineIndex = _resolveRemoteEditorLineIndex(
+    lineStartOffsets,
+    clampedOffset,
+  );
+  final lineStartOffset = lineStartOffsets[lineIndex];
+  return (line: lineIndex + 1, column: clampedOffset - lineStartOffset + 1);
 }
 
 /// Builds the remote text editor screen for widget and integration tests.
@@ -201,7 +218,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   bool _selectionVisibilityUpdateScheduled = false;
   double _editorViewportWidth = 0;
   String? _cachedText;
-  int _cachedLineCount = 1;
+  List<int> _cachedLineStartOffsets = const [0];
   TextSelection? _cachedSelection;
   ({int line, int column}) _cachedCaretPosition = (line: 1, column: 1);
 
@@ -258,7 +275,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     super.dispose();
   }
 
-  int get _lineCount => _cachedLineCount;
+  int get _lineCount => _cachedLineStartOffsets.length;
 
   ({int line, int column}) get _caretPosition => _cachedCaretPosition;
 
@@ -273,13 +290,21 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     }
 
     if (textChanged) {
+      _cachedLineStartOffsets = _updateRemoteEditorLineStartOffsets(
+        previousText: _cachedText,
+        nextText: text,
+        previousLineStartOffsets: _cachedLineStartOffsets,
+      );
       _cachedText = text;
-      _cachedLineCount = '\n'.allMatches(text).length + 1;
     }
 
     if (textChanged || selectionChanged) {
       _cachedSelection = selection;
-      _cachedCaretPosition = resolveRemoteEditorCaretPosition(text, selection);
+      _cachedCaretPosition = resolveRemoteEditorCaretPositionFromLineStarts(
+        text: text,
+        selection: selection,
+        lineStartOffsets: _cachedLineStartOffsets,
+      );
     }
   }
 
@@ -736,4 +761,92 @@ _RemoteEditorColors _resolveEditorColors(
     statusBackground: statusBackground,
     statusForeground: terminalTheme.foreground.withAlpha(235),
   );
+}
+
+int _resolveRemoteEditorLineIndex(List<int> lineStartOffsets, int textOffset) {
+  var low = 0;
+  var high = lineStartOffsets.length;
+
+  while (low < high) {
+    final mid = low + ((high - low) >> 1);
+    if (lineStartOffsets[mid] <= textOffset) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+
+  return math.max(0, low - 1);
+}
+
+List<int> _updateRemoteEditorLineStartOffsets({
+  required String? previousText,
+  required String nextText,
+  required List<int> previousLineStartOffsets,
+}) {
+  if (previousText == null ||
+      previousText.isEmpty ||
+      previousLineStartOffsets.isEmpty) {
+    return computeRemoteEditorLineStartOffsets(nextText);
+  }
+  if (previousText == nextText) {
+    return previousLineStartOffsets;
+  }
+
+  var prefixLength = 0;
+  final maxPrefixLength = math.min(previousText.length, nextText.length);
+  while (prefixLength < maxPrefixLength &&
+      previousText.codeUnitAt(prefixLength) ==
+          nextText.codeUnitAt(prefixLength)) {
+    prefixLength++;
+  }
+
+  var suffixLength = 0;
+  final maxSuffixLength = math.min(
+    previousText.length - prefixLength,
+    nextText.length - prefixLength,
+  );
+  while (suffixLength < maxSuffixLength &&
+      previousText.codeUnitAt(previousText.length - suffixLength - 1) ==
+          nextText.codeUnitAt(nextText.length - suffixLength - 1)) {
+    suffixLength++;
+  }
+
+  final oldChangedEnd = previousText.length - suffixLength;
+  final newChangedEnd = nextText.length - suffixLength;
+  final changeLineIndex = _resolveRemoteEditorLineIndex(
+    previousLineStartOffsets,
+    prefixLength,
+  );
+  final changeLineStart = previousLineStartOffsets[changeLineIndex];
+  final nextLineStartOffsets = <int>[
+    for (final lineStart in previousLineStartOffsets)
+      if (lineStart < changeLineStart) lineStart,
+  ];
+
+  for (var index = changeLineStart; index < newChangedEnd; index++) {
+    if (index == changeLineStart) {
+      nextLineStartOffsets.add(index);
+      continue;
+    }
+    if (nextText.codeUnitAt(index - 1) == 10) {
+      nextLineStartOffsets.add(index);
+    }
+  }
+  if (nextLineStartOffsets.isEmpty) {
+    nextLineStartOffsets.add(0);
+  }
+
+  final lengthDelta = nextText.length - previousText.length;
+  for (final lineStart in previousLineStartOffsets) {
+    if (lineStart < oldChangedEnd) {
+      continue;
+    }
+    final shiftedLineStart = lineStart + lengthDelta;
+    if (nextLineStartOffsets.last != shiftedLineStart) {
+      nextLineStartOffsets.add(shiftedLineStart);
+    }
+  }
+
+  return nextLineStartOffsets;
 }
