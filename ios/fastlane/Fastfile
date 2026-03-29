@@ -185,16 +185,13 @@ platform :ios do
 
     embed_swift_runtime(bundle_path: app_path)
     appex_paths.each do |appex_path|
-      embed_swift_runtime(bundle_path: appex_path)
+      FileUtils.rm_rf(File.join(appex_path, 'Frameworks'))
     end
 
     FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
     FileUtils.mkdir_p(swift_support_dir)
 
     swift_runtime_paths = Dir[File.join(app_path, 'Frameworks', 'libswift*.dylib')].sort
-    appex_paths.each do |appex_path|
-      swift_runtime_paths.concat(Dir[File.join(appex_path, 'Frameworks', 'libswift*.dylib')].sort)
-    end
 
     swift_runtime_paths
       .uniq { |path| File.basename(path) }
@@ -300,12 +297,6 @@ platform :ios do
         package_root: tmpdir,
       )
 
-      Dir[File.join(live_activity_path, 'Frameworks', '*.framework')].sort.each do |framework_path|
-        codesign_path(path: framework_path, signing_identity: signing_identity)
-      end
-      Dir[File.join(live_activity_path, 'Frameworks', '*.dylib')].sort.each do |dylib_path|
-        codesign_path(path: dylib_path, signing_identity: signing_identity)
-      end
       codesign_path(
         path: live_activity_path,
         signing_identity: signing_identity,
