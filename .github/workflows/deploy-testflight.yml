@@ -12,18 +12,13 @@ on:
         required: false
         default: ''
         type: string
-      preview-run-id:
-        description: 'Preview workflow run ID for the requested SHA'
-        required: false
-        default: ''
-        type: string
       preview-build-name:
-        description: 'Build name associated with the requested preview artifacts'
+        description: 'Build name associated with the requested deploy artifacts'
         required: false
         default: ''
         type: string
       preview-build-number:
-        description: 'Build number associated with the requested preview artifacts'
+        description: 'Build number associated with the requested deploy artifacts'
         required: false
         default: ''
         type: string
@@ -69,7 +64,6 @@ jobs:
       pull-requests: read
     outputs:
       pr-head-sha: ${{ steps.validate.outputs.pr-head-sha }}
-      pr-head-ref: ${{ steps.validate.outputs.pr-head-ref }}
       deploy-sha: ${{ steps.validate.outputs.deploy-sha }}
       pr-title: ${{ steps.validate.outputs.pr-title }}
     steps:
@@ -116,24 +110,53 @@ jobs:
             }
 
             core.setOutput('pr-head-sha', pr.head.sha);
-            core.setOutput('pr-head-ref', pr.head.ref);
             core.setOutput('deploy-sha', deploySha);
             core.setOutput('pr-title', pr.title);
 
+  compute-version:
+    name: Compute Version
+    needs: validate-pr
+    runs-on: ubuntu-latest
+    outputs:
+      build-name: ${{ steps.provided-version.outputs.build-name || steps.source-version.outputs.build-name }}
+      build-number: ${{ steps.provided-version.outputs.build-number || steps.source-version.outputs.build-number }}
+    steps:
+      - name: Reuse requested build version
+        id: provided-version
+        if: inputs.preview-build-name != '' && inputs.preview-build-number != ''
+        run: |
+          echo "build-name=${{ inputs.preview-build-name }}" >> "$GITHUB_OUTPUT"
+          echo "build-number=${{ inputs.preview-build-number }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: inputs.preview-build-name == '' || inputs.preview-build-number == ''
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-pr.outputs.deploy-sha }}
+
+      - name: Compute version
+        id: source-version
+        if: inputs.preview-build-name == '' || inputs.preview-build-number == ''
+        run: |
+          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
+          BUILD_NUMBER=$(( $(date +%s) / 10 ))
+
+          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
+          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+
   resolve-preview-artifacts:
     name: Resolve Preview Artifacts
-    needs: validate-pr
+    needs: [validate-pr, compute-version]
     if: needs.validate-pr.result == 'success'
     runs-on: ubuntu-latest
     permissions:
-      actions: read
+      actions: write
+      contents: read
     outputs:
       reuse-artifacts: ${{ steps.resolve.outputs.reuse-artifacts }}
       preview-run-id: ${{ steps.resolve.outputs.preview-run-id }}
-      build-name: ${{ steps.resolve.outputs.build-name }}
-      build-number: ${{ steps.resolve.outputs.build-number }}
     steps:
-      - name: Find reusable preview artifacts
+      - name: Find or start reusable artifact build
         id: resolve
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -141,33 +164,46 @@ jobs:
             const owner = context.repo.owner;
             const repo = context.repo.repo;
             const deploySha = '${{ needs.validate-pr.outputs.deploy-sha }}';
-            const prHeadRef = '${{ needs.validate-pr.outputs.pr-head-ref }}';
-            const previewRunIdInput = '${{ inputs.preview-run-id }}'.trim();
-            const previewBuildNameInput = '${{ inputs.preview-build-name }}'.trim();
-            const previewBuildNumberInput = '${{ inputs.preview-build-number }}'.trim();
-            const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
-            const maxWaitAttempts = 40;
-            const waitDelayMs = 30_000;
-
-            const requiredArtifactNames = (buildName, buildNumber) => [
+            const prNumber = '${{ inputs.pr-number }}';
+            const buildName = '${{ needs.compute-version.outputs.build-name }}';
+            const buildNumber = '${{ needs.compute-version.outputs.build-number }}';
+            const workflowId = 'prepare-pr-deploy-artifacts.yml';
+            const requiredArtifactNames = [
               `android-private-${buildName}-${buildNumber}`,
               `android-apk-private-${buildName}-${buildNumber}`,
               `ios-private-${buildName}-${buildNumber}`,
             ];
+            const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
+            const maxWaitAttempts = 40;
+            const waitDelayMs = 30_000;
+            const dispatchedRunSearchAttempts = 10;
 
             const setOutputs = ({
               reuseArtifacts = 'false',
               previewRunId = '',
-              buildName = '',
-              buildNumber = '',
             }) => {
               core.setOutput('reuse-artifacts', reuseArtifacts);
               core.setOutput('preview-run-id', previewRunId);
-              core.setOutput('build-name', buildName);
-              core.setOutput('build-number', buildNumber);
             };
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+            const listRuns = async () =>
+              github.paginate(github.rest.actions.listWorkflowRuns, {
+                owner,
+                repo,
+                workflow_id: workflowId,
+                event: 'workflow_dispatch',
+                per_page: 100,
+              });
+
+            const listArtifacts = async (runId) =>
+              github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                owner,
+                repo,
+                run_id: Number(runId),
+                per_page: 100,
+              });
 
             const getWorkflowRun = async (runId) =>
               (
@@ -178,46 +214,42 @@ jobs:
                 })
               ).data;
 
-            const listArtifacts = async (runId) =>
-              github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+            const findRunForSha = async () => {
+              const runs = await listRuns();
+              return (
+                runs.find(
+                  (run) =>
+                    run.head_sha === deploySha &&
+                    run.display_title === 'Build reusable deploy artifacts',
+                ) ??
+                runs.find((run) => run.head_sha === deploySha) ??
+                null
+              );
+            };
+
+            const dispatchPrepareRun = async () => {
+              await github.rest.actions.createWorkflowDispatch({
                 owner,
                 repo,
-                run_id: Number(runId),
-                per_page: 100,
+                workflow_id: workflowId,
+                ref: 'main',
+                inputs: {
+                  'pr-number': prNumber,
+                  'source-sha': deploySha,
+                  'build-name': buildName,
+                  'build-number': buildNumber,
+                },
               });
 
-            const findMatchingRun = async () => {
-              if (previewRunIdInput) {
-                try {
-                  const previewRun = await getWorkflowRun(previewRunIdInput);
-                  if (previewRun.head_sha === deploySha) {
-                    return previewRun;
-                  }
-
-                  core.notice(
-                    `Preview run ${previewRunIdInput} does not match requested SHA ${deploySha}; falling back to lookup.`,
-                  );
-                } catch (error) {
-                  core.warning(
-                    `Failed to inspect preview run ${previewRunIdInput}: ${String(error)}`,
-                  );
+              for (let attempt = 0; attempt < dispatchedRunSearchAttempts; attempt += 1) {
+                await sleep(10_000);
+                const run = await findRunForSha();
+                if (run) {
+                  return run;
                 }
               }
 
-              if (!previewBuildNameInput || !previewBuildNumberInput) {
-                return null;
-              }
-
-              const runs = await github.paginate(github.rest.actions.listWorkflowRuns, {
-                owner,
-                repo,
-                workflow_id: 'preview.yml',
-                branch: prHeadRef,
-                event: 'pull_request',
-                per_page: 100,
-              });
-
-              return runs.find((run) => run.head_sha === deploySha) ?? null;
+              return null;
             };
 
             const awaitCompletion = async (initialRun) => {
@@ -228,7 +260,7 @@ jobs:
                 }
 
                 core.notice(
-                  `Waiting for preview run ${currentRun.id} to finish building reusable artifacts for ${deploySha}.`,
+                  `Waiting for artifact workflow run ${currentRun.id} to finish building reusable artifacts for ${deploySha}.`,
                 );
                 await sleep(waitDelayMs);
                 currentRun = await getWorkflowRun(currentRun.id);
@@ -237,23 +269,24 @@ jobs:
               return currentRun;
             };
 
-            const previewRun = await findMatchingRun();
-            if (!previewRun) {
-              core.notice('No matching preview run metadata found; deploy will build fresh artifacts.');
+            let prepareRun = await findRunForSha();
+            if (!prepareRun) {
+              core.notice(
+                `No reusable artifact run found for ${deploySha}; dispatching ${workflowId}.`,
+              );
+              prepareRun = await dispatchPrepareRun();
+            }
+
+            if (!prepareRun) {
+              core.notice('Unable to locate a reusable artifact run; deploy will build fresh artifacts.');
               setOutputs({});
               return;
             }
 
-            if (!previewBuildNameInput || !previewBuildNumberInput) {
-              core.notice('Preview build metadata is incomplete; deploy will build fresh artifacts.');
-              setOutputs({});
-              return;
-            }
-
-            const finishedRun = await awaitCompletion(previewRun);
+            const finishedRun = await awaitCompletion(prepareRun);
             if (finishedRun.status !== 'completed') {
               core.notice(
-                `Preview run ${finishedRun.id} did not complete in time; deploy will build fresh artifacts.`,
+                `Artifact workflow run ${finishedRun.id} did not complete in time; deploy will build fresh artifacts.`,
               );
               setOutputs({});
               return;
@@ -261,7 +294,7 @@ jobs:
 
             if (finishedRun.conclusion !== 'success') {
               core.notice(
-                `Preview run ${finishedRun.id} concluded with ${finishedRun.conclusion}; deploy will build fresh artifacts.`,
+                `Artifact workflow run ${finishedRun.id} concluded with ${finishedRun.conclusion}; deploy will build fresh artifacts.`,
               );
               setOutputs({});
               return;
@@ -271,14 +304,13 @@ jobs:
             const availableArtifactNames = new Set(
               artifacts.filter((artifact) => !artifact.expired).map((artifact) => artifact.name),
             );
-            const missingArtifactNames = requiredArtifactNames(
-              previewBuildNameInput,
-              previewBuildNumberInput,
-            ).filter((artifactName) => !availableArtifactNames.has(artifactName));
+            const missingArtifactNames = requiredArtifactNames.filter(
+              (artifactName) => !availableArtifactNames.has(artifactName),
+            );
 
             if (missingArtifactNames.length > 0) {
               core.notice(
-                `Preview run ${finishedRun.id} is missing reusable artifacts (${missingArtifactNames.join(', ')}); deploy will build fresh artifacts.`,
+                `Artifact workflow run ${finishedRun.id} is missing reusable artifacts (${missingArtifactNames.join(', ')}); deploy will build fresh artifacts.`,
               );
               setOutputs({});
               return;
@@ -287,44 +319,11 @@ jobs:
             setOutputs({
               reuseArtifacts: 'true',
               previewRunId: String(finishedRun.id),
-              buildName: previewBuildNameInput,
-              buildNumber: previewBuildNumberInput,
             });
-
-  compute-version:
-    name: Compute Version
-    needs: [validate-pr, resolve-preview-artifacts]
-    runs-on: ubuntu-latest
-    outputs:
-      build-name: ${{ steps.preview-version.outputs.build-name || steps.source-version.outputs.build-name }}
-      build-number: ${{ steps.preview-version.outputs.build-number || steps.source-version.outputs.build-number }}
-    steps:
-      - name: Reuse preview build version
-        id: preview-version
-        if: needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true'
-        run: |
-          echo "build-name=${{ needs.resolve-preview-artifacts.outputs.build-name }}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${{ needs.resolve-preview-artifacts.outputs.build-number }}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        if: needs.resolve-preview-artifacts.outputs.reuse-artifacts != 'true'
-        with:
-          persist-credentials: false
-          ref: ${{ needs.validate-pr.outputs.deploy-sha }}
-
-      - name: Compute version
-        id: source-version
-        if: needs.resolve-preview-artifacts.outputs.reuse-artifacts != 'true'
-        run: |
-          BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
-          BUILD_NUMBER=$(( $(date +%s) / 10 ))
-
-          echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
-          echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
   comment-start:
     name: Update PR deploy comment (start)
-    needs: [validate-pr, resolve-preview-artifacts, compute-version]
+    needs: [validate-pr, compute-version, resolve-preview-artifacts]
     if: needs.validate-pr.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -384,7 +383,7 @@ jobs:
               : `@${requestedBy} via workflow dispatch`;
             const artifactDetails =
               '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reusing preview artifacts from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                ? `| **Artifacts** | Reusing trusted artifact run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Building fresh deploy artifacts in this run |';
 
             const body = [
@@ -416,6 +415,8 @@ jobs:
               `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
               `<!-- preview-deploy-source-sha:${deploySha} -->`,
+              `<!-- preview-deploy-build-name:${{ needs.compute-version.outputs.build-name }} -->`,
+              `<!-- preview-deploy-build-number:${{ needs.compute-version.outputs.build-number }} -->`,
             ]
               .filter(Boolean)
               .join('\n');
@@ -438,7 +439,7 @@ jobs:
 
   deploy:
     name: Deploy to TestFlight & Play Internal
-    needs: [validate-pr, resolve-preview-artifacts, compute-version]
+    needs: [validate-pr, compute-version, resolve-preview-artifacts]
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
@@ -513,8 +514,8 @@ jobs:
     needs:
       [
         validate-pr,
-        resolve-preview-artifacts,
         compute-version,
+        resolve-preview-artifacts,
         comment-start,
         deploy,
         verify-pr-source,
@@ -579,7 +580,7 @@ jobs:
               : `@${requestedBy} via workflow dispatch`;
             const artifactDetails =
               '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reused preview artifacts from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                ? `| **Artifacts** | Reused trusted artifact run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Built fresh deploy artifacts in this run |';
 
             const replaceEyesReactionWithRocket = async () => {
@@ -699,6 +700,8 @@ jobs:
               `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
               `<!-- preview-deploy-source-sha:${deploySha} -->`,
+              `<!-- preview-deploy-build-name:${{ needs.compute-version.outputs.build-name }} -->`,
+              `<!-- preview-deploy-build-number:${{ needs.compute-version.outputs.build-number }} -->`,
             ]
               .filter(Boolean)
               .join('\n');

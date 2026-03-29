@@ -54,15 +54,9 @@ jobs:
       flavor: private
       source-ref: ${{ github.event.pull_request.head.sha }}
       deploy-ios-to: none
-      deploy-android-to: internal
+      deploy-android-to: none
       build-ios: false
       build-android: true
-      run-android-deploy: false
-    secrets:
-      ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
-      ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-      ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
-      ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
 
   build-ios:
     name: Build iOS Preview
@@ -76,18 +70,10 @@ jobs:
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
       source-ref: ${{ github.event.pull_request.head.sha }}
-      deploy-ios-to: testflight
+      deploy-ios-to: none
       deploy-android-to: none
       build-ios: true
       build-android: false
-      run-ios-deploy: false
-    secrets:
-      MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
-      MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
-      MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
-      APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
-      APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
-      APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
 
   comment-android:
     name: PR Comment (Android)
@@ -176,13 +162,9 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. `/deploy` now reuses these preview artifacts when they match the requested SHA, and waits for them if this preview run is still in progress.
+            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and reuses them when available.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
-            <!-- preview-run-id:${{ github.run_id }} -->
-            <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
-            <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
-            <!-- preview-source-sha:${{ github.event.pull_request.head.sha }} -->
 
   comment-ios:
     name: PR Comment (iOS)
@@ -270,10 +252,6 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. `/deploy` now reuses these preview artifacts when they match the requested SHA, and waits for them if this preview run is still in progress.
+            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and reuses them when available.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
-            <!-- preview-run-id:${{ github.run_id }} -->
-            <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
-            <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
-            <!-- preview-source-sha:${{ github.event.pull_request.head.sha }} -->
