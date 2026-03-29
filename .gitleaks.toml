@@ -10,6 +10,7 @@ paths = [
   '''(?:^|/)(?:ios|macos)/Podfile\.lock$''',
   '''(?:^|/)lib/data/security/secret_encryption_service\.dart$''',
   '''(?:^|/)test/unit/secret_encryption_service_test\.dart$''',
+  '''(?:^|/)test/data/repositories/ssh_key_repository_test\.dart$''',
 ]
 regexTarget = 'line'
 regexes = [
