@@ -1,6 +1,8 @@
 default_platform(:ios)
 
 require 'fileutils'
+require 'shellwords'
+require 'tmpdir'
 
 platform :ios do
   before_all do
@@ -129,6 +131,36 @@ platform :ios do
     certificate_name
   end
 
+  private_lane :extract_profile_entitlements do |options|
+    profile_path = options[:profile_path]
+    output_path = options[:output_path]
+
+    sh(
+      "security cms -D -i #{profile_path.shellescape} | " \
+      "plutil -extract Entitlements xml1 -o #{output_path.shellescape} -",
+    )
+
+    output_path
+  end
+
+  private_lane :codesign_path do |options|
+    path = options[:path]
+    signing_identity = options[:signing_identity]
+    entitlements_path = options[:entitlements_path].to_s
+
+    command = [
+      'codesign',
+      '--force',
+      '--sign', signing_identity,
+      '--timestamp=none',
+      '--generate-entitlement-der',
+    ]
+    command += ['--entitlements', entitlements_path] unless entitlements_path.empty?
+    command << path
+
+    sh(command.map(&:shellescape).join(' '))
+  end
+
   desc 'Setup code signing for CI builds'
   lane :setup_signing do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
@@ -159,7 +191,7 @@ platform :ios do
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
       type: 'appstore',
-      readonly: false,
+      readonly: true,
     )
 
     resigned_ipa_path = unsigned_ipa_path
@@ -169,15 +201,64 @@ platform :ios do
       resigned_ipa_path = output_ipa_path
     end
 
-    resign(
-      ipa: resigned_ipa_path,
-      signing_identity: resolved_certificate_name(app_identifier: app_id),
-      provisioning_profile: {
-        app_id => resolved_profile_path(app_identifier: app_id),
-        live_activity_app_id => resolved_profile_path(app_identifier: live_activity_app_id),
-      },
-      use_app_entitlements: true,
-    )
+    signing_identity = resolved_certificate_name(app_identifier: app_id)
+    app_profile_path = resolved_profile_path(app_identifier: app_id)
+    live_activity_profile_path = resolved_profile_path(app_identifier: live_activity_app_id)
+
+    Dir.mktmpdir('flutty-resign-ipa') do |tmpdir|
+      sh("unzip -q #{resigned_ipa_path.shellescape} -d #{tmpdir.shellescape}")
+
+      payload_dir = File.join(tmpdir, 'Payload')
+      app_path = Dir[File.join(payload_dir, '*.app')].first
+      UI.user_error!("Expected exactly one .app in #{payload_dir}") if app_path.to_s.empty?
+
+      live_activity_path = Dir[File.join(app_path, 'PlugIns', '*.appex')].first
+      UI.user_error!("Expected a live activity extension in #{app_path}/PlugIns") if live_activity_path.to_s.empty?
+
+      app_entitlements_path = File.join(tmpdir, 'app-entitlements.plist')
+      live_activity_entitlements_path = File.join(tmpdir, 'live-activity-entitlements.plist')
+
+      extract_profile_entitlements(
+        profile_path: app_profile_path,
+        output_path: app_entitlements_path,
+      )
+      extract_profile_entitlements(
+        profile_path: live_activity_profile_path,
+        output_path: live_activity_entitlements_path,
+      )
+
+      FileUtils.cp(app_profile_path, File.join(app_path, 'embedded.mobileprovision'))
+      FileUtils.cp(live_activity_profile_path, File.join(live_activity_path, 'embedded.mobileprovision'))
+
+      Dir[File.join(live_activity_path, 'Frameworks', '*.framework')].sort.each do |framework_path|
+        codesign_path(path: framework_path, signing_identity: signing_identity)
+      end
+      Dir[File.join(live_activity_path, 'Frameworks', '*.dylib')].sort.each do |dylib_path|
+        codesign_path(path: dylib_path, signing_identity: signing_identity)
+      end
+      codesign_path(
+        path: live_activity_path,
+        signing_identity: signing_identity,
+        entitlements_path: live_activity_entitlements_path,
+      )
+
+      Dir[File.join(app_path, 'Frameworks', '*.framework')].sort.each do |framework_path|
+        codesign_path(path: framework_path, signing_identity: signing_identity)
+      end
+      Dir[File.join(app_path, 'Frameworks', '*.dylib')].sort.each do |dylib_path|
+        codesign_path(path: dylib_path, signing_identity: signing_identity)
+      end
+      codesign_path(
+        path: app_path,
+        signing_identity: signing_identity,
+        entitlements_path: app_entitlements_path,
+      )
+
+      FileUtils.rm_f(resigned_ipa_path)
+      Dir.chdir(tmpdir) do
+        sh("ditto -c -k --sequesterRsrc --keepParent Payload #{resigned_ipa_path.shellescape}")
+      end
+    end
 
     resigned_ipa_path
   end
