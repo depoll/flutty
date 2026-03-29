@@ -6,10 +6,8 @@ platform :android do
     'xyz.depollsoft.monkeyssh' => File.expand_path('metadata-production/android', __dir__),
   }.freeze
 
-  # Clear any stuck draft releases that would block a new upload
-  private_lane :clear_draft_releases do |options|
+  private_lane :play_store_client do |options|
     package = options[:package_name]
-    track_name = options[:track]
 
     require 'supply'
     Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, {
@@ -18,7 +16,16 @@ platform :android do
       changes_not_sent_for_review: true,
       rescue_changes_not_sent_for_review: true,
     })
-    client = Supply::Client.make_from_config
+
+    Supply::Client.make_from_config
+  end
+
+  # Clear any stuck draft releases that would block a new upload
+  private_lane :clear_draft_releases do |options|
+    package = options[:package_name]
+    track_name = options[:track]
+
+    client = play_store_client(package_name: package)
     client.begin_edit(package_name: package)
 
     tracks = client.tracks(track_name)
@@ -36,10 +43,30 @@ platform :android do
     client.abort_current_edit
   end
 
+  private_lane :track_contains_version_code do |options|
+    package = options[:package_name]
+    track_name = options[:track]
+    version_code = options[:version_code].to_s
+
+    return false if version_code.empty?
+
+    client = play_store_client(package_name: package)
+    client.begin_edit(package_name: package)
+
+    tracks = client.tracks(track_name)
+    version_codes = tracks.flat_map do |track|
+      track.releases.flat_map { |release| Array(release.version_codes) }
+    end.map(&:to_s)
+
+    client.abort_current_edit
+    version_codes.include?(version_code)
+  end
+
   desc 'Upload flavor AAB to Play Store internal testing'
   lane :internal do |options|
     skip_meta = options[:skip_metadata].to_s == 'true'
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh.private'
+    version_code = options[:version_code].to_s
     allowed_packages = METADATA_DIRS.keys.sort.join(', ')
     default_aab =
       case package
@@ -61,6 +88,11 @@ platform :android do
 
     clear_draft_releases(package_name: package, track: 'internal')
 
+    if track_contains_version_code(package_name: package, track: 'internal', version_code: version_code)
+      UI.important("Version code #{version_code} already exists on the internal track; skipping upload")
+      next
+    end
+
     upload_to_play_store(
       package_name: package,
       track: 'internal',
@@ -79,9 +111,15 @@ platform :android do
   lane :release do |options|
     skip_meta = options[:skip_metadata].to_s == 'true'
     package = 'xyz.depollsoft.monkeyssh'
+    version_code = options[:version_code].to_s
     meta_path = METADATA_DIRS[package]
 
     clear_draft_releases(package_name: package, track: 'production')
+
+    if track_contains_version_code(package_name: package, track: 'production', version_code: version_code)
+      UI.important("Version code #{version_code} already exists on the production track; skipping upload")
+      next
+    end
 
     upload_to_play_store(
       package_name: package,
@@ -103,14 +141,7 @@ platform :android do
     meta_path = METADATA_DIRS[package] || File.expand_path('metadata-production/android', __dir__)
     lang_dir = File.join(meta_path, 'en-US')
 
-    require 'supply'
-    Supply.config = FastlaneCore::Configuration.create(Supply::Options.available_options, {
-      package_name: package,
-      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      changes_not_sent_for_review: true,
-      rescue_changes_not_sent_for_review: true,
-    })
-    client = Supply::Client.make_from_config
+    client = play_store_client(package_name: package)
     client.begin_edit(package_name: package)
 
     title = File.read(File.join(lang_dir, 'title.txt')).strip
