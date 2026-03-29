@@ -1,6 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:monkeyssh/presentation/screens/sftp_screen.dart';
+import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 
 void main() {
   group('currentLinePrefixAtTextOffset', () {
@@ -44,6 +44,18 @@ void main() {
     });
   });
 
+  group('resolveRemoteEditorCaretPosition', () {
+    test('returns the current line and column from the selection offset', () {
+      expect(
+        resolveRemoteEditorCaretPosition(
+          'alpha\nbeta\ngamma',
+          const TextSelection.collapsed(offset: 7),
+        ),
+        (line: 2, column: 2),
+      );
+    });
+  });
+
   group('buildRemoteTextEditorScreenForTesting', () {
     testWidgets(
       'keeps the nowrap viewport fixed while scrolling the selection into view',
@@ -79,10 +91,67 @@ void main() {
                 ),
               )
               .width,
-          closeTo(372, 0.1),
+          closeTo(316, 0.1),
+        );
+        expect(
+          tester
+              .getSize(
+                find.byKey(const ValueKey<String>('remoteTextEditorSurface')),
+              )
+              .width,
+          closeTo(396, 0.1),
+        );
+        expect(
+          tester
+              .getTopRight(
+                find.byKey(
+                  const ValueKey<String>('remoteTextEditorNowrapViewport'),
+                ),
+              )
+              .dx,
+          lessThanOrEqualTo(
+            tester
+                .getTopRight(
+                  find.byKey(const ValueKey<String>('remoteTextEditorSurface')),
+                )
+                .dx,
+          ),
         );
         expect(horizontalScrollController.offset, greaterThan(0));
+        expect(find.byType(InputDecorator), findsNothing);
       },
     );
+
+    testWidgets('shows status details plus wrap and zoom controls', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha\nbeta')
+        ..selection = const TextSelection.collapsed(offset: 7);
+
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Line 2, Column 2'), findsOneWidget);
+      expect(find.text('Wrap off'), findsOneWidget);
+      expect(find.text('14 pt'), findsOneWidget);
+      expect(find.byTooltip('Enable line wrap'), findsOneWidget);
+      expect(find.byTooltip('Zoom out'), findsOneWidget);
+      expect(find.byTooltip('Zoom in'), findsOneWidget);
+
+      await tester.tap(find.byTooltip('Enable line wrap'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Wrap on'), findsOneWidget);
+      expect(find.byTooltip('Disable line wrap'), findsOneWidget);
+    });
   });
 }
