@@ -34,6 +34,12 @@ abstract final class SettingKeys {
   /// Terminal bell sound enabled.
   static const bellSound = 'bell_sound';
 
+  /// Enable tapping terminal file paths to open SFTP.
+  static const terminalPathLinks = 'terminal_path_links';
+
+  /// Show underlines for clickable terminal file paths.
+  static const terminalPathLinkUnderlines = 'terminal_path_link_badges';
+
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
 
@@ -427,6 +433,79 @@ class BellSoundNotifier extends Notifier<bool> {
 final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
+
+/// Notifier for terminal file path links with write capability.
+class TerminalPathLinksNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalPathLinks,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal file path linking.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.terminalPathLinks, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal file path links with write capability.
+final terminalPathLinksNotifierProvider =
+    NotifierProvider<TerminalPathLinksNotifier, bool>(
+      TerminalPathLinksNotifier.new,
+    );
+
+/// Notifier for terminal file path underlines with write capability.
+class TerminalPathLinkUnderlinesNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalPathLinkUnderlines,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal file path underlines.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(
+      SettingKeys.terminalPathLinkUnderlines,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for terminal file path underlines with write capability.
+final terminalPathLinkUnderlinesNotifierProvider =
+    NotifierProvider<TerminalPathLinkUnderlinesNotifier, bool>(
+      TerminalPathLinkUnderlinesNotifier.new,
+    );
 
 /// State for terminal theme settings (light and dark).
 class TerminalThemeSettings {

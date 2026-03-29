@@ -100,10 +100,17 @@ final routerProvider = Provider<GoRouter>((ref) {
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
           );
+          final initialPath = state.uri.queryParameters['path'];
+          final initialWorkingDirectory = state.uri.queryParameters['cwd'];
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
-          return SftpScreen(hostId: hostId, connectionId: connectionId);
+          return SftpScreen(
+            hostId: hostId,
+            connectionId: connectionId,
+            initialPath: initialPath,
+            initialWorkingDirectory: initialWorkingDirectory,
+          );
         },
       ),
       GoRoute(
