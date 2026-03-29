@@ -191,7 +191,7 @@ platform :ios do
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
       type: 'appstore',
-      readonly: true,
+      readonly: false,
     )
 
     resigned_ipa_path = unsigned_ipa_path
