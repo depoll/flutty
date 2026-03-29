@@ -248,7 +248,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     final nextInitialPath = _sanitizeRequestedPath(widget.initialPath);
     _pendingInitialPath = nextInitialPath;
     if (_sftp != null && nextInitialPath != null) {
-      unawaited(_openRequestedPath(nextInitialPath));
+      final pathToOpen = nextInitialPath;
+      _pendingInitialPath = null;
+      unawaited(_openRequestedPath(pathToOpen));
     }
   }
 

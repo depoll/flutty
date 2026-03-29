@@ -120,6 +120,7 @@ class _MonkeyTerminalGestureDetectorState
     _doubleTapTimer?.cancel();
     _doubleTapTimer = null;
     _lastTapOffset = null;
+    _isDoubleTap = false;
   }
 
   void _doubleTapTimeout() {

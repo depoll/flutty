@@ -3346,6 +3346,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final terminalLocalPosition = terminalViewState.renderTerminal
         .globalToLocal(event.position);
+    final terminalViewObject = terminalViewState.context.findRenderObject();
+    final terminalViewLocalPosition = terminalViewObject is RenderBox
+        ? terminalViewObject.globalToLocal(event.position)
+        : terminalLocalPosition;
     final offset = terminalViewState.renderTerminal.getCellOffset(
       terminalLocalPosition,
     );
@@ -3354,7 +3358,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       forgiving: event.kind == PointerDeviceKind.touch,
     );
     final underlinePath = event.kind == PointerDeviceKind.touch
-        ? resolveTerminalPathTouchTargetTap(terminalLocalPosition, [
+        ? resolveTerminalPathTouchTargetTap(terminalViewLocalPosition, [
             for (final underline in _visibleTerminalPathUnderlines)
               (path: underline.path, touchRect: underline.touchRect),
           ])
@@ -4046,6 +4050,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ? 'Could not open "$terminalPath" in SFTP: path does not exist'
             : 'Could not open "$terminalPath" in SFTP';
         _showTerminalLinkMessage(message);
+      }
+      return null;
+    } on Object catch (error, stackTrace) {
+      debugPrint(
+        'Failed to resolve terminal file path "$terminalPath": $error',
+      );
+      debugPrint('$stackTrace');
+      if (isExplicitPath) {
+        _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
       }
       return null;
     }
