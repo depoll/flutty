@@ -105,9 +105,7 @@ platform :ios do
 
   private_lane :resolved_ipa_path do |options|
     provided_ipa_path = options[:ipa_path].to_s
-    return provided_ipa_path unless provided_ipa_path.empty?
-
-    lane_context[SharedValues::IPA_OUTPUT_PATH]
+    provided_ipa_path.empty? ? lane_context[SharedValues::IPA_OUTPUT_PATH] : provided_ipa_path
   end
 
   private_lane :resolved_profile_path do |options|
