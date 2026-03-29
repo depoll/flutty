@@ -15,4 +15,5 @@ regexTarget = 'line'
 regexes = [
   '''^PODFILE CHECKSUM: [0-9a-f]{40}$''',
   '''flutty_db_(?:encryption|secret)_key_v1''',
+  '''privateKey: 'fixture-(?:open-ssh|rsa|ec)-material(?:-[0-9]+)?\.\.\.',''',
 ]
