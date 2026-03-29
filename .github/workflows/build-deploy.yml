@@ -50,6 +50,16 @@ on:
         type: boolean
         default: true
         description: 'Whether to run the iOS build job'
+      build-android-unsigned-aab:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to build an unsigned Android release bundle artifact'
+      build-ios-unsigned-ipa:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to package an unsigned iOS IPA artifact'
       run-android-deploy:
         required: false
         type: boolean
@@ -75,6 +85,11 @@ on:
         type: string
         default: ''
         description: 'Artifact name for a reusable Android APK'
+      android-reuse-aab-is-unsigned:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether the reusable Android AAB must be signed in this workflow'
       android-reuse-source-sha:
         required: false
         type: string
@@ -90,6 +105,11 @@ on:
         type: string
         default: ''
         description: 'Artifact name for a reusable iOS IPA'
+      ios-reuse-ipa-is-unsigned:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether the reusable iOS IPA must be signed in this workflow'
       ios-reuse-source-sha:
         required: false
         type: string
@@ -153,11 +173,25 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-          ref: ${{ inputs.source-ref || github.ref }}
+          ref: ${{ github.ref }}
+          fetch-depth: 2
 
       - name: Capture source SHA
         id: source-sha
-        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
+          REUSED_SOURCE_SHA: ${{ inputs.android-reuse-source-sha }}
+        run: |
+          if [ -n "$REUSED_SOURCE_SHA" ]; then
+            echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          elif echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "value=$REQUESTED_SOURCE_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
+            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
+            echo "value=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve source SHA
         id: resolved-source-sha
@@ -171,8 +205,14 @@ jobs:
             echo "value=$CHECKED_OUT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Checkout requested source ref for Android build
+        if: inputs.source-ref != '' && inputs.android-reuse-aab-artifact-name == ''
+        env:
+          REQUESTED_SOURCE_SHA: ${{ steps.source-sha.outputs.value }}
+        run: git checkout --force "$REQUESTED_SOURCE_SHA"
+
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
-        if: inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.android-reuse-aab-artifact-name == '' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-is-unsigned)
         with:
           distribution: 'temurin'
           java-version: '17'
@@ -198,7 +238,7 @@ jobs:
         run: flutter pub get
 
       - name: Validate Android signing secrets
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -206,24 +246,24 @@ jobs:
           ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
         run: |
           if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "::error title=Missing Android signing secret::ANDROID_KEYSTORE_BASE64 is required for signed Android release builds."
+            echo "::error title=Missing Android signing secret::ANDROID_KEYSTORE_BASE64 is required for Android release signing."
             exit 1
           fi
           if [ -z "$ANDROID_KEY_ALIAS" ]; then
-            echo "::error title=Missing Android signing secret::ANDROID_KEY_ALIAS is required for signed Android release builds."
+            echo "::error title=Missing Android signing secret::ANDROID_KEY_ALIAS is required for Android release signing."
             exit 1
           fi
           if [ -z "$ANDROID_KEY_PASSWORD" ]; then
-            echo "::error title=Missing Android signing secret::ANDROID_KEY_PASSWORD is required for signed Android release builds."
+            echo "::error title=Missing Android signing secret::ANDROID_KEY_PASSWORD is required for Android release signing."
             exit 1
           fi
           if [ -z "$ANDROID_STORE_PASSWORD" ]; then
-            echo "::error title=Missing Android signing secret::ANDROID_STORE_PASSWORD is required for signed Android release builds."
+            echo "::error title=Missing Android signing secret::ANDROID_STORE_PASSWORD is required for Android release signing."
             exit 1
           fi
 
       - name: Decode keystore
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -245,8 +285,21 @@ jobs:
           storeFile=upload-keystore.jks
           EOF_KEY_PROPERTIES
 
-      - name: Build AAB
+      - name: Build signed AAB
         if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        run: |
+          flutter build appbundle \
+            --flavor ${{ inputs.flavor }} \
+            --release \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+
+      - name: Build unsigned AAB
+        if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
+        env:
+          FLUTTY_ALLOW_UNSIGNED_RELEASE: 'true'
         run: |
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
@@ -296,11 +349,44 @@ jobs:
           name: ${{ inputs.android-reuse-apk-artifact-name }}
           path: build/app/outputs/flutter-apk
 
-      - name: Upload AAB artifact
+      - name: Sign reusable unsigned AAB
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name != '' && inputs.android-reuse-aab-is-unsigned
+        env:
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+        run: |
+          AAB_PATH=$(find build/app/outputs/bundle/${{ inputs.flavor }}Release -maxdepth 1 -name '*.aab' -print -quit)
+          if [ -z "$AAB_PATH" ]; then
+            echo "Expected a reusable unsigned AAB artifact, but none was downloaded."
+            exit 1
+          fi
+
+          SIGNED_AAB_PATH="$(dirname "$AAB_PATH")/signed-$(basename "$AAB_PATH")"
+          jarsigner \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore android/app/upload-keystore.jks \
+            -storepass "$ANDROID_STORE_PASSWORD" \
+            -keypass "$ANDROID_KEY_PASSWORD" \
+            -signedjar "$SIGNED_AAB_PATH" \
+            "$AAB_PATH" \
+            "$ANDROID_KEY_ALIAS"
+          jarsigner -verify "$SIGNED_AAB_PATH"
+          mv "$SIGNED_AAB_PATH" "$AAB_PATH"
+
+      - name: Upload signed AAB artifact
         if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+
+      - name: Upload unsigned AAB artifact
+        if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload APK artifact
@@ -334,19 +420,20 @@ jobs:
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
+          ANDROID_VERSION_CODE: ${{ inputs.build-number }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd android
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
           if [ "${{ inputs.deploy-android-to }}" = "internal" ]; then
-            bundle exec fastlane internal package_name:"$PACKAGE_NAME" skip_metadata:"$SKIP_META"
+            bundle exec fastlane internal package_name:"$PACKAGE_NAME" skip_metadata:"$SKIP_META" version_code:"$ANDROID_VERSION_CODE"
           elif [ "${{ inputs.deploy-android-to }}" = "production" ]; then
-            bundle exec fastlane release skip_metadata:"$SKIP_META"
+            bundle exec fastlane release skip_metadata:"$SKIP_META" version_code:"$ANDROID_VERSION_CODE"
           fi
 
       - name: Remove Android signing material
-        if: always() && inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
+        if: always() && inputs.deploy-android-to != 'none' && (inputs.android-reuse-aab-artifact-name == '' || inputs.android-reuse-aab-is-unsigned)
         run: rm -f android/app/upload-keystore.jks android/app/key.properties
 
   build-ios:
@@ -362,11 +449,25 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-          ref: ${{ inputs.source-ref || github.ref }}
+          ref: ${{ github.ref }}
+          fetch-depth: 2
 
       - name: Capture source SHA
         id: source-sha
-        run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+        env:
+          REQUESTED_SOURCE_REF: ${{ inputs.source-ref }}
+          REUSED_SOURCE_SHA: ${{ inputs.ios-reuse-source-sha }}
+        run: |
+          if [ -n "$REUSED_SOURCE_SHA" ]; then
+            echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          elif echo "$REQUESTED_SOURCE_REF" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "value=$REQUESTED_SOURCE_REF" >> "$GITHUB_OUTPUT"
+          elif [ -n "$REQUESTED_SOURCE_REF" ]; then
+            git fetch --no-tags --depth=1 origin -- "$REQUESTED_SOURCE_REF"
+            echo "value=$(git rev-parse FETCH_HEAD)" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Resolve source SHA
         id: resolved-source-sha
@@ -379,6 +480,12 @@ jobs:
           else
             echo "value=$CHECKED_OUT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
           fi
+
+      - name: Checkout requested source ref for iOS build
+        if: inputs.source-ref != '' && inputs.ios-reuse-ipa-artifact-name == ''
+        env:
+          REQUESTED_SOURCE_SHA: ${{ steps.source-sha.outputs.value }}
+        run: git checkout --force "$REQUESTED_SOURCE_SHA"
 
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
@@ -404,7 +511,7 @@ jobs:
         run: flutter pub get
 
       - name: Setup code signing
-        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
+        if: inputs.deploy-ios-to != 'none' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -433,6 +540,66 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
+      - name: Package unsigned IPA
+        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        run: |
+          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo 'Expected a built .app bundle under build/ios/iphoneos, but none was found.'
+            ls -la build/ios/iphoneos || true
+            exit 1
+          fi
+          APP_BUNDLE_NAME=$(basename "$APP_PATH")
+
+          bundle_executable_path() {
+            local bundle_path="$1"
+            local info_plist="$bundle_path/Info.plist"
+            if [ ! -f "$info_plist" ]; then
+              echo "Expected Info.plist at $info_plist" >&2
+              return 1
+            fi
+
+            /usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$info_plist"
+          }
+
+          add_swift_scan_args() {
+            local bundle_path="$1"
+            local executable_name
+            executable_name=$(bundle_executable_path "$bundle_path")
+            SWIFT_SCAN_ARGS+=("--scan-executable" "$bundle_path/$executable_name")
+
+            if [ -d "$bundle_path/Frameworks" ]; then
+              SWIFT_SCAN_ARGS+=("--scan-folder" "$bundle_path/Frameworks")
+            fi
+          }
+
+          rm -rf build/ios/unsigned
+          mkdir -p build/ios/unsigned/Payload build/ios/ipa
+          ditto "$APP_PATH" "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
+
+          SWIFT_SUPPORT_DIR=build/ios/unsigned/SwiftSupport/iphoneos
+          mkdir -p "$SWIFT_SUPPORT_DIR"
+          declare -a SWIFT_SCAN_ARGS=()
+          add_swift_scan_args "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
+          if [ -d "build/ios/unsigned/Payload/$APP_BUNDLE_NAME/PlugIns" ]; then
+            while IFS= read -r -d '' APPEX_PATH; do
+              add_swift_scan_args "$APPEX_PATH"
+            done < <(find "build/ios/unsigned/Payload/$APP_BUNDLE_NAME/PlugIns" -mindepth 1 -maxdepth 1 -name '*.appex' -type d -print0)
+          fi
+          xcrun swift-stdlib-tool --copy --platform iphoneos --destination "$SWIFT_SUPPORT_DIR" "${SWIFT_SCAN_ARGS[@]}"
+          if ! find "$SWIFT_SUPPORT_DIR" -type f | grep -q .; then
+            rm -rf build/ios/unsigned/SwiftSupport
+          fi
+
+          (
+            cd build/ios/unsigned
+            ZIP_INPUTS=(Payload)
+            if [ -d SwiftSupport ]; then
+              ZIP_INPUTS+=(SwiftSupport)
+            fi
+            zip -qry ../ipa/Runner-unsigned.ipa "${ZIP_INPUTS[@]}"
+          )
+
       - name: Download reusable IPA artifact
         if: inputs.ios-reuse-ipa-artifact-name != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -458,25 +625,48 @@ jobs:
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           REUSED_IPA_PATH=''
           if [ -n '${{ inputs.ios-reuse-ipa-artifact-name }}' ]; then
-            REUSED_IPA_PATH=$(find ../build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+            REUSED_IPA_PATH=$(find ../build/ios/ipa -name '*.ipa' -print -quit)
             if [ -z "$REUSED_IPA_PATH" ]; then
               echo "Expected a reusable IPA artifact, but none was downloaded."
+              find ../build/ios/ipa -maxdepth 4 -print || true
               exit 1
             fi
+            REUSED_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$REUSED_IPA_PATH")"
           fi
+
+          if [ "${{ inputs.ios-reuse-ipa-is-unsigned }}" = 'true' ]; then
+            if [ -z "$REUSED_IPA_PATH" ]; then
+              echo "ios-reuse-ipa-is-unsigned requires a reusable IPA artifact to be downloaded first."
+              exit 1
+            fi
+            SIGNED_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/resigned-${{ inputs.flavor }}.ipa"))')"
+            bundle exec fastlane resign_ipa \
+              scheme:"$SCHEME" \
+              unsigned_ipa_path:"$REUSED_IPA_PATH" \
+              output_ipa_path:"$SIGNED_IPA_PATH"
+            REUSED_IPA_PATH="$SIGNED_IPA_PATH"
+          fi
+
           if [ "${{ inputs.run-ios-deploy }}" = "true" ]; then
             if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
               bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
             elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
               bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
             fi
-          else
+          elif [ -z "$REUSED_IPA_PATH" ]; then
             bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
 
-      - name: Upload IPA artifact
+      - name: Upload signed IPA artifact
         if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/*.ipa
+
+      - name: Upload unsigned IPA artifact
+        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/ios/ipa/Runner-unsigned.ipa

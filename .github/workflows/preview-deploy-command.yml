@@ -231,11 +231,24 @@ jobs:
             );
             const previewSha = pr.head.sha;
             const previewCommentUrl = previewComment?.html_url ?? '';
+            const previewCommentBody = previewComment?.body ?? '';
+            const previewCommentSha = readMeta(previewCommentBody, 'preview-build-source-sha');
             const previousDeploySha = readMeta(statusBody, 'preview-deploy-source-sha');
-            let buildName = readMeta(statusBody, 'preview-deploy-build-name');
-            let buildNumber = readMeta(statusBody, 'preview-deploy-build-number');
+            let buildName =
+              previewCommentSha === previewSha
+                ? readMeta(previewCommentBody, 'preview-build-name')
+                : '';
+            let buildNumber =
+              previewCommentSha === previewSha
+                ? readMeta(previewCommentBody, 'preview-build-number')
+                : '';
 
-            if (previousDeploySha !== previewSha || !buildName || !buildNumber) {
+            if ((!buildName || !buildNumber) && previousDeploySha === previewSha) {
+              buildName = buildName || readMeta(statusBody, 'preview-deploy-build-name');
+              buildNumber = buildNumber || readMeta(statusBody, 'preview-deploy-build-number');
+            }
+
+            if (!buildName || !buildNumber) {
               const {data: pubspec} = await github.rest.repos.getContent({
                 owner,
                 repo,
@@ -266,7 +279,7 @@ jobs:
               previewSha,
               previewCommentUrl,
               state: 'queued',
-              note: '> Duplicate requests stay locked out while this deploy is queued or running. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and then reuses them.',
+              note: '> Duplicate requests stay locked out while this deploy is queued or running. The deploy workflow waits for matching unsigned preview intermediates for this SHA, then signs and uploads them without recompiling source when they are available.',
             });
 
             try {

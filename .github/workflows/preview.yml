@@ -17,6 +17,7 @@ concurrency:
   cancel-in-progress: true
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -57,6 +58,7 @@ jobs:
       deploy-android-to: none
       build-ios: false
       build-android: true
+      build-android-unsigned-aab: true
 
   build-ios:
     name: Build iOS Preview
@@ -74,6 +76,7 @@ jobs:
       deploy-android-to: none
       build-ios: true
       build-android: false
+      build-ios-unsigned-ipa: true
 
   comment-android:
     name: PR Comment (Android)
@@ -162,9 +165,13 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and reuses them when available.
+            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow waits for these unsigned preview intermediates when they are already building for this SHA, then signs and uploads them without rebuilding source.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
+            <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
+            <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
+            <!-- preview-build-run-id:${{ github.run_id }} -->
 
   comment-ios:
     name: PR Comment (iOS)
@@ -252,6 +259,10 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and reuses them when available.
+            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow waits for these unsigned preview intermediates when they are already building for this SHA, then signs and uploads them without rebuilding source.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
+            <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
+            <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
+            <!-- preview-build-run-id:${{ github.run_id }} -->
