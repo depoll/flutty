@@ -291,16 +291,21 @@ jobs:
               {
                 echo 'command=git'
                 echo 'log-opts<<EOF'
-                echo "--no-merges -n 1 ${PUSH_AFTER}"
+                echo "--no-merges ${PUSH_AFTER}"
                 echo 'EOF'
               } >> "$GITHUB_OUTPUT"
-              echo 'mode=push-head' >> "$GITHUB_OUTPUT"
-              echo '- Running OSS Gitleaks against the pushed HEAD commit because no prior push base SHA was available.' >> "$GITHUB_STEP_SUMMARY"
+              echo 'mode=push-history' >> "$GITHUB_OUTPUT"
+              echo '- Running OSS Gitleaks against all commits reachable from the pushed HEAD commit because no prior push base SHA was available.' >> "$GITHUB_STEP_SUMMARY"
             fi
           else
-            echo 'command=dir' >> "$GITHUB_OUTPUT"
-            echo 'mode=working-tree' >> "$GITHUB_OUTPUT"
-            echo '- Running OSS Gitleaks against the current repository contents.' >> "$GITHUB_STEP_SUMMARY"
+            {
+              echo 'command=git'
+              echo 'log-opts<<EOF'
+              echo '--no-merges --all'
+              echo 'EOF'
+            } >> "$GITHUB_OUTPUT"
+            echo 'mode=full-history' >> "$GITHUB_OUTPUT"
+            echo '- Running OSS Gitleaks against the full git history for scheduled or manually triggered scans.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Scan repository for leaked secrets
