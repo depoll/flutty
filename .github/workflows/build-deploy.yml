@@ -502,15 +502,17 @@ jobs:
       - name: Package unsigned IPA
         if: inputs.build-ios-unsigned-ipa
         run: |
-          APP_PATH="build/ios/iphoneos/Runner.app"
-          if [ ! -d "$APP_PATH" ]; then
-            echo "Expected built app at $APP_PATH"
+          APP_PATH=$(find build/ios/iphoneos -maxdepth 1 -name '*.app' -type d -print -quit)
+          if [ -z "$APP_PATH" ]; then
+            echo 'Expected a built .app bundle under build/ios/iphoneos, but none was found.'
+            ls -la build/ios/iphoneos || true
             exit 1
           fi
+          APP_BUNDLE_NAME=$(basename "$APP_PATH")
 
           rm -rf build/ios/unsigned
           mkdir -p build/ios/unsigned/Payload build/ios/ipa
-          ditto "$APP_PATH" build/ios/unsigned/Payload/Runner.app
+          ditto "$APP_PATH" "build/ios/unsigned/Payload/$APP_BUNDLE_NAME"
           (
             cd build/ios/unsigned
             zip -qry ../ipa/Runner-unsigned.ipa Payload
