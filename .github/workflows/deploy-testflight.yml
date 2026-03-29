@@ -167,16 +167,14 @@ jobs:
             const prNumber = '${{ inputs.pr-number }}';
             const buildName = '${{ needs.compute-version.outputs.build-name }}';
             const buildNumber = '${{ needs.compute-version.outputs.build-number }}';
-            const workflowId = 'prepare-pr-deploy-artifacts.yml';
+            const workflowId = 'preview.yml';
             const requiredArtifactNames = [
-              `android-private-${buildName}-${buildNumber}`,
-              `android-apk-private-${buildName}-${buildNumber}`,
-              `ios-private-${buildName}-${buildNumber}`,
+              `android-unsigned-private-${buildName}-${buildNumber}`,
+              `ios-unsigned-private-${buildName}-${buildNumber}`,
             ];
             const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
             const maxWaitAttempts = 40;
             const waitDelayMs = 30_000;
-            const dispatchedRunSearchAttempts = 10;
 
             const setOutputs = ({
               reuseArtifacts = 'false',
@@ -193,7 +191,7 @@ jobs:
                 owner,
                 repo,
                 workflow_id: workflowId,
-                event: 'workflow_dispatch',
+                event: 'pull_request',
                 per_page: 100,
               });
 
@@ -216,40 +214,12 @@ jobs:
 
             const findRunForSha = async () => {
               const runs = await listRuns();
-              return (
-                runs.find(
-                  (run) =>
-                    run.head_sha === deploySha &&
-                    run.display_title === 'Build reusable deploy artifacts',
-                ) ??
-                runs.find((run) => run.head_sha === deploySha) ??
-                null
-              );
-            };
-
-            const dispatchPrepareRun = async () => {
-              await github.rest.actions.createWorkflowDispatch({
-                owner,
-                repo,
-                workflow_id: workflowId,
-                ref: 'main',
-                inputs: {
-                  'pr-number': prNumber,
-                  'source-sha': deploySha,
-                  'build-name': buildName,
-                  'build-number': buildNumber,
-                },
-              });
-
-              for (let attempt = 0; attempt < dispatchedRunSearchAttempts; attempt += 1) {
-                await sleep(10_000);
-                const run = await findRunForSha();
-                if (run) {
-                  return run;
-                }
-              }
-
-              return null;
+              return runs.find(
+                (run) =>
+                  run.head_sha === deploySha &&
+                  run.event === 'pull_request' &&
+                  run.pull_requests?.some((pullRequest) => String(pullRequest.number) === prNumber),
+              ) ?? runs.find((run) => run.head_sha === deploySha && run.event === 'pull_request') ?? null;
             };
 
             const awaitCompletion = async (initialRun) => {
@@ -260,7 +230,7 @@ jobs:
                 }
 
                 core.notice(
-                  `Waiting for artifact workflow run ${currentRun.id} to finish building reusable artifacts for ${deploySha}.`,
+                  `Waiting for preview workflow run ${currentRun.id} to finish building reusable artifacts for ${deploySha}.`,
                 );
                 await sleep(waitDelayMs);
                 currentRun = await getWorkflowRun(currentRun.id);
@@ -269,16 +239,11 @@ jobs:
               return currentRun;
             };
 
-            let prepareRun = await findRunForSha();
+            const prepareRun = await findRunForSha();
             if (!prepareRun) {
               core.notice(
-                `No reusable artifact run found for ${deploySha}; dispatching ${workflowId}.`,
+                `No preview workflow run found for ${deploySha}; deploy will build fresh artifacts.`,
               );
-              prepareRun = await dispatchPrepareRun();
-            }
-
-            if (!prepareRun) {
-              core.notice('Unable to locate a reusable artifact run; deploy will build fresh artifacts.');
               setOutputs({});
               return;
             }
@@ -310,8 +275,8 @@ jobs:
 
             if (missingArtifactNames.length > 0) {
               core.notice(
-                `Artifact workflow run ${finishedRun.id} is missing reusable artifacts (${missingArtifactNames.join(', ')}); deploy will build fresh artifacts.`,
-              );
+                 `Preview workflow run ${finishedRun.id} is missing reusable artifacts (${missingArtifactNames.join(', ')}); deploy will build fresh artifacts.`,
+               );
               setOutputs({});
               return;
             }
@@ -383,8 +348,8 @@ jobs:
               : `@${requestedBy} via workflow dispatch`;
             const artifactDetails =
               '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reusing trusted artifact run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
-                : '| **Artifacts** | Building fresh deploy artifacts in this run |';
+                ? `| **Artifacts** | Reusing unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                : '| **Artifacts** | Preview intermediates unavailable, so this run is building deploy artifacts from source |';
 
             const body = [
               '## 🚀 Preview Deploy',
@@ -451,11 +416,12 @@ jobs:
       deploy-ios-to: testflight
       deploy-android-to: internal
       android-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-private-{0}-{1}', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
-      android-reuse-apk-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-apk-private-{0}-{1}', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
+      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
+      android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-private-{0}-{1}', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}', 'private', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
@@ -580,8 +546,8 @@ jobs:
               : `@${requestedBy} via workflow dispatch`;
             const artifactDetails =
               '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reused trusted artifact run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
-                : '| **Artifacts** | Built fresh deploy artifacts in this run |';
+                ? `| **Artifacts** | Reused unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                : '| **Artifacts** | Built fresh deploy artifacts in this run because matching preview intermediates were unavailable |';
 
             const replaceEyesReactionWithRocket = async () => {
               if (!requestCommentId) {

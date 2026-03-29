@@ -1,5 +1,7 @@
 default_platform(:ios)
 
+require 'fileutils'
+
 platform :ios do
   before_all do
     setup_ci if ENV['CI']
@@ -59,9 +61,11 @@ platform :ios do
     )
 
     profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
+                   ENV["sigh_#{app_id}_appstore_profile_name"] ||
                    "match AppStore #{app_id}"
     live_activity_profile_name =
       ENV["sigh_#{live_activity_app_id}_appstore_profile-name"] ||
+      ENV["sigh_#{live_activity_app_id}_appstore_profile_name"] ||
       "match AppStore #{live_activity_app_id}"
 
     update_code_signing_settings(
@@ -104,6 +108,17 @@ platform :ios do
     lane_context[SharedValues::IPA_OUTPUT_PATH]
   end
 
+  private_lane :resolved_profile_path do |options|
+    app_id = options[:app_identifier]
+    profile_path = ENV["sigh_#{app_id}_appstore_profile-path"] ||
+                   ENV["sigh_#{app_id}_appstore_profile_path"]
+
+    UI.user_error!("Missing installed provisioning profile path for #{app_id}") if profile_path.to_s.empty?
+    UI.user_error!("Provisioning profile not found at #{profile_path} for #{app_id}") unless File.exist?(profile_path)
+
+    profile_path
+  end
+
   desc 'Setup code signing for CI builds'
   lane :setup_signing do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
@@ -114,6 +129,42 @@ platform :ios do
   lane :build_ipa do |options|
     scheme = options[:scheme] || 'Private'
     build_and_sign(scheme: scheme)
+  end
+
+  desc 'Re-sign an existing IPA for App Store Connect upload'
+  lane :resign_ipa do |options|
+    scheme = options[:scheme] || 'Private'
+    unsigned_ipa_path = options[:unsigned_ipa_path].to_s
+    output_ipa_path = options[:output_ipa_path].to_s
+    app_id = APP_IDS[scheme]
+    live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
+
+    UI.user_error!('unsigned_ipa_path is required') if unsigned_ipa_path.empty?
+
+    sync_certs(
+      app_identifier: [app_id, live_activity_app_id],
+      type: 'appstore',
+      readonly: false,
+    )
+
+    resigned_ipa_path = unsigned_ipa_path
+    unless output_ipa_path.empty?
+      FileUtils.mkdir_p(File.dirname(output_ipa_path))
+      FileUtils.cp(unsigned_ipa_path, output_ipa_path)
+      resigned_ipa_path = output_ipa_path
+    end
+
+    resign(
+      ipa: resigned_ipa_path,
+      signing_identity: 'Apple Distribution',
+      provisioning_profile: {
+        app_id => resolved_profile_path(app_identifier: app_id),
+        live_activity_app_id => resolved_profile_path(app_identifier: live_activity_app_id),
+      },
+      use_app_entitlements: true,
+    )
+
+    resigned_ipa_path
   end
 
   desc 'Build, sign, and upload to TestFlight'
