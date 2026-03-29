@@ -549,6 +549,7 @@ jobs:
               find ../build/ios/ipa -maxdepth 4 -print || true
               exit 1
             fi
+            REUSED_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$REUSED_IPA_PATH")"
           fi
 
           if [ "${{ inputs.ios-reuse-ipa-is-unsigned }}" = 'true' ]; then
@@ -556,7 +557,7 @@ jobs:
               echo "ios-reuse-ipa-is-unsigned requires a reusable IPA artifact to be downloaded first."
               exit 1
             fi
-            SIGNED_IPA_PATH="../build/ios/ipa/resigned-${{ inputs.flavor }}.ipa"
+            SIGNED_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/resigned-${{ inputs.flavor }}.ipa"))')"
             bundle exec fastlane resign_ipa \
               scheme:"$SCHEME" \
               unsigned_ipa_path:"$REUSED_IPA_PATH" \
