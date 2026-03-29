@@ -55,7 +55,13 @@ final _terminalLinkPattern = RegExp(
   caseSensitive: false,
 );
 final _terminalFilePathPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#]+)?|/(?:[^\s<>"'$#]+)|\.\.?/(?:[^\s<>"'$#]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
+  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
+);
+final _terminalFilePathStackTraceSuffixPattern = RegExp(
+  r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
+);
+final _terminalFilePathShellOperatorSuffixPattern = RegExp(
+  r'(?:&&|\|\||[&;|])+$',
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
@@ -207,9 +213,18 @@ String normalizeTerminalLinkCandidate(String text) {
 
 /// Trims terminal-rendered file paths before SFTP navigation.
 @visibleForTesting
-String trimTerminalFilePathCandidate(String text) => trimTerminalLinkCandidate(
-  text.trim(),
-).replaceFirst(RegExp(r':\d+(?::\d+)?$'), '');
+String trimTerminalFilePathCandidate(String text) {
+  var candidate = trimTerminalLinkCandidate(text.trim());
+  candidate = candidate.replaceFirst(
+    _terminalFilePathStackTraceSuffixPattern,
+    '',
+  );
+  candidate = candidate.replaceFirst(
+    _terminalFilePathShellOperatorSuffixPattern,
+    '',
+  );
+  return trimTerminalLinkCandidate(candidate);
+}
 
 /// Whether a character can safely appear before a supported terminal path.
 @visibleForTesting
