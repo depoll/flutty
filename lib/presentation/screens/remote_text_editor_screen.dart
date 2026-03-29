@@ -501,10 +501,10 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                           final gutterWidth = _wrapLines
                               ? 0.0
                               : _resolveGutterWidth(context, editorTextStyle);
-                          final viewportWidth = math.max<double>(
-                            constraints.maxWidth - gutterWidth,
-                            0,
-                          );
+                          final viewportWidth =
+                              constraints.maxWidth > gutterWidth
+                              ? constraints.maxWidth - gutterWidth
+                              : 0.0;
                           _updateEditorViewportWidth(viewportWidth);
 
                           final editor = TextField(
