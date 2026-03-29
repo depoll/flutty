@@ -32,6 +32,7 @@ class SecretEncryptionService {
   final Random _random;
   final List<int>? _testingMasterKey;
 
+  static const _legacyMasterKeyStorageEntry = 'flutty_db_secret_key_v1';
   static const _masterKeyStorageEntry = 'flutty_db_encryption_key_v1';
   static const _encryptedPrefix = 'ENCv1:';
   static const _masterKeyBytes = 32;
@@ -162,6 +163,19 @@ class SecretEncryptionService {
         if (decoded.length != _masterKeyBytes) {
           throw const FormatException('Invalid secret encryption key');
         }
+        _cachedMasterKey = SecretKey(decoded);
+        return;
+      }
+
+      final legacyExisting = await storage.read(
+        key: _legacyMasterKeyStorageEntry,
+      );
+      if (legacyExisting != null) {
+        final decoded = base64Decode(legacyExisting);
+        if (decoded.length != _masterKeyBytes) {
+          throw const FormatException('Invalid secret encryption key');
+        }
+        await storage.write(key: _masterKeyStorageEntry, value: legacyExisting);
         _cachedMasterKey = SecretKey(decoded);
         return;
       }

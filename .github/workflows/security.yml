@@ -315,6 +315,8 @@ jobs:
 
           scan_args=(
             "${GITLEAKS_COMMAND}"
+            --config
+            /repo/.gitleaks.toml
             --no-banner
             --redact
             --report-format sarif
@@ -329,6 +331,7 @@ jobs:
 
           docker run --rm \
             -v "${GITHUB_WORKSPACE}:/repo" \
+            -w /repo \
             "${GITLEAKS_IMAGE}" \
             "${scan_args[@]}"
 

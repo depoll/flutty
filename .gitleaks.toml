@@ -4,7 +4,6 @@ title = 'Flutty gitleaks configuration'
 useDefault = true
 
 [[allowlists]]
-targetRules = ['generic-api-key']
 description = 'Ignore CocoaPods checksum false positives in generated lockfiles.'
 condition = 'AND'
 paths = [
