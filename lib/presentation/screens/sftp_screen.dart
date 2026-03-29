@@ -849,7 +849,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     return RefreshIndicator(
-      onRefresh: () => _loadDirectory(_currentPath),
+      onRefresh: () async {
+        await _loadDirectory(_currentPath);
+      },
       child: ListView.builder(
         controller: _fileListScrollController,
         itemCount: _files.length,
