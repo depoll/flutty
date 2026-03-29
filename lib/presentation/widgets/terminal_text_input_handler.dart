@@ -808,13 +808,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
-    if (!widget.readOnly && widget.focusNode.hasFocus) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && widget.focusNode.hasFocus) {
-          _openInputConnection();
-        }
-      });
-    }
   }
 
   @override

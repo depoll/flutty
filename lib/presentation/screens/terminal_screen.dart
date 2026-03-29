@@ -34,9 +34,9 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
+import '../widgets/monospace_text_style.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
-import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 const _minTerminalFontSize = 8.0;
@@ -2797,11 +2797,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   /// Gets the terminal text style for the given font family using Google Fonts.
   TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
-    final textStyle = _resolveTerminalTextStyle(fontFamily, fontSize);
-    if (textStyle != null) {
-      return TerminalStyle.fromTextStyle(textStyle);
-    }
-    return TerminalStyle(fontSize: fontSize);
+    final textStyle = resolveMonospaceTextStyle(
+      fontFamily,
+      platform: Theme.of(context).platform,
+      fontSize: fontSize,
+    );
+    return TerminalStyle.fromTextStyle(textStyle);
   }
 
   TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
@@ -2814,9 +2815,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               FontFeature.disable('calt'),
             ],
           );
-
-  TextStyle? _resolveTerminalTextStyle(String fontFamily, double fontSize) =>
-      resolveConfiguredMonospaceTextStyle(fontFamily, fontSize: fontSize);
 
   Size? _measureTerminalPathUnderlineTextSize(String text) {
     if (text.isEmpty) {
@@ -2832,9 +2830,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _host?.terminalFontFamily ??
         ref.read(fontFamilyNotifierProvider) ??
         'monospace';
-    final textStyle =
-        _resolveTerminalTextStyle(fontFamily, fontSize) ??
-        TextStyle(fontFamily: 'monospace', fontSize: fontSize);
+    final textStyle = resolveMonospaceTextStyle(
+      fontFamily,
+      platform: Theme.of(context).platform,
+      fontSize: fontSize,
+    );
     final painter = TextPainter(
       text: TextSpan(text: text, style: textStyle),
       textDirection: TextDirection.ltr,

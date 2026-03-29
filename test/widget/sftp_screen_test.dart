@@ -57,6 +57,26 @@ void main() {
   });
 
   group('buildRemoteTextEditorScreenForTesting', () {
+    test('uses Menlo for the system monospace font on iOS', () {
+      expect(
+        resolveRemoteEditorTextStyle(
+          'monospace',
+          platform: TargetPlatform.iOS,
+        ).fontFamily,
+        'Menlo',
+      );
+    });
+
+    test('uses the configured terminal font family when provided', () {
+      expect(
+        resolveRemoteEditorTextStyle(
+          'Custom Mono',
+          platform: TargetPlatform.android,
+        ).fontFamily,
+        'Custom Mono',
+      );
+    });
+
     testWidgets(
       'keeps the nowrap viewport fixed while scrolling the selection into view',
       (tester) async {
@@ -132,6 +152,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.macOS),
           home: buildRemoteTextEditorScreenForTesting(
             fileName: 'notes.txt',
             controller: controller,
@@ -152,6 +173,25 @@ void main() {
 
       expect(find.text('Wrap on'), findsOneWidget);
       expect(find.byTooltip('Disable line wrap'), findsOneWidget);
+    });
+
+    testWidgets('hides zoom buttons on touch-first platforms', (tester) async {
+      final controller = TextEditingController(text: 'alpha\nbeta');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.iOS),
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Zoom out'), findsNothing);
+      expect(find.byTooltip('Zoom in'), findsNothing);
     });
   });
 }
