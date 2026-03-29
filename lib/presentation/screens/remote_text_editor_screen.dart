@@ -222,6 +222,12 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   List<int> _cachedLineStartOffsets = const [0];
   TextSelection? _cachedSelection;
   ({int line, int column}) _cachedCaretPosition = (line: 1, column: 1);
+  String? _cachedMeasuredWidthText;
+  double? _cachedMeasuredWidth;
+  TextDirection? _cachedMeasuredWidthTextDirection;
+  double? _cachedMeasuredWidthTextScale;
+  String? _cachedMeasuredWidthFontFamily;
+  double? _cachedMeasuredWidthFontSize;
 
   @override
   void initState() {
@@ -247,6 +253,8 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       widget.controller.addListener(_handleControllerChanged);
       _cachedText = null;
       _cachedSelection = null;
+      _cachedMeasuredWidthText = null;
+      _cachedMeasuredWidth = null;
       _refreshCachedMetrics();
       _scheduleSelectionVisibilityUpdate();
     }
@@ -426,13 +434,35 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     return painter.width + 28;
   }
 
-  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) =>
-      measureUnwrappedEditorContentWidth(
-        lines: widget.controller.text.split('\n'),
-        style: style,
-        textDirection: Directionality.of(context),
-        textScaler: MediaQuery.textScalerOf(context),
-      );
+  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
+    final text = widget.controller.text;
+    final textDirection = Directionality.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
+    final textScale = textScaler.scale(1);
+
+    if (_cachedMeasuredWidth != null &&
+        identical(_cachedMeasuredWidthText, text) &&
+        _cachedMeasuredWidthTextDirection == textDirection &&
+        _cachedMeasuredWidthTextScale == textScale &&
+        _cachedMeasuredWidthFontFamily == style.fontFamily &&
+        _cachedMeasuredWidthFontSize == style.fontSize) {
+      return _cachedMeasuredWidth!;
+    }
+
+    final measuredWidth = measureUnwrappedEditorContentWidth(
+      lines: text.split('\n'),
+      style: style,
+      textDirection: textDirection,
+      textScaler: textScaler,
+    );
+    _cachedMeasuredWidthText = text;
+    _cachedMeasuredWidth = measuredWidth;
+    _cachedMeasuredWidthTextDirection = textDirection;
+    _cachedMeasuredWidthTextScale = textScale;
+    _cachedMeasuredWidthFontFamily = style.fontFamily;
+    _cachedMeasuredWidthFontSize = style.fontSize;
+    return measuredWidth;
+  }
 
   @override
   Widget build(BuildContext context) {
