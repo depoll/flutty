@@ -156,26 +156,10 @@ platform :ios do
     executable_path
   end
 
-  private_lane :populate_swift_support do |options|
-    app_path = options[:app_path]
-    package_root = options[:package_root]
-    swift_support_dir = File.join(package_root, 'SwiftSupport', 'iphoneos')
-    scan_arguments = [
-      '--scan-executable', bundle_executable_path(bundle_path: app_path),
-    ]
-
-    app_frameworks_path = File.join(app_path, 'Frameworks')
-    scan_arguments += ['--scan-folder', app_frameworks_path] if Dir.exist?(app_frameworks_path)
-
-    Dir[File.join(app_path, 'PlugIns', '*.appex')].sort.each do |appex_path|
-      scan_arguments += ['--scan-executable', bundle_executable_path(bundle_path: appex_path)]
-
-      appex_frameworks_path = File.join(appex_path, 'Frameworks')
-      scan_arguments += ['--scan-folder', appex_frameworks_path] if Dir.exist?(appex_frameworks_path)
-    end
-
-    FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
-    FileUtils.mkdir_p(swift_support_dir)
+  private_lane :embed_swift_runtime do |options|
+    bundle_path = options[:bundle_path]
+    frameworks_path = File.join(bundle_path, 'Frameworks')
+    FileUtils.mkdir_p(frameworks_path)
 
     command = [
       'xcrun',
@@ -184,10 +168,39 @@ platform :ios do
       '--platform',
       'iphoneos',
       '--destination',
-      swift_support_dir,
-      *scan_arguments,
+      frameworks_path,
+      '--scan-executable',
+      bundle_executable_path(bundle_path: bundle_path),
+      '--scan-folder',
+      frameworks_path,
     ]
     sh(command.map(&:shellescape).join(' '))
+  end
+
+  private_lane :populate_swift_support do |options|
+    app_path = options[:app_path]
+    package_root = options[:package_root]
+    swift_support_dir = File.join(package_root, 'SwiftSupport', 'iphoneos')
+    appex_paths = Dir[File.join(app_path, 'PlugIns', '*.appex')].sort
+
+    embed_swift_runtime(bundle_path: app_path)
+    appex_paths.each do |appex_path|
+      embed_swift_runtime(bundle_path: appex_path)
+    end
+
+    FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
+    FileUtils.mkdir_p(swift_support_dir)
+
+    swift_runtime_paths = Dir[File.join(app_path, 'Frameworks', 'libswift*.dylib')].sort
+    appex_paths.each do |appex_path|
+      swift_runtime_paths.concat(Dir[File.join(appex_path, 'Frameworks', 'libswift*.dylib')].sort)
+    end
+
+    swift_runtime_paths
+      .uniq { |path| File.basename(path) }
+      .each do |runtime_path|
+        FileUtils.cp(runtime_path, File.join(swift_support_dir, File.basename(runtime_path)))
+      end
 
     unless Dir.glob(File.join(swift_support_dir, '*')).any?
       UI.message('No Swift runtime libraries detected; removing empty SwiftSupport directory.')
@@ -282,6 +295,11 @@ platform :ios do
       FileUtils.cp(app_profile_path, File.join(app_path, 'embedded.mobileprovision'))
       FileUtils.cp(live_activity_profile_path, File.join(live_activity_path, 'embedded.mobileprovision'))
 
+      populate_swift_support(
+        app_path: app_path,
+        package_root: tmpdir,
+      )
+
       Dir[File.join(live_activity_path, 'Frameworks', '*.framework')].sort.each do |framework_path|
         codesign_path(path: framework_path, signing_identity: signing_identity)
       end
@@ -306,14 +324,11 @@ platform :ios do
         entitlements_path: app_entitlements_path,
       )
 
-      populate_swift_support(
-        app_path: app_path,
-        package_root: tmpdir,
-      )
-
       FileUtils.rm_f(resigned_ipa_path)
       Dir.chdir(tmpdir) do
-        package_entries = Dir.children('.').reject { |entry| entry == '__MACOSX' }
+        package_entries = Dir.children('.').select do |entry|
+          File.directory?(entry) && entry != '__MACOSX'
+        end
         UI.user_error!('Expected IPA contents to include Payload') unless package_entries.include?('Payload')
         sh("zip -qry #{resigned_ipa_path.shellescape} #{package_entries.map(&:shellescape).join(' ')}")
       end
