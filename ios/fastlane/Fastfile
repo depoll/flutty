@@ -97,10 +97,23 @@ platform :ios do
     )
   end
 
+  private_lane :resolved_ipa_path do |options|
+    provided_ipa_path = options[:ipa_path].to_s
+    return provided_ipa_path unless provided_ipa_path.empty?
+
+    lane_context[SharedValues::IPA_OUTPUT_PATH]
+  end
+
   desc 'Setup code signing for CI builds'
   lane :setup_signing do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
     sync_certs(app_identifier: app_id, type: 'appstore')
+  end
+
+  desc 'Build and sign an IPA without uploading it'
+  lane :build_ipa do |options|
+    scheme = options[:scheme] || 'Private'
+    build_and_sign(scheme: scheme)
   end
 
   desc 'Build, sign, and upload to TestFlight'
@@ -108,13 +121,14 @@ platform :ios do
     scheme = options[:scheme] || 'Private'
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
+    provided_ipa_path = options[:ipa_path].to_s
 
-    build_and_sign(scheme: scheme)
+    build_and_sign(scheme: scheme) if provided_ipa_path.empty?
 
     pilot(
       api_key: get_api_key,
       app_identifier: app_id,
-      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      ipa: resolved_ipa_path(ipa_path: provided_ipa_path),
       skip_waiting_for_build_processing: false,
       skip_submission: false,
       distribute_external: false,
@@ -129,13 +143,14 @@ platform :ios do
     scheme = options[:scheme] || 'Production'
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
+    provided_ipa_path = options[:ipa_path].to_s
 
-    build_and_sign(scheme: scheme)
+    build_and_sign(scheme: scheme) if provided_ipa_path.empty?
 
     deliver(
       api_key: get_api_key,
       app_identifier: app_id,
-      ipa: lane_context[SharedValues::IPA_OUTPUT_PATH],
+      ipa: resolved_ipa_path(ipa_path: provided_ipa_path),
       skip_metadata: true,
       skip_screenshots: true,
       submit_for_review: false,

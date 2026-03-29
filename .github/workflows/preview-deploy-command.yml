@@ -38,7 +38,7 @@ jobs:
             const statusMarker = '<!-- preview-deploy-status -->';
             const workflowId = 'deploy-testflight.yml';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
-            const activeLockTimeoutMs = 30 * 60 * 1000;
+            const activeLockTimeoutMs = 4 * 60 * 60 * 1000;
             const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
 
             if (commandBody !== '/deploy') {
@@ -229,19 +229,44 @@ jobs:
             const previewComment = [...comments].reverse().find((comment) =>
               comment.body?.includes(previewMarker),
             );
-            const previewSha =
-              previewComment?.body.match(/Build triggered by ([0-9a-f]{7,40})/i)?.[1] ??
-              pr.head.sha;
-            const queuedNote = previewComment
-              ? '> Duplicate requests stay locked out while this deploy is queued or running.'
-              : '> Preview artifacts comment is unavailable, so this deploy is using the current PR head SHA directly. Duplicate requests stay locked out while this deploy is queued or running.';
+            const previewSha = pr.head.sha;
+            const previewCommentUrl = previewComment?.html_url ?? '';
+            const previousDeploySha = readMeta(statusBody, 'preview-deploy-source-sha');
+            let buildName = readMeta(statusBody, 'preview-deploy-build-name');
+            let buildNumber = readMeta(statusBody, 'preview-deploy-build-number');
+
+            if (previousDeploySha !== previewSha || !buildName || !buildNumber) {
+              const {data: pubspec} = await github.rest.repos.getContent({
+                owner,
+                repo,
+                path: 'pubspec.yaml',
+                ref: previewSha,
+              });
+              if (!('content' in pubspec) || typeof pubspec.content !== 'string') {
+                core.setFailed(`Unable to read pubspec.yaml for ${previewSha}.`);
+                return;
+              }
+
+              const pubspecBody = Buffer.from(pubspec.content, 'base64').toString('utf8');
+              const versionLine = pubspecBody
+                .split('\n')
+                .find((line) => line.startsWith('version:'));
+              if (!versionLine) {
+                core.setFailed(`Unable to determine version from pubspec.yaml for ${previewSha}.`);
+                return;
+              }
+
+              buildName = versionLine.replace(/^version:\s*/, '').split('+')[0].trim();
+              buildNumber = String(Math.floor(Date.now() / 1000 / 10));
+            }
+
             const queuedBody = renderStatusComment({
               status: '🔒 Lock acquired — queued for deploy',
               workflow: 'Waiting for `Deploy PR Preview` to start',
               previewSha,
-              previewCommentUrl: previewComment?.html_url ?? '',
+              previewCommentUrl,
               state: 'queued',
-              note: queuedNote,
+              note: '> Duplicate requests stay locked out while this deploy is queued or running. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and then reuses them.',
             });
 
             try {
@@ -260,11 +285,13 @@ jobs:
                 inputs: {
                   'pr-number': String(issueNumber),
                   'source-sha': previewSha,
+                  'preview-build-name': buildName,
+                  'preview-build-number': buildNumber,
                   'request-comment-id': requestCommentId,
                   'request-comment-at': requestCreatedAt,
                   'request-comment-user': requester,
                   'request-comment-url': requestCommentUrl,
-                  'request-preview-comment-url': previewComment?.html_url ?? noPreviewCommentUrl,
+                  'request-preview-comment-url': previewCommentUrl || noPreviewCommentUrl,
                 },
               });
               dispatched = true;
@@ -283,7 +310,7 @@ jobs:
                 status: '❌ Failed to dispatch `Deploy PR Preview`',
                 workflow: 'Dispatch did not start; check the command workflow logs',
                 previewSha,
-                previewCommentUrl: previewComment?.html_url ?? '',
+                previewCommentUrl,
                 state: 'failed',
                 note: '> Add a new `/deploy` comment if you want to retry.',
               });
