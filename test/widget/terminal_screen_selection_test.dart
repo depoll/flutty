@@ -79,6 +79,29 @@ void main() {
         '../lib/main.dart',
       );
     });
+
+    test('drops view line-range suffixes from file paths', () {
+      expect(
+        trimTerminalFilePathCandidate(
+          '~/Code/flutty.worktrees/fix-local-path-link-separators/test/widget/terminal_screen_selection_test.dartL360:430',
+        ),
+        '~/Code/flutty.worktrees/fix-local-path-link-separators/test/widget/terminal_screen_selection_test.dart',
+      );
+    });
+
+    test('drops trailing shell operators from file paths', () {
+      expect(
+        trimTerminalFilePathCandidate(
+          '/Users/depoll/Code/flutty.worktrees/fix-main-ci&&',
+        ),
+        '/Users/depoll/Code/flutty.worktrees/fix-main-ci',
+      );
+      expect(
+        trimTerminalFilePathCandidate('/var/log/app.log||'),
+        '/var/log/app.log',
+      );
+      expect(trimTerminalFilePathCandidate('/tmp/output;'), '/tmp/output');
+    });
   });
 
   group('resolvePickedTerminalUploadFileName', () {
@@ -339,6 +362,41 @@ void main() {
 
       expect(detectedPath, isNotNull);
       expect(detectedPath!.path, '../lib/main.dart');
+    });
+
+    test('stops before shell operators that follow a wrapped path', () {
+      const text =
+          'cd /Users/depoll/Code/flutty.worktrees/fix-main-ci&& git status';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('fix-main-ci'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/Users/depoll/Code/flutty.worktrees/fix-main-ci',
+      );
+      expect(
+        text.substring(detectedPath.start, detectedPath.end),
+        '/Users/depoll/Code/flutty.worktrees/fix-main-ci',
+      );
+    });
+
+    test('drops wrapped view line-range suffixes from detected paths', () {
+      const text =
+          '~/Code/flutty.worktrees/fix-local-path-link-separators/'
+          'lib/presentation/screens/terminal_screen.dartL360:430';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/fix-local-path-link-separators/lib/presentation/screens/terminal_screen.dart',
+      );
     });
 
     test('ignores branch-like slash paths without a file-like basename', () {
