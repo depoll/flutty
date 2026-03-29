@@ -200,6 +200,10 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   final ScrollController _lineNumberScrollController = ScrollController();
   bool _selectionVisibilityUpdateScheduled = false;
   double _editorViewportWidth = 0;
+  String? _cachedText;
+  int _cachedLineCount = 1;
+  TextSelection? _cachedSelection;
+  ({int line, int column}) _cachedCaretPosition = (line: 1, column: 1);
 
   @override
   void initState() {
@@ -213,6 +217,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
     widget.controller.addListener(_handleControllerChanged);
     _editorScrollController.addListener(_syncLineNumberScrollOffset);
+    _refreshCachedMetrics();
     _scheduleSelectionVisibilityUpdate();
   }
 
@@ -222,6 +227,9 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_handleControllerChanged);
       widget.controller.addListener(_handleControllerChanged);
+      _cachedText = null;
+      _cachedSelection = null;
+      _refreshCachedMetrics();
       _scheduleSelectionVisibilityUpdate();
     }
     if (oldWidget.horizontalScrollController !=
@@ -250,18 +258,36 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     super.dispose();
   }
 
-  int get _lineCount => '\n'.allMatches(widget.controller.text).length + 1;
+  int get _lineCount => _cachedLineCount;
 
-  ({int line, int column}) get _caretPosition =>
-      resolveRemoteEditorCaretPosition(
-        widget.controller.text,
-        widget.controller.selection,
-      );
+  ({int line, int column}) get _caretPosition => _cachedCaretPosition;
+
+  void _refreshCachedMetrics() {
+    final text = widget.controller.text;
+    final selection = widget.controller.selection;
+    final textChanged = !identical(_cachedText, text);
+    final selectionChanged = _cachedSelection != selection;
+
+    if (!textChanged && !selectionChanged) {
+      return;
+    }
+
+    if (textChanged) {
+      _cachedText = text;
+      _cachedLineCount = '\n'.allMatches(text).length + 1;
+    }
+
+    if (textChanged || selectionChanged) {
+      _cachedSelection = selection;
+      _cachedCaretPosition = resolveRemoteEditorCaretPosition(text, selection);
+    }
+  }
 
   void _handleControllerChanged() {
     if (!mounted) {
       return;
     }
+    _refreshCachedMetrics();
     setState(() {});
     _scheduleSelectionVisibilityUpdate();
   }
