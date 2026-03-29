@@ -189,10 +189,10 @@ platform :ios do
     ]
     sh(command.map(&:shellescape).join(' '))
 
-    return if Dir.glob(File.join(swift_support_dir, '*')).any?
-
-    UI.message('No Swift runtime libraries detected; removing empty SwiftSupport directory.')
-    FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
+    unless Dir.glob(File.join(swift_support_dir, '*')).any?
+      UI.message('No Swift runtime libraries detected; removing empty SwiftSupport directory.')
+      FileUtils.rm_rf(File.join(package_root, 'SwiftSupport'))
+    end
   end
 
   private_lane :codesign_path do |options|
