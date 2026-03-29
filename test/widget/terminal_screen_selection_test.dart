@@ -362,6 +362,50 @@ void main() {
     });
   });
 
+  group('resolveTerminalFilePathSegmentOnRow', () {
+    test('excludes continuation indentation from the visible segment', () {
+      const snapshotText =
+          'Open /srv/app/lib/presentation/\n'
+          '    screens/terminal_screen.dart next.';
+      const rowText = '    screens/terminal_screen.dart next.';
+      expect(
+        resolveTerminalFilePathSegmentOnRowForPath(
+          snapshotText: snapshotText,
+          rowText: rowText,
+          rowStartOffset: snapshotText.indexOf(rowText),
+          rowColumnOffsets: List<int>.generate(rowText.length + 1, (i) => i),
+          path: '/srv/app/lib/presentation/screens/terminal_screen.dart',
+        ),
+        (text: 'screens/terminal_screen.dart', startColumn: 4, endColumn: 31),
+      );
+    });
+
+    test(
+      'keeps unindented continuation rows anchored to the first path cell',
+      () {
+        const snapshotText =
+            'Edit ~/Code/flutty.worktrees/fix-sftp-local-path-link\n'
+            's/lib/presentation/screens/terminal_screen.dart';
+        const rowText = 's/lib/presentation/screens/terminal_screen.dart';
+        expect(
+          resolveTerminalFilePathSegmentOnRowForPath(
+            snapshotText: snapshotText,
+            rowText: rowText,
+            rowStartOffset: snapshotText.indexOf(rowText),
+            rowColumnOffsets: List<int>.generate(rowText.length + 1, (i) => i),
+            path:
+                '~/Code/flutty.worktrees/fix-sftp-local-path-links/lib/presentation/screens/terminal_screen.dart',
+          ),
+          (
+            text: 's/lib/presentation/screens/terminal_screen.dart',
+            startColumn: 0,
+            endColumn: 46,
+          ),
+        );
+      },
+    );
+  });
+
   group('normalizeTerminalLinkCandidate', () {
     test('prepends https for uppercase www links', () {
       expect(

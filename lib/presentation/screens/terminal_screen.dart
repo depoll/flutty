@@ -483,10 +483,29 @@ _normalizeTerminalFilePathDetectionText(String text) {
   );
 }
 
-List<({String path, int start, int end, int hitTestEnd})>
+List<
+  ({
+    String path,
+    int start,
+    int end,
+    int hitTestEnd,
+    int normalizedStart,
+    int normalizedEnd,
+  })
+>
 _detectTerminalFilePathMatches(String text) {
   final normalizedText = _normalizeTerminalFilePathDetectionText(text);
-  final detectedPaths = <({String path, int start, int end, int hitTestEnd})>[];
+  final detectedPaths =
+      <
+        ({
+          String path,
+          int start,
+          int end,
+          int hitTestEnd,
+          int normalizedStart,
+          int normalizedEnd,
+        })
+      >[];
 
   for (final match in _terminalFilePathPattern.allMatches(
     normalizedText.text,
@@ -514,10 +533,102 @@ _detectTerminalFilePathMatches(String text) {
       start: originalStart,
       end: originalEnd,
       hitTestEnd: originalHitTestEnd,
+      normalizedStart: match.start,
+      normalizedEnd: visualEnd,
     ));
   }
 
   return detectedPaths;
+}
+
+/// Resolves the visible row segment for the first matching path on a row.
+@visibleForTesting
+({String text, int startColumn, int endColumn})?
+resolveTerminalFilePathSegmentOnRowForPath({
+  required String snapshotText,
+  required String rowText,
+  required int rowStartOffset,
+  required List<int> rowColumnOffsets,
+  required String path,
+}) {
+  final normalizedSnapshot = _normalizeTerminalFilePathDetectionText(
+    snapshotText,
+  );
+  for (final match in _detectTerminalFilePathMatches(snapshotText)) {
+    if (match.path != path) {
+      continue;
+    }
+    final segment = resolveTerminalFilePathSegmentOnRow(
+      rowText: rowText,
+      rowStartOffset: rowStartOffset,
+      rowColumnOffsets: rowColumnOffsets,
+      originalToNormalizedOffsets:
+          normalizedSnapshot.originalToNormalizedOffsets,
+      normalizedPathStart: match.normalizedStart,
+      normalizedPathEnd: match.normalizedEnd,
+    );
+    if (segment != null) {
+      return segment;
+    }
+  }
+  return null;
+}
+
+/// Resolves the visible path-only segment for a specific rendered row.
+@visibleForTesting
+({String text, int startColumn, int endColumn})?
+resolveTerminalFilePathSegmentOnRow({
+  required String rowText,
+  required int rowStartOffset,
+  required List<int> rowColumnOffsets,
+  required List<int> originalToNormalizedOffsets,
+  required int normalizedPathStart,
+  required int normalizedPathEnd,
+}) {
+  if (rowText.isEmpty || rowColumnOffsets.length < 2) {
+    return null;
+  }
+
+  int? startColumn;
+  int? endColumn;
+  for (var column = 0; column < rowColumnOffsets.length - 1; column++) {
+    final textStart = rowColumnOffsets[column];
+    if (textStart < 0 || textStart >= rowText.length) {
+      continue;
+    }
+    final textEnd = rowColumnOffsets[column + 1].clamp(
+      textStart + 1,
+      rowText.length,
+    );
+    final character = rowText.substring(textStart, textEnd);
+    if (!_isTerminalFilePathBodyCharacter(character)) {
+      continue;
+    }
+
+    final normalizedOffset =
+        originalToNormalizedOffsets[rowStartOffset + textStart];
+    if (normalizedOffset < normalizedPathStart ||
+        normalizedOffset >= normalizedPathEnd) {
+      continue;
+    }
+    startColumn ??= column;
+    endColumn = column;
+  }
+
+  if (startColumn == null || endColumn == null) {
+    return null;
+  }
+
+  final segmentStart = rowColumnOffsets[startColumn];
+  final segmentEnd = rowColumnOffsets[endColumn + 1].clamp(
+    segmentStart + 1,
+    rowText.length,
+  );
+  return (
+    text: rowText.substring(segmentStart, segmentEnd),
+    startColumn: startColumn,
+    endColumn: endColumn,
+  );
 }
 
 /// Resolves all tappable terminal file paths within the given text.
@@ -3563,49 +3674,47 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ({String path, String text, int startColumn, int endColumn})
       >[];
     }
-    final detectedPaths = detectTerminalFilePaths(pathSnapshot.text);
+    final detectedPaths = _detectTerminalFilePathMatches(pathSnapshot.text);
     if (detectedPaths.isEmpty) {
       return const <
         ({String path, String text, int startColumn, int endColumn})
       >[];
     }
 
+    final normalizedPathSnapshot = _normalizeTerminalFilePathDetectionText(
+      pathSnapshot.text,
+    );
     final rowStart = pathSnapshot.rowStarts[rowIndex];
     final rowColumnOffsets = pathSnapshot.columnOffsets[rowIndex];
     final rowEnd = rowStart + rowColumnOffsets.last;
+    final rowText = pathSnapshot.text.substring(rowStart, rowEnd);
     final relativeCandidatesToPrime = <String>{};
     final segments =
         <({String path, String text, int startColumn, int endColumn})>[];
     for (final detectedPath in detectedPaths) {
-      final segmentStart = detectedPath.start > rowStart
-          ? detectedPath.start
-          : rowStart;
-      final segmentEnd = detectedPath.end < rowEnd ? detectedPath.end : rowEnd;
-      if (segmentStart >= segmentEnd) {
-        continue;
-      }
-
-      int? startColumn;
-      int? endColumn;
-      for (var column = 0; column < rowColumnOffsets.length - 1; column++) {
-        final columnOffset = rowStart + rowColumnOffsets[column];
-        if (columnOffset < segmentStart || columnOffset >= segmentEnd) {
-          continue;
-        }
-        startColumn ??= column;
-        endColumn = column;
-      }
-      if (startColumn == null || endColumn == null) {
+      if (detectedPath.end <= rowStart || detectedPath.start >= rowEnd) {
         continue;
       }
 
       final path = detectedPath.path;
       if (_isInteractiveTerminalFilePath(path)) {
+        final visibleSegment = resolveTerminalFilePathSegmentOnRow(
+          rowText: rowText,
+          rowStartOffset: rowStart,
+          rowColumnOffsets: rowColumnOffsets,
+          originalToNormalizedOffsets:
+              normalizedPathSnapshot.originalToNormalizedOffsets,
+          normalizedPathStart: detectedPath.normalizedStart,
+          normalizedPathEnd: detectedPath.normalizedEnd,
+        );
+        if (visibleSegment == null) {
+          continue;
+        }
         segments.add((
           path: path,
-          text: pathSnapshot.text.substring(segmentStart, segmentEnd),
-          startColumn: startColumn,
-          endColumn: endColumn,
+          text: visibleSegment.text,
+          startColumn: visibleSegment.startColumn,
+          endColumn: visibleSegment.endColumn,
         ));
       } else if (isRelativeTerminalFilePathCandidate(path)) {
         relativeCandidatesToPrime.add(path);

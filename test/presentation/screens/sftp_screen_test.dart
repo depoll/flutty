@@ -46,6 +46,51 @@ void main() {
       },
     );
 
+    test('scrolls upward when the highlighted file is above the viewport', () {
+      expect(
+        resolveSftpHighlightedFileScrollOffset(
+          highlightedIndex: 2,
+          currentOffset: 300,
+          itemExtentEstimate: 64,
+          viewportExtent: 240,
+          maxScrollExtent: 2000,
+        ),
+        112,
+      );
+    });
+
+    test(
+      'scrolls downward when the highlighted file is below the viewport',
+      () {
+        expect(
+          resolveSftpHighlightedFileScrollOffset(
+            highlightedIndex: 12,
+            currentOffset: 120,
+            itemExtentEstimate: 64,
+            viewportExtent: 240,
+            maxScrollExtent: 2000,
+          ),
+          608,
+        );
+      },
+    );
+
+    test(
+      'keeps the current offset when the highlighted file is already visible',
+      () {
+        expect(
+          resolveSftpHighlightedFileScrollOffset(
+            highlightedIndex: 4,
+            currentOffset: 180,
+            itemExtentEstimate: 64,
+            viewportExtent: 240,
+            maxScrollExtent: 2000,
+          ),
+          180,
+        );
+      },
+    );
+
     test('detects previewable image file names including svg', () {
       expect(isPreviewableImageFileName('screenshot.png'), isTrue);
       expect(isPreviewableImageFileName('diagram.svg'), isTrue);

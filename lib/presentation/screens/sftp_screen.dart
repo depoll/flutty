@@ -18,6 +18,8 @@ const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
 const _unwrappedEditorTrailingSlack = 24.0;
 const _requestedPathLookupTimeout = Duration(seconds: 5);
+const _sftpFileRowExtentEstimate = 64.0;
+const _sftpHighlightedFileScrollPadding = 16.0;
 const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
@@ -47,6 +49,30 @@ List<String> popSftpPathHistory(List<String> history) {
     return history.isEmpty ? ['/'] : List<String>.from(history);
   }
   return List<String>.from(history)..removeLast();
+}
+
+/// Resolves the list offset needed to reveal a highlighted file row.
+@visibleForTesting
+double resolveSftpHighlightedFileScrollOffset({
+  required int highlightedIndex,
+  required double currentOffset,
+  required double itemExtentEstimate,
+  required double viewportExtent,
+  required double maxScrollExtent,
+  double padding = _sftpHighlightedFileScrollPadding,
+}) {
+  final itemTop = highlightedIndex * itemExtentEstimate;
+  final itemBottom = itemTop + itemExtentEstimate;
+  final viewportTop = currentOffset;
+  final viewportBottom = currentOffset + viewportExtent;
+
+  if (itemTop - padding < viewportTop) {
+    return (itemTop - padding).clamp(0.0, maxScrollExtent);
+  }
+  if (itemBottom + padding > viewportBottom) {
+    return (itemBottom + padding - viewportExtent).clamp(0.0, maxScrollExtent);
+  }
+  return currentOffset.clamp(0.0, maxScrollExtent);
 }
 
 /// Resolves how a requested path should open in the browser.
@@ -217,6 +243,7 @@ class SftpScreen extends ConsumerStatefulWidget {
 
 class _SftpScreenState extends ConsumerState<SftpScreen> {
   SftpClient? _sftp;
+  final ScrollController _fileListScrollController = ScrollController();
   String _currentPath = '/';
   List<SftpName> _files = [];
   bool _isLoading = true;
@@ -256,6 +283,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
   @override
   void dispose() {
+    _fileListScrollController.dispose();
     _sftp?.close();
     _sftp = null;
     super.dispose();
@@ -578,6 +606,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         _highlightedDirectoryPath = navigationTarget.directoryPath;
         _highlightedFileName = fileName;
       });
+      _queueScrollHighlightedFileIntoView();
       return true;
     }
 
@@ -601,6 +630,44 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _error = message;
     });
     unawaited(_openFallbackDirectory(preferredPath: _currentPath));
+  }
+
+  void _queueScrollHighlightedFileIntoView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _highlightedDirectoryPath != _currentPath ||
+          _highlightedFileName == null ||
+          !_fileListScrollController.hasClients) {
+        return;
+      }
+
+      final highlightedIndex = _files.indexWhere(
+        (file) => file.filename == _highlightedFileName,
+      );
+      if (highlightedIndex < 0) {
+        return;
+      }
+
+      final position = _fileListScrollController.position;
+      final targetOffset = resolveSftpHighlightedFileScrollOffset(
+        highlightedIndex: highlightedIndex,
+        currentOffset: _fileListScrollController.offset,
+        itemExtentEstimate: _sftpFileRowExtentEstimate,
+        viewportExtent: position.viewportDimension,
+        maxScrollExtent: position.maxScrollExtent,
+      );
+      if ((targetOffset - _fileListScrollController.offset).abs() < 0.5) {
+        return;
+      }
+
+      unawaited(
+        _fileListScrollController.animateTo(
+          targetOffset,
+          duration: const Duration(milliseconds: 220),
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
   }
 
   String? _sanitizeRequestedPath(String? path) {
@@ -774,6 +841,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     return RefreshIndicator(
       onRefresh: () => _loadDirectory(_currentPath),
       child: ListView.builder(
+        controller: _fileListScrollController,
         itemCount: _files.length,
         itemBuilder: (context, index) {
           final file = _files[index];
