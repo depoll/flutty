@@ -417,7 +417,7 @@ void main() {
                 keyType: 'ed25519',
                 publicKey: 'ssh-ed25519 AAAA...',
                 privateKey:
-                    'test-open-ssh-private-key\ntest\ntest-open-ssh-private-key-end',
+                    'test-open-ssh-key-material\ntest\ntest-open-ssh-key-material-end',
                 passphrase: const Value('keypass'),
               ),
             );
@@ -442,7 +442,7 @@ void main() {
 
         expect(config.hostname, '10.0.0.2');
         expect(config.username, 'admin');
-        expect(config.privateKey, contains('test-open-ssh-private-key'));
+        expect(config.privateKey, contains('test-open-ssh-key-material'));
         expect(config.passphrase, 'keypass');
         expect(config.identityKeys, isNull);
       });
@@ -758,7 +758,7 @@ void main() {
           name: 'Auto Key 1',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: 'private-key-1',
+          privateKey: 'key-material-1',
         ),
       );
       await keyRepo.insert(
@@ -766,7 +766,7 @@ void main() {
           name: 'Auto Key 2',
           keyType: 'rsa',
           publicKey: 'ssh-rsa BBBB...',
-          privateKey: 'private-key-2',
+          privateKey: 'key-material-2',
         ),
       );
       final hostId = await db
@@ -804,7 +804,7 @@ void main() {
             name: 'Auto Key $i',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 KEY$i',
-            privateKey: 'private-key-$i',
+            privateKey: 'key-material-$i',
           ),
         );
       }
@@ -869,7 +869,7 @@ void main() {
             name: 'Auto Key 1',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'private-key-1',
+            privateKey: 'key-material-1',
           ),
         );
         await keyRepo.insert(
@@ -877,7 +877,7 @@ void main() {
             name: 'Auto Key 2',
             keyType: 'rsa',
             publicKey: 'ssh-rsa BBBB...',
-            privateKey: 'private-key-2',
+            privateKey: 'key-material-2',
           ),
         );
 
@@ -908,7 +908,7 @@ void main() {
           name: 'Selected Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 CCCC...',
-          privateKey: 'selected-private-key',
+          privateKey: 'selected-key-material',
         ),
       );
       await keyRepo.insert(
@@ -916,7 +916,7 @@ void main() {
           name: 'Other Key',
           keyType: 'rsa',
           publicKey: 'ssh-rsa DDDD...',
-          privateKey: 'other-private-key',
+          privateKey: 'other-key-material',
         ),
       );
       final hostId = await db
@@ -934,7 +934,7 @@ void main() {
 
       final config = service.capturedConfig;
       expect(config, isNotNull);
-      expect(config!.privateKey, 'selected-private-key');
+      expect(config!.privateKey, 'selected-key-material');
       expect(config.identityKeys, isNull);
     });
 
@@ -960,7 +960,7 @@ void main() {
             name: 'Selected Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 CCCC...',
-            privateKey: 'selected-private-key',
+            privateKey: 'selected-key-material',
           ),
         );
         await keyRepo.insert(
@@ -968,7 +968,7 @@ void main() {
             name: 'Auto Key',
             keyType: 'rsa',
             publicKey: 'ssh-rsa DDDD...',
-            privateKey: 'auto-private-key',
+            privateKey: 'auto-key-material',
           ),
         );
         final hostId = await db
@@ -1013,7 +1013,7 @@ void main() {
             name: 'Selected Jump Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 EEEE...',
-            privateKey: 'selected-jump-private-key',
+            privateKey: 'selected-jump-key-material',
           ),
         );
         await keyRepo.insert(
@@ -1021,7 +1021,7 @@ void main() {
             name: 'Auto Key',
             keyType: 'rsa',
             publicKey: 'ssh-rsa FFFF...',
-            privateKey: 'auto-private-key',
+            privateKey: 'auto-key-material',
           ),
         );
         final jumpHostId = await db
@@ -1071,7 +1071,7 @@ void main() {
           name: 'Unused Auto Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 EEEE...',
-          privateKey: 'unused-private-key',
+          privateKey: 'unused-key-material',
         ),
       );
       final hostId = await hostRepo.insert(

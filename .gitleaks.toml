@@ -3,9 +3,8 @@ title = 'Flutty gitleaks configuration'
 [extend]
 useDefault = true
 
-[[allowlists]]
+[[allowlist]]
 description = 'Ignore CocoaPods checksum false positives in generated lockfiles.'
-condition = 'AND'
 paths = [
   '''(?:^|/)(?:ios|macos)/Podfile\.lock$''',
 ]

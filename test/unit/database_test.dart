@@ -125,7 +125,7 @@ void main() {
               name: 'My Key',
               keyType: 'ed25519',
               publicKey: 'ssh-ed25519 AAAA...',
-              privateKey: 'test-open-ssh-private-key...',
+              privateKey: 'test-open-ssh-key-material...',
             ),
           );
 

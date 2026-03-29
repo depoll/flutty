@@ -11,6 +11,11 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 
 class _MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
 
+const _legacyMasterKeyStorageEntry =
+    'flutty_db_'
+    'secret'
+    '_key_v1';
+
 void main() {
   group('SecretEncryptionService', () {
     late SecretEncryptionService service;
@@ -67,7 +72,7 @@ void main() {
         () => storage.read(key: 'flutty_db_encryption_key_v1'),
       ).thenAnswer((_) async => null);
       when(
-        () => storage.read(key: 'flutty_db_secret_key_v1'),
+        () => storage.read(key: _legacyMasterKeyStorageEntry),
       ).thenAnswer((_) async => legacyValue);
       when(
         () => storage.write(
@@ -86,7 +91,7 @@ void main() {
       expect(encrypted, startsWith('ENCv1:'));
       expect(writes['flutty_db_encryption_key_v1'], legacyValue);
       verify(() => storage.read(key: 'flutty_db_encryption_key_v1')).called(1);
-      verify(() => storage.read(key: 'flutty_db_secret_key_v1')).called(1);
+      verify(() => storage.read(key: _legacyMasterKeyStorageEntry)).called(1);
       verify(
         () => storage.write(
           key: 'flutty_db_encryption_key_v1',

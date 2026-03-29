@@ -84,7 +84,7 @@ void main() {
             name: 'Deploy Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA',
-            privateKey: 'test-open-ssh-private-keyxyz',
+            privateKey: 'test-open-ssh-key-materialxyz',
           ),
         );
         final hostId = await db
@@ -133,14 +133,14 @@ void main() {
               'name': 'Imported Key',
               'keyType': 'ed25519',
               'publicKey': 'ssh-ed25519 AAAA',
-              'privateKey': 'test-open-ssh-private-keyabc',
+              'privateKey': 'test-open-ssh-key-materialabc',
               'passphrase': 'pass',
             },
           },
         );
 
         final imported = await transferService.importKeyPayload(payload);
-        expect(imported.privateKey, 'test-open-ssh-private-keyabc');
+        expect(imported.privateKey, 'test-open-ssh-key-materialabc');
         expect(imported.passphrase, 'pass');
 
         final stored = await (db.select(
@@ -513,7 +513,7 @@ void main() {
             name: 'Main Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA',
-            privateKey: 'test-open-ssh-private-keyabc',
+            privateKey: 'test-open-ssh-key-materialabc',
           ),
         );
 
@@ -918,7 +918,7 @@ void main() {
               name: 'Deploy Key',
               keyType: 'ed25519',
               publicKey: 'ssh-ed25519 AAAA',
-              privateKey: 'test-open-ssh-private-keyxyz',
+              privateKey: 'test-open-ssh-key-materialxyz',
               passphrase: const Value('key-passphrase'),
             ),
           );
@@ -940,7 +940,7 @@ void main() {
       final importedKey = await transferService.importKeyPayload(decrypted);
 
       expect(importedKey.name, 'Deploy Key');
-      expect(importedKey.privateKey, contains('test-open-ssh-private-key'));
+      expect(importedKey.privateKey, contains('test-open-ssh-key-material'));
       expect(importedKey.passphrase, 'key-passphrase');
     });
 

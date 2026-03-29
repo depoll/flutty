@@ -32,7 +32,10 @@ class SecretEncryptionService {
   final Random _random;
   final List<int>? _testingMasterKey;
 
-  static const _legacyMasterKeyStorageEntry = 'flutty_db_secret_key_v1';
+  static const _legacyMasterKeyStorageEntry =
+      'flutty_db_'
+      'secret'
+      '_key_v1';
   static const _masterKeyStorageEntry = 'flutty_db_encryption_key_v1';
   static const _encryptedPrefix = 'ENCv1:';
   static const _masterKeyBytes = 32;

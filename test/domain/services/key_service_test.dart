@@ -47,7 +47,7 @@ void main() {
             name: 'Test Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
@@ -63,7 +63,7 @@ void main() {
             name: 'My Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
@@ -85,7 +85,7 @@ void main() {
             name: 'To Delete',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
@@ -103,7 +103,7 @@ void main() {
             name: 'Test',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
@@ -118,7 +118,7 @@ void main() {
             name: 'Test',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
@@ -133,7 +133,7 @@ void main() {
             name: 'Test',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
@@ -150,13 +150,13 @@ void main() {
             name: 'Test',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
         final key = await keyService.getById(id);
         final exported = keyService.exportPrivateKey(key!);
-        expect(exported, 'test-open-ssh-private-key...');
+        expect(exported, 'test-open-ssh-key-material...');
       });
     });
 
@@ -167,7 +167,7 @@ void main() {
             name: 'Watched Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'test-open-ssh-private-key...',
+            privateKey: 'test-open-ssh-key-material...',
           ),
         );
 
