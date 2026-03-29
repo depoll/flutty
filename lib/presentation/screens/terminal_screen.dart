@@ -13,7 +13,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
@@ -37,6 +36,7 @@ import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
+import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 const _minTerminalFontSize = 8.0;
@@ -2791,24 +2791,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
 
   TextStyle? _resolveTerminalTextStyle(String fontFamily, double fontSize) =>
-      switch (fontFamily) {
-        'JetBrains Mono' => GoogleFonts.jetBrainsMono(fontSize: fontSize),
-        'Fira Code' => GoogleFonts.firaCode(fontSize: fontSize),
-        'Source Code Pro' => GoogleFonts.sourceCodePro(fontSize: fontSize),
-        'Ubuntu Mono' => GoogleFonts.ubuntuMono(fontSize: fontSize),
-        'Roboto Mono' => GoogleFonts.robotoMono(fontSize: fontSize),
-        'IBM Plex Mono' => GoogleFonts.ibmPlexMono(fontSize: fontSize),
-        'Inconsolata' => GoogleFonts.inconsolata(fontSize: fontSize),
-        'Anonymous Pro' => GoogleFonts.anonymousPro(fontSize: fontSize),
-        'Cousine' => GoogleFonts.cousine(fontSize: fontSize),
-        'PT Mono' => GoogleFonts.ptMono(fontSize: fontSize),
-        'Space Mono' => GoogleFonts.spaceMono(fontSize: fontSize),
-        'VT323' => GoogleFonts.vt323(fontSize: fontSize),
-        'Share Tech Mono' => GoogleFonts.shareTechMono(fontSize: fontSize),
-        'Overpass Mono' => GoogleFonts.overpassMono(fontSize: fontSize),
-        'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
-        _ => null,
-      };
+      resolveConfiguredMonospaceTextStyle(fontFamily, fontSize: fontSize);
 
   Size? _measureTerminalPathUnderlineTextSize(String text) {
     if (text.isEmpty) {

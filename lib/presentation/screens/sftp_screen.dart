@@ -11,20 +11,21 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as path;
 
+import '../../data/repositories/host_repository.dart';
+import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/remote_file_service.dart';
+import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/connection_preview_snippet.dart';
+import 'remote_text_editor_screen.dart';
 
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
-const _unwrappedEditorTrailingSlack = 24.0;
 const _requestedPathLookupTimeout = Duration(seconds: 5);
 const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
-const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
-const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
-  'remoteTextEditorNowrapViewport',
-);
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -108,112 +109,6 @@ bool isPreviewableImageFileName(String filename) {
 @visibleForTesting
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
-
-/// Measures the width needed to display unwrapped editor lines without clipping.
-@visibleForTesting
-double measureUnwrappedEditorContentWidth({
-  required Iterable<String> lines,
-  required TextStyle style,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-  double Function(String line, TextStyle style)? measureLineWidth,
-}) {
-  final painter = measureLineWidth == null
-      ? TextPainter(
-          textDirection: textDirection,
-          textScaler: textScaler,
-          maxLines: 1,
-        )
-      : null;
-  var maxWidth = 0.0;
-  var hasVisibleText = false;
-
-  for (final line in lines) {
-    if (line.isEmpty) {
-      continue;
-    }
-
-    hasVisibleText = true;
-    final lineWidth =
-        measureLineWidth?.call(line, style) ??
-        (painter!
-              ..text = TextSpan(text: line, style: style)
-              ..layout())
-            .width;
-    if (lineWidth > maxWidth) {
-      maxWidth = lineWidth;
-    }
-  }
-
-  return hasVisibleText ? maxWidth + trailingSlack : 0;
-}
-
-/// Returns the current line prefix that appears before the text offset.
-@visibleForTesting
-String currentLinePrefixAtTextOffset(String text, int textOffset) {
-  final clampedOffset = textOffset < 0
-      ? 0
-      : textOffset > text.length
-      ? text.length
-      : textOffset;
-  final lineStart = text.lastIndexOf('\n', clampedOffset - 1);
-  final prefixStart = lineStart == -1 ? 0 : lineStart + 1;
-  return text.substring(prefixStart, clampedOffset);
-}
-
-/// Resolves the horizontal scroll offset needed to keep the current selection visible.
-@visibleForTesting
-double resolveUnwrappedEditorSelectionScrollOffset({
-  required String text,
-  required TextSelection selection,
-  required TextStyle style,
-  required TextDirection textDirection,
-  required TextScaler textScaler,
-  required double viewportWidth,
-  double currentOffset = 0,
-  double trailingSlack = _unwrappedEditorTrailingSlack,
-  double Function(String line, TextStyle style)? measureLineWidth,
-}) {
-  if (!selection.isValid || viewportWidth <= 0) {
-    return currentOffset;
-  }
-
-  final prefix = currentLinePrefixAtTextOffset(text, selection.extentOffset);
-  final caretOffset = measureUnwrappedEditorContentWidth(
-    lines: [prefix],
-    style: style,
-    textDirection: textDirection,
-    textScaler: textScaler,
-    trailingSlack: 0,
-    measureLineWidth: measureLineWidth,
-  );
-  final viewportEnd = currentOffset + viewportWidth;
-  final caretLeadingEdge = caretOffset > trailingSlack
-      ? caretOffset - trailingSlack
-      : 0.0;
-  final caretTrailingEdge = caretOffset + trailingSlack;
-
-  if (caretLeadingEdge < currentOffset) {
-    return caretLeadingEdge;
-  }
-  if (caretTrailingEdge > viewportEnd) {
-    return caretTrailingEdge - viewportWidth;
-  }
-  return currentOffset;
-}
-
-/// Builds the remote text editor screen for widget and integration tests.
-@visibleForTesting
-Widget buildRemoteTextEditorScreenForTesting({
-  required String fileName,
-  required TextEditingController controller,
-  ScrollController? horizontalScrollController,
-}) => _RemoteTextEditorScreen(
-  fileName: fileName,
-  controller: controller,
-  horizontalScrollController: horizontalScrollController,
-);
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
@@ -1366,12 +1261,49 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         controller.dispose();
         return;
       }
-      final updated = await Navigator.of(context).push<String>(
+      final brightness = Theme.of(context).brightness;
+      final navigator = Navigator.of(context);
+      final host = await ref
+          .read(hostRepositoryProvider)
+          .getById(widget.hostId);
+      final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+      final preferredConnectionId =
+          widget.connectionId ??
+          sessionsNotifier.getPreferredConnectionForHost(widget.hostId);
+      final session = preferredConnectionId == null
+          ? null
+          : sessionsNotifier.getSession(preferredConnectionId);
+      final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
+      final terminalThemes =
+          ref.read(allTerminalThemesProvider).asData?.value ??
+          TerminalThemes.all;
+      final editorTheme = resolveConnectionPreviewTheme(
+        brightness: brightness,
+        themeSettings: terminalThemeSettings,
+        availableThemes: terminalThemes,
+        lightThemeId:
+            session?.terminalThemeLightId ?? host?.terminalThemeLightId,
+        darkThemeId: session?.terminalThemeDarkId ?? host?.terminalThemeDarkId,
+      );
+      final fontFamily =
+          host?.terminalFontFamily ??
+          ref.read(fontFamilyNotifierProvider) ??
+          'monospace';
+      final initialFontSize =
+          session?.terminalFontSize ?? ref.read(fontSizeNotifierProvider) ?? 14;
+      if (!mounted) {
+        controller.dispose();
+        return;
+      }
+      final updated = await navigator.push<String>(
         MaterialPageRoute(
           fullscreenDialog: true,
-          builder: (context) => _RemoteTextEditorScreen(
+          builder: (context) => RemoteTextEditorScreen(
             fileName: file.filename,
             controller: controller,
+            terminalTheme: editorTheme,
+            fontFamily: fontFamily,
+            initialFontSize: initialFontSize,
           ),
         ),
       );
@@ -1522,237 +1454,6 @@ class _InfoRow extends StatelessWidget {
       ],
     ),
   );
-}
-
-class _RemoteTextEditorScreen extends StatefulWidget {
-  const _RemoteTextEditorScreen({
-    required this.fileName,
-    required this.controller,
-    this.horizontalScrollController,
-  });
-
-  final String fileName;
-  final TextEditingController controller;
-  final ScrollController? horizontalScrollController;
-
-  @override
-  State<_RemoteTextEditorScreen> createState() =>
-      _RemoteTextEditorScreenState();
-}
-
-class _RemoteTextEditorScreenState extends State<_RemoteTextEditorScreen> {
-  bool _wrapLines = false;
-  late ScrollController _horizontalScrollController;
-  late bool _ownsHorizontalScrollController;
-  bool _selectionVisibilityUpdateScheduled = false;
-  double _editorViewportWidth = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    _horizontalScrollController =
-        widget.horizontalScrollController ?? ScrollController();
-    _ownsHorizontalScrollController = widget.horizontalScrollController == null;
-    widget.controller.addListener(_handleControllerChanged);
-    _scheduleSelectionVisibilityUpdate();
-  }
-
-  @override
-  void didUpdateWidget(covariant _RemoteTextEditorScreen oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.controller != widget.controller) {
-      oldWidget.controller.removeListener(_handleControllerChanged);
-      widget.controller.addListener(_handleControllerChanged);
-      _scheduleSelectionVisibilityUpdate();
-    }
-    if (oldWidget.horizontalScrollController !=
-        widget.horizontalScrollController) {
-      if (_ownsHorizontalScrollController) {
-        _horizontalScrollController.dispose();
-      }
-      _horizontalScrollController =
-          widget.horizontalScrollController ?? ScrollController();
-      _ownsHorizontalScrollController =
-          widget.horizontalScrollController == null;
-      _scheduleSelectionVisibilityUpdate();
-    }
-  }
-
-  @override
-  void dispose() {
-    widget.controller.removeListener(_handleControllerChanged);
-    if (_ownsHorizontalScrollController) {
-      _horizontalScrollController.dispose();
-    }
-    super.dispose();
-  }
-
-  void _handleControllerChanged() {
-    if (!mounted) {
-      return;
-    }
-    if (_wrapLines) {
-      return;
-    }
-    setState(() {});
-    _scheduleSelectionVisibilityUpdate();
-  }
-
-  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) =>
-      measureUnwrappedEditorContentWidth(
-        lines: widget.controller.text.split('\n'),
-        style: style,
-        textDirection: Directionality.of(context),
-        textScaler: MediaQuery.textScalerOf(context),
-      );
-
-  void _scheduleSelectionVisibilityUpdate() {
-    if (_wrapLines ||
-        !mounted ||
-        _selectionVisibilityUpdateScheduled ||
-        _editorViewportWidth <= 0) {
-      return;
-    }
-    _selectionVisibilityUpdateScheduled = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _selectionVisibilityUpdateScheduled = false;
-      if (!mounted || _wrapLines || !_horizontalScrollController.hasClients) {
-        return;
-      }
-      _ensureSelectionVisible();
-    });
-  }
-
-  void _ensureSelectionVisible() {
-    final targetOffset = resolveUnwrappedEditorSelectionScrollOffset(
-      text: widget.controller.text,
-      selection: widget.controller.selection,
-      style: _remoteEditorTextStyle,
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      viewportWidth: _editorViewportWidth,
-      currentOffset: _horizontalScrollController.offset,
-    );
-    final clampedOffset = targetOffset.clamp(
-      0.0,
-      _horizontalScrollController.position.maxScrollExtent,
-    );
-    if ((clampedOffset - _horizontalScrollController.offset).abs() < 0.5) {
-      return;
-    }
-    _horizontalScrollController.jumpTo(clampedOffset);
-  }
-
-  void _updateEditorViewportWidth(double viewportWidth) {
-    if ((_editorViewportWidth - viewportWidth).abs() < 0.5) {
-      return;
-    }
-    _editorViewportWidth = viewportWidth;
-    _scheduleSelectionVisibilityUpdate();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final editor = TextField(
-      controller: widget.controller,
-      autofocus: true,
-      expands: true,
-      maxLines: null,
-      keyboardType: TextInputType.multiline,
-      textAlignVertical: TextAlignVertical.top,
-      style: _remoteEditorTextStyle,
-      decoration: const InputDecoration(
-        border: InputBorder.none,
-        isCollapsed: true,
-      ),
-    );
-
-    return Scaffold(
-      appBar: AppBar(
-        title: Text('Edit ${widget.fileName}'),
-        actions: [
-          IconButton(
-            onPressed: () {
-              setState(() {
-                _wrapLines = !_wrapLines;
-              });
-              if (!_wrapLines) {
-                _scheduleSelectionVisibilityUpdate();
-              }
-            },
-            icon: const Icon(Icons.wrap_text),
-            tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
-          ),
-          TextButton(
-            onPressed: () => Navigator.pop(context, widget.controller.text),
-            child: const Text('Save'),
-          ),
-        ],
-      ),
-      body: Padding(
-        padding: const EdgeInsets.all(12),
-        child: SizedBox.expand(
-          child: DecoratedBox(
-            decoration: ShapeDecoration(
-              shape: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(4),
-                borderSide: BorderSide(color: theme.colorScheme.outline),
-              ),
-            ),
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  if (_wrapLines) {
-                    return SizedBox(
-                      width: constraints.maxWidth,
-                      height: constraints.maxHeight,
-                      child: editor,
-                    );
-                  }
-
-                  _updateEditorViewportWidth(constraints.maxWidth);
-                  final measuredContentWidth = _measureUnwrappedContentWidth(
-                    context,
-                    _remoteEditorTextStyle,
-                  );
-                  final viewportWidth = constraints.maxWidth;
-                  final contentWidth = measuredContentWidth > viewportWidth
-                      ? measuredContentWidth
-                      : viewportWidth;
-
-                  return SizedBox(
-                    key: _remoteTextEditorNowrapViewportKey,
-                    width: viewportWidth,
-                    height: constraints.maxHeight,
-                    child: ClipRect(
-                      child: Scrollbar(
-                        controller: _horizontalScrollController,
-                        thumbVisibility: true,
-                        notificationPredicate: (notification) =>
-                            notification.metrics.axis == Axis.horizontal,
-                        child: SingleChildScrollView(
-                          controller: _horizontalScrollController,
-                          scrollDirection: Axis.horizontal,
-                          physics: const ClampingScrollPhysics(),
-                          child: SizedBox(
-                            width: contentWidth,
-                            height: constraints.maxHeight,
-                            child: editor,
-                          ),
-                        ),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }
 
 class _RemoteImageViewerScreen extends StatelessWidget {
