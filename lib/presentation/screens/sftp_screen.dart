@@ -524,10 +524,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<bool> _openRequestedPath(String requestedPath) async {
+    final homeDirectory = await _resolveHomeDirectoryPath();
+    if (!mounted) {
+      return false;
+    }
     final normalizedPath = resolveRequestedSftpPath(
       requestedPath,
       workingDirectory: widget.initialWorkingDirectory,
-      homeDirectory: await _resolveHomeDirectoryPath(),
+      homeDirectory: homeDirectory,
     );
     if (normalizedPath == null) {
       _closeRequestedPathWithError(
@@ -550,9 +554,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return false;
     }
 
+    final sftp = _sftp;
+    if (sftp == null) {
+      _closeRequestedPathWithError('Could not open "$requestedPath" in SFTP');
+      return false;
+    }
+
     late final SftpFileAttrs requestedPathStat;
     try {
-      requestedPathStat = await _sftp!
+      requestedPathStat = await sftp
           .stat(normalizedPath)
           .timeout(_requestedPathLookupTimeout);
     } on TimeoutException {
