@@ -119,6 +119,16 @@ platform :ios do
     profile_path
   end
 
+  private_lane :resolved_certificate_name do |options|
+    app_id = options[:app_identifier]
+    certificate_name = ENV["sigh_#{app_id}_appstore_certificate-name"] ||
+                       ENV["sigh_#{app_id}_appstore_certificate_name"]
+
+    UI.user_error!("Missing installed certificate name for #{app_id}") if certificate_name.to_s.empty?
+
+    certificate_name
+  end
+
   desc 'Setup code signing for CI builds'
   lane :setup_signing do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
@@ -161,7 +171,7 @@ platform :ios do
 
     resign(
       ipa: resigned_ipa_path,
-      signing_identity: 'Apple Distribution',
+      signing_identity: resolved_certificate_name(app_identifier: app_id),
       provisioning_profile: {
         app_id => resolved_profile_path(app_identifier: app_id),
         live_activity_app_id => resolved_profile_path(app_identifier: live_activity_app_id),
