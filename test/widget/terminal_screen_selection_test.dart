@@ -277,6 +277,22 @@ void main() {
       );
     });
 
+    test('detects tilde paths split across unindented continuation lines', () {
+      const text =
+          'Edit ~/Code/flutty.worktrees/fix-sftp-local-path-link\n'
+          's/lib/presentation/screens/terminal_screen.dart';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_screen'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/fix-sftp-local-path-links/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
     test('keeps suffix taps inside the hit-test range for stack traces', () {
       const line = 'Error in /srv/app/lib/main.dart:42:7';
       final detectedPath = detectTerminalFilePathAtTextOffset(
@@ -520,6 +536,20 @@ void main() {
       },
     );
 
+    test('prefers measured text height when available', () {
+      expect(
+        resolveTerminalPathUnderlineRect(
+          lineTopLeft: const Offset(24, 18),
+          lineEndOffset: const Offset(98, 18),
+          lineHeight: 20,
+          rowHeight: 24,
+          textHeight: 16,
+          viewportHeight: 300,
+        ),
+        const Rect.fromLTWH(24, 35, 74, 1.6),
+      );
+    });
+
     test('returns null when the underline would have no visible width', () {
       expect(
         resolveTerminalPathUnderlineRect(
@@ -529,6 +559,29 @@ void main() {
           viewportHeight: 300,
         ),
         isNull,
+      );
+    });
+  });
+
+  group('isTerminalPathContinuationAcrossLines', () {
+    test('joins explicit paths split by unindented rendered line breaks', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText:
+              'Edit ~/Code/flutty.worktrees/fix-sftp-local-path-link',
+          nextLineText: 's/lib/presentation/screens/terminal_screen.dart',
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not join unrelated rendered lines', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Read terminal_screen.dart',
+          nextLineText: 'Read sftp_screen.dart',
+        ),
+        isFalse,
       );
     });
   });

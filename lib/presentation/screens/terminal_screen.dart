@@ -271,6 +271,7 @@ Rect? resolveTerminalPathUnderlineRect({
   required double lineHeight,
   required double viewportHeight,
   double? rowHeight,
+  double? textHeight,
 }) {
   final width = lineEndOffset.dx - lineTopLeft.dx;
   if (width <= 0 || lineHeight <= 0 || viewportHeight <= 0) {
@@ -281,7 +282,8 @@ Rect? resolveTerminalPathUnderlineRect({
       ? lineHeight
       : (rowHeight ?? lineHeight);
   final thickness = (lineHeight * 0.08).clamp(1.5, 2.0);
-  final top = (lineTopLeft.dy + effectiveRowHeight + 1.0).clamp(
+  final effectiveTextHeight = textHeight ?? effectiveRowHeight;
+  final top = (lineTopLeft.dy + effectiveTextHeight + 1.0).clamp(
     0.0,
     viewportHeight - thickness,
   );
@@ -365,6 +367,37 @@ String _trimTerminalPathContinuationPrefix(String text) {
     index++;
   }
   return text.substring(index);
+}
+
+/// Whether adjacent rendered lines should be treated as one file-path span.
+@visibleForTesting
+bool isTerminalPathContinuationAcrossLines({
+  required String previousLineText,
+  required String nextLineText,
+}) {
+  final previousText = trimTerminalLinePadding(previousLineText);
+  final nextText = trimTerminalLinePadding(nextLineText);
+  if (previousText.isEmpty || nextText.isEmpty) {
+    return false;
+  }
+
+  final nextWithoutIndentation = _trimTerminalPathContinuationPrefix(nextText);
+  if (nextWithoutIndentation.isNotEmpty &&
+      nextWithoutIndentation.length != nextText.length &&
+      _isTerminalFilePathBodyCharacter(previousText[previousText.length - 1]) &&
+      _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0])) {
+    return true;
+  }
+
+  final combinedText = '$previousText\n$nextText';
+  final splitOffset = previousText.length;
+  for (final detectedPath in _detectTerminalFilePathMatches(combinedText)) {
+    if (detectedPath.start < splitOffset &&
+        detectedPath.end > splitOffset + 1) {
+      return true;
+    }
+  }
+  return false;
 }
 
 ({
@@ -788,10 +821,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   String? _terminalPathCacheScope;
   String? _pendingTerminalPathTap;
-  ({String text, Offset textOffset})? _hoveredTerminalPathUnderline;
-  List<({String path, String text, Offset textOffset, Rect touchRect})>
+  Rect? _hoveredTerminalPathUnderline;
+  List<({String path, Rect underlineRect, Rect touchRect})>
   _visibleTerminalPathUnderlines =
-      const <({String path, String text, Offset textOffset, Rect touchRect})>[];
+      const <({String path, Rect underlineRect, Rect touchRect})>[];
   bool _shouldScheduleVisibleTerminalPathBadgeRefreshFromBuild = true;
   bool? _lastShowsTerminalPathBadges;
   CellOffset? _lastHoveredTerminalPathOffset;
@@ -2338,17 +2371,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
     final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
-    final terminalUnderlineTextStyle =
-        (_resolveTerminalTextStyle(fontFamily, fontSize) ??
-                TextStyle(fontFamily: 'monospace', fontSize: fontSize))
-            .copyWith(
-              color: Colors.transparent,
-              decoration: TextDecoration.underline,
-              decorationColor: theme.colorScheme.primary.withValues(
-                alpha: 0.92,
-              ),
-              decorationThickness: 2,
-            );
     final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
       terminalTextStyle,
     );
@@ -2412,9 +2434,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         setState(
           () => _visibleTerminalPathUnderlines =
-              const <
-                ({String path, String text, Offset textOffset, Rect touchRect})
-              >[],
+              const <({String path, Rect underlineRect, Rect touchRect})>[],
         );
       });
     }
@@ -2437,14 +2457,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             terminalView,
             for (final underline in _visibleTerminalPathUnderlines)
               Positioned(
-                left: underline.textOffset.dx,
-                top: underline.textOffset.dy,
+                left: underline.underlineRect.left,
+                top: underline.underlineRect.top,
                 child: IgnorePointer(
-                  child: Text(
-                    underline.text,
-                    textScaler: MediaQuery.textScalerOf(context),
-                    softWrap: false,
-                    style: terminalUnderlineTextStyle,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: SizedBox(
+                      width: underline.underlineRect.width,
+                      height: underline.underlineRect.height,
+                    ),
                   ),
                 ),
               ),
@@ -2460,14 +2484,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               terminalView,
               if (_hoveredTerminalPathUnderline != null)
                 Positioned(
-                  left: _hoveredTerminalPathUnderline!.textOffset.dx,
-                  top: _hoveredTerminalPathUnderline!.textOffset.dy,
+                  left: _hoveredTerminalPathUnderline!.left,
+                  top: _hoveredTerminalPathUnderline!.top,
                   child: IgnorePointer(
-                    child: Text(
-                      _hoveredTerminalPathUnderline!.text,
-                      textScaler: MediaQuery.textScalerOf(context),
-                      softWrap: false,
-                      style: terminalUnderlineTextStyle,
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(
+                          alpha: 0.92,
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: SizedBox(
+                        width: _hoveredTerminalPathUnderline!.width,
+                        height: _hoveredTerminalPathUnderline!.height,
+                      ),
                     ),
                   ),
                 ),
@@ -2639,6 +2669,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
         _ => null,
       };
+
+  Size? _measureTerminalPathUnderlineTextSize(String text) {
+    if (text.isEmpty) {
+      return null;
+    }
+    final globalFontSize = ref.read(fontSizeNotifierProvider);
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+      pinchFontSize: _pinchFontSize,
+    );
+    final fontFamily =
+        _host?.terminalFontFamily ??
+        ref.read(fontFamilyNotifierProvider) ??
+        'monospace';
+    final textStyle =
+        _resolveTerminalTextStyle(fontFamily, fontSize) ??
+        TextStyle(fontFamily: 'monospace', fontSize: fontSize);
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: textStyle),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    if (painter.width <= 0 || painter.height <= 0) {
+      return null;
+    }
+    return Size(painter.width, painter.height);
+  }
 
   void _openConnectionFileBrowser() {
     final connectionId = _connectionId;
@@ -3182,7 +3241,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     while (startRow > 0 &&
-        _isIndentedTerminalPathContinuation(
+        isTerminalPathContinuationAcrossLines(
           previousLineText: lineTextAt(startRow - 1),
           nextLineText: lineTextAt(startRow),
         )) {
@@ -3190,7 +3249,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     while (endRow + 1 < buffer.height &&
-        _isIndentedTerminalPathContinuation(
+        isTerminalPathContinuationAcrossLines(
           previousLineText: lineTextAt(endRow),
           nextLineText: lineTextAt(endRow + 1),
         )) {
@@ -3219,27 +3278,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       rowStarts: rowStarts,
       columnOffsets: columnOffsets,
     );
-  }
-
-  bool _isIndentedTerminalPathContinuation({
-    required String previousLineText,
-    required String nextLineText,
-  }) {
-    final previousText = trimTerminalLinePadding(previousLineText);
-    final nextText = trimTerminalLinePadding(nextLineText);
-    final nextWithoutIndentation = _trimTerminalPathContinuationPrefix(
-      nextText,
-    );
-    if (previousText.isEmpty ||
-        nextWithoutIndentation.isEmpty ||
-        nextWithoutIndentation.length == nextText.length) {
-      return false;
-    }
-
-    return _isTerminalFilePathBodyCharacter(
-          previousText[previousText.length - 1],
-        ) &&
-        _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0]);
   }
 
   void _handleTerminalPathHover(PointerHoverEvent event) {
@@ -3278,16 +3316,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _clearHoveredTerminalPathUnderline();
       return;
     }
-    final textOffset = _buildTerminalPathUnderlineTextOffset(
+    final underline = _buildTerminalPathUnderlineRect(
       terminalViewState,
       row: offset.y,
       startColumn: hoveredSegment.startColumn,
+      endColumn: hoveredSegment.endColumn,
+      text: hoveredSegment.text,
     );
-    if (textOffset == null) {
+    if (underline == null) {
       _clearHoveredTerminalPathUnderline();
       return;
     }
-    final underline = (text: hoveredSegment.text, textOffset: textOffset);
     if (_hoveredTerminalPathUnderline == underline) {
       return;
     }
@@ -3370,9 +3409,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (_visibleTerminalPathUnderlines.isNotEmpty) {
         setState(
           () => _visibleTerminalPathUnderlines =
-              const <
-                ({String path, String text, Offset textOffset, Rect touchRect})
-              >[],
+              const <({String path, Rect underlineRect, Rect touchRect})>[],
         );
       }
       return;
@@ -3391,8 +3428,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final underlines =
-        <({String path, String text, Offset textOffset, Rect touchRect})>[];
+    final underlines = <({String path, Rect underlineRect, Rect touchRect})>[];
 
     for (var row = rowRange.topRow; row <= rowRange.bottomRow; row++) {
       final segments = _resolveInteractiveTerminalPathSegmentsOnRow(row);
@@ -3400,10 +3436,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!_shouldShowTerminalPathBadge(segment.path)) {
           continue;
         }
-        final textOffset = _buildTerminalPathUnderlineTextOffset(
+        final underlineRect = _buildTerminalPathUnderlineRect(
           terminalViewState,
           row: row,
           startColumn: segment.startColumn,
+          endColumn: segment.endColumn,
+          text: segment.text,
         );
         final touchRect = _buildTerminalPathTouchTargetRect(
           terminalViewState,
@@ -3411,11 +3449,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           startColumn: segment.startColumn,
           endColumn: segment.endColumn,
         );
-        if (textOffset != null && touchRect != null) {
+        if (underlineRect != null && touchRect != null) {
           underlines.add((
             path: segment.path,
-            text: segment.text,
-            textOffset: textOffset,
+            underlineRect: underlineRect,
             touchRect: touchRect,
           ));
         }
@@ -3427,12 +3464,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Offset? _buildTerminalPathUnderlineTextOffset(
+  Rect? _buildTerminalPathUnderlineRect(
     MonkeyTerminalViewState terminalViewState, {
     required int row,
     required int startColumn,
-  }) =>
-      terminalViewState.renderTerminal.getOffset(CellOffset(startColumn, row));
+    required int endColumn,
+    required String text,
+  }) {
+    final terminalViewObject = terminalViewState.context.findRenderObject();
+    if (terminalViewObject is! RenderBox) {
+      return null;
+    }
+    final renderTerminal = terminalViewState.renderTerminal;
+    final lineTopLeft = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(CellOffset(startColumn, row)),
+      ancestor: terminalViewObject,
+    );
+    final measuredTextSize = _measureTerminalPathUnderlineTextSize(text);
+    final lineEndOffset = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(
+        CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
+      ),
+      ancestor: terminalViewObject,
+    );
+    return resolveTerminalPathUnderlineRect(
+      lineTopLeft: lineTopLeft,
+      lineEndOffset: lineEndOffset,
+      lineHeight: renderTerminal.lineHeight,
+      viewportHeight: terminalViewObject.size.height,
+      rowHeight: renderTerminal.cellSize.height,
+      textHeight: measuredTextSize?.height,
+    );
+  }
 
   Rect? _buildTerminalPathTouchTargetRect(
     MonkeyTerminalViewState terminalViewState, {
@@ -3440,16 +3503,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required int startColumn,
     required int endColumn,
   }) {
+    final terminalViewObject = terminalViewState.context.findRenderObject();
+    if (terminalViewObject is! RenderBox) {
+      return null;
+    }
     final renderTerminal = terminalViewState.renderTerminal;
-    final lineTopLeft = renderTerminal.getOffset(CellOffset(startColumn, row));
-    final lineEndOffset = renderTerminal.getOffset(
-      CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
+    final lineTopLeft = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(CellOffset(startColumn, row)),
+      ancestor: terminalViewObject,
+    );
+    final lineEndOffset = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(
+        CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
+      ),
+      ancestor: terminalViewObject,
     );
     return resolveTerminalPathTouchTargetRect(
       lineTopLeft: lineTopLeft,
       lineEndOffset: lineEndOffset,
       lineHeight: renderTerminal.lineHeight,
-      viewportHeight: renderTerminal.size.height,
+      viewportHeight: terminalViewObject.size.height,
     );
   }
 

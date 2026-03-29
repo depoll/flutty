@@ -49,6 +49,19 @@ List<String> popSftpPathHistory(List<String> history) {
   return List<String>.from(history)..removeLast();
 }
 
+/// Resolves how a requested path should open in the browser.
+@visibleForTesting
+({String directoryPath, String? highlightedFileName})
+resolveRequestedSftpNavigationTarget(
+  String normalizedPath, {
+  required bool isDirectory,
+}) => (
+  directoryPath: isDirectory
+      ? normalizedPath
+      : parentRemotePath(normalizedPath),
+  highlightedFileName: isDirectory ? null : path.posix.basename(normalizedPath),
+);
+
 /// Whether the file name should be previewable as an image.
 @visibleForTesting
 bool isPreviewableImageFileName(String filename) {
@@ -528,25 +541,20 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return false;
     }
 
-    if (requestedPathStat.isDirectory) {
-      if (await _loadDirectory(
-        normalizedPath,
-        nextHistory: [normalizedPath],
-        showError: false,
-      )) {
-        return true;
-      }
-      _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
-      return false;
-    }
-
-    final parentPath = parentRemotePath(normalizedPath);
-    final fileName = path.posix.basename(normalizedPath);
+    final navigationTarget = resolveRequestedSftpNavigationTarget(
+      normalizedPath,
+      isDirectory: requestedPathStat.isDirectory,
+    );
     if (await _loadDirectory(
-      parentPath,
-      nextHistory: [parentPath],
+      navigationTarget.directoryPath,
+      nextHistory: [navigationTarget.directoryPath],
       showError: false,
     )) {
+      final fileName = navigationTarget.highlightedFileName;
+      if (fileName == null) {
+        return true;
+      }
+
       SftpName? matchingEntry;
       for (final entry in _files) {
         if (entry.filename == fileName) {
@@ -565,7 +573,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return true;
       }
       setState(() {
-        _highlightedDirectoryPath = parentPath;
+        _highlightedDirectoryPath = navigationTarget.directoryPath;
         _highlightedFileName = fileName;
       });
       return true;
