@@ -543,9 +543,10 @@ jobs:
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
           REUSED_IPA_PATH=''
           if [ -n '${{ inputs.ios-reuse-ipa-artifact-name }}' ]; then
-            REUSED_IPA_PATH=$(find ../build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+            REUSED_IPA_PATH=$(find ../build/ios/ipa -name '*.ipa' -print -quit)
             if [ -z "$REUSED_IPA_PATH" ]; then
               echo "Expected a reusable IPA artifact, but none was downloaded."
+              find ../build/ios/ipa -maxdepth 4 -print || true
               exit 1
             fi
           fi
