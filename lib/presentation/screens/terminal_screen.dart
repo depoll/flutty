@@ -60,6 +60,31 @@ final _terminalFilePathPattern = RegExp(
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
 
+typedef _TerminalPathMatch = ({
+  String path,
+  int start,
+  int end,
+  int hitTestEnd,
+  int normalizedStart,
+  int normalizedEnd,
+});
+typedef _NormalizedTerminalPathSnapshot = ({
+  String text,
+  List<int> originalToNormalizedOffsets,
+  List<int> normalizedToOriginalStarts,
+  List<int> normalizedToOriginalEnds,
+});
+typedef _TerminalPathTapSnapshot = ({
+  String text,
+  int startRow,
+  List<int> rowStarts,
+  List<List<int>> columnOffsets,
+});
+typedef _TerminalPathSnapshotAnalysis = ({
+  List<_TerminalPathMatch> detectedPaths,
+  _NormalizedTerminalPathSnapshot normalizedSnapshot,
+});
+
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
 /// Padding around the terminal viewport.
@@ -404,13 +429,9 @@ bool isTerminalPathContinuationAcrossLines({
   return false;
 }
 
-({
+_NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   String text,
-  List<int> originalToNormalizedOffsets,
-  List<int> normalizedToOriginalStarts,
-  List<int> normalizedToOriginalEnds,
-})
-_normalizeTerminalFilePathDetectionText(String text) {
+) {
   final normalizedCharacters = <String>[];
   final originalToNormalizedOffsets = List<int>.filled(text.length + 1, 0);
   final normalizedToOriginalStarts = <int>[];
@@ -487,29 +508,9 @@ _normalizeTerminalFilePathDetectionText(String text) {
   );
 }
 
-List<
-  ({
-    String path,
-    int start,
-    int end,
-    int hitTestEnd,
-    int normalizedStart,
-    int normalizedEnd,
-  })
->
-_detectTerminalFilePathMatches(String text) {
+List<_TerminalPathMatch> _detectTerminalFilePathMatches(String text) {
   final normalizedText = _normalizeTerminalFilePathDetectionText(text);
-  final detectedPaths =
-      <
-        ({
-          String path,
-          int start,
-          int end,
-          int hitTestEnd,
-          int normalizedStart,
-          int normalizedEnd,
-        })
-      >[];
+  final detectedPaths = <_TerminalPathMatch>[];
 
   for (final match in _terminalFilePathPattern.allMatches(
     normalizedText.text,
@@ -3255,13 +3256,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _detectTerminalFilePathInSnapshotAtCell(
-    ({
-      String text,
-      int startRow,
-      List<int> rowStarts,
-      List<List<int>> columnOffsets,
-    })
-    pathSnapshot,
+    _TerminalPathTapSnapshot pathSnapshot,
     CellOffset offset,
   ) {
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);
@@ -3294,13 +3289,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return detectedPath.path;
   }
 
-  ({
-    String text,
-    int startRow,
-    List<int> rowStarts,
-    List<List<int>> columnOffsets,
-  })?
-  _buildWrappedTerminalLinkSnapshot(int row) {
+  _TerminalPathTapSnapshot? _buildWrappedTerminalLinkSnapshot(int row) {
     final buffer = _terminal.buffer;
     if (row < 0 || row >= buffer.height) {
       return null;
@@ -3337,13 +3326,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
-  ({
-    String text,
-    int startRow,
-    List<int> rowStarts,
-    List<List<int>> columnOffsets,
-  })?
-  _buildTerminalPathTapSnapshot(int row) {
+  _TerminalPathTapSnapshot? _buildTerminalPathTapSnapshot(int row) {
     final buffer = _terminal.buffer;
     if (row < 0 || row >= buffer.height) {
       return null;
@@ -3557,34 +3540,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     final underlines = <({String path, Rect underlineRect, Rect touchRect})>[];
-
-    for (var row = rowRange.topRow; row <= rowRange.bottomRow; row++) {
-      final segments = _resolveInteractiveTerminalPathSegmentsOnRow(row);
-      for (final segment in segments) {
-        if (!_shouldShowTerminalPathBadge(segment.path)) {
-          continue;
-        }
-        final underlineRect = _buildTerminalPathUnderlineRect(
-          terminalViewState,
-          row: row,
-          startColumn: segment.startColumn,
-          endColumn: segment.endColumn,
-          text: segment.text,
+    var row = rowRange.topRow;
+    while (row <= rowRange.bottomRow) {
+      final pathSnapshot = _buildTerminalPathTapSnapshot(row);
+      if (pathSnapshot == null) {
+        row++;
+        continue;
+      }
+      final snapshotAnalysis = _analyzeTerminalPathSnapshot(pathSnapshot);
+      final snapshotEndRow =
+          pathSnapshot.startRow + pathSnapshot.columnOffsets.length - 1;
+      final visibleSnapshotBottom = min(rowRange.bottomRow, snapshotEndRow);
+      for (
+        var snapshotRow = max(row, pathSnapshot.startRow);
+        snapshotRow <= visibleSnapshotBottom;
+        snapshotRow++
+      ) {
+        final segments = _resolveInteractiveTerminalPathSegmentsInSnapshotRow(
+          snapshotRow,
+          pathSnapshot: pathSnapshot,
+          snapshotAnalysis: snapshotAnalysis,
         );
-        final touchRect = _buildTerminalPathTouchTargetRect(
-          terminalViewState,
-          row: row,
-          startColumn: segment.startColumn,
-          endColumn: segment.endColumn,
-        );
-        if (underlineRect != null && touchRect != null) {
-          underlines.add((
-            path: segment.path,
-            underlineRect: underlineRect,
-            touchRect: touchRect,
-          ));
+        for (final segment in segments) {
+          if (!_shouldShowTerminalPathBadge(segment.path)) {
+            continue;
+          }
+          final underlineRect = _buildTerminalPathUnderlineRect(
+            terminalViewState,
+            row: snapshotRow,
+            startColumn: segment.startColumn,
+            endColumn: segment.endColumn,
+            text: segment.text,
+          );
+          final touchRect = _buildTerminalPathTouchTargetRect(
+            terminalViewState,
+            row: snapshotRow,
+            startColumn: segment.startColumn,
+            endColumn: segment.endColumn,
+          );
+          if (underlineRect != null && touchRect != null) {
+            underlines.add((
+              path: segment.path,
+              underlineRect: underlineRect,
+              touchRect: touchRect,
+            ));
+          }
         }
       }
+      row = visibleSnapshotBottom + 1;
     }
 
     if (!listEquals(_visibleTerminalPathUnderlines, underlines)) {
@@ -3671,6 +3674,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return null;
   }
 
+  _TerminalPathSnapshotAnalysis _analyzeTerminalPathSnapshot(
+    _TerminalPathTapSnapshot pathSnapshot,
+  ) => (
+    detectedPaths: _detectTerminalFilePathMatches(pathSnapshot.text),
+    normalizedSnapshot: _normalizeTerminalFilePathDetectionText(
+      pathSnapshot.text,
+    ),
+  );
+
   List<({String path, String text, int startColumn, int endColumn})>
   _resolveInteractiveTerminalPathSegmentsOnRow(int row) {
     final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
@@ -3681,22 +3693,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       >[];
     }
 
-    final rowIndex = clampedRow - pathSnapshot.startRow;
+    return _resolveInteractiveTerminalPathSegmentsInSnapshotRow(
+      clampedRow,
+      pathSnapshot: pathSnapshot,
+      snapshotAnalysis: _analyzeTerminalPathSnapshot(pathSnapshot),
+    );
+  }
+
+  List<({String path, String text, int startColumn, int endColumn})>
+  _resolveInteractiveTerminalPathSegmentsInSnapshotRow(
+    int row, {
+    required _TerminalPathTapSnapshot pathSnapshot,
+    required _TerminalPathSnapshotAnalysis snapshotAnalysis,
+  }) {
+    final rowIndex = row - pathSnapshot.startRow;
     if (rowIndex < 0 || rowIndex >= pathSnapshot.columnOffsets.length) {
       return const <
         ({String path, String text, int startColumn, int endColumn})
       >[];
     }
-    final detectedPaths = _detectTerminalFilePathMatches(pathSnapshot.text);
-    if (detectedPaths.isEmpty) {
+    if (snapshotAnalysis.detectedPaths.isEmpty) {
       return const <
         ({String path, String text, int startColumn, int endColumn})
       >[];
     }
 
-    final normalizedPathSnapshot = _normalizeTerminalFilePathDetectionText(
-      pathSnapshot.text,
-    );
     final rowStart = pathSnapshot.rowStarts[rowIndex];
     final rowColumnOffsets = pathSnapshot.columnOffsets[rowIndex];
     final rowEnd = rowStart + rowColumnOffsets.last;
@@ -3704,7 +3725,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final relativeCandidatesToPrime = <String>{};
     final segments =
         <({String path, String text, int startColumn, int endColumn})>[];
-    for (final detectedPath in detectedPaths) {
+    for (final detectedPath in snapshotAnalysis.detectedPaths) {
       if (detectedPath.end <= rowStart || detectedPath.start >= rowEnd) {
         continue;
       }
@@ -3716,7 +3737,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           rowStartOffset: rowStart,
           rowColumnOffsets: rowColumnOffsets,
           originalToNormalizedOffsets:
-              normalizedPathSnapshot.originalToNormalizedOffsets,
+              snapshotAnalysis.normalizedSnapshot.originalToNormalizedOffsets,
           normalizedPathStart: detectedPath.normalizedStart,
           normalizedPathEnd: detectedPath.normalizedEnd,
         );
