@@ -136,10 +136,15 @@ platform :ios do
     scheme = options[:scheme] || 'Private'
     unsigned_ipa_path = options[:unsigned_ipa_path].to_s
     output_ipa_path = options[:output_ipa_path].to_s
+    supported_schemes = (APP_IDS.keys + LIVE_ACTIVITY_APP_IDS.keys).uniq
+    unless APP_IDS.key?(scheme) && LIVE_ACTIVITY_APP_IDS.key?(scheme)
+      UI.user_error!("Unknown scheme '#{scheme}'. Supported schemes: #{supported_schemes.join(', ')}")
+    end
     app_id = APP_IDS[scheme]
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
     UI.user_error!('unsigned_ipa_path is required') if unsigned_ipa_path.empty?
+    UI.user_error!("IPA not found at #{unsigned_ipa_path}") unless File.exist?(unsigned_ipa_path)
 
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],

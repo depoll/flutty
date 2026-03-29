@@ -549,6 +549,10 @@ jobs:
           fi
 
           if [ "${{ inputs.ios-reuse-ipa-is-unsigned }}" = 'true' ]; then
+            if [ -z "$REUSED_IPA_PATH" ]; then
+              echo "ios-reuse-ipa-is-unsigned requires a reusable IPA artifact to be downloaded first."
+              exit 1
+            fi
             SIGNED_IPA_PATH="../build/ios/ipa/resigned-${{ inputs.flavor }}.ipa"
             bundle exec fastlane resign_ipa \
               scheme:"$SCHEME" \

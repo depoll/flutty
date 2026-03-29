@@ -219,7 +219,7 @@ jobs:
                   run.head_sha === deploySha &&
                   run.event === 'pull_request' &&
                   run.pull_requests?.some((pullRequest) => String(pullRequest.number) === prNumber),
-              ) ?? runs.find((run) => run.head_sha === deploySha && run.event === 'pull_request') ?? null;
+              ) ?? null;
             };
 
             const awaitCompletion = async (initialRun) => {
