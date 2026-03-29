@@ -93,6 +93,14 @@ void main() {
               .width,
           closeTo(340, 0.1),
         );
+        expect(
+          tester
+              .getSize(
+                find.byKey(const ValueKey<String>('remoteTextEditorSurface')),
+              )
+              .width,
+          closeTo(396, 0.1),
+        );
         expect(horizontalScrollController.offset, greaterThan(0));
       },
     );

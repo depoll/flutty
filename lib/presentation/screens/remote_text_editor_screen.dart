@@ -13,6 +13,7 @@ const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
 );
 const _remoteTextEditorStatusKey = ValueKey<String>('remoteTextEditorStatus');
+const _remoteTextEditorSurfaceKey = ValueKey<String>('remoteTextEditorSurface');
 
 /// Measures the width needed to display unwrapped editor lines without clipping.
 @visibleForTesting
@@ -487,158 +488,168 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
         ),
         body: Padding(
           padding: const EdgeInsets.all(12),
-          child: DecoratedBox(
-            decoration: ShapeDecoration(
-              color: colors.background,
-              shape: RoundedRectangleBorder(
-                borderRadius: BorderRadius.circular(16),
-                side: BorderSide(color: colors.border),
-              ),
-              shadows: [
-                BoxShadow(blurRadius: 18, color: colors.border.withAlpha(28)),
-              ],
-            ),
-            child: Column(
-              children: [
-                Expanded(
-                  child: LayoutBuilder(
-                    builder: (context, constraints) {
-                      final gutterWidth = _wrapLines
-                          ? 0.0
-                          : _resolveGutterWidth(context, editorTextStyle);
-                      final viewportWidth = math.max<double>(
-                        constraints.maxWidth - gutterWidth,
-                        0,
-                      );
-                      _updateEditorViewportWidth(viewportWidth);
+          child: SizedBox.expand(
+            child: ClipRRect(
+              key: _remoteTextEditorSurfaceKey,
+              borderRadius: BorderRadius.circular(16),
+              child: DecoratedBox(
+                decoration: ShapeDecoration(
+                  color: colors.background,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(color: colors.border),
+                  ),
+                  shadows: [
+                    BoxShadow(
+                      blurRadius: 18,
+                      color: colors.border.withAlpha(28),
+                    ),
+                  ],
+                ),
+                child: Column(
+                  children: [
+                    Expanded(
+                      child: LayoutBuilder(
+                        builder: (context, constraints) {
+                          final gutterWidth = _wrapLines
+                              ? 0.0
+                              : _resolveGutterWidth(context, editorTextStyle);
+                          final viewportWidth = math.max<double>(
+                            constraints.maxWidth - gutterWidth,
+                            0,
+                          );
+                          _updateEditorViewportWidth(viewportWidth);
 
-                      final editor = TextField(
-                        controller: widget.controller,
-                        autofocus: true,
-                        expands: true,
-                        maxLines: null,
-                        keyboardType: TextInputType.multiline,
-                        textAlignVertical: TextAlignVertical.top,
-                        style: editorTextStyle,
-                        scrollController: _editorScrollController,
-                        scrollPhysics: const ClampingScrollPhysics(),
-                        strutStyle: StrutStyle.fromTextStyle(
-                          editorTextStyle,
-                          forceStrutHeight: true,
-                        ),
-                        decoration: const InputDecoration(
-                          border: InputBorder.none,
-                          isCollapsed: true,
-                        ),
-                      );
-
-                      final editorPane = _wrapLines
-                          ? SizedBox(
-                              width: viewportWidth,
-                              height: constraints.maxHeight,
-                              child: Padding(
-                                padding: const EdgeInsets.fromLTRB(
-                                  12,
-                                  12,
-                                  12,
-                                  0,
-                                ),
-                                child: editor,
-                              ),
-                            )
-                          : _buildNowrapEditorPane(
-                              context,
-                              constraints.maxHeight,
-                              viewportWidth,
+                          final editor = TextField(
+                            controller: widget.controller,
+                            autofocus: true,
+                            expands: true,
+                            maxLines: null,
+                            keyboardType: TextInputType.multiline,
+                            textAlignVertical: TextAlignVertical.top,
+                            style: editorTextStyle,
+                            scrollController: _editorScrollController,
+                            scrollPhysics: const ClampingScrollPhysics(),
+                            strutStyle: StrutStyle.fromTextStyle(
                               editorTextStyle,
-                              editor,
-                            );
+                              forceStrutHeight: true,
+                            ),
+                            decoration: const InputDecoration(
+                              border: InputBorder.none,
+                              isCollapsed: true,
+                            ),
+                          );
 
-                      return Row(
-                        children: [
-                          if (!_wrapLines)
-                            Container(
-                              width: gutterWidth,
-                              height: constraints.maxHeight,
-                              padding: const EdgeInsets.only(
-                                left: 12,
-                                right: 8,
-                                top: 12,
-                              ),
-                              decoration: BoxDecoration(
-                                color: colors.gutterBackground,
-                                borderRadius: const BorderRadius.only(
-                                  topLeft: Radius.circular(16),
-                                ),
-                              ),
-                              child: IgnorePointer(
-                                child: ListView.builder(
-                                  controller: _lineNumberScrollController,
-                                  physics: const NeverScrollableScrollPhysics(),
-                                  itemCount: _lineCount,
-                                  itemExtent: lineHeight,
-                                  itemBuilder: (context, index) => Align(
-                                    alignment: Alignment.centerRight,
-                                    child: Text(
-                                      '${index + 1}',
-                                      style: editorTextStyle.copyWith(
-                                        color: colors.gutterForeground,
-                                        fontSize: _fontSize * 0.88,
+                          final editorPane = _wrapLines
+                              ? SizedBox(
+                                  width: viewportWidth,
+                                  height: constraints.maxHeight,
+                                  child: Padding(
+                                    padding: const EdgeInsets.fromLTRB(
+                                      12,
+                                      12,
+                                      12,
+                                      0,
+                                    ),
+                                    child: editor,
+                                  ),
+                                )
+                              : _buildNowrapEditorPane(
+                                  context,
+                                  constraints.maxHeight,
+                                  viewportWidth,
+                                  editorTextStyle,
+                                  editor,
+                                );
+
+                          return Row(
+                            children: [
+                              if (!_wrapLines)
+                                Container(
+                                  width: gutterWidth,
+                                  height: constraints.maxHeight,
+                                  padding: const EdgeInsets.only(
+                                    left: 12,
+                                    right: 8,
+                                    top: 12,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: colors.gutterBackground,
+                                    borderRadius: const BorderRadius.only(
+                                      topLeft: Radius.circular(16),
+                                    ),
+                                  ),
+                                  child: IgnorePointer(
+                                    child: ListView.builder(
+                                      controller: _lineNumberScrollController,
+                                      physics:
+                                          const NeverScrollableScrollPhysics(),
+                                      itemCount: _lineCount,
+                                      itemExtent: lineHeight,
+                                      itemBuilder: (context, index) => Align(
+                                        alignment: Alignment.centerRight,
+                                        child: Text(
+                                          '${index + 1}',
+                                          style: editorTextStyle.copyWith(
+                                            color: colors.gutterForeground,
+                                            fontSize: _fontSize * 0.88,
+                                          ),
+                                        ),
                                       ),
                                     ),
                                   ),
                                 ),
-                              ),
-                            ),
-                          Expanded(child: editorPane),
-                        ],
-                      );
-                    },
-                  ),
-                ),
-                Container(
-                  key: _remoteTextEditorStatusKey,
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 12,
-                  ),
-                  decoration: BoxDecoration(
-                    color: colors.statusBackground,
-                    border: Border(top: BorderSide(color: colors.border)),
-                    borderRadius: const BorderRadius.only(
-                      bottomLeft: Radius.circular(16),
-                      bottomRight: Radius.circular(16),
+                              Expanded(child: editorPane),
+                            ],
+                          );
+                        },
+                      ),
                     ),
-                  ),
-                  child: Wrap(
-                    alignment: WrapAlignment.spaceBetween,
-                    runSpacing: 8,
-                    spacing: 16,
-                    children: [
-                      Text(
-                        'Line ${caretPosition.line}, Column ${caretPosition.column}',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.statusForeground,
-                          fontWeight: FontWeight.w600,
+                    Container(
+                      key: _remoteTextEditorStatusKey,
+                      width: double.infinity,
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colors.statusBackground,
+                        border: Border(top: BorderSide(color: colors.border)),
+                        borderRadius: const BorderRadius.only(
+                          bottomLeft: Radius.circular(16),
+                          bottomRight: Radius.circular(16),
                         ),
                       ),
-                      Text(
-                        _wrapLines ? 'Wrap on' : 'Wrap off',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.statusForeground,
-                        ),
+                      child: Wrap(
+                        alignment: WrapAlignment.spaceBetween,
+                        runSpacing: 8,
+                        spacing: 16,
+                        children: [
+                          Text(
+                            'Line ${caretPosition.line}, Column ${caretPosition.column}',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.statusForeground,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                          Text(
+                            _wrapLines ? 'Wrap on' : 'Wrap off',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.statusForeground,
+                            ),
+                          ),
+                          Text(
+                            '${_fontSize.toStringAsFixed(0)} pt',
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              color: colors.statusForeground,
+                            ),
+                          ),
+                        ],
                       ),
-                      Text(
-                        '${_fontSize.toStringAsFixed(0)} pt',
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          color: colors.statusForeground,
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
-              ],
+              ),
             ),
           ),
         ),
