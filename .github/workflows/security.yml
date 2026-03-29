@@ -243,6 +243,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          PUSH_AFTER: ${{ github.sha }}
         run: |
           set -euo pipefail
 
@@ -250,28 +252,51 @@ jobs:
 
           if [ "${{ github.event_name }}" = 'pull_request' ]; then
             {
+              echo 'command=git'
               echo 'log-opts<<EOF'
               echo "--no-merges ${BASE_SHA}..${HEAD_SHA}"
               echo 'EOF'
             } >> "$GITHUB_OUTPUT"
             echo 'mode=pull-request' >> "$GITHUB_OUTPUT"
             echo '- Running OSS Gitleaks against commits introduced by this pull request so new leaks stay blocking without failing on unrelated repository history.' >> "$GITHUB_STEP_SUMMARY"
+          elif [ "${{ github.event_name }}" = 'push' ]; then
+            if [ -n "${PUSH_BEFORE}" ] && [ "${PUSH_BEFORE}" != '0000000000000000000000000000000000000000' ]; then
+              {
+                echo 'command=git'
+                echo 'log-opts<<EOF'
+                echo "--no-merges ${PUSH_BEFORE}..${PUSH_AFTER}"
+                echo 'EOF'
+              } >> "$GITHUB_OUTPUT"
+              echo 'mode=push-range' >> "$GITHUB_OUTPUT"
+              echo '- Running OSS Gitleaks against the commits introduced by this push so newly added leaks still block protected branches.' >> "$GITHUB_STEP_SUMMARY"
+            else
+              {
+                echo 'command=git'
+                echo 'log-opts<<EOF'
+                echo "--no-merges -n 1 ${PUSH_AFTER}"
+                echo 'EOF'
+              } >> "$GITHUB_OUTPUT"
+              echo 'mode=push-head' >> "$GITHUB_OUTPUT"
+              echo '- Running OSS Gitleaks against the pushed HEAD commit because no prior push base SHA was available.' >> "$GITHUB_STEP_SUMMARY"
+            fi
           else
-            echo 'mode=full-history' >> "$GITHUB_OUTPUT"
-            echo '- Running OSS Gitleaks against the full repository history.' >> "$GITHUB_STEP_SUMMARY"
+            echo 'command=dir' >> "$GITHUB_OUTPUT"
+            echo 'mode=working-tree' >> "$GITHUB_OUTPUT"
+            echo '- Running OSS Gitleaks against the current repository contents.' >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Scan repository for leaked secrets
         id: gitleaks-scan
         continue-on-error: true
         env:
+          GITLEAKS_COMMAND: ${{ steps.gitleaks-scope.outputs.command }}
           GITLEAKS_IMAGE: ghcr.io/gitleaks/gitleaks:v8.30.1
           GITLEAKS_LOG_OPTS: ${{ steps.gitleaks-scope.outputs.log-opts }}
         run: |
           set -euo pipefail
 
           scan_args=(
-            git
+            "${GITLEAKS_COMMAND}"
             --no-banner
             --redact
             --report-format sarif

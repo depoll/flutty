@@ -1,0 +1,16 @@
+title = 'Flutty gitleaks configuration'
+
+[extend]
+useDefault = true
+
+[[allowlists]]
+targetRules = ['generic-api-key']
+description = 'Ignore CocoaPods checksum false positives in generated lockfiles.'
+condition = 'AND'
+paths = [
+  '''(?:^|/)(?:ios|macos)/Podfile\.lock$''',
+]
+regexTarget = 'line'
+regexes = [
+  '''^PODFILE CHECKSUM: [0-9a-f]{40}$''',
+]

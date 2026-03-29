@@ -84,7 +84,7 @@ void main() {
             name: 'Deploy Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA',
-            privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----xyz',
+            privateKey: 'test-open-ssh-private-keyxyz',
           ),
         );
         final hostId = await db
@@ -133,14 +133,14 @@ void main() {
               'name': 'Imported Key',
               'keyType': 'ed25519',
               'publicKey': 'ssh-ed25519 AAAA',
-              'privateKey': '-----BEGIN OPENSSH PRIVATE KEY-----abc',
+              'privateKey': 'test-open-ssh-private-keyabc',
               'passphrase': 'pass',
             },
           },
         );
 
         final imported = await transferService.importKeyPayload(payload);
-        expect(imported.privateKey, '-----BEGIN OPENSSH PRIVATE KEY-----abc');
+        expect(imported.privateKey, 'test-open-ssh-private-keyabc');
         expect(imported.passphrase, 'pass');
 
         final stored = await (db.select(
@@ -513,7 +513,7 @@ void main() {
             name: 'Main Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA',
-            privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----abc',
+            privateKey: 'test-open-ssh-private-keyabc',
           ),
         );
 
@@ -918,7 +918,7 @@ void main() {
               name: 'Deploy Key',
               keyType: 'ed25519',
               publicKey: 'ssh-ed25519 AAAA',
-              privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----xyz',
+              privateKey: 'test-open-ssh-private-keyxyz',
               passphrase: const Value('key-passphrase'),
             ),
           );
@@ -940,7 +940,7 @@ void main() {
       final importedKey = await transferService.importKeyPayload(decrypted);
 
       expect(importedKey.name, 'Deploy Key');
-      expect(importedKey.privateKey, contains('OPENSSH PRIVATE KEY'));
+      expect(importedKey.privateKey, contains('test-open-ssh-private-key'));
       expect(importedKey.passphrase, 'key-passphrase');
     });
 

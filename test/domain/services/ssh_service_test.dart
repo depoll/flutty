@@ -417,7 +417,7 @@ void main() {
                 keyType: 'ed25519',
                 publicKey: 'ssh-ed25519 AAAA...',
                 privateKey:
-                    '-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----',
+                    'test-open-ssh-private-key\ntest\ntest-open-ssh-private-key-end',
                 passphrase: const Value('keypass'),
               ),
             );
@@ -442,7 +442,7 @@ void main() {
 
         expect(config.hostname, '10.0.0.2');
         expect(config.username, 'admin');
-        expect(config.privateKey, contains('BEGIN OPENSSH PRIVATE KEY'));
+        expect(config.privateKey, contains('test-open-ssh-private-key'));
         expect(config.passphrase, 'keypass');
         expect(config.identityKeys, isNull);
       });
