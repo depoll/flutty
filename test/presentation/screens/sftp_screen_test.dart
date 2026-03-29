@@ -26,6 +26,71 @@ void main() {
       ]);
     });
 
+    test('requested directories open directly without file highlighting', () {
+      expect(
+        resolveRequestedSftpNavigationTarget('/var/log', isDirectory: true),
+        (directoryPath: '/var/log', highlightedFileName: null),
+      );
+    });
+
+    test(
+      'requested files open their parent directory and highlight the file',
+      () {
+        expect(
+          resolveRequestedSftpNavigationTarget(
+            '/var/log/app.log',
+            isDirectory: false,
+          ),
+          (directoryPath: '/var/log', highlightedFileName: 'app.log'),
+        );
+      },
+    );
+
+    test('scrolls upward when the highlighted file is above the viewport', () {
+      expect(
+        resolveSftpHighlightedFileScrollOffset(
+          highlightedIndex: 2,
+          currentOffset: 300,
+          itemExtentEstimate: 64,
+          viewportExtent: 240,
+          maxScrollExtent: 2000,
+        ),
+        112,
+      );
+    });
+
+    test(
+      'scrolls downward when the highlighted file is below the viewport',
+      () {
+        expect(
+          resolveSftpHighlightedFileScrollOffset(
+            highlightedIndex: 12,
+            currentOffset: 120,
+            itemExtentEstimate: 64,
+            viewportExtent: 240,
+            maxScrollExtent: 2000,
+          ),
+          608,
+        );
+      },
+    );
+
+    test(
+      'keeps the current offset when the highlighted file is already visible',
+      () {
+        expect(
+          resolveSftpHighlightedFileScrollOffset(
+            highlightedIndex: 4,
+            currentOffset: 180,
+            itemExtentEstimate: 64,
+            viewportExtent: 240,
+            maxScrollExtent: 2000,
+          ),
+          180,
+        );
+      },
+    );
+
     test('detects previewable image file names including svg', () {
       expect(isPreviewableImageFileName('screenshot.png'), isTrue);
       expect(isPreviewableImageFileName('diagram.svg'), isTrue);

@@ -323,6 +323,10 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final terminalPathLinks = ref.watch(terminalPathLinksNotifierProvider);
+    final terminalPathLinkUnderlines = ref.watch(
+      terminalPathLinkUnderlinesNotifierProvider,
+    );
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
 
@@ -373,6 +377,30 @@ class _TerminalSection extends ConsumerWidget {
                 .read(bellSoundNotifierProvider.notifier)
                 .setEnabled(enabled: value);
           },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.folder_open_outlined),
+          title: const Text('Clickable file paths'),
+          subtitle: const Text('Tap terminal file paths to open them in SFTP'),
+          value: terminalPathLinks,
+          onChanged: (value) {
+            ref
+                .read(terminalPathLinksNotifierProvider.notifier)
+                .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.format_underline),
+          title: const Text('Path link underlines'),
+          subtitle: const Text('Underline clickable terminal file paths'),
+          value: terminalPathLinks && terminalPathLinkUnderlines,
+          onChanged: terminalPathLinks
+              ? (value) {
+                  ref
+                      .read(terminalPathLinkUnderlinesNotifierProvider.notifier)
+                      .setEnabled(enabled: value);
+                }
+              : null,
         ),
         SwitchListTile(
           secondary: const Icon(Icons.content_paste_go_outlined),

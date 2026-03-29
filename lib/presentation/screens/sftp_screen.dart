@@ -17,6 +17,10 @@ import '../../domain/services/ssh_service.dart';
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
 const _unwrappedEditorTrailingSlack = 24.0;
+const _requestedPathLookupTimeout = Duration(seconds: 5);
+const _sftpFileRowExtentEstimate = 64.0;
+const _sftpHighlightedFileScrollPadding = 16.0;
+const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _remoteEditorTextStyle = TextStyle(fontFamily: 'monospace');
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
@@ -47,6 +51,43 @@ List<String> popSftpPathHistory(List<String> history) {
   }
   return List<String>.from(history)..removeLast();
 }
+
+/// Resolves the list offset needed to reveal a highlighted file row.
+@visibleForTesting
+double resolveSftpHighlightedFileScrollOffset({
+  required int highlightedIndex,
+  required double currentOffset,
+  required double itemExtentEstimate,
+  required double viewportExtent,
+  required double maxScrollExtent,
+  double padding = _sftpHighlightedFileScrollPadding,
+}) {
+  final itemTop = highlightedIndex * itemExtentEstimate;
+  final itemBottom = itemTop + itemExtentEstimate;
+  final viewportTop = currentOffset;
+  final viewportBottom = currentOffset + viewportExtent;
+
+  if (itemTop - padding < viewportTop) {
+    return (itemTop - padding).clamp(0.0, maxScrollExtent);
+  }
+  if (itemBottom + padding > viewportBottom) {
+    return (itemBottom + padding - viewportExtent).clamp(0.0, maxScrollExtent);
+  }
+  return currentOffset.clamp(0.0, maxScrollExtent);
+}
+
+/// Resolves how a requested path should open in the browser.
+@visibleForTesting
+({String directoryPath, String? highlightedFileName})
+resolveRequestedSftpNavigationTarget(
+  String normalizedPath, {
+  required bool isDirectory,
+}) => (
+  directoryPath: isDirectory
+      ? normalizedPath
+      : parentRemotePath(normalizedPath),
+  highlightedFileName: isDirectory ? null : path.posix.basename(normalizedPath),
+);
 
 /// Whether the file name should be previewable as an image.
 @visibleForTesting
@@ -177,7 +218,13 @@ Widget buildRemoteTextEditorScreenForTesting({
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
-  const SftpScreen({required this.hostId, this.connectionId, super.key});
+  const SftpScreen({
+    required this.hostId,
+    this.connectionId,
+    this.initialPath,
+    this.initialWorkingDirectory,
+    super.key,
+  });
 
   /// The host ID to connect to.
   final int hostId;
@@ -185,27 +232,61 @@ class SftpScreen extends ConsumerStatefulWidget {
   /// Optional existing connection ID to reuse.
   final int? connectionId;
 
+  /// Optional remote path to open when the browser loads.
+  final String? initialPath;
+
+  /// Optional terminal working directory used to resolve relative paths.
+  final String? initialWorkingDirectory;
+
   @override
   ConsumerState<SftpScreen> createState() => _SftpScreenState();
 }
 
 class _SftpScreenState extends ConsumerState<SftpScreen> {
   SftpClient? _sftp;
+  final ScrollController _breadcrumbScrollController = ScrollController();
+  final ScrollController _fileListScrollController = ScrollController();
   String _currentPath = '/';
   List<SftpName> _files = [];
   bool _isLoading = true;
   String? _error;
   final List<String> _pathHistory = ['/'];
   String? _hostLabel;
+  String? _pendingInitialPath;
+  String? _highlightedDirectoryPath;
+  String? _highlightedFileName;
+  String? _homeDirectoryPath;
+  String? _fallbackDirectoryPath;
 
   @override
   void initState() {
     super.initState();
+    _pendingInitialPath = _sanitizeRequestedPath(widget.initialPath);
     _connect();
   }
 
   @override
+  void didUpdateWidget(covariant SftpScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+
+    if (oldWidget.initialPath == widget.initialPath &&
+        oldWidget.initialWorkingDirectory == widget.initialWorkingDirectory) {
+      return;
+    }
+
+    final nextInitialPath = _sanitizeRequestedPath(widget.initialPath);
+    _pendingInitialPath = nextInitialPath;
+    if (_sftp != null && nextInitialPath != null) {
+      final pathToOpen = nextInitialPath;
+      _pendingInitialPath = null;
+      unawaited(_openRequestedPath(pathToOpen));
+    }
+  }
+
+  @override
   void dispose() {
+    _breadcrumbScrollController.dispose();
+    _fileListScrollController.dispose();
     _sftp?.close();
     _sftp = null;
     super.dispose();
@@ -275,7 +356,21 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         _sftp = null;
         return;
       }
-      await _loadDirectory(initialPath, nextHistory: [initialPath]);
+      _fallbackDirectoryPath = normalizeSftpAbsolutePath(initialPath) ?? '/';
+      final requestedPath = _pendingInitialPath;
+      if (requestedPath != null) {
+        _pendingInitialPath = null;
+        await _openRequestedPath(requestedPath);
+        return;
+      }
+      if (await _loadDirectory(
+        _fallbackDirectoryPath!,
+        nextHistory: [_fallbackDirectoryPath!],
+        showError: false,
+      )) {
+        return;
+      }
+      await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
     } on Exception catch (e) {
       if (!mounted) {
         return;
@@ -287,9 +382,74 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
-  Future<void> _loadDirectory(String path, {List<String>? nextHistory}) async {
+  Future<String?> _resolveHomeDirectoryPath() async {
+    if (_homeDirectoryPath != null) {
+      return _homeDirectoryPath;
+    }
     if (_sftp == null) {
+      return null;
+    }
+
+    try {
+      final resolvedPath = normalizeSftpAbsolutePath(
+        await _sftp!.absolute('.').timeout(_requestedPathLookupTimeout),
+      );
+      if (resolvedPath != null) {
+        _homeDirectoryPath = resolvedPath;
+      }
+      return resolvedPath;
+    } on TimeoutException {
+      return null;
+    } on SftpStatusError {
+      return null;
+    }
+  }
+
+  Future<void> _openFallbackDirectory({String? preferredPath}) async {
+    final candidatePaths = <String>[];
+
+    void addCandidate(String? path) {
+      final normalizedPath = normalizeSftpAbsolutePath(path);
+      if (normalizedPath == null || candidatePaths.contains(normalizedPath)) {
+        return;
+      }
+      candidatePaths.add(normalizedPath);
+    }
+
+    addCandidate(preferredPath);
+    addCandidate(_fallbackDirectoryPath);
+    addCandidate(widget.initialWorkingDirectory);
+    addCandidate(_currentPath);
+    addCandidate(await _resolveHomeDirectoryPath());
+    addCandidate('/');
+
+    for (final candidatePath in candidatePaths) {
+      if (await _loadDirectory(
+        candidatePath,
+        nextHistory: [candidatePath],
+        showError: false,
+      )) {
+        _pendingInitialPath = null;
+        return;
+      }
+    }
+
+    if (!mounted) {
       return;
+    }
+    setState(() {
+      _isLoading = false;
+      _error = 'Failed to open SFTP browser';
+    });
+  }
+
+  Future<bool> _loadDirectory(
+    String path, {
+    List<String>? nextHistory,
+    bool showError = true,
+  }) async {
+    if (_sftp == null) {
+      return false;
     }
 
     setState(() => _isLoading = true);
@@ -297,7 +457,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     try {
       final items = await _sftp!.listdir(path);
       if (!mounted) {
-        return;
+        return false;
       }
       setState(() {
         _currentPath = path;
@@ -315,17 +475,26 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
             ..clear()
             ..addAll(nextHistory);
         }
+        if (_highlightedDirectoryPath != path) {
+          _highlightedDirectoryPath = null;
+          _highlightedFileName = null;
+        }
         _isLoading = false;
         _error = null;
       });
+      _queueScrollBreadcrumbTailIntoView();
+      return true;
     } on Exception catch (e) {
       if (!mounted) {
-        return;
+        return false;
       }
       setState(() {
         _isLoading = false;
-        _error = 'Failed to list directory: $e';
+        if (showError) {
+          _error = 'Failed to list directory: $e';
+        }
       });
+      return false;
     }
   }
 
@@ -356,6 +525,193 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
     final nextHistory = popSftpPathHistory(_pathHistory);
     await _loadDirectory(nextHistory.last, nextHistory: nextHistory);
+  }
+
+  Future<bool> _openRequestedPath(String requestedPath) async {
+    final homeDirectory = await _resolveHomeDirectoryPath();
+    if (!mounted) {
+      return false;
+    }
+    final normalizedPath = resolveRequestedSftpPath(
+      requestedPath,
+      workingDirectory: widget.initialWorkingDirectory,
+      homeDirectory: homeDirectory,
+    );
+    if (normalizedPath == null) {
+      _closeRequestedPathWithError(
+        'Could not open "$requestedPath" in SFTP: could not resolve path',
+      );
+      return false;
+    }
+
+    if (normalizedPath == '/') {
+      if (await _loadDirectory(
+        normalizedPath,
+        nextHistory: [normalizedPath],
+        showError: false,
+      )) {
+        return true;
+      }
+      _closeRequestedPathWithError(
+        'Could not open "$normalizedPath" in SFTP: failed to list directory',
+      );
+      return false;
+    }
+
+    final sftp = _sftp;
+    if (sftp == null) {
+      _closeRequestedPathWithError('Could not open "$requestedPath" in SFTP');
+      return false;
+    }
+
+    late final SftpFileAttrs requestedPathStat;
+    try {
+      requestedPathStat = await sftp
+          .stat(normalizedPath)
+          .timeout(_requestedPathLookupTimeout);
+    } on TimeoutException {
+      _closeRequestedPathWithError(
+        'Timed out opening "$normalizedPath" in SFTP',
+      );
+      return false;
+    } on SftpStatusError catch (error) {
+      if (error.code == SftpStatusCode.noSuchFile) {
+        _closeRequestedPathWithError(
+          'Could not open "$normalizedPath" in SFTP: path does not exist',
+        );
+        return false;
+      }
+      _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
+      return false;
+    }
+
+    final navigationTarget = resolveRequestedSftpNavigationTarget(
+      normalizedPath,
+      isDirectory: requestedPathStat.isDirectory,
+    );
+    if (await _loadDirectory(
+      navigationTarget.directoryPath,
+      nextHistory: [navigationTarget.directoryPath],
+      showError: false,
+    )) {
+      final fileName = navigationTarget.highlightedFileName;
+      if (fileName == null) {
+        return true;
+      }
+
+      SftpName? matchingEntry;
+      for (final entry in _files) {
+        if (entry.filename == fileName) {
+          matchingEntry = entry;
+          break;
+        }
+      }
+      if (matchingEntry == null) {
+        _closeRequestedPathWithError(
+          'Could not open "$normalizedPath" in SFTP: path does not exist',
+        );
+        return false;
+      }
+
+      if (!mounted) {
+        return true;
+      }
+      setState(() {
+        _highlightedDirectoryPath = navigationTarget.directoryPath;
+        _highlightedFileName = fileName;
+      });
+      _queueScrollHighlightedFileIntoView();
+      return true;
+    }
+
+    _closeRequestedPathWithError('Could not open "$normalizedPath" in SFTP');
+    return false;
+  }
+
+  void _closeRequestedPathWithError(String message) {
+    if (!mounted) {
+      return;
+    }
+
+    final navigator = Navigator.of(context);
+    if (navigator.canPop()) {
+      navigator.pop(message);
+      return;
+    }
+
+    setState(() {
+      _isLoading = false;
+      _error = message;
+    });
+    unawaited(_openFallbackDirectory(preferredPath: _currentPath));
+  }
+
+  void _queueScrollHighlightedFileIntoView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted ||
+          _highlightedDirectoryPath != _currentPath ||
+          _highlightedFileName == null ||
+          !_fileListScrollController.hasClients) {
+        return;
+      }
+
+      final highlightedIndex = _files.indexWhere(
+        (file) => file.filename == _highlightedFileName,
+      );
+      if (highlightedIndex < 0) {
+        return;
+      }
+
+      final position = _fileListScrollController.position;
+      final targetOffset = resolveSftpHighlightedFileScrollOffset(
+        highlightedIndex: highlightedIndex,
+        currentOffset: _fileListScrollController.offset,
+        itemExtentEstimate: _sftpFileRowExtentEstimate,
+        viewportExtent: position.viewportDimension,
+        maxScrollExtent: position.maxScrollExtent,
+      );
+      if ((targetOffset - _fileListScrollController.offset).abs() < 0.5) {
+        return;
+      }
+
+      unawaited(
+        _fileListScrollController.animateTo(
+          targetOffset,
+          duration: _sftpScrollAnimationDuration,
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
+  }
+
+  void _queueScrollBreadcrumbTailIntoView() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_breadcrumbScrollController.hasClients) {
+        return;
+      }
+
+      final position = _breadcrumbScrollController.position;
+      final targetOffset = position.maxScrollExtent;
+      if ((targetOffset - _breadcrumbScrollController.offset).abs() < 0.5) {
+        return;
+      }
+
+      unawaited(
+        _breadcrumbScrollController.animateTo(
+          targetOffset,
+          duration: _sftpScrollAnimationDuration,
+          curve: Curves.easeOutCubic,
+        ),
+      );
+    });
+  }
+
+  String? _sanitizeRequestedPath(String? path) {
+    final trimmedPath = path?.trim();
+    if (trimmedPath == null || trimmedPath.isEmpty) {
+      return null;
+    }
+    return trimmedPath;
   }
 
   @override
@@ -427,6 +783,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           const SizedBox(width: 8),
           Expanded(
             child: SingleChildScrollView(
+              controller: _breadcrumbScrollController,
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
@@ -519,8 +876,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     return RefreshIndicator(
-      onRefresh: () => _loadDirectory(_currentPath),
+      onRefresh: () async {
+        await _loadDirectory(_currentPath);
+      },
       child: ListView.builder(
+        controller: _fileListScrollController,
         itemCount: _files.length,
         itemBuilder: (context, index) {
           final file = _files[index];
@@ -530,6 +890,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           }
           return _FileListTile(
             file: file,
+            isHighlighted:
+                _highlightedDirectoryPath == _currentPath &&
+                _highlightedFileName == file.filename,
             onTap: () => _handleFileTap(file),
             onLongPress: () => _showFileOptions(file),
           );
@@ -1053,38 +1416,64 @@ class _FileListTile extends StatelessWidget {
     required this.file,
     required this.onTap,
     required this.onLongPress,
+    this.isHighlighted = false,
   });
 
   final SftpName file;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final bool isHighlighted;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final isDirectory = file.attr.isDirectory;
+    final iconColor = isHighlighted
+        ? theme.colorScheme.onPrimaryContainer
+        : isDirectory
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
+    final trailingIconColor = isHighlighted
+        ? theme.colorScheme.onPrimaryContainer
+        : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
       visualDensity: VisualDensity.compact,
       contentPadding: const EdgeInsets.symmetric(horizontal: 12),
       minVerticalPadding: 2,
       minLeadingWidth: 32,
+      tileColor: isHighlighted ? theme.colorScheme.primaryContainer : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       leading: Icon(
         isDirectory ? Icons.folder : _getFileIcon(file.filename),
-        color: isDirectory
-            ? theme.colorScheme.primary
-            : theme.colorScheme.onSurfaceVariant,
+        color: iconColor,
       ),
-      title: Text(file.filename, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(
+        file.filename,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: isHighlighted
+            ? theme.textTheme.bodyLarge?.copyWith(
+                color: theme.colorScheme.onPrimaryContainer,
+                fontWeight: FontWeight.w600,
+              )
+            : null,
+      ),
       subtitle: isDirectory
           ? null
           : Text(
               formatRemoteFileSize(file.attr.size ?? 0),
-              style: theme.textTheme.bodySmall,
+              style: isHighlighted
+                  ? theme.textTheme.bodySmall?.copyWith(
+                      color: theme.colorScheme.onPrimaryContainer,
+                    )
+                  : theme.textTheme.bodySmall,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-      trailing: isDirectory ? const Icon(Icons.chevron_right, size: 20) : null,
+      trailing: isDirectory
+          ? Icon(Icons.chevron_right, size: 20, color: trailingIconColor)
+          : null,
       onTap: onTap,
       onLongPress: onLongPress,
     );

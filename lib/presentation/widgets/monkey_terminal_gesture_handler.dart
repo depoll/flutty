@@ -95,6 +95,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onSingleTapUp: onSingleTapUp,
       onTapDown: onTapDown,
       onTapCancel: _clearPendingLinkTap,
+      shouldBypassDoubleTap: () => _pendingLinkTap != null,
       onSecondaryTapDown: onSecondaryTapDown,
       onSecondaryTapUp: onSecondaryTapUp,
       onTertiaryTapDown: onTertiaryTapDown,

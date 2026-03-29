@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart' as drift;
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -39,6 +42,9 @@ import '../widgets/terminal_theme_picker.dart';
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
+const _maxVerifiedTerminalPathCacheEntries = 128;
+const _terminalPathTouchHorizontalPadding = 10.0;
+const _terminalPathTouchVerticalPadding = 8.0;
 const _selectionActionsBottomPadding = 12.0;
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 const _clipboardContentChannel = MethodChannel(
@@ -48,6 +54,36 @@ final _terminalLinkPattern = RegExp(
   r'''(?:(?:https?:\/\/)|(?:mailto:)|(?:tel:)|(?:www\.))[^\s<>"']+''',
   caseSensitive: false,
 );
+final _terminalFilePathPattern = RegExp(
+  r'''(?:~(?:/[^\s<>"'$#]+)?|/(?:[^\s<>"'$#]+)|\.\.?/(?:[^\s<>"'$#]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
+);
+const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
+const _terminalPathVerificationTimeout = Duration(seconds: 5);
+
+typedef _TerminalPathMatch = ({
+  String path,
+  int start,
+  int end,
+  int hitTestEnd,
+  int normalizedStart,
+  int normalizedEnd,
+});
+typedef _NormalizedTerminalPathSnapshot = ({
+  String text,
+  List<int> originalToNormalizedOffsets,
+  List<int> normalizedToOriginalStarts,
+  List<int> normalizedToOriginalEnds,
+});
+typedef _TerminalPathTapSnapshot = ({
+  String text,
+  int startRow,
+  List<int> rowStarts,
+  List<List<int>> columnOffsets,
+});
+typedef _TerminalPathSnapshotAnalysis = ({
+  List<_TerminalPathMatch> detectedPaths,
+  _NormalizedTerminalPathSnapshot normalizedSnapshot,
+});
 
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
@@ -167,6 +203,476 @@ String normalizeTerminalLinkCandidate(String text) {
     return 'https://$candidate';
   }
   return candidate;
+}
+
+/// Trims terminal-rendered file paths before SFTP navigation.
+@visibleForTesting
+String trimTerminalFilePathCandidate(String text) => trimTerminalLinkCandidate(
+  text.trim(),
+).replaceFirst(RegExp(r':\d+(?::\d+)?$'), '');
+
+/// Whether a character can safely appear before a supported terminal path.
+@visibleForTesting
+bool isTerminalFilePathBoundary(String? character) =>
+    character == null ||
+    character.trim().isEmpty ||
+    '([{"\'`=:,'.contains(character);
+
+/// Whether a terminal path can be opened in the remote SFTP browser.
+@visibleForTesting
+bool isSupportedTerminalFilePath(String path) {
+  if (path.isEmpty || path == '.' || path == '..' || path.startsWith('//')) {
+    return false;
+  }
+  return isExplicitTerminalFilePath(path) ||
+      isRelativeTerminalFilePathCandidate(path);
+}
+
+/// Whether a detected terminal path should currently behave like a link.
+@visibleForTesting
+bool shouldActivateTerminalFilePath(
+  String path, {
+  required bool hasVerifiedRelativePath,
+}) =>
+    isExplicitTerminalFilePath(path) ||
+    (hasVerifiedRelativePath && isRelativeTerminalFilePathCandidate(path));
+
+/// Candidate terminal cells to probe for a touch-friendly path hit test.
+@visibleForTesting
+List<CellOffset> resolveForgivingTerminalTapOffsets(CellOffset offset) {
+  final offsets = <CellOffset>[];
+  final seen = <String>{};
+
+  void addOffset(int dx, int dy) {
+    final candidate = CellOffset(offset.x + dx, offset.y + dy);
+    final key = '${candidate.x}:${candidate.y}';
+    if (seen.add(key)) {
+      offsets.add(candidate);
+    }
+  }
+
+  addOffset(0, 0);
+  for (var dx = 1; dx <= 4; dx++) {
+    addOffset(-dx, 0);
+    addOffset(dx, 0);
+  }
+  for (final dy in const [-1, 1]) {
+    addOffset(0, dy);
+    for (var dx = 1; dx <= 2; dx++) {
+      addOffset(-dx, dy);
+      addOffset(dx, dy);
+    }
+  }
+
+  return offsets;
+}
+
+/// Visible terminal rows for the current scroll offset and rendered viewport.
+@visibleForTesting
+({int topRow, int bottomRow})? resolveVisibleTerminalRowRange({
+  required double scrollOffset,
+  required double lineHeight,
+  required double viewportHeight,
+  required int bufferHeight,
+}) {
+  if (lineHeight <= 0 || viewportHeight <= 0 || bufferHeight <= 0) {
+    return null;
+  }
+
+  final maxRow = bufferHeight - 1;
+  final topRow = (scrollOffset / lineHeight).floor().clamp(0, maxRow);
+  final visibleRows = (viewportHeight / lineHeight).ceil().clamp(
+    1,
+    bufferHeight,
+  );
+  final bottomRow = (topRow + visibleRows - 1).clamp(0, maxRow);
+  return (topRow: topRow, bottomRow: bottomRow);
+}
+
+/// Builds a visible underline rect that hugs the bottom of a terminal row.
+@visibleForTesting
+Rect? resolveTerminalPathUnderlineRect({
+  required Offset lineTopLeft,
+  required Offset lineEndOffset,
+  required double lineHeight,
+  required double viewportHeight,
+  double? rowHeight,
+  double? textHeight,
+}) {
+  final width = lineEndOffset.dx - lineTopLeft.dx;
+  if (width <= 0 || lineHeight <= 0 || viewportHeight <= 0) {
+    return null;
+  }
+
+  final effectiveRowHeight = (rowHeight ?? lineHeight) < lineHeight
+      ? lineHeight
+      : (rowHeight ?? lineHeight);
+  final thickness = (lineHeight * 0.08).clamp(1.5, 2.0);
+  final effectiveTextHeight = textHeight ?? effectiveRowHeight;
+  final rowBottom = lineTopLeft.dy + effectiveRowHeight;
+  final preferredTop = lineTopLeft.dy + effectiveTextHeight + 0.25;
+  final maxTopWithinRow = rowBottom - thickness - 0.5;
+  final top = min(
+    preferredTop,
+    maxTopWithinRow,
+  ).clamp(0.0, viewportHeight - thickness);
+  return Rect.fromLTWH(lineTopLeft.dx, top, width, thickness);
+}
+
+/// Builds a forgiving touch target around a terminal path segment.
+@visibleForTesting
+Rect? resolveTerminalPathTouchTargetRect({
+  required Offset lineTopLeft,
+  required Offset lineEndOffset,
+  required double lineHeight,
+  required double viewportHeight,
+  double horizontalPadding = _terminalPathTouchHorizontalPadding,
+  double verticalPadding = _terminalPathTouchVerticalPadding,
+}) {
+  final width = lineEndOffset.dx - lineTopLeft.dx;
+  if (width <= 0 || lineHeight <= 0 || viewportHeight <= 0) {
+    return null;
+  }
+
+  final left = (lineTopLeft.dx - horizontalPadding).clamp(0.0, double.infinity);
+  final top = (lineTopLeft.dy - verticalPadding).clamp(0.0, viewportHeight);
+  final right = lineEndOffset.dx + horizontalPadding;
+  final bottom = (lineTopLeft.dy + lineHeight + verticalPadding).clamp(
+    top,
+    viewportHeight,
+  );
+  return Rect.fromLTRB(left, top, right, bottom);
+}
+
+/// Resolves which visible terminal path touch target, if any, a tap landed on.
+@visibleForTesting
+String? resolveTerminalPathTouchTargetTap(
+  Offset localPosition,
+  List<({String path, Rect touchRect})> targets,
+) {
+  for (final target in targets.reversed) {
+    if (target.touchRect.contains(localPosition)) {
+      return target.path;
+    }
+  }
+  return null;
+}
+
+/// Whether a terminal path is anchored to `/` or `~`.
+@visibleForTesting
+bool isExplicitTerminalFilePath(String path) =>
+    path.startsWith('/') || path == '~' || path.startsWith('~/');
+
+/// Whether a relative terminal path looks file-like enough to probe safely.
+@visibleForTesting
+bool isRelativeTerminalFilePathCandidate(String path) {
+  if (isExplicitTerminalFilePath(path) ||
+      path.isEmpty ||
+      path == '.' ||
+      path == '..' ||
+      path.startsWith('//') ||
+      !path.contains('/')) {
+    return false;
+  }
+
+  if (path.startsWith('./') || path.startsWith('../')) {
+    return true;
+  }
+
+  final basename = path.split('/').last;
+  return basename.contains('.');
+}
+
+bool _isTerminalFilePathBodyCharacter(String character) =>
+    character.isNotEmpty && !RegExp(r'''[\s<>"'$#]''').hasMatch(character);
+
+bool _isTerminalPathContinuationDecorationCharacter(String character) =>
+    character == ' ' || character == '\t' || '│┃║╎┆┊|'.contains(character);
+
+String _trimTerminalPathContinuationPrefix(String text) {
+  var index = 0;
+  while (index < text.length &&
+      _isTerminalPathContinuationDecorationCharacter(text[index])) {
+    index++;
+  }
+  return text.substring(index);
+}
+
+/// Whether adjacent rendered lines should be treated as one file-path span.
+@visibleForTesting
+bool isTerminalPathContinuationAcrossLines({
+  required String previousLineText,
+  required String nextLineText,
+}) {
+  final previousText = trimTerminalLinePadding(previousLineText);
+  final nextText = trimTerminalLinePadding(nextLineText);
+  if (previousText.isEmpty || nextText.isEmpty) {
+    return false;
+  }
+
+  final nextWithoutIndentation = _trimTerminalPathContinuationPrefix(nextText);
+  if (nextWithoutIndentation.isNotEmpty &&
+      nextWithoutIndentation.length != nextText.length &&
+      _isTerminalFilePathBodyCharacter(previousText[previousText.length - 1]) &&
+      _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0])) {
+    return true;
+  }
+
+  final combinedText = '$previousText\n$nextText';
+  final splitOffset = previousText.length;
+  for (final detectedPath in _detectTerminalFilePathMatches(combinedText)) {
+    if (detectedPath.start < splitOffset &&
+        detectedPath.end > splitOffset + 1) {
+      return true;
+    }
+  }
+  return false;
+}
+
+_NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
+  String text,
+) {
+  final normalizedCharacters = <String>[];
+  final originalToNormalizedOffsets = List<int>.filled(text.length + 1, 0);
+  final normalizedToOriginalStarts = <int>[];
+  final normalizedToOriginalEnds = <int>[];
+  var index = 0;
+
+  while (index < text.length) {
+    final character = text[index];
+    if (character == '\r' || character == '\n') {
+      var lineBreakEnd = index + 1;
+      if (character == '\r' &&
+          lineBreakEnd < text.length &&
+          text[lineBreakEnd] == '\n') {
+        lineBreakEnd++;
+      }
+
+      var continuationEnd = lineBreakEnd;
+      while (continuationEnd < text.length &&
+          _isTerminalPathContinuationDecorationCharacter(
+            text[continuationEnd],
+          )) {
+        continuationEnd++;
+      }
+
+      final previousCharacter = normalizedCharacters.isEmpty
+          ? null
+          : normalizedCharacters.last;
+      final nextCharacter = continuationEnd < text.length
+          ? text[continuationEnd]
+          : null;
+      final isPathContinuation =
+          previousCharacter != null &&
+          nextCharacter != null &&
+          _isTerminalFilePathBodyCharacter(previousCharacter) &&
+          _isTerminalFilePathBodyCharacter(nextCharacter);
+      if (isPathContinuation) {
+        for (
+          var skippedIndex = index;
+          skippedIndex < continuationEnd;
+          skippedIndex++
+        ) {
+          originalToNormalizedOffsets[skippedIndex] =
+              normalizedCharacters.length;
+        }
+        index = continuationEnd;
+        continue;
+      }
+
+      final normalizedIndex = normalizedCharacters.length;
+      for (var sourceIndex = index; sourceIndex < lineBreakEnd; sourceIndex++) {
+        originalToNormalizedOffsets[sourceIndex] = normalizedIndex;
+      }
+      normalizedCharacters.add('\n');
+      normalizedToOriginalStarts.add(index);
+      normalizedToOriginalEnds.add(lineBreakEnd);
+      index = lineBreakEnd;
+      continue;
+    }
+
+    final normalizedIndex = normalizedCharacters.length;
+    originalToNormalizedOffsets[index] = normalizedIndex;
+    normalizedCharacters.add(character);
+    normalizedToOriginalStarts.add(index);
+    normalizedToOriginalEnds.add(index + 1);
+    index++;
+  }
+
+  originalToNormalizedOffsets[text.length] = normalizedCharacters.length;
+  return (
+    text: normalizedCharacters.join(),
+    originalToNormalizedOffsets: originalToNormalizedOffsets,
+    normalizedToOriginalStarts: normalizedToOriginalStarts,
+    normalizedToOriginalEnds: normalizedToOriginalEnds,
+  );
+}
+
+List<_TerminalPathMatch> _detectTerminalFilePathMatches(String text) {
+  final normalizedText = _normalizeTerminalFilePathDetectionText(text);
+  final detectedPaths = <_TerminalPathMatch>[];
+
+  for (final match in _terminalFilePathPattern.allMatches(
+    normalizedText.text,
+  )) {
+    final previousCharacter = match.start == 0
+        ? null
+        : normalizedText.text.substring(match.start - 1, match.start);
+    if (!isTerminalFilePathBoundary(previousCharacter)) {
+      continue;
+    }
+
+    final candidate = trimTerminalFilePathCandidate(match.group(0)!);
+    if (!isSupportedTerminalFilePath(candidate)) {
+      continue;
+    }
+
+    final visualEnd = match.start + candidate.length;
+    final originalStart =
+        normalizedText.normalizedToOriginalStarts[match.start];
+    final originalEnd = normalizedText.normalizedToOriginalEnds[visualEnd - 1];
+    final originalHitTestEnd =
+        normalizedText.normalizedToOriginalEnds[match.end - 1];
+    detectedPaths.add((
+      path: candidate,
+      start: originalStart,
+      end: originalEnd,
+      hitTestEnd: originalHitTestEnd,
+      normalizedStart: match.start,
+      normalizedEnd: visualEnd,
+    ));
+  }
+
+  return detectedPaths;
+}
+
+/// Resolves the visible row segment for the first matching path on a row.
+@visibleForTesting
+({String text, int startColumn, int endColumn})?
+resolveTerminalFilePathSegmentOnRowForPath({
+  required String snapshotText,
+  required String rowText,
+  required int rowStartOffset,
+  required List<int> rowColumnOffsets,
+  required String path,
+}) {
+  final normalizedSnapshot = _normalizeTerminalFilePathDetectionText(
+    snapshotText,
+  );
+  for (final match in _detectTerminalFilePathMatches(snapshotText)) {
+    if (match.path != path) {
+      continue;
+    }
+    final segment = resolveTerminalFilePathSegmentOnRow(
+      rowText: rowText,
+      rowStartOffset: rowStartOffset,
+      rowColumnOffsets: rowColumnOffsets,
+      originalToNormalizedOffsets:
+          normalizedSnapshot.originalToNormalizedOffsets,
+      normalizedPathStart: match.normalizedStart,
+      normalizedPathEnd: match.normalizedEnd,
+    );
+    if (segment != null) {
+      return segment;
+    }
+  }
+  return null;
+}
+
+/// Resolves the visible path-only segment for a specific rendered row.
+@visibleForTesting
+({String text, int startColumn, int endColumn})?
+resolveTerminalFilePathSegmentOnRow({
+  required String rowText,
+  required int rowStartOffset,
+  required List<int> rowColumnOffsets,
+  required List<int> originalToNormalizedOffsets,
+  required int normalizedPathStart,
+  required int normalizedPathEnd,
+}) {
+  if (rowText.isEmpty || rowColumnOffsets.length < 2) {
+    return null;
+  }
+
+  int? startColumn;
+  int? endColumn;
+  for (var column = 0; column < rowColumnOffsets.length - 1; column++) {
+    final textStart = rowColumnOffsets[column];
+    if (textStart < 0 || textStart >= rowText.length) {
+      if (startColumn != null) {
+        break;
+      }
+      continue;
+    }
+    final textEnd = rowColumnOffsets[column + 1].clamp(
+      textStart + 1,
+      rowText.length,
+    );
+    final character = rowText.substring(textStart, textEnd);
+    if (!_isTerminalFilePathBodyCharacter(character)) {
+      if (startColumn != null) {
+        break;
+      }
+      continue;
+    }
+
+    final normalizedOffset =
+        originalToNormalizedOffsets[rowStartOffset + textStart];
+    if (normalizedOffset < normalizedPathStart ||
+        normalizedOffset >= normalizedPathEnd) {
+      if (startColumn != null) {
+        break;
+      }
+      continue;
+    }
+    startColumn ??= column;
+    endColumn = column;
+  }
+
+  if (startColumn == null || endColumn == null) {
+    return null;
+  }
+
+  final segmentStart = rowColumnOffsets[startColumn];
+  final segmentEnd = rowColumnOffsets[endColumn + 1].clamp(
+    segmentStart + 1,
+    rowText.length,
+  );
+  return (
+    text: rowText.substring(segmentStart, segmentEnd),
+    startColumn: startColumn,
+    endColumn: endColumn,
+  );
+}
+
+/// Resolves all tappable terminal file paths within the given text.
+@visibleForTesting
+List<({String path, int start, int end})> detectTerminalFilePaths(
+  String text,
+) => [
+  for (final path in _detectTerminalFilePathMatches(text))
+    (path: path.path, start: path.start, end: path.end),
+];
+
+/// Resolves a tappable terminal file path at the given text offset, if present.
+@visibleForTesting
+({String path, int start, int end})? detectTerminalFilePathAtTextOffset(
+  String text,
+  int offset,
+) {
+  final clampedOffset = offset.clamp(0, text.length);
+  for (final detectedPath in _detectTerminalFilePathMatches(text)) {
+    if (clampedOffset >= detectedPath.start &&
+        clampedOffset < detectedPath.hitTestEnd) {
+      return (
+        path: detectedPath.path,
+        start: detectedPath.start,
+        end: detectedPath.end,
+      );
+    }
+  }
+
+  return null;
 }
 
 /// Resolves a tappable terminal link at the given text offset, if present.
@@ -306,6 +812,12 @@ bool shouldShowNativeSelectionOverlay({
     isNativeSelectionMode &&
     (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
 
+/// Whether terminal tap links should be resolved for the current overlay state.
+@visibleForTesting
+bool shouldResolveTerminalTapLinks({
+  required bool showsNativeSelectionOverlay,
+}) => !showsNativeSelectionOverlay;
+
 /// How a native selection change should update the mobile overlay state.
 @visibleForTesting
 enum NativeSelectionOverlayChange {
@@ -398,6 +910,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
+  final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
 
   late Terminal _terminal;
   late final TerminalController _terminalController;
@@ -428,6 +941,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
+  final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
+  final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
+  final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
+  String? _terminalPathCacheScope;
+  String? _pendingTerminalPathTap;
+  Rect? _hoveredTerminalPathUnderline;
+  List<({String path, Rect underlineRect, Rect touchRect})>
+  _visibleTerminalPathUnderlines =
+      const <({String path, Rect underlineRect, Rect touchRect})>[];
+  bool _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
+  bool? _lastShowsTerminalPathUnderlines;
+  CellOffset? _lastHoveredTerminalPathOffset;
+  String? _lastHoveredTerminalPath;
+  bool _isTerminalPathUnderlineRefreshQueued = false;
+  SshSession? _terminalPathVerificationSession;
+  Future<SftpClient?>? _terminalPathVerificationSftpFuture;
+  SftpClient? _terminalPathVerificationSftp;
+  String? _terminalPathVerificationHomeDirectory;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
@@ -589,6 +1120,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
+    _queueVisibleTerminalPathUnderlineRefresh();
+
     if (_shouldFollowLiveOutput) {
       _queueTerminalScrollToBottom();
     }
@@ -616,6 +1149,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    if (!identical(_terminalPathVerificationSession, session)) {
+      _disposeTerminalPathVerificationSftp();
+    }
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _observedSession = session
       ..removeMetadataListener(_handleSessionMetadataChanged)
@@ -626,6 +1162,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
+    _syncVerifiedTerminalPathCacheScope();
     setState(() {});
   }
 
@@ -815,6 +1352,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : 0,
     );
     _syncNativeScrollFromTerminal();
+    _queueVisibleTerminalPathUnderlineRefresh();
   }
 
   void _followLiveOutput() {
@@ -1381,6 +1919,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.removeObserver(this);
     _sharedClipboardSubscription.close();
     _stopSharedClipboardSync();
+    _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
     _terminalController
@@ -1961,8 +2500,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminalTextStyle,
     );
     final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
+    final terminalPathLinksEnabled = ref.watch(
+      terminalPathLinksNotifierProvider,
+    );
+    final terminalPathLinkUnderlinesEnabled = ref.watch(
+      terminalPathLinkUnderlinesNotifierProvider,
+    );
 
-    final terminalView = MonkeyTerminalView(
+    Widget terminalView = MonkeyTerminalView(
+      key: _terminalViewKey,
       _terminal,
       controller: _terminalController,
       scrollController: _terminalScrollController,
@@ -1989,6 +2535,103 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onPasteText: isMobile ? null : _pasteClipboard,
     );
 
+    final showsTerminalPathUnderlines =
+        terminalPathLinksEnabled && terminalPathLinkUnderlinesEnabled;
+    if (_lastShowsTerminalPathUnderlines != showsTerminalPathUnderlines) {
+      _lastShowsTerminalPathUnderlines = showsTerminalPathUnderlines;
+      _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild =
+          showsTerminalPathUnderlines;
+    }
+    if (!showsTerminalPathUnderlines && _hoveredTerminalPathUnderline != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _hoveredTerminalPathUnderline == null) {
+          return;
+        }
+        setState(() => _hoveredTerminalPathUnderline = null);
+      });
+    }
+    if (!showsTerminalPathUnderlines &&
+        _isMobilePlatform &&
+        _visibleTerminalPathUnderlines.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _visibleTerminalPathUnderlines.isEmpty) {
+          return;
+        }
+        setState(
+          () => _visibleTerminalPathUnderlines =
+              const <({String path, Rect underlineRect, Rect touchRect})>[],
+        );
+      });
+    }
+    if (terminalPathLinksEnabled) {
+      terminalView = Listener(
+        behavior: HitTestBehavior.translucent,
+        onPointerDown: _handleTerminalPathPointerDown,
+        child: terminalView,
+      );
+    }
+    if (showsTerminalPathUnderlines) {
+      if (_isMobilePlatform) {
+        if (_shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild) {
+          _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = false;
+          _queueVisibleTerminalPathUnderlineRefresh();
+        }
+        terminalView = Stack(
+          fit: StackFit.expand,
+          children: [
+            terminalView,
+            for (final underline in _visibleTerminalPathUnderlines)
+              Positioned(
+                left: underline.underlineRect.left,
+                top: underline.underlineRect.top,
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.primary.withValues(alpha: 0.92),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: SizedBox(
+                      width: underline.underlineRect.width,
+                      height: underline.underlineRect.height,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        );
+      } else {
+        terminalView = MouseRegion(
+          onHover: _handleTerminalPathHover,
+          onExit: (_) => _clearHoveredTerminalPathUnderline(),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              terminalView,
+              if (_hoveredTerminalPathUnderline != null)
+                Positioned(
+                  left: _hoveredTerminalPathUnderline!.left,
+                  top: _hoveredTerminalPathUnderline!.top,
+                  child: IgnorePointer(
+                    child: DecoratedBox(
+                      decoration: BoxDecoration(
+                        color: theme.colorScheme.primary.withValues(
+                          alpha: 0.92,
+                        ),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: SizedBox(
+                        width: _hoveredTerminalPathUnderline!.width,
+                        height: _hoveredTerminalPathUnderline!.height,
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        );
+      }
+    }
+
     if (!isMobile) {
       return overlayMessage == null
           ? terminalView
@@ -2000,7 +2643,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             );
     }
 
-    Widget mobileTerminalView = terminalView;
+    var mobileTerminalView = terminalView;
 
     // On mobile, wrap with our own text input handler that enables
     // IME suggestions so swipe typing correctly inserts spaces.
@@ -2151,6 +2794,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'Oxygen Mono' => GoogleFonts.oxygenMono(fontSize: fontSize),
         _ => null,
       };
+
+  Size? _measureTerminalPathUnderlineTextSize(String text) {
+    if (text.isEmpty) {
+      return null;
+    }
+    final globalFontSize = ref.read(fontSizeNotifierProvider);
+    final fontSize = resolveTerminalFontSize(
+      globalFontSize: globalFontSize,
+      sessionFontSize: _sessionFontSizeOverride,
+      pinchFontSize: _pinchFontSize,
+    );
+    final fontFamily =
+        _host?.terminalFontFamily ??
+        ref.read(fontFamilyNotifierProvider) ??
+        'monospace';
+    final textStyle =
+        _resolveTerminalTextStyle(fontFamily, fontSize) ??
+        TextStyle(fontFamily: 'monospace', fontSize: fontSize);
+    final painter = TextPainter(
+      text: TextSpan(text: text, style: textStyle),
+      textDirection: TextDirection.ltr,
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    if (painter.width <= 0 || painter.height <= 0) {
+      return null;
+    }
+    return Size(painter.width, painter.height);
+  }
 
   void _openConnectionFileBrowser() {
     final connectionId = _connectionId;
@@ -2474,15 +3146,119 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    if (!_routesTouchScrollToTerminal || _showsNativeSelectionOverlay) {
+    if (!shouldResolveTerminalTapLinks(
+      showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
+    )) {
       return null;
     }
 
     final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
     if (trackedHyperlink != null) {
+      _pendingTerminalPathTap = null;
       return trackedHyperlink;
     }
 
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    final line = _terminal.buffer.lines[row];
+    if (line.getCodePoint(column) != 0) {
+      final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
+      if (wrappedSnapshot != null) {
+        final rowIndex = row - wrappedSnapshot.startRow;
+        final textOffset =
+            wrappedSnapshot.rowStarts[rowIndex] +
+            wrappedSnapshot.columnOffsets[rowIndex][column];
+        final detectedLink = detectTerminalLinkAtTextOffset(
+          wrappedSnapshot.text,
+          textOffset,
+        );
+        if (detectedLink != null) {
+          _pendingTerminalPathTap = null;
+          return detectedLink.uri.toString();
+        }
+      }
+    }
+
+    if (!ref.read(terminalPathLinksNotifierProvider)) {
+      _pendingTerminalPathTap = null;
+      return null;
+    }
+
+    final detectedPath = _resolveTerminalFilePathAtOffset(
+      offset,
+      forgiving: _isMobilePlatform,
+    );
+    if (detectedPath == null) {
+      final pendingPath = _pendingTerminalPathTap;
+      _pendingTerminalPathTap = null;
+      if (pendingPath == null || !_isInteractiveTerminalFilePath(pendingPath)) {
+        return null;
+      }
+      return '$_terminalSftpPathPrefix$pendingPath';
+    }
+
+    _pendingTerminalPathTap = null;
+    return '$_terminalSftpPathPrefix$detectedPath';
+  }
+
+  String? _resolveTerminalFilePathAtOffset(
+    CellOffset offset, {
+    bool forgiving = false,
+  }) {
+    final detectedPath = _detectTerminalFilePathAtOffset(
+      offset,
+      forgiving: forgiving,
+    );
+    if (detectedPath == null) {
+      return null;
+    }
+
+    if (_isInteractiveTerminalFilePath(detectedPath)) {
+      return detectedPath;
+    }
+
+    _primeRelativeTerminalFilePathVerification(detectedPath);
+    return null;
+  }
+
+  String? _detectTerminalFilePathAtOffset(
+    CellOffset offset, {
+    bool forgiving = false,
+  }) {
+    final candidateOffsets = forgiving
+        ? resolveForgivingTerminalTapOffsets(offset)
+        : <CellOffset>[offset];
+    for (final candidateOffset in candidateOffsets) {
+      final detectedPath = _detectTerminalFilePathAtCell(candidateOffset);
+      if (detectedPath != null) {
+        return detectedPath;
+      }
+    }
+    if (forgiving) {
+      return _resolveSingleInteractiveTerminalFilePathOnRow(offset.y);
+    }
+    return null;
+  }
+
+  String? _resolveSingleInteractiveTerminalFilePathOnRow(int row) {
+    final segments = _resolveInteractiveTerminalPathSegmentsOnRow(row);
+    return segments.length == 1 ? segments.single.path : null;
+  }
+
+  String? _detectTerminalFilePathAtCell(CellOffset offset) {
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final pathSnapshot = _buildTerminalPathTapSnapshot(row);
+    if (pathSnapshot == null) {
+      return null;
+    }
+
+    return _detectTerminalFilePathInSnapshotAtCell(pathSnapshot, offset);
+  }
+
+  String? _detectTerminalFilePathInSnapshotAtCell(
+    _TerminalPathTapSnapshot pathSnapshot,
+    CellOffset offset,
+  ) {
     final row = offset.y.clamp(0, _terminal.buffer.height - 1);
     final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
     final line = _terminal.buffer.lines[row];
@@ -2490,27 +3266,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
 
-    final snapshot = _buildWrappedTerminalLinkSnapshot(row);
-    if (snapshot == null) {
+    final pathRowIndex = row - pathSnapshot.startRow;
+    if (pathRowIndex < 0 || pathRowIndex >= pathSnapshot.columnOffsets.length) {
       return null;
     }
 
-    final rowIndex = row - snapshot.startRow;
-    final textOffset =
-        snapshot.rowStarts[rowIndex] + snapshot.columnOffsets[rowIndex][column];
-    return detectTerminalLinkAtTextOffset(
-      snapshot.text,
-      textOffset,
-    )?.uri.toString();
+    final rowColumnOffsets = pathSnapshot.columnOffsets[pathRowIndex];
+    if (column >= rowColumnOffsets.length) {
+      return null;
+    }
+
+    final pathTextOffset =
+        pathSnapshot.rowStarts[pathRowIndex] + rowColumnOffsets[column];
+    final detectedPath = detectTerminalFilePathAtTextOffset(
+      pathSnapshot.text,
+      pathTextOffset,
+    );
+    if (detectedPath == null) {
+      return null;
+    }
+
+    return detectedPath.path;
   }
 
-  ({
-    String text,
-    int startRow,
-    List<int> rowStarts,
-    List<List<int>> columnOffsets,
-  })?
-  _buildWrappedTerminalLinkSnapshot(int row) {
+  _TerminalPathTapSnapshot? _buildWrappedTerminalLinkSnapshot(int row) {
     final buffer = _terminal.buffer;
     if (row < 0 || row >= buffer.height) {
       return null;
@@ -2545,6 +3324,444 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       rowStarts: rowStarts,
       columnOffsets: columnOffsets,
     );
+  }
+
+  _TerminalPathTapSnapshot? _buildTerminalPathTapSnapshot(int row) {
+    final buffer = _terminal.buffer;
+    if (row < 0 || row >= buffer.height) {
+      return null;
+    }
+
+    String lineTextAt(int lineIndex) => _buildNativeSelectionLineSnapshot(
+      buffer.lines[lineIndex],
+      buffer.viewWidth,
+    ).text;
+
+    var startRow = row;
+    while (startRow > 0 && buffer.lines[startRow].isWrapped) {
+      startRow--;
+    }
+
+    var endRow = row;
+    while (endRow + 1 < buffer.height && buffer.lines[endRow + 1].isWrapped) {
+      endRow++;
+    }
+
+    while (startRow > 0 &&
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: lineTextAt(startRow - 1),
+          nextLineText: lineTextAt(startRow),
+        )) {
+      startRow--;
+    }
+
+    while (endRow + 1 < buffer.height &&
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: lineTextAt(endRow),
+          nextLineText: lineTextAt(endRow + 1),
+        )) {
+      endRow++;
+    }
+
+    final builder = StringBuffer();
+    final rowStarts = <int>[];
+    final columnOffsets = <List<int>>[];
+    for (var lineIndex = startRow; lineIndex <= endRow; lineIndex++) {
+      rowStarts.add(builder.length);
+      final lineSnapshot = _buildNativeSelectionLineSnapshot(
+        buffer.lines[lineIndex],
+        buffer.viewWidth,
+      );
+      builder.write(lineSnapshot.text);
+      columnOffsets.add(lineSnapshot.columnOffsets);
+      if (lineIndex < endRow) {
+        builder.write('\n');
+      }
+    }
+
+    return (
+      text: builder.toString(),
+      startRow: startRow,
+      rowStarts: rowStarts,
+      columnOffsets: columnOffsets,
+    );
+  }
+
+  void _handleTerminalPathHover(PointerHoverEvent event) {
+    final terminalViewState = _terminalViewKey.currentState;
+    if (terminalViewState == null ||
+        !ref.read(terminalPathLinksNotifierProvider) ||
+        !ref.read(terminalPathLinkUnderlinesNotifierProvider)) {
+      _clearHoveredTerminalPathUnderline();
+      return;
+    }
+
+    final terminalLocalPosition = terminalViewState.renderTerminal
+        .globalToLocal(event.position);
+    final offset = terminalViewState.renderTerminal.getCellOffset(
+      terminalLocalPosition,
+    );
+    final isSameHoveredCell =
+        _lastHoveredTerminalPathOffset?.x == offset.x &&
+        _lastHoveredTerminalPathOffset?.y == offset.y;
+    final detectedPath = isSameHoveredCell
+        ? _lastHoveredTerminalPath
+        : _resolveTerminalFilePathAtOffset(offset);
+    if (!isSameHoveredCell) {
+      _lastHoveredTerminalPathOffset = offset;
+      _lastHoveredTerminalPath = detectedPath;
+    }
+    if (detectedPath == null || !_shouldShowTerminalPathBadge(detectedPath)) {
+      _clearHoveredTerminalPathUnderline();
+      return;
+    }
+    final hoveredSegment = _resolveInteractiveTerminalPathSegmentAtOffset(
+      offset,
+      path: detectedPath,
+    );
+    if (hoveredSegment == null) {
+      _clearHoveredTerminalPathUnderline();
+      return;
+    }
+    final underline = _buildTerminalPathUnderlineRect(
+      terminalViewState,
+      row: offset.y,
+      startColumn: hoveredSegment.startColumn,
+      endColumn: hoveredSegment.endColumn,
+      text: hoveredSegment.text,
+    );
+    if (underline == null) {
+      _clearHoveredTerminalPathUnderline();
+      return;
+    }
+    if (_hoveredTerminalPathUnderline == underline) {
+      return;
+    }
+    setState(() => _hoveredTerminalPathUnderline = underline);
+  }
+
+  void _handleTerminalPathPointerDown(PointerDownEvent event) {
+    final terminalViewState = _terminalViewKey.currentState;
+    final pathLinksEnabled = ref.read(terminalPathLinksNotifierProvider);
+    _pendingTerminalPathTap = null;
+    if (terminalViewState == null || !pathLinksEnabled) {
+      if (_hoveredTerminalPathUnderline != null) {
+        _clearHoveredTerminalPathUnderline();
+      }
+      return;
+    }
+
+    final terminalLocalPosition = terminalViewState.renderTerminal
+        .globalToLocal(event.position);
+    final terminalViewObject = terminalViewState.context.findRenderObject();
+    final terminalViewLocalPosition = terminalViewObject is RenderBox
+        ? terminalViewObject.globalToLocal(event.position)
+        : terminalLocalPosition;
+    final offset = terminalViewState.renderTerminal.getCellOffset(
+      terminalLocalPosition,
+    );
+    final candidatePath = _detectTerminalFilePathAtOffset(
+      offset,
+      forgiving: event.kind == PointerDeviceKind.touch,
+    );
+    final underlinePath = event.kind == PointerDeviceKind.touch
+        ? resolveTerminalPathTouchTargetTap(terminalViewLocalPosition, [
+            for (final underline in _visibleTerminalPathUnderlines)
+              (path: underline.path, touchRect: underline.touchRect),
+          ])
+        : null;
+    final tappedPath = candidatePath ?? underlinePath;
+    if (tappedPath != null && event.kind == PointerDeviceKind.touch) {
+      _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    }
+    if (candidatePath != null &&
+        !_isInteractiveTerminalFilePath(candidatePath)) {
+      _primeRelativeTerminalFilePathVerification(candidatePath);
+    }
+    if (tappedPath != null && _isInteractiveTerminalFilePath(tappedPath)) {
+      _pendingTerminalPathTap = tappedPath;
+    }
+  }
+
+  void _clearHoveredTerminalPathUnderline() {
+    _lastHoveredTerminalPathOffset = null;
+    _lastHoveredTerminalPath = null;
+    if (_hoveredTerminalPathUnderline == null || !mounted) {
+      return;
+    }
+    setState(() => _hoveredTerminalPathUnderline = null);
+  }
+
+  bool _shouldShowTerminalPathBadge(String path) =>
+      isExplicitTerminalFilePath(path) ||
+      _hasVerifiedRelativeTerminalPath(path);
+
+  void _queueVisibleTerminalPathUnderlineRefresh() {
+    if (!_isMobilePlatform ||
+        _isTerminalPathUnderlineRefreshQueued ||
+        !mounted) {
+      return;
+    }
+
+    _isTerminalPathUnderlineRefreshQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalPathUnderlineRefreshQueued = false;
+      if (!mounted) {
+        return;
+      }
+      _refreshVisibleTerminalPathUnderlines();
+    });
+  }
+
+  void _refreshVisibleTerminalPathUnderlines() {
+    final terminalViewState = _terminalViewKey.currentState;
+    final showsUnderlines =
+        ref.read(terminalPathLinksNotifierProvider) &&
+        ref.read(terminalPathLinkUnderlinesNotifierProvider);
+    if (!_isMobilePlatform || !showsUnderlines || terminalViewState == null) {
+      if (_visibleTerminalPathUnderlines.isNotEmpty) {
+        setState(
+          () => _visibleTerminalPathUnderlines =
+              const <({String path, Rect underlineRect, Rect touchRect})>[],
+        );
+      }
+      return;
+    }
+
+    final renderTerminal = terminalViewState.renderTerminal;
+    final rowRange = resolveVisibleTerminalRowRange(
+      scrollOffset: _terminalScrollController.hasClients
+          ? _terminalScrollController.offset
+          : 0,
+      lineHeight: renderTerminal.lineHeight,
+      viewportHeight: renderTerminal.size.height,
+      bufferHeight: _terminal.buffer.height,
+    );
+    if (rowRange == null) {
+      return;
+    }
+
+    final underlines = <({String path, Rect underlineRect, Rect touchRect})>[];
+    var row = rowRange.topRow;
+    while (row <= rowRange.bottomRow) {
+      final pathSnapshot = _buildTerminalPathTapSnapshot(row);
+      if (pathSnapshot == null) {
+        row++;
+        continue;
+      }
+      final snapshotAnalysis = _analyzeTerminalPathSnapshot(pathSnapshot);
+      final snapshotEndRow =
+          pathSnapshot.startRow + pathSnapshot.columnOffsets.length - 1;
+      final visibleSnapshotBottom = min(rowRange.bottomRow, snapshotEndRow);
+      for (
+        var snapshotRow = max(row, pathSnapshot.startRow);
+        snapshotRow <= visibleSnapshotBottom;
+        snapshotRow++
+      ) {
+        final segments = _resolveInteractiveTerminalPathSegmentsInSnapshotRow(
+          snapshotRow,
+          pathSnapshot: pathSnapshot,
+          snapshotAnalysis: snapshotAnalysis,
+        );
+        for (final segment in segments) {
+          if (!_shouldShowTerminalPathBadge(segment.path)) {
+            continue;
+          }
+          final underlineRect = _buildTerminalPathUnderlineRect(
+            terminalViewState,
+            row: snapshotRow,
+            startColumn: segment.startColumn,
+            endColumn: segment.endColumn,
+            text: segment.text,
+          );
+          final touchRect = _buildTerminalPathTouchTargetRect(
+            terminalViewState,
+            row: snapshotRow,
+            startColumn: segment.startColumn,
+            endColumn: segment.endColumn,
+          );
+          if (underlineRect != null && touchRect != null) {
+            underlines.add((
+              path: segment.path,
+              underlineRect: underlineRect,
+              touchRect: touchRect,
+            ));
+          }
+        }
+      }
+      row = visibleSnapshotBottom + 1;
+    }
+
+    if (!listEquals(_visibleTerminalPathUnderlines, underlines)) {
+      setState(() => _visibleTerminalPathUnderlines = underlines);
+    }
+  }
+
+  Rect? _buildTerminalPathUnderlineRect(
+    MonkeyTerminalViewState terminalViewState, {
+    required int row,
+    required int startColumn,
+    required int endColumn,
+    required String text,
+  }) {
+    final terminalViewObject = terminalViewState.context.findRenderObject();
+    if (terminalViewObject is! RenderBox) {
+      return null;
+    }
+    final renderTerminal = terminalViewState.renderTerminal;
+    final lineTopLeft = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(CellOffset(startColumn, row)),
+      ancestor: terminalViewObject,
+    );
+    final measuredTextSize = _measureTerminalPathUnderlineTextSize(text);
+    final lineEndOffset = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(
+        CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
+      ),
+      ancestor: terminalViewObject,
+    );
+    return resolveTerminalPathUnderlineRect(
+      lineTopLeft: lineTopLeft,
+      lineEndOffset: lineEndOffset,
+      lineHeight: renderTerminal.lineHeight,
+      viewportHeight: terminalViewObject.size.height,
+      rowHeight: renderTerminal.cellSize.height,
+      textHeight: measuredTextSize?.height,
+    );
+  }
+
+  Rect? _buildTerminalPathTouchTargetRect(
+    MonkeyTerminalViewState terminalViewState, {
+    required int row,
+    required int startColumn,
+    required int endColumn,
+  }) {
+    final terminalViewObject = terminalViewState.context.findRenderObject();
+    if (terminalViewObject is! RenderBox) {
+      return null;
+    }
+    final renderTerminal = terminalViewState.renderTerminal;
+    final lineTopLeft = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(CellOffset(startColumn, row)),
+      ancestor: terminalViewObject,
+    );
+    final lineEndOffset = renderTerminal.localToGlobal(
+      renderTerminal.getOffset(
+        CellOffset((endColumn + 1).clamp(0, _terminal.buffer.viewWidth), row),
+      ),
+      ancestor: terminalViewObject,
+    );
+    return resolveTerminalPathTouchTargetRect(
+      lineTopLeft: lineTopLeft,
+      lineEndOffset: lineEndOffset,
+      lineHeight: renderTerminal.lineHeight,
+      viewportHeight: terminalViewObject.size.height,
+    );
+  }
+
+  ({String path, String text, int startColumn, int endColumn})?
+  _resolveInteractiveTerminalPathSegmentAtOffset(
+    CellOffset offset, {
+    String? path,
+  }) {
+    for (final segment in _resolveInteractiveTerminalPathSegmentsOnRow(
+      offset.y,
+    )) {
+      if (offset.x >= segment.startColumn &&
+          offset.x <= segment.endColumn &&
+          (path == null || segment.path == path)) {
+        return segment;
+      }
+    }
+    return null;
+  }
+
+  _TerminalPathSnapshotAnalysis _analyzeTerminalPathSnapshot(
+    _TerminalPathTapSnapshot pathSnapshot,
+  ) => (
+    detectedPaths: _detectTerminalFilePathMatches(pathSnapshot.text),
+    normalizedSnapshot: _normalizeTerminalFilePathDetectionText(
+      pathSnapshot.text,
+    ),
+  );
+
+  List<({String path, String text, int startColumn, int endColumn})>
+  _resolveInteractiveTerminalPathSegmentsOnRow(int row) {
+    final clampedRow = row.clamp(0, _terminal.buffer.height - 1);
+    final pathSnapshot = _buildTerminalPathTapSnapshot(clampedRow);
+    if (pathSnapshot == null) {
+      return const <
+        ({String path, String text, int startColumn, int endColumn})
+      >[];
+    }
+
+    return _resolveInteractiveTerminalPathSegmentsInSnapshotRow(
+      clampedRow,
+      pathSnapshot: pathSnapshot,
+      snapshotAnalysis: _analyzeTerminalPathSnapshot(pathSnapshot),
+    );
+  }
+
+  List<({String path, String text, int startColumn, int endColumn})>
+  _resolveInteractiveTerminalPathSegmentsInSnapshotRow(
+    int row, {
+    required _TerminalPathTapSnapshot pathSnapshot,
+    required _TerminalPathSnapshotAnalysis snapshotAnalysis,
+  }) {
+    final rowIndex = row - pathSnapshot.startRow;
+    if (rowIndex < 0 || rowIndex >= pathSnapshot.columnOffsets.length) {
+      return const <
+        ({String path, String text, int startColumn, int endColumn})
+      >[];
+    }
+    if (snapshotAnalysis.detectedPaths.isEmpty) {
+      return const <
+        ({String path, String text, int startColumn, int endColumn})
+      >[];
+    }
+
+    final rowStart = pathSnapshot.rowStarts[rowIndex];
+    final rowColumnOffsets = pathSnapshot.columnOffsets[rowIndex];
+    final rowEnd = rowStart + rowColumnOffsets.last;
+    final rowText = pathSnapshot.text.substring(rowStart, rowEnd);
+    final relativeCandidatesToPrime = <String>{};
+    final segments =
+        <({String path, String text, int startColumn, int endColumn})>[];
+    for (final detectedPath in snapshotAnalysis.detectedPaths) {
+      if (detectedPath.end <= rowStart || detectedPath.start >= rowEnd) {
+        continue;
+      }
+
+      final path = detectedPath.path;
+      if (_isInteractiveTerminalFilePath(path)) {
+        final visibleSegment = resolveTerminalFilePathSegmentOnRow(
+          rowText: rowText,
+          rowStartOffset: rowStart,
+          rowColumnOffsets: rowColumnOffsets,
+          originalToNormalizedOffsets:
+              snapshotAnalysis.normalizedSnapshot.originalToNormalizedOffsets,
+          normalizedPathStart: detectedPath.normalizedStart,
+          normalizedPathEnd: detectedPath.normalizedEnd,
+        );
+        if (visibleSegment == null) {
+          continue;
+        }
+        segments.add((
+          path: path,
+          text: visibleSegment.text,
+          startColumn: visibleSegment.startColumn,
+          endColumn: visibleSegment.endColumn,
+        ));
+      } else if (isRelativeTerminalFilePathCandidate(path)) {
+        relativeCandidatesToPrime.add(path);
+      }
+    }
+
+    for (final path in relativeCandidatesToPrime) {
+      _primeRelativeTerminalFilePathVerification(path);
+    }
+
+    return segments;
   }
 
   ({String text, int cursorOffset})? _buildWrappedTerminalCommandSnapshot() {
@@ -2597,6 +3814,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalLinkTap(String link) {
+    _clearHoveredTerminalPathUnderline();
+    if (link.startsWith(_terminalSftpPathPrefix)) {
+      unawaited(
+        _openTerminalFilePath(link.substring(_terminalSftpPathPrefix.length)),
+      );
+      return;
+    }
+
     unawaited(_openTerminalLink(link));
   }
 
@@ -2633,6 +3858,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _showTerminalLinkMessage('Could not open $link');
+  }
+
+  Future<void> _openTerminalFilePath(String path) async {
+    final normalizedPath = trimTerminalFilePathCandidate(path);
+    if (!isSupportedTerminalFilePath(normalizedPath)) {
+      _showTerminalLinkMessage('Could not open $path');
+      return;
+    }
+
+    final verifiedPath = await _resolveVerifiedTerminalFilePath(normalizedPath);
+    if (!mounted || verifiedPath == null) {
+      return;
+    }
+
+    final connectionId = _connectionId;
+    final result = await context.pushNamed<String>(
+      Routes.sftp,
+      pathParameters: {'hostId': widget.hostId.toString()},
+      queryParameters: {
+        if (connectionId != null) 'connectionId': connectionId.toString(),
+        'path': verifiedPath,
+      },
+    );
+    if (!mounted || result == null) {
+      return;
+    }
+
+    _showTerminalLinkMessage(result);
   }
 
   Widget get _selectionActions => Material(
@@ -2745,6 +3998,215 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
     return sessionsNotifier.getSession(connectionId);
+  }
+
+  String _terminalPathCacheKey(String terminalPath) =>
+      '${_currentTerminalPathCacheScope()}:$terminalPath';
+
+  String _currentTerminalPathCacheScope() =>
+      '${widget.hostId}:${_connectionId ?? 0}:${_workingDirectoryPath ?? ''}';
+
+  void _syncVerifiedTerminalPathCacheScope() {
+    final nextScope = _currentTerminalPathCacheScope();
+    if (_terminalPathCacheScope == nextScope) {
+      return;
+    }
+    _terminalPathCacheScope = nextScope;
+    _resetVerifiedTerminalPathCache();
+  }
+
+  void _resetVerifiedTerminalPathCache() {
+    _verifiedTerminalPathCache.clear();
+    _verifiedTerminalPathCacheOrder.clear();
+    _verifyingTerminalPathCacheKeys.clear();
+  }
+
+  void _cacheVerifiedTerminalPath(String cacheKey, String resolvedPath) {
+    _verifiedTerminalPathCache.remove(cacheKey);
+    _verifiedTerminalPathCache[cacheKey] = resolvedPath;
+    _verifiedTerminalPathCacheOrder
+      ..remove(cacheKey)
+      ..addLast(cacheKey);
+    while (_verifiedTerminalPathCacheOrder.length >
+        _maxVerifiedTerminalPathCacheEntries) {
+      final evictedKey = _verifiedTerminalPathCacheOrder.removeFirst();
+      _verifiedTerminalPathCache.remove(evictedKey);
+    }
+  }
+
+  void _disposeTerminalPathVerificationSftp() {
+    _terminalPathVerificationSftp?.close();
+    _terminalPathVerificationSftp = null;
+    _terminalPathVerificationSftpFuture = null;
+    _terminalPathVerificationSession = null;
+    _terminalPathVerificationHomeDirectory = null;
+  }
+
+  Future<SftpClient?> _resolveTerminalPathVerificationSftp(
+    SshSession session,
+  ) async {
+    if (!identical(_terminalPathVerificationSession, session)) {
+      _disposeTerminalPathVerificationSftp();
+      _terminalPathVerificationSession = session;
+    }
+
+    final cachedSftp = _terminalPathVerificationSftp;
+    if (cachedSftp != null) {
+      return cachedSftp;
+    }
+
+    final inFlight = _terminalPathVerificationSftpFuture;
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future = session
+        .sftp()
+        .timeout(_terminalPathVerificationTimeout)
+        .then<SftpClient?>((sftp) {
+          if (!identical(_terminalPathVerificationSession, session)) {
+            sftp.close();
+            return null;
+          }
+          _terminalPathVerificationSftp = sftp;
+          return sftp;
+        });
+    _terminalPathVerificationSftpFuture = future;
+    try {
+      return await future;
+    } finally {
+      if (identical(_terminalPathVerificationSftpFuture, future)) {
+        _terminalPathVerificationSftpFuture = null;
+      }
+    }
+  }
+
+  Future<String?> _resolveTerminalPathVerificationHomeDirectory(
+    SftpClient sftp,
+    String terminalPath,
+  ) async {
+    if (terminalPath != '~' && !terminalPath.startsWith('~/')) {
+      return null;
+    }
+    final cachedHomeDirectory = _terminalPathVerificationHomeDirectory;
+    if (cachedHomeDirectory != null) {
+      return cachedHomeDirectory;
+    }
+
+    final homeDirectory = normalizeSftpAbsolutePath(
+      await sftp.absolute('.').timeout(_terminalPathVerificationTimeout),
+    );
+    _terminalPathVerificationHomeDirectory = homeDirectory;
+    return homeDirectory;
+  }
+
+  bool _hasVerifiedRelativeTerminalPath(String terminalPath) {
+    _syncVerifiedTerminalPathCacheScope();
+    return _verifiedTerminalPathCache.containsKey(
+      _terminalPathCacheKey(terminalPath),
+    );
+  }
+
+  bool _isInteractiveTerminalFilePath(String terminalPath) =>
+      shouldActivateTerminalFilePath(
+        terminalPath,
+        hasVerifiedRelativePath: _hasVerifiedRelativeTerminalPath(terminalPath),
+      );
+
+  void _primeRelativeTerminalFilePathVerification(String terminalPath) {
+    if (!isRelativeTerminalFilePathCandidate(terminalPath)) {
+      return;
+    }
+
+    _syncVerifiedTerminalPathCacheScope();
+    final cacheKey = _terminalPathCacheKey(terminalPath);
+    if (_verifiedTerminalPathCache.containsKey(cacheKey) ||
+        _verifyingTerminalPathCacheKeys.contains(cacheKey)) {
+      return;
+    }
+
+    _verifyingTerminalPathCacheKeys.add(cacheKey);
+    unawaited(() async {
+      try {
+        final verifiedPath = await _resolveVerifiedTerminalFilePath(
+          terminalPath,
+        );
+        if (!mounted || verifiedPath == null) {
+          return;
+        }
+        setState(() {});
+      } finally {
+        _verifyingTerminalPathCacheKeys.remove(cacheKey);
+      }
+    }());
+  }
+
+  Future<String?> _resolveVerifiedTerminalFilePath(String terminalPath) async {
+    _syncVerifiedTerminalPathCacheScope();
+    final cacheKey = _terminalPathCacheKey(terminalPath);
+    final cachedPath = _verifiedTerminalPathCache[cacheKey];
+    if (cachedPath != null) {
+      return cachedPath;
+    }
+
+    final session = _activeSession();
+    final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
+    if (session == null) {
+      if (isExplicitPath) {
+        _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
+      }
+      return null;
+    }
+
+    try {
+      final sftp = await _resolveTerminalPathVerificationSftp(session);
+      if (sftp == null) {
+        return null;
+      }
+      final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
+        sftp,
+        terminalPath,
+      );
+      final resolvedPath = resolveRequestedSftpPath(
+        terminalPath,
+        workingDirectory: _workingDirectoryPath,
+        homeDirectory: homeDirectory,
+      );
+      if (resolvedPath == null) {
+        if (isExplicitPath) {
+          _showTerminalLinkMessage(
+            'Could not open "$terminalPath" in SFTP: path does not exist',
+          );
+        }
+        return null;
+      }
+
+      await sftp.stat(resolvedPath).timeout(_terminalPathVerificationTimeout);
+      _cacheVerifiedTerminalPath(cacheKey, resolvedPath);
+      return resolvedPath;
+    } on TimeoutException {
+      if (isExplicitPath) {
+        _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
+      }
+      return null;
+    } on SftpStatusError catch (error) {
+      if (isExplicitPath) {
+        final message = error.code == SftpStatusCode.noSuchFile
+            ? 'Could not open "$terminalPath" in SFTP: path does not exist'
+            : 'Could not open "$terminalPath" in SFTP';
+        _showTerminalLinkMessage(message);
+      }
+      return null;
+    } on Object catch (error, stackTrace) {
+      debugPrint(
+        'Failed to resolve terminal file path "$terminalPath": $error',
+      );
+      debugPrint('$stackTrace');
+      if (isExplicitPath) {
+        _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
+      }
+      return null;
+    }
   }
 
   Future<void> _pasteClipboard() async {
