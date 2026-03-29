@@ -207,9 +207,11 @@ jobs:
 
       - name: Checkout requested source ref for Android build
         if: inputs.source-ref != '' && inputs.android-reuse-aab-artifact-name == ''
-        env:
-          REQUESTED_SOURCE_SHA: ${{ steps.source-sha.outputs.value }}
-        run: git checkout --force "$REQUESTED_SOURCE_SHA"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          ref: ${{ steps.source-sha.outputs.value }}
+          fetch-depth: 1
 
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
         if: inputs.android-reuse-aab-artifact-name == '' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-is-unsigned)
@@ -483,9 +485,11 @@ jobs:
 
       - name: Checkout requested source ref for iOS build
         if: inputs.source-ref != '' && inputs.ios-reuse-ipa-artifact-name == ''
-        env:
-          REQUESTED_SOURCE_SHA: ${{ steps.source-sha.outputs.value }}
-        run: git checkout --force "$REQUESTED_SOURCE_SHA"
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          ref: ${{ steps.source-sha.outputs.value }}
+          fetch-depth: 1
 
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
