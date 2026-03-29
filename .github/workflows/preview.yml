@@ -30,6 +30,7 @@ jobs:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
 
       - name: Compute version
         id: version
@@ -51,6 +52,7 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
+      source-ref: ${{ github.event.pull_request.head.sha }}
       deploy-ios-to: none
       deploy-android-to: none
       build-ios: false
@@ -67,6 +69,7 @@ jobs:
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
+      source-ref: ${{ github.event.pull_request.head.sha }}
       deploy-ios-to: none
       deploy-android-to: none
       build-ios: true
@@ -101,7 +104,7 @@ jobs:
               if (!job || job.status !== 'completed') return '⏳ Building';
               switch (job.conclusion) {
                 case 'success':
-                  return '✅ Deployed';
+                  return '✅ Built';
                 case 'skipped':
                   return '⏭️ Skipped';
                 case 'cancelled':
@@ -159,7 +162,7 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. You can still run **Deploy PR Preview** manually from the Actions tab.
+            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and reuses them when available.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
 
@@ -192,7 +195,7 @@ jobs:
               if (!job || job.status !== 'completed') return '⏳ Building';
               switch (job.conclusion) {
                 case 'success':
-                  return '✅ Deployed';
+                  return '✅ Built';
                 case 'skipped':
                   return '⏭️ Skipped';
                 case 'cancelled':
@@ -249,6 +252,6 @@ jobs:
             | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
-            Comment `/deploy` on this PR to deploy this preview build to TestFlight and the Play Store internal track. You can still run **Deploy PR Preview** manually from the Actions tab.
+            Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow prepares signed artifacts in a trusted workflow, waits for them if they are already building for this SHA, and reuses them when available.
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}

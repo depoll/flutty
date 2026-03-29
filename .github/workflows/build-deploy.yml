@@ -50,6 +50,51 @@ on:
         type: boolean
         default: true
         description: 'Whether to run the iOS build job'
+      run-android-deploy:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to upload Android artifacts to Play when deploy-android-to != none'
+      run-ios-deploy:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to upload iOS artifacts to App Store Connect when deploy-ios-to != none'
+      android-reuse-run-id:
+        required: false
+        type: string
+        default: ''
+        description: 'Workflow run ID containing reusable Android artifacts'
+      android-reuse-aab-artifact-name:
+        required: false
+        type: string
+        default: ''
+        description: 'Artifact name for a reusable Android AAB'
+      android-reuse-apk-artifact-name:
+        required: false
+        type: string
+        default: ''
+        description: 'Artifact name for a reusable Android APK'
+      android-reuse-source-sha:
+        required: false
+        type: string
+        default: ''
+        description: 'Source SHA associated with the reusable Android artifacts'
+      ios-reuse-run-id:
+        required: false
+        type: string
+        default: ''
+        description: 'Workflow run ID containing a reusable iOS IPA'
+      ios-reuse-ipa-artifact-name:
+        required: false
+        type: string
+        default: ''
+        description: 'Artifact name for a reusable iOS IPA'
+      ios-reuse-source-sha:
+        required: false
+        type: string
+        default: ''
+        description: 'Source SHA associated with the reusable iOS IPA'
       sync-metadata:
         required: false
         type: boolean
@@ -90,6 +135,7 @@ on:
         value: ${{ jobs.build-ios.outputs.source-sha }}
 
 permissions:
+  actions: read
   contents: read
 
 jobs:
@@ -102,7 +148,7 @@ jobs:
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
-      source-sha: ${{ steps.source-sha.outputs.value }}
+      source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -113,12 +159,26 @@ jobs:
         id: source-sha
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve source SHA
+        id: resolved-source-sha
+        env:
+          REUSED_SOURCE_SHA: ${{ inputs.android-reuse-source-sha }}
+          CHECKED_OUT_SOURCE_SHA: ${{ steps.source-sha.outputs.value }}
+        run: |
+          if [ -n "$REUSED_SOURCE_SHA" ]; then
+            echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$CHECKED_OUT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
+        if: inputs.android-reuse-aab-artifact-name == ''
         with:
           distribution: 'temurin'
           java-version: '17'
 
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        if: inputs.android-reuse-aab-artifact-name == ''
         with:
           path: |
             ~/.gradle/caches
@@ -127,16 +187,18 @@ jobs:
           restore-keys: gradle-${{ runner.os }}-
 
       - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
+        if: inputs.android-reuse-aab-artifact-name == ''
         with:
           flutter-version: '3.x'
           channel: 'stable'
           cache: true
 
       - name: Install dependencies
+        if: inputs.android-reuse-aab-artifact-name == ''
         run: flutter pub get
 
       - name: Validate Android signing secrets
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -161,7 +223,7 @@ jobs:
           fi
 
       - name: Decode keystore
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
@@ -169,7 +231,7 @@ jobs:
           echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > android/app/upload-keystore.jks
 
       - name: Create key.properties
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         env:
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
@@ -184,7 +246,7 @@ jobs:
           EOF_KEY_PROPERTIES
 
       - name: Build AAB
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         run: |
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
@@ -195,7 +257,7 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
       - name: Build release APK
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         run: |
           flutter build apk \
             --flavor ${{ inputs.flavor }} \
@@ -216,8 +278,26 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
+      - name: Download reusable AAB artifact
+        if: inputs.android-reuse-aab-artifact-name != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.android-reuse-run-id }}
+          name: ${{ inputs.android-reuse-aab-artifact-name }}
+          path: build/app/outputs/bundle/${{ inputs.flavor }}Release
+
+      - name: Download reusable APK artifact
+        if: inputs.android-reuse-apk-artifact-name != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.android-reuse-run-id }}
+          name: ${{ inputs.android-reuse-apk-artifact-name }}
+          path: build/app/outputs/flutter-apk
+
       - name: Upload AAB artifact
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
@@ -225,31 +305,32 @@ jobs:
 
       - name: Upload APK artifact
         id: upload-apk
+        if: inputs.deploy-android-to == 'none' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == '')
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: ${{ inputs.deploy-android-to != 'none' && format('build/app/outputs/flutter-apk/app-{0}-release.apk', inputs.flavor) || format('build/app/outputs/flutter-apk/app-{0}-debug.apk', inputs.flavor) }}
 
       - name: Setup Ruby for Play deployment
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         uses: ruby/setup-ruby@319994f95fa847cf3fb3cd3dbe89f6dcde9f178f # v1.295.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
 
       - name: Refresh Play Store icon metadata
-        if: inputs.deploy-android-to != 'none' && inputs.sync-metadata
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy && inputs.sync-metadata
         run: |
           python -m pip install --quiet Pillow
           python scripts/sync_play_store_icons.py
 
       - name: Validate Play Store metadata
-        if: inputs.deploy-android-to != 'none' && inputs.sync-metadata
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy && inputs.sync-metadata
         run: |
           python3 scripts/validate_play_store_metadata.py ${{ inputs.flavor }}
 
       - name: Run Fastlane
-        if: inputs.deploy-android-to != 'none'
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
@@ -265,7 +346,7 @@ jobs:
           fi
 
       - name: Remove Android signing material
-        if: always() && inputs.deploy-android-to != 'none'
+        if: always() && inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
         run: rm -f android/app/upload-keystore.jks android/app/key.properties
 
   build-ios:
@@ -276,7 +357,7 @@ jobs:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
     outputs:
-      source-sha: ${{ steps.source-sha.outputs.value }}
+      source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -287,13 +368,27 @@ jobs:
         id: source-sha
         run: echo "value=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve source SHA
+        id: resolved-source-sha
+        env:
+          REUSED_SOURCE_SHA: ${{ inputs.ios-reuse-source-sha }}
+          CHECKED_OUT_SOURCE_SHA: ${{ steps.source-sha.outputs.value }}
+        run: |
+          if [ -n "$REUSED_SOURCE_SHA" ]; then
+            echo "value=$REUSED_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          else
+            echo "value=$CHECKED_OUT_SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+        if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
           path: ios/Pods
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
           restore-keys: pods-${{ runner.os }}-
 
       - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
+        if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
           flutter-version: '3.x'
           channel: 'stable'
@@ -305,10 +400,11 @@ jobs:
           bundler-cache: true
 
       - name: Install dependencies
+        if: inputs.ios-reuse-ipa-artifact-name == ''
         run: flutter pub get
 
       - name: Setup code signing
-        if: inputs.deploy-ios-to != 'none'
+        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -326,6 +422,7 @@ jobs:
           fi
 
       - name: Build iOS
+        if: inputs.ios-reuse-ipa-artifact-name == ''
         run: |
           flutter build ios \
             --flavor ${{ inputs.flavor }} \
@@ -335,6 +432,15 @@ jobs:
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+
+      - name: Download reusable IPA artifact
+        if: inputs.ios-reuse-ipa-artifact-name != ''
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ inputs.ios-reuse-run-id }}
+          name: ${{ inputs.ios-reuse-ipa-artifact-name }}
+          path: build/ios/ipa
 
       - name: Archive, sign & deploy via Fastlane
         if: inputs.deploy-ios-to != 'none'
@@ -350,14 +456,26 @@ jobs:
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
           SKIP_META=${{ inputs.sync-metadata && 'false' || 'true' }}
-          if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
-            bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META"
-          elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
-            bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META"
+          REUSED_IPA_PATH=''
+          if [ -n '${{ inputs.ios-reuse-ipa-artifact-name }}' ]; then
+            REUSED_IPA_PATH=$(find ../build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+            if [ -z "$REUSED_IPA_PATH" ]; then
+              echo "Expected a reusable IPA artifact, but none was downloaded."
+              exit 1
+            fi
+          fi
+          if [ "${{ inputs.run-ios-deploy }}" = "true" ]; then
+            if [ "${{ inputs.deploy-ios-to }}" = "testflight" ]; then
+              bundle exec fastlane beta scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
+            elif [ "${{ inputs.deploy-ios-to }}" = "appstore" ]; then
+              bundle exec fastlane release scheme:"$SCHEME" skip_metadata:"$SKIP_META" ipa_path:"$REUSED_IPA_PATH"
+            fi
+          else
+            bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
 
       - name: Upload IPA artifact
-        if: inputs.deploy-ios-to != 'none'
+        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
