@@ -653,14 +653,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
             controller: _horizontalScrollController,
             scrollDirection: Axis.horizontal,
             physics: const ClampingScrollPhysics(),
-            child: SizedBox(
-              width: contentWidth,
-              height: height,
-              child: Padding(
-                padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                child: editor,
-              ),
-            ),
+            child: SizedBox(width: contentWidth, height: height, child: editor),
           ),
         ),
       ),
