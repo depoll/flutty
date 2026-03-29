@@ -243,14 +243,35 @@ bool isSupportedTerminalFilePath(String path) {
       isRelativeTerminalFilePathCandidate(path);
 }
 
+/// Whether a detected terminal path must be verified before becoming tappable.
+@visibleForTesting
+bool requiresTerminalFilePathVerification(String path) {
+  if (isRelativeTerminalFilePathCandidate(path)) {
+    return true;
+  }
+
+  if (!path.startsWith('/')) {
+    return false;
+  }
+
+  final rootSegment = path.substring(1);
+  return rootSegment.isNotEmpty &&
+      !rootSegment.contains('/') &&
+      !rootSegment.contains('.');
+}
+
 /// Whether a detected terminal path should currently behave like a link.
 @visibleForTesting
 bool shouldActivateTerminalFilePath(
   String path, {
-  required bool hasVerifiedRelativePath,
-}) =>
-    isExplicitTerminalFilePath(path) ||
-    (hasVerifiedRelativePath && isRelativeTerminalFilePathCandidate(path));
+  required bool hasVerifiedPath,
+}) {
+  if (requiresTerminalFilePathVerification(path)) {
+    return hasVerifiedPath;
+  }
+
+  return isExplicitTerminalFilePath(path);
+}
 
 /// Candidate terminal cells to probe for a touch-friendly path hit test.
 @visibleForTesting
@@ -399,10 +420,14 @@ bool isRelativeTerminalFilePathCandidate(String path) {
 }
 
 bool _isTerminalFilePathBodyCharacter(String character) =>
-    character.isNotEmpty && !RegExp(r'''[\s<>"'$#]''').hasMatch(character);
+    character.isNotEmpty &&
+    !RegExp(r'''[\s<>"'$#]''').hasMatch(character) &&
+    !_isTerminalPathContinuationDecorationCharacter(character);
 
 bool _isTerminalPathContinuationDecorationCharacter(String character) =>
-    character == ' ' || character == '\t' || '│┃║╎┆┊|'.contains(character);
+    character == ' ' ||
+    character == '\t' ||
+    '│┃║╎┆┊|├┤┬┴┼└┘┌┐╭╮╯╰─━═'.contains(character);
 
 String _trimTerminalPathContinuationPrefix(String text) {
   var index = 0;
@@ -3215,7 +3240,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return detectedPath;
     }
 
-    _primeRelativeTerminalFilePathVerification(detectedPath);
+    _primeTerminalFilePathVerification(detectedPath);
     return null;
   }
 
@@ -3474,7 +3499,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (candidatePath != null &&
         !_isInteractiveTerminalFilePath(candidatePath)) {
-      _primeRelativeTerminalFilePathVerification(candidatePath);
+      _primeTerminalFilePathVerification(candidatePath);
     }
     if (tappedPath != null && _isInteractiveTerminalFilePath(tappedPath)) {
       _pendingTerminalPathTap = tappedPath;
@@ -3491,8 +3516,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   bool _shouldShowTerminalPathBadge(String path) =>
-      isExplicitTerminalFilePath(path) ||
-      _hasVerifiedRelativeTerminalPath(path);
+      _isInteractiveTerminalFilePath(path);
 
   void _queueVisibleTerminalPathUnderlineRefresh() {
     if (!_isMobilePlatform ||
@@ -3750,13 +3774,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           startColumn: visibleSegment.startColumn,
           endColumn: visibleSegment.endColumn,
         ));
-      } else if (isRelativeTerminalFilePathCandidate(path)) {
+      } else if (requiresTerminalFilePathVerification(path)) {
         relativeCandidatesToPrime.add(path);
       }
     }
 
     for (final path in relativeCandidatesToPrime) {
-      _primeRelativeTerminalFilePathVerification(path);
+      _primeTerminalFilePathVerification(path);
     }
 
     return segments;
@@ -4108,11 +4132,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isInteractiveTerminalFilePath(String terminalPath) =>
       shouldActivateTerminalFilePath(
         terminalPath,
-        hasVerifiedRelativePath: _hasVerifiedRelativeTerminalPath(terminalPath),
+        hasVerifiedPath: _hasVerifiedRelativeTerminalPath(terminalPath),
       );
 
-  void _primeRelativeTerminalFilePathVerification(String terminalPath) {
-    if (!isRelativeTerminalFilePathCandidate(terminalPath)) {
+  void _primeTerminalFilePathVerification(String terminalPath) {
+    if (!requiresTerminalFilePathVerification(terminalPath)) {
       return;
     }
 

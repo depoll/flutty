@@ -300,6 +300,38 @@ void main() {
       );
     });
 
+    test('detects paths split across TUI guide continuation rows', () {
+      const text =
+          "│ p = Path('/Users/depoll/.copilot/session-state/6745\n"
+          "  │ 9a12-f8a8-405a-a838-2fc3a30dadd4/plan.md')";
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('9a12'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '/Users/depoll/.copilot/session-state/67459a12-f8a8-405a-a838-2fc3a30dadd4/plan.md',
+      );
+    });
+
+    test('detects tilde paths split across TUI guide continuation rows', () {
+      const text =
+          '│ Edit ~/Code/flutty.worktrees/fix-local-path-link-sepa\n'
+          '  │ rators/lib/presentation/screens/terminal_screen.dart';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('rators'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/fix-local-path-link-separators/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
     test('detects tilde paths split across unindented continuation lines', () {
       const text =
           'Edit ~/Code/flutty.worktrees/fix-sftp-local-path-link\n'
@@ -438,6 +470,51 @@ void main() {
       );
     });
 
+    test('excludes TUI guide prefixes from wrapped visible segments', () {
+      const snapshotText =
+          "│ p = Path('/Users/depoll/.copilot/session-state/6745\n"
+          "  │ 9a12-f8a8-405a-a838-2fc3a30dadd4/plan.md')";
+      const rowText = '  │ 9a12-f8a8-405a-a838-2fc3a30dadd4/plan.md\')';
+      expect(
+        resolveTerminalFilePathSegmentOnRowForPath(
+          snapshotText: snapshotText,
+          rowText: rowText,
+          rowStartOffset: snapshotText.indexOf(rowText),
+          rowColumnOffsets: List<int>.generate(rowText.length + 1, (i) => i),
+          path:
+              '/Users/depoll/.copilot/session-state/67459a12-f8a8-405a-a838-2fc3a30dadd4/plan.md',
+        ),
+        (
+          text: '9a12-f8a8-405a-a838-2fc3a30dadd4/plan.md',
+          startColumn: 4,
+          endColumn: 43,
+        ),
+      );
+    });
+
+    test('excludes guide prefixes from wrapped tilde path segments', () {
+      const snapshotText =
+          '│ Edit ~/Code/flutty.worktrees/fix-local-path-link-sepa\n'
+          '  │ rators/lib/presentation/screens/terminal_screen.dart';
+      const rowText =
+          '  │ rators/lib/presentation/screens/terminal_screen.dart';
+      expect(
+        resolveTerminalFilePathSegmentOnRowForPath(
+          snapshotText: snapshotText,
+          rowText: rowText,
+          rowStartOffset: snapshotText.indexOf(rowText),
+          rowColumnOffsets: List<int>.generate(rowText.length + 1, (i) => i),
+          path:
+              '~/Code/flutty.worktrees/fix-local-path-link-separators/lib/presentation/screens/terminal_screen.dart',
+        ),
+        (
+          text: 'rators/lib/presentation/screens/terminal_screen.dart',
+          startColumn: 4,
+          endColumn: 55,
+        ),
+      );
+    });
+
     test(
       'keeps unindented continuation rows anchored to the first path cell',
       () {
@@ -507,49 +584,51 @@ void main() {
   });
 
   group('shouldActivateTerminalFilePath', () {
-    test('always activates explicit paths', () {
+    test('activates unambiguous explicit paths without verification', () {
       expect(
         shouldActivateTerminalFilePath(
           '/var/log/app.log',
-          hasVerifiedRelativePath: false,
+          hasVerifiedPath: false,
         ),
         isTrue,
       );
       expect(
-        shouldActivateTerminalFilePath(
-          '~/.ssh/config',
-          hasVerifiedRelativePath: false,
-        ),
+        shouldActivateTerminalFilePath('~/.ssh/config', hasVerifiedPath: false),
+        isTrue,
+      );
+    });
+
+    test('only activates ambiguous slash commands after verification', () {
+      expect(
+        shouldActivateTerminalFilePath('/commands', hasVerifiedPath: false),
+        isFalse,
+      );
+      expect(
+        shouldActivateTerminalFilePath('/commands', hasVerifiedPath: true),
         isTrue,
       );
     });
 
     test('only activates conservative relative paths after verification', () {
       expect(
-        shouldActivateTerminalFilePath(
-          'lib/main.dart',
-          hasVerifiedRelativePath: false,
-        ),
+        shouldActivateTerminalFilePath('lib/main.dart', hasVerifiedPath: false),
         isFalse,
       );
       expect(
-        shouldActivateTerminalFilePath(
-          'lib/main.dart',
-          hasVerifiedRelativePath: true,
-        ),
+        shouldActivateTerminalFilePath('lib/main.dart', hasVerifiedPath: true),
         isTrue,
       );
       expect(
         shouldActivateTerminalFilePath(
           '../lib/main.dart',
-          hasVerifiedRelativePath: false,
+          hasVerifiedPath: false,
         ),
         isFalse,
       );
       expect(
         shouldActivateTerminalFilePath(
           '../lib/main.dart',
-          hasVerifiedRelativePath: true,
+          hasVerifiedPath: true,
         ),
         isTrue,
       );
