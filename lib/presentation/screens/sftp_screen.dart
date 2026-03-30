@@ -18,6 +18,9 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/syntax_highlight_controller.dart';
+import '../widgets/syntax_highlight_language.dart';
+import '../widgets/syntax_highlight_theme.dart';
 import 'remote_text_editor_screen.dart';
 
 const _maxEditableBytes = 1024 * 1024;
@@ -1286,11 +1289,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         return;
       }
 
-      final controller = TextEditingController(
-        text: utf8.decode(bytes, allowMalformed: true),
-      );
+      final decodedText = utf8.decode(bytes, allowMalformed: true);
+      final detectedLanguage = detectLanguageFromFilename(file.filename);
+      final useHighlighting =
+          detectedLanguage != null && bytes.length <= syntaxHighlightSizeLimit;
+
       if (!mounted) {
-        controller.dispose();
         return;
       }
       final brightness = Theme.of(context).brightness;
@@ -1323,6 +1327,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           'monospace';
       final initialFontSize =
           session?.terminalFontSize ?? ref.read(fontSizeNotifierProvider) ?? 14;
+
+      final TextEditingController controller;
+      if (useHighlighting) {
+        final syntaxTheme = buildSyntaxThemeFromTerminal(editorTheme);
+        controller = SyntaxHighlightController(
+          text: decodedText,
+          language: detectedLanguage,
+          theme: syntaxTheme,
+        );
+      } else {
+        controller = TextEditingController(text: decodedText);
+      }
+
       if (!mounted) {
         controller.dispose();
         return;
