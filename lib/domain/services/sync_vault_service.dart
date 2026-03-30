@@ -4,6 +4,7 @@ import 'dart:math';
 
 import 'package:collection/collection.dart';
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:path/path.dart' as p;
@@ -403,7 +404,8 @@ class SyncVaultService {
       );
 
       final vaultFile = File(vaultPath);
-      if (!vaultFile.existsSync()) {
+      // ignore: avoid_slow_async_io
+      if (!await vaultFile.exists()) {
         return _storeFailureResult(
           const SyncVaultSyncResult(
             outcome: SyncVaultSyncOutcome.needsRelink,
@@ -822,14 +824,9 @@ class SyncVaultService {
 
     final signaturesById = <int, String>{};
     final canonicalRecords = <Map<String, dynamic>>[];
-    for (
-      var canonicalIndex = 0;
-      canonicalIndex < normalizedEntries.length;
-      canonicalIndex += 1
-    ) {
-      final entry = normalizedEntries[canonicalIndex];
+    for (final entry in normalizedEntries) {
       final record = records[entry.key];
-      final signature = _signatureForRecord(entry.value, canonicalIndex);
+      final signature = _signatureForRecord(entry.value);
       final oldId = _optionalInt(record['id']);
       if (oldId != null) {
         signaturesById[oldId] = signature;
@@ -854,28 +851,35 @@ class SyncVaultService {
     };
     final cache = <int, Map<String, dynamic>>{};
 
-    Map<String, dynamic> normalizeRecord(int id) {
+    Map<String, dynamic> normalizeRecord(int id, Set<int> activePath) {
       final cached = cache[id];
       if (cached != null) {
         return cached;
       }
-
-      final record = recordsById[id];
-      if (record == null) {
+      if (!activePath.add(id)) {
         throw const FormatException('Invalid sync snapshot hierarchy');
       }
 
-      final normalized = <String, dynamic>{};
-      for (final field in fields) {
-        normalized[field] = record[field];
+      try {
+        final record = recordsById[id];
+        if (record == null) {
+          throw const FormatException('Invalid sync snapshot hierarchy');
+        }
+
+        final normalized = <String, dynamic>{};
+        for (final field in fields) {
+          normalized[field] = record[field];
+        }
+        final parentId = _optionalInt(record[parentKey]);
+        normalized['parent'] = parentId == null
+            ? null
+            : normalizeRecord(parentId, activePath);
+        final canonical = _canonicalizeScalarMap(normalized);
+        cache[id] = canonical;
+        return canonical;
+      } finally {
+        activePath.remove(id);
       }
-      final parentId = _optionalInt(record[parentKey]);
-      normalized['parent'] = parentId == null
-          ? null
-          : normalizeRecord(parentId);
-      final canonical = _canonicalizeScalarMap(normalized);
-      cache[id] = canonical;
-      return canonical;
     }
 
     final normalizedEntries = <MapEntry<int, Map<String, dynamic>>>[];
@@ -883,7 +887,7 @@ class SyncVaultService {
       final record = records[index];
       final oldId = _optionalInt(record['id']);
       if (oldId != null) {
-        normalizedEntries.add(MapEntry(index, normalizeRecord(oldId)));
+        normalizedEntries.add(MapEntry(index, normalizeRecord(oldId, <int>{})));
         continue;
       }
 
@@ -904,18 +908,10 @@ class SyncVaultService {
 
     final signaturesById = <int, String>{};
     final canonicalRecords = <Map<String, dynamic>>[];
-    for (
-      var canonicalIndex = 0;
-      canonicalIndex < normalizedEntries.length;
-      canonicalIndex += 1
-    ) {
-      final entry = normalizedEntries[canonicalIndex];
+    for (final entry in normalizedEntries) {
       final oldId = _optionalInt(records[entry.key]['id']);
       if (oldId != null) {
-        signaturesById[oldId] = _signatureForRecord(
-          entry.value,
-          canonicalIndex,
-        );
+        signaturesById[oldId] = _signatureForRecord(entry.value);
       }
       canonicalRecords.add(entry.value);
     }
@@ -970,18 +966,10 @@ class SyncVaultService {
     );
 
     final baseSignaturesById = <int, String>{};
-    for (
-      var canonicalIndex = 0;
-      canonicalIndex < baseEntries.length;
-      canonicalIndex += 1
-    ) {
-      final entry = baseEntries[canonicalIndex];
+    for (final entry in baseEntries) {
       final oldId = _optionalInt(hosts[entry.key]['id']);
       if (oldId != null) {
-        baseSignaturesById[oldId] = _signatureForRecord(
-          entry.value,
-          canonicalIndex,
-        );
+        baseSignaturesById[oldId] = _signatureForRecord(entry.value);
       }
     }
 
@@ -1040,8 +1028,7 @@ class SyncVaultService {
     return id == null ? null : signaturesById[id];
   }
 
-  String _signatureForRecord(Map<String, dynamic> record, int canonicalIndex) =>
-      '$canonicalIndex:${jsonEncode(record)}';
+  String _signatureForRecord(Map<String, dynamic> record) => jsonEncode(record);
 
   int? _optionalInt(Object? value) {
     if (value is int) {
@@ -1067,7 +1054,8 @@ class SyncVaultService {
     try {
       await tempFile.rename(vaultFile.path);
     } on FileSystemException {
-      if (vaultFile.existsSync()) {
+      // ignore: avoid_slow_async_io
+      if (await vaultFile.exists()) {
         await vaultFile.delete();
       }
       await tempFile.rename(vaultFile.path);
@@ -1164,7 +1152,19 @@ final syncVaultServiceProvider = Provider<SyncVaultService>(
 );
 
 /// Provider for the current encrypted sync vault status.
-final syncVaultStatusProvider = FutureProvider<SyncVaultStatus>((ref) {
+final syncVaultStatusProvider = FutureProvider<SyncVaultStatus>((ref) async {
   final service = ref.watch(syncVaultServiceProvider);
-  return service.getStatus();
+  try {
+    return await service.getStatus();
+  } on Object catch (error, stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'sync_vault_service',
+        context: ErrorDescription('while loading encrypted sync vault status'),
+      ),
+    );
+    rethrow;
+  }
 });

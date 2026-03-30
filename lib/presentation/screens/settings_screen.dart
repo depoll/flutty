@@ -758,14 +758,16 @@ class _SyncSection extends ConsumerWidget {
           ),
         ],
       ),
-      error: (error, stackTrace) => Column(
+      error: (error, stackTrace) => const Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionHeader(title: 'Sync'),
+          _SectionHeader(title: 'Sync'),
           ListTile(
-            leading: const Icon(Icons.warning_amber_outlined),
-            title: const Text('Encrypted sync'),
-            subtitle: Text('Could not load sync status: $error'),
+            leading: Icon(Icons.warning_amber_outlined),
+            title: Text('Encrypted sync'),
+            subtitle: Text(
+              'Could not load sync status. Try reopening Settings.',
+            ),
           ),
         ],
       ),

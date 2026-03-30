@@ -386,6 +386,35 @@ void main() {
       expect(find.text('Connect to existing vault'), findsOneWidget);
     });
 
+    testWidgets('shows generic encrypted sync status error message', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            syncVaultStatusProvider.overrideWith(
+              (ref) => Future<SyncVaultStatus>.error(StateError('boom')),
+            ),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('Could not load sync status. Try reopening Settings.'),
+        findsOneWidget,
+      );
+      expect(find.textContaining('boom'), findsNothing);
+    });
+
     testWidgets('has scrollable ListView', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);

@@ -2,6 +2,7 @@
 
 import 'dart:io';
 
+import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -165,6 +166,84 @@ void main() {
         expect(secondSync.outcome, SyncVaultSyncOutcome.noChanges);
       },
     );
+
+    test(
+      'treats duplicate-equivalent references as unchanged across devices',
+      () async {
+        final deviceA = await _createFixture();
+        final deviceB = await _createFixture();
+        addTearDown(deviceA.close);
+        addTearDown(deviceB.close);
+
+        final groupA1 = await _insertGroup(deviceA.db, name: 'Team');
+        final groupA2 = await _insertGroup(deviceA.db, name: 'Team');
+        await _insertHost(
+          deviceA.hostRepository,
+          label: 'Alpha',
+          groupId: groupA1,
+        );
+        await _insertHost(
+          deviceA.hostRepository,
+          label: 'Beta',
+          groupId: groupA2,
+        );
+
+        final groupB1 = await _insertGroup(deviceB.db, name: 'Team');
+        final groupB2 = await _insertGroup(deviceB.db, name: 'Team');
+        await _insertHost(
+          deviceB.hostRepository,
+          label: 'Alpha',
+          groupId: groupB2,
+        );
+        await _insertHost(
+          deviceB.hostRepository,
+          label: 'Beta',
+          groupId: groupB1,
+        );
+
+        final provisioning = await deviceA.syncService.prepareNewVault();
+        final vaultFile = File('${tempDir.path}/duplicate-groups.monkeysync');
+        await vaultFile.writeAsString(provisioning.encryptedVault, flush: true);
+        await deviceA.syncService.enablePreparedVault(
+          vaultPath: vaultFile.path,
+          provisioning: provisioning,
+        );
+
+        await deviceB.syncService.linkExistingVault(
+          vaultPath: vaultFile.path,
+          encryptedVault: await vaultFile.readAsString(),
+          recoveryKey: provisioning.recoveryKey,
+        );
+
+        final syncResult = await deviceB.syncService.syncNow();
+        expect(syncResult.outcome, SyncVaultSyncOutcome.noChanges);
+      },
+    );
+
+    test('rejects cyclic sync snapshot hierarchies', () async {
+      final device = await _createFixture();
+      addTearDown(device.close);
+
+      final parentId = await _insertGroup(device.db, name: 'Parent');
+      final childId = await _insertGroup(device.db, name: 'Child');
+      await (device.db.update(device.db.groups)
+            ..where((tbl) => tbl.id.equals(parentId)))
+          .write(GroupsCompanion(parentId: Value(childId)));
+      await (device.db.update(device.db.groups)
+            ..where((tbl) => tbl.id.equals(childId)))
+          .write(GroupsCompanion(parentId: Value(parentId)));
+
+      await expectLater(
+        device.syncService.prepareNewVault(),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            'Invalid sync snapshot hierarchy',
+          ),
+        ),
+      );
+    });
   });
 }
 
@@ -212,15 +291,20 @@ Future<_SyncFixture> _createFixture() async {
 Future<void> _insertHost(
   HostRepository repository, {
   required String label,
+  int? groupId,
 }) async {
   await repository.insert(
     HostsCompanion.insert(
       label: label,
       hostname: '${label.toLowerCase().replaceAll(' ', '-')}.example.com',
       username: 'root',
+      groupId: Value(groupId),
     ),
   );
 }
+
+Future<int> _insertGroup(AppDatabase db, {required String name}) =>
+    db.into(db.groups).insert(GroupsCompanion.insert(name: name));
 
 class _SyncFixture {
   const _SyncFixture({
