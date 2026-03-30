@@ -2627,7 +2627,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.92),
+                      color: terminalTheme.foreground.withValues(alpha: 0.92),
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: SizedBox(
@@ -2654,9 +2654,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   child: IgnorePointer(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.primary.withValues(
-                          alpha: 0.92,
-                        ),
+                        color: terminalTheme.foreground.withValues(alpha: 0.92),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: SizedBox(
