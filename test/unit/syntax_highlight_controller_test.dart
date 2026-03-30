@@ -178,6 +178,27 @@ void main() {
       );
       expect(span.toPlainText(), 'some text');
     });
+
+    test('falls back to super during active IME composing', () {
+      controller = SyntaxHighlightController(
+        theme: const {'keyword': TextStyle(color: Color(0xFFFF00FF))},
+        text: 'var x = 1;',
+        language: 'dart',
+      );
+
+      // Simulate an active composing range.
+      controller.value = controller.value.copyWith(
+        composing: const TextRange(start: 4, end: 9),
+      );
+
+      final span = controller.buildTextSpan(
+        context: _FakeBuildContext(),
+        withComposing: true,
+      );
+
+      // The plain text should still be intact (handled by super).
+      expect(span.toPlainText(), 'var x = 1;');
+    });
   });
 }
 

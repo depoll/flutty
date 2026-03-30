@@ -48,6 +48,18 @@ class SyntaxHighlightController extends TextEditingController {
   }) {
     final source = text;
 
+    // During active IME composing, fall back to the default controller so
+    // the composing underline decoration is preserved.
+    if (withComposing &&
+        value.composing.isValid &&
+        !value.composing.isCollapsed) {
+      return super.buildTextSpan(
+        context: context,
+        style: style,
+        withComposing: withComposing,
+      );
+    }
+
     // Skip highlighting for empty or oversized text.
     if (source.isEmpty || source.length > syntaxHighlightSizeLimit) {
       return super.buildTextSpan(
