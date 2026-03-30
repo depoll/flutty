@@ -11,7 +11,6 @@ const _minRemoteEditorFontSize = 8.0;
 const _maxRemoteEditorFontSize = 32.0;
 const _remoteEditorFontStep = 1.0;
 const _remoteEditorGutterDigitSlots = 4;
-const _remoteEditorGutterDigitWidthFactor = 0.55;
 const _remoteEditorGutterLeftPadding = 4.0;
 const _remoteEditorGutterRightPadding = 4.0;
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
@@ -510,10 +509,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
   double _resolveGutterWidth(BuildContext context, TextStyle style) {
     final digits = resolveRemoteEditorGutterDigitSlots(_lineCount);
-    final textScaler = MediaQuery.textScalerOf(context);
-    final fontSize = style.fontSize ?? 14;
-    final digitWidth = fontSize * _remoteEditorGutterDigitWidthFactor;
-    return (digitWidth * digits * textScaler.scale(1)) +
+    final painter = TextPainter(
+      text: TextSpan(text: ''.padRight(digits, '8'), style: style),
+      textDirection: Directionality.of(context),
+      textScaler: MediaQuery.textScalerOf(context),
+      maxLines: 1,
+    )..layout();
+    return painter.width +
         _remoteEditorGutterLeftPadding +
         _remoteEditorGutterRightPadding;
   }
