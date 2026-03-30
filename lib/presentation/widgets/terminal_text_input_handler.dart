@@ -76,8 +76,9 @@ class TerminalTextInputHandlerController {
 
   /// Explicitly shows the soft keyboard.
   ///
-  /// This always opens the keyboard regardless of the [tapToShowKeyboard]
-  /// setting and is intended for toolbar buttons or programmatic triggers.
+  /// This always opens the keyboard regardless of the
+  /// [TerminalTextInputHandler.tapToShowKeyboard] setting and is intended for
+  /// toolbar buttons or programmatic triggers.
   void requestKeyboard() {
     _state?.requestKeyboard();
   }
