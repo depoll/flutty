@@ -1,0 +1,20 @@
+title = 'Flutty gitleaks configuration'
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = 'Ignore known false positives in generated Podfile checksums and encryption-key identifier strings.'
+condition = 'AND'
+paths = [
+  '''(?:^|/)(?:ios|macos)/Podfile\.lock$''',
+  '''(?:^|/)lib/data/security/secret_encryption_service\.dart$''',
+  '''(?:^|/)test/unit/secret_encryption_service_test\.dart$''',
+  '''(?:^|/)test/data/repositories/ssh_key_repository_test\.dart$''',
+]
+regexTarget = 'line'
+regexes = [
+  '''^PODFILE CHECKSUM: [0-9a-f]{40}$''',
+  '''flutty_db_(?:encryption|secret)_key_v1''',
+  '''privateKey: 'fixture-(?:open-ssh|rsa|ec)-material(?:-[0-9]+)?\.\.\.',''',
+]

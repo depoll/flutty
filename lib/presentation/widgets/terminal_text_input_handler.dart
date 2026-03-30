@@ -73,6 +73,15 @@ class TerminalTextInputHandlerController {
   void suppressNextTouchKeyboardRequest() {
     _state?._suppressNextTouchKeyboardRequest();
   }
+
+  /// Explicitly shows the soft keyboard.
+  ///
+  /// This always opens the keyboard regardless of the
+  /// [TerminalTextInputHandler.tapToShowKeyboard] setting and is intended for
+  /// toolbar buttons or programmatic triggers.
+  void requestKeyboard() {
+    _state?.requestKeyboard();
+  }
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -99,6 +108,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
     this.readOnly = false,
+    this.tapToShowKeyboard = true,
     super.key,
   });
 
@@ -137,6 +147,12 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Whether input should be suppressed.
   final bool readOnly;
+
+  /// Whether tapping the terminal should show the keyboard.
+  ///
+  /// When `false`, touch taps are ignored for keyboard purposes; the keyboard
+  /// can still be opened via [requestKeyboard] (e.g. from a toolbar button).
+  final bool tapToShowKeyboard;
 
   @override
   State<TerminalTextInputHandler> createState() =>
@@ -179,7 +195,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
     } else if (oldWidget.readOnly && widget.focusNode.hasFocus) {
-      _openInputConnection();
+      _openInputConnection(show: widget.tapToShowKeyboard);
     }
   }
 
@@ -248,11 +264,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
     final shouldSkipKeyboardRequest =
         event.kind == PointerDeviceKind.touch && _skipNextTouchKeyboardRequest;
+    final shouldSkipTapToShow =
+        event.kind == PointerDeviceKind.touch && !widget.tapToShowKeyboard;
     if (event.kind == PointerDeviceKind.touch) {
       _skipNextTouchKeyboardRequest = false;
     }
     _clearPointerTracking(event);
-    if (shouldRequestKeyboard && !shouldSkipKeyboardRequest) {
+    if (shouldRequestKeyboard &&
+        !shouldSkipKeyboardRequest &&
+        !shouldSkipTapToShow) {
       requestKeyboard();
     }
   }
@@ -326,11 +346,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   /// Shows the soft keyboard.
   void requestKeyboard() {
-    if (widget.focusNode.hasFocus) {
-      _openInputConnection();
-    } else {
+    if (!widget.focusNode.hasFocus) {
       widget.focusNode.requestFocus();
     }
+    // Always show — this is an explicit request (e.g. from a toolbar button).
+    _openInputConnection();
   }
 
   /// Hides the soft keyboard.
@@ -350,7 +370,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.focusNode.hasFocus) {
       final consumedKeyboardToken = widget.focusNode.consumeKeyboardToken();
       if (!hasInputConnection || consumedKeyboardToken) {
-        _openInputConnection();
+        // Attach the input connection but only show the soft keyboard when
+        // tap-to-show is enabled.  Explicit keyboard requests go through
+        // requestKeyboard() which always passes show: true.
+        _openInputConnection(show: widget.tapToShowKeyboard);
       }
     } else if (!widget.focusNode.hasFocus) {
       _closeInputConnectionIfNeeded();
@@ -366,11 +389,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _queuedEditingValue = null;
   }
 
-  void _openInputConnection() {
+  void _openInputConnection({bool show = true}) {
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      _connection!.show();
+      if (show) _connection!.show();
     } else {
       final config = TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
@@ -387,7 +410,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       );
 
       _connection = TextInput.attach(this, config);
-      _connection!.show();
+      if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastSentText = '';
@@ -451,9 +474,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   String _extractInputText(String text) {
     final extractedText = _extractRawInputText(text);
-    if (_lastSentText.isNotEmpty) {
-      return extractedText;
-    }
     final sanitizedText = extractedText.replaceFirst(
       _leadingSwipeNewlineArtifactPattern,
       '',
@@ -498,6 +518,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     _lastSentText = currentText;
     return '\n'.allMatches(appendedText).length;
+  }
+
+  void _resetCommittedInputState({int pendingEnterSuppressions = 0}) {
+    _lastSentText = '';
+    _pendingEnterActionSuppressions = pendingEnterSuppressions;
+    _syncEditingStateWithUserText('');
   }
 
   ({int deletedCount, String appendedText}) _computeTextDelta(
@@ -670,8 +696,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       userSelection: userSelection,
       userComposing: userComposing,
     );
+    final hasActiveReplacementSelection =
+        sourceValue != null &&
+        sourceValue.selection.isValid &&
+        !sourceValue.selection.isCollapsed;
     final shouldResyncText =
-        sourceValue == null || sourceValue.text != nextState.text;
+        sourceValue == null ||
+        (sourceValue.text != nextState.text &&
+            !(trimmedLeadingCharacters > 0 && hasActiveReplacementSelection));
     _currentEditingState = nextState;
     if (shouldResyncText && hasInputConnection) {
       _connection!.setEditingState(nextState);
@@ -735,9 +767,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.backspace);
       _sawImeComposition = false;
-      _lastSentText = '';
-      _pendingEnterActionSuppressions = 0;
-      _syncEditingStateWithUserText('');
+      _resetCommittedInputState();
       return;
     }
 
@@ -758,7 +788,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (currentText != _lastSentText) {
       _notifyUserInput();
     }
-    _pendingEnterActionSuppressions += _sendInputDelta(currentText);
+    final newlineCount = _sendInputDelta(currentText);
+    if (newlineCount > 0) {
+      _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
+      _sawImeComposition = false;
+      return;
+    }
     _syncEditingStateWithUserText(currentText, sourceValue: value);
     _sawImeComposition = false;
   }
@@ -774,6 +809,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.enter);
+      _resetCommittedInputState();
+      _sawImeComposition = false;
     }
   }
 
@@ -794,13 +831,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
-    if (!widget.readOnly && widget.focusNode.hasFocus) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && widget.focusNode.hasFocus) {
-          _openInputConnection();
-        }
-      });
-    }
   }
 
   @override

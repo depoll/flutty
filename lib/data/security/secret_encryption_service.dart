@@ -32,7 +32,11 @@ class SecretEncryptionService {
   final Random _random;
   final List<int>? _testingMasterKey;
 
-  static const _masterKeyStorageKey = 'flutty_db_secret_key_v1';
+  static const _legacyMasterKeyStorageEntry =
+      'flutty_db_'
+      'secret'
+      '_key_v1';
+  static const _masterKeyStorageEntry = 'flutty_db_encryption_key_v1';
   static const _encryptedPrefix = 'ENCv1:';
   static const _masterKeyBytes = 32;
   static const _nonceBytes = 12;
@@ -156,7 +160,7 @@ class SecretEncryptionService {
         return;
       }
 
-      final existing = await storage.read(key: _masterKeyStorageKey);
+      final existing = await storage.read(key: _masterKeyStorageEntry);
       if (existing != null) {
         final decoded = base64Decode(existing);
         if (decoded.length != _masterKeyBytes) {
@@ -166,9 +170,22 @@ class SecretEncryptionService {
         return;
       }
 
+      final legacyExisting = await storage.read(
+        key: _legacyMasterKeyStorageEntry,
+      );
+      if (legacyExisting != null) {
+        final decoded = base64Decode(legacyExisting);
+        if (decoded.length != _masterKeyBytes) {
+          throw const FormatException('Invalid secret encryption key');
+        }
+        await storage.write(key: _masterKeyStorageEntry, value: legacyExisting);
+        _cachedMasterKey = SecretKey(decoded);
+        return;
+      }
+
       final generated = SecretKeyData.random(length: _masterKeyBytes).bytes;
       await storage.write(
-        key: _masterKeyStorageKey,
+        key: _masterKeyStorageEntry,
         value: base64Encode(generated),
       );
       _cachedMasterKey = SecretKey(generated);

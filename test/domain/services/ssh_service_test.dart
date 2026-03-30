@@ -132,6 +132,7 @@ class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
 
 class _FakeActiveSessionsSshService extends SshService {
   final Map<int, SshSession> _sessions = {};
+  final Map<int, Completer<void>> _clientDoneCompleters = {};
   int _nextConnectionId = 1;
 
   @override
@@ -143,10 +144,14 @@ class _FakeActiveSessionsSshService extends SshService {
     ConnectionProgressCallback? onProgress,
   }) async {
     final connectionId = _nextConnectionId++;
+    final client = _MockSshClient();
+    final clientDoneCompleter = Completer<void>();
+    _clientDoneCompleters[connectionId] = clientDoneCompleter;
+    when(() => client.done).thenAnswer((_) => clientDoneCompleter.future);
     final session = SshSession(
       connectionId: connectionId,
       hostId: hostId,
-      client: _MockSshClient(),
+      client: client,
       config: SshConnectionConfig(
         hostname: 'host-$hostId.example.com',
         port: 22,
@@ -160,15 +165,24 @@ class _FakeActiveSessionsSshService extends SshService {
   @override
   Future<void> disconnect(int connectionId) async {
     _sessions.remove(connectionId);
+    _clientDoneCompleters.remove(connectionId);
   }
 
   @override
   Future<void> disconnectAll() async {
     _sessions.clear();
+    _clientDoneCompleters.clear();
   }
 
   @override
   SshSession? getSession(int connectionId) => _sessions[connectionId];
+
+  void completeConnection(int connectionId) {
+    final completer = _clientDoneCompleters[connectionId];
+    if (completer != null && !completer.isCompleted) {
+      completer.complete();
+    }
+  }
 }
 
 void main() {
@@ -403,7 +417,7 @@ void main() {
                 keyType: 'ed25519',
                 publicKey: 'ssh-ed25519 AAAA...',
                 privateKey:
-                    '-----BEGIN OPENSSH PRIVATE KEY-----\ntest\n-----END OPENSSH PRIVATE KEY-----',
+                    'test-open-ssh-key-material\ntest\ntest-open-ssh-key-material-end',
                 passphrase: const Value('keypass'),
               ),
             );
@@ -428,7 +442,7 @@ void main() {
 
         expect(config.hostname, '10.0.0.2');
         expect(config.username, 'admin');
-        expect(config.privateKey, contains('BEGIN OPENSSH PRIVATE KEY'));
+        expect(config.privateKey, contains('test-open-ssh-key-material'));
         expect(config.passphrase, 'keypass');
         expect(config.identityKeys, isNull);
       });
@@ -652,6 +666,26 @@ void main() {
       expect(updateCallCount, 2);
       expect(maxConcurrentCalls, 1);
     });
+
+    test('removes sessions that close unexpectedly', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      expect(result.connectionId, isNotNull);
+
+      final connectionId = result.connectionId!;
+      fakeSshService.completeConnection(connectionId);
+      await Future<void>.delayed(Duration.zero);
+      await Future<void>.delayed(Duration.zero);
+
+      expect(notifier.getSession(connectionId), isNull);
+      expect(container.read(activeSessionsProvider)[connectionId], isNull);
+      expect(
+        notifier.getConnectionAttempt(42)?.latestMessage,
+        'Connection closed',
+      );
+    });
   });
 
   group('SshService', () {
@@ -724,7 +758,7 @@ void main() {
           name: 'Auto Key 1',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA...',
-          privateKey: 'private-key-1',
+          privateKey: 'key-material-1',
         ),
       );
       await keyRepo.insert(
@@ -732,7 +766,7 @@ void main() {
           name: 'Auto Key 2',
           keyType: 'rsa',
           publicKey: 'ssh-rsa BBBB...',
-          privateKey: 'private-key-2',
+          privateKey: 'key-material-2',
         ),
       );
       final hostId = await db
@@ -770,7 +804,7 @@ void main() {
             name: 'Auto Key $i',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 KEY$i',
-            privateKey: 'private-key-$i',
+            privateKey: 'key-material-$i',
           ),
         );
       }
@@ -835,7 +869,7 @@ void main() {
             name: 'Auto Key 1',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAA...',
-            privateKey: 'private-key-1',
+            privateKey: 'key-material-1',
           ),
         );
         await keyRepo.insert(
@@ -843,7 +877,7 @@ void main() {
             name: 'Auto Key 2',
             keyType: 'rsa',
             publicKey: 'ssh-rsa BBBB...',
-            privateKey: 'private-key-2',
+            privateKey: 'key-material-2',
           ),
         );
 
@@ -874,7 +908,7 @@ void main() {
           name: 'Selected Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 CCCC...',
-          privateKey: 'selected-private-key',
+          privateKey: 'selected-key-material',
         ),
       );
       await keyRepo.insert(
@@ -882,7 +916,7 @@ void main() {
           name: 'Other Key',
           keyType: 'rsa',
           publicKey: 'ssh-rsa DDDD...',
-          privateKey: 'other-private-key',
+          privateKey: 'other-key-material',
         ),
       );
       final hostId = await db
@@ -900,7 +934,7 @@ void main() {
 
       final config = service.capturedConfig;
       expect(config, isNotNull);
-      expect(config!.privateKey, 'selected-private-key');
+      expect(config!.privateKey, 'selected-key-material');
       expect(config.identityKeys, isNull);
     });
 
@@ -926,7 +960,7 @@ void main() {
             name: 'Selected Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 CCCC...',
-            privateKey: 'selected-private-key',
+            privateKey: 'selected-key-material',
           ),
         );
         await keyRepo.insert(
@@ -934,7 +968,7 @@ void main() {
             name: 'Auto Key',
             keyType: 'rsa',
             publicKey: 'ssh-rsa DDDD...',
-            privateKey: 'auto-private-key',
+            privateKey: 'auto-key-material',
           ),
         );
         final hostId = await db
@@ -979,7 +1013,7 @@ void main() {
             name: 'Selected Jump Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 EEEE...',
-            privateKey: 'selected-jump-private-key',
+            privateKey: 'selected-jump-key-material',
           ),
         );
         await keyRepo.insert(
@@ -987,7 +1021,7 @@ void main() {
             name: 'Auto Key',
             keyType: 'rsa',
             publicKey: 'ssh-rsa FFFF...',
-            privateKey: 'auto-private-key',
+            privateKey: 'auto-key-material',
           ),
         );
         final jumpHostId = await db
@@ -1037,7 +1071,7 @@ void main() {
           name: 'Unused Auto Key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 EEEE...',
-          privateKey: 'unused-private-key',
+          privateKey: 'unused-key-material',
         ),
       );
       final hostId = await hostRepo.insert(

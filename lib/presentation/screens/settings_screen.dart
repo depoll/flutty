@@ -1,12 +1,16 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
+import '../../app/app_metadata.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/ssh_service.dart';
 import '../../domain/services/sync_vault_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -323,6 +327,12 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final terminalPathLinks = ref.watch(terminalPathLinksNotifierProvider);
+    final terminalPathLinkUnderlines = ref.watch(
+      terminalPathLinkUnderlinesNotifierProvider,
+    );
+    final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
+    final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
 
     final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
@@ -371,6 +381,64 @@ class _TerminalSection extends ConsumerWidget {
             ref
                 .read(bellSoundNotifierProvider.notifier)
                 .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.folder_open_outlined),
+          title: const Text('Clickable file paths'),
+          subtitle: const Text('Tap terminal file paths to open them in SFTP'),
+          value: terminalPathLinks,
+          onChanged: (value) {
+            ref
+                .read(terminalPathLinksNotifierProvider.notifier)
+                .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.format_underline),
+          title: const Text('Path link underlines'),
+          subtitle: const Text('Underline clickable terminal file paths'),
+          value: terminalPathLinks && terminalPathLinkUnderlines,
+          onChanged: terminalPathLinks
+              ? (value) {
+                  ref
+                      .read(terminalPathLinkUnderlinesNotifierProvider.notifier)
+                      .setEnabled(enabled: value);
+                }
+              : null,
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.content_paste_go_outlined),
+          title: const Text('Shared clipboard'),
+          subtitle: const Text(
+            'Sync clipboard between local and remote using OSC 52 and remote clipboard tools when available',
+          ),
+          value: sharedClipboard,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(sharedClipboardNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+            ref
+                .read(activeSessionsProvider.notifier)
+                .updateClipboardSharing(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.keyboard_outlined),
+          title: const Text('Tap to show keyboard'),
+          subtitle: const Text(
+            'Show the keyboard when tapping the terminal. '
+            'When off, use the toolbar button instead.',
+          ),
+          value: tapToShowKeyboard,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(tapToShowKeyboardNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
           },
         ),
       ],
@@ -1199,36 +1267,53 @@ class _SyncSection extends ConsumerWidget {
   }
 }
 
-class _AboutSection extends StatelessWidget {
+class _AboutSection extends ConsumerWidget {
   const _AboutSection();
 
   @override
-  Widget build(BuildContext context) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      const _SectionHeader(title: 'About'),
-      const ListTile(
-        leading: Icon(Icons.info_outline),
-        title: Text('App version'),
-        subtitle: Text('0.1.0'),
-      ),
-      ListTile(
-        leading: const Icon(Icons.code),
-        title: const Text('GitHub'),
-        subtitle: const Text('View source code'),
-        onTap: () => _showGitHubInfo(context),
-      ),
-      ListTile(
-        leading: const Icon(Icons.description_outlined),
-        title: const Text('Licenses'),
-        subtitle: const Text('Open source licenses'),
-        onTap: () => showLicensePage(
-          context: context,
-          applicationName: 'MonkeySSH',
-          applicationVersion: '0.1.0',
+  Widget build(BuildContext context, WidgetRef ref) {
+    final appMetadata = ref.watch(appMetadataProvider);
+    final previewBuildLabel = appMetadata.asData?.value.pullRequestLabel;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(title: 'About'),
+        ListTile(
+          leading: const Icon(Icons.info_outline),
+          title: const Text('App version'),
+          subtitle: Text(_versionLabel(appMetadata)),
         ),
-      ),
-    ],
+        if (previewBuildLabel != null)
+          ListTile(
+            leading: const Icon(Icons.merge_type_outlined),
+            title: const Text('Preview build'),
+            subtitle: Text(previewBuildLabel),
+          ),
+        ListTile(
+          leading: const Icon(Icons.code),
+          title: const Text('GitHub'),
+          subtitle: const Text('View source code'),
+          onTap: () => _showGitHubInfo(context),
+        ),
+        ListTile(
+          leading: const Icon(Icons.description_outlined),
+          title: const Text('Licenses'),
+          subtitle: const Text('Open source licenses'),
+          onTap: () => showLicensePage(
+            context: context,
+            applicationName: 'MonkeySSH',
+            applicationVersion: _versionLabel(appMetadata),
+          ),
+        ),
+      ],
+    );
+  }
+
+  String _versionLabel(AsyncValue<AppMetadata> appMetadata) => appMetadata.when(
+    data: (value) => value.versionLabel,
+    loading: () => 'Loading...',
+    error: (_, _) => 'Unavailable',
   );
 
   void _showGitHubInfo(BuildContext context) {
@@ -1379,6 +1464,8 @@ class _MigrationSection extends ConsumerWidget {
         ..invalidate(fontFamilyNotifierProvider)
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
+        ..invalidate(sharedClipboardNotifierProvider)
+        ..invalidate(sharedClipboardProvider)
         ..invalidate(terminalThemeSettingsProvider);
       invalidateImportedEntityProviders(ref.invalidate);
 

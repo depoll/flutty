@@ -2,7 +2,6 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -14,6 +13,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
@@ -1449,42 +1449,8 @@ Future<String?> showFontPickerDialog({
   );
 }
 
-TextStyle _getFontStyle(String family) {
-  switch (family) {
-    case 'JetBrains Mono':
-      return GoogleFonts.jetBrainsMono(fontSize: 14);
-    case 'Fira Code':
-      return GoogleFonts.firaCode(fontSize: 14);
-    case 'Source Code Pro':
-      return GoogleFonts.sourceCodePro(fontSize: 14);
-    case 'Ubuntu Mono':
-      return GoogleFonts.ubuntuMono(fontSize: 14);
-    case 'Roboto Mono':
-      return GoogleFonts.robotoMono(fontSize: 14);
-    case 'IBM Plex Mono':
-      return GoogleFonts.ibmPlexMono(fontSize: 14);
-    case 'Inconsolata':
-      return GoogleFonts.inconsolata(fontSize: 14);
-    case 'Anonymous Pro':
-      return GoogleFonts.anonymousPro(fontSize: 14);
-    case 'Cousine':
-      return GoogleFonts.cousine(fontSize: 14);
-    case 'PT Mono':
-      return GoogleFonts.ptMono(fontSize: 14);
-    case 'Space Mono':
-      return GoogleFonts.spaceMono(fontSize: 14);
-    case 'VT323':
-      return GoogleFonts.vt323(fontSize: 14);
-    case 'Share Tech Mono':
-      return GoogleFonts.shareTechMono(fontSize: 14);
-    case 'Overpass Mono':
-      return GoogleFonts.overpassMono(fontSize: 14);
-    case 'Oxygen Mono':
-      return GoogleFonts.oxygenMono(fontSize: 14);
-    default:
-      return const TextStyle(fontFamily: 'monospace', fontSize: 14);
-  }
-}
+TextStyle _getFontStyle(String family) =>
+    resolveMonospaceTextStyle(family, fontSize: 14);
 
 /// A tile displaying a single port forward with edit/delete actions.
 class _PortForwardTile extends StatelessWidget {

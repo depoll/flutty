@@ -32,6 +32,9 @@ dependencies:
   # Terminal
   xterm: ^4.0.0
   
+  # Syntax highlighting
+  highlight: ^0.7.0
+  
   # Secure storage
   flutter_secure_storage: ^10.0.0
   
@@ -58,6 +61,7 @@ dependencies:
   json_annotation: ^4.11.0
   pasteboard: ^0.5.0
   url_launcher: ^6.3.2
+  package_info_plus: ^9.0.0
 
 dev_dependencies:
   flutter_test:

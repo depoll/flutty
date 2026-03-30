@@ -28,6 +28,7 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     this.onTouchScrollStart,
     this.onTouchScrollUpdate,
     this.onDoubleTapDown,
+    this.shouldBypassDoubleTap,
   });
 
   final Widget? child;
@@ -45,6 +46,10 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   final GestureTapUpCallback? onSecondaryTapUp;
 
   final GestureTapDownCallback? onDoubleTapDown;
+
+  /// Returns true when the current tap should not be treated as part of a
+  /// double tap gesture even if it falls within the standard slop window.
+  final bool Function()? shouldBypassDoubleTap;
 
   final GestureTapDownCallback? onTertiaryTapDown;
 
@@ -83,6 +88,11 @@ class _MonkeyTerminalGestureDetectorState
   // run before a long press success.
   void _handleTapDown(TapDownDetails details) {
     widget.onTapDown?.call(details);
+    final shouldBypassDoubleTap = widget.shouldBypassDoubleTap?.call() ?? false;
+    if (shouldBypassDoubleTap) {
+      _clearDoubleTapState();
+      return;
+    }
 
     if (_doubleTapTimer != null &&
         _isWithinDoubleTapTolerance(details.globalPosition)) {
@@ -100,8 +110,16 @@ class _MonkeyTerminalGestureDetectorState
     if (!_isDoubleTap) {
       widget.onSingleTapUp?.call(details);
       _lastTapOffset = details.globalPosition;
+      _doubleTapTimer?.cancel();
       _doubleTapTimer = Timer(kDoubleTapTimeout, _doubleTapTimeout);
     }
+    _isDoubleTap = false;
+  }
+
+  void _clearDoubleTapState() {
+    _doubleTapTimer?.cancel();
+    _doubleTapTimer = null;
+    _lastTapOffset = null;
     _isDoubleTap = false;
   }
 
@@ -117,6 +135,12 @@ class _MonkeyTerminalGestureDetectorState
 
     final difference = secondTapOffset - _lastTapOffset!;
     return difference.distance <= kDoubleTapSlop;
+  }
+
+  @override
+  void dispose() {
+    _doubleTapTimer?.cancel();
+    super.dispose();
   }
 
   @override

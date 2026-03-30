@@ -34,6 +34,12 @@ abstract final class SettingKeys {
   /// Terminal bell sound enabled.
   static const bellSound = 'bell_sound';
 
+  /// Enable tapping terminal file paths to open SFTP.
+  static const terminalPathLinks = 'terminal_path_links';
+
+  /// Show underlines for clickable terminal file paths.
+  static const terminalPathLinkUnderlines = 'terminal_path_link_badges';
+
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
 
@@ -72,6 +78,17 @@ abstract final class SettingKeys {
 
   /// Stable identifier for this device in encrypted sync metadata.
   static const syncVaultDeviceId = 'sync_vault_device_id';
+
+  /// Enable shared clipboard between device and remote session.
+  ///
+  /// The terminal can sync through OSC 52 and remote clipboard utilities when
+  /// the remote host provides them.
+  static const sharedClipboard = 'shared_clipboard';
+
+  /// Whether tapping the terminal automatically shows the keyboard.
+  ///
+  /// When disabled, the keyboard can only be toggled via the toolbar button.
+  static const tapToShowKeyboard = 'tap_to_show_keyboard';
 }
 
 /// Service for managing app settings.
@@ -440,6 +457,79 @@ final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
 
+/// Notifier for terminal file path links with write capability.
+class TerminalPathLinksNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalPathLinks,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal file path linking.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.terminalPathLinks, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal file path links with write capability.
+final terminalPathLinksNotifierProvider =
+    NotifierProvider<TerminalPathLinksNotifier, bool>(
+      TerminalPathLinksNotifier.new,
+    );
+
+/// Notifier for terminal file path underlines with write capability.
+class TerminalPathLinkUnderlinesNotifier extends Notifier<bool> {
+  late final SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalPathLinkUnderlines,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal file path underlines.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(
+      SettingKeys.terminalPathLinkUnderlines,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for terminal file path underlines with write capability.
+final terminalPathLinkUnderlinesNotifierProvider =
+    NotifierProvider<TerminalPathLinkUnderlinesNotifier, bool>(
+      TerminalPathLinkUnderlinesNotifier.new,
+    );
+
 /// State for terminal theme settings (light and dark).
 class TerminalThemeSettings {
   /// Creates a new [TerminalThemeSettings].
@@ -509,4 +599,79 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
 final terminalThemeSettingsProvider =
     NotifierProvider<TerminalThemeSettingsNotifier, TerminalThemeSettings>(
       TerminalThemeSettingsNotifier.new,
+    );
+
+/// Provider for shared clipboard setting.
+final sharedClipboardProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(SettingKeys.sharedClipboard);
+});
+
+/// Notifier for shared clipboard (OSC 52) with write capability.
+class SharedClipboardNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return false;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(SettingKeys.sharedClipboard);
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set shared clipboard enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.sharedClipboard, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for shared clipboard setting with write capability.
+final sharedClipboardNotifierProvider =
+    NotifierProvider<SharedClipboardNotifier, bool>(
+      SharedClipboardNotifier.new,
+    );
+
+/// Notifier for tap-to-show-keyboard with write capability.
+class TapToShowKeyboardNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.tapToShowKeyboard,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set tap-to-show-keyboard enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.tapToShowKeyboard, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for tap-to-show-keyboard setting with write capability.
+final tapToShowKeyboardNotifierProvider =
+    NotifierProvider<TapToShowKeyboardNotifier, bool>(
+      TapToShowKeyboardNotifier.new,
     );

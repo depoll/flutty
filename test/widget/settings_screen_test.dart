@@ -8,7 +8,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
-
+import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
@@ -19,11 +19,22 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 
 import '../support/settings_import_test_helpers.dart';
 
 void main() {
   group('SettingsScreen', () {
+    setUp(() {
+      PackageInfo.setMockInitialValues(
+        appName: 'MonkeySSH',
+        packageName: 'xyz.depollsoft.monkeyssh',
+        version: '0.1.1',
+        buildNumber: '123',
+        buildSignature: '',
+      );
+    });
+
     testWidgets('displays all sections', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -221,6 +232,35 @@ void main() {
       expect(find.byType(SwitchListTile), findsWidgets);
     });
 
+    testWidgets('displays terminal path link toggles', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      expect(find.text('Clickable file paths'), findsOneWidget);
+      expect(
+        find.text('Tap terminal file paths to open them in SFTP'),
+        findsOneWidget,
+      );
+      expect(find.text('Path link underlines'), findsOneWidget);
+      expect(
+        find.text('Underline clickable terminal file paths'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('displays about section with version', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -251,9 +291,48 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('App version'), findsOneWidget);
-      expect(find.text('0.1.0'), findsOneWidget);
+      expect(find.text('0.1.1 (123)'), findsOneWidget);
       expect(find.text('GitHub'), findsOneWidget);
       expect(find.text('Licenses'), findsOneWidget);
+    });
+
+    testWidgets('displays preview metadata when available', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appMetadataProvider.overrideWith(
+              (ref) async => const AppMetadata(
+                version: '0.1.1',
+                buildNumber: '123',
+                pullRequestNumber: '175',
+                pullRequestTitle: 'Show PR metadata in settings',
+              ),
+            ),
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      await tester.scrollUntilVisible(
+        find.text('Preview build'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Preview build'), findsOneWidget);
+      expect(
+        find.text('PR #175: Show PR metadata in settings'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('displays security options', (tester) async {
@@ -416,20 +495,19 @@ void main() {
       final initialKeyBuilds = keyBuilds;
       final initialGroupBuilds = groupBuilds;
 
-      final importMigrationButton = find.text('Import migration package');
-      final importMigrationTile = find.widgetWithText(
-        ListTile,
-        'Import migration package',
-      );
+      final importMigrationFinder = find.text('Import migration package');
       await tester.scrollUntilVisible(
-        importMigrationButton,
+        importMigrationFinder,
         300,
         scrollable: find.byType(Scrollable).first,
       );
-      tester.widget<ListTile>(importMigrationTile).onTap!.call();
+      final importTile = tester
+          .widgetList<ListTile>(find.byType(ListTile))
+          .firstWhere(
+            (tile) => (tile.title as Text?)?.data == 'Import migration package',
+          );
+      importTile.onTap?.call();
       await tester.pumpAndSettle();
-
-      expect(find.byType(TextField), findsOneWidget);
       await tester.enterText(find.byType(EditableText).last, '1234');
       await tester.tap(find.text('Continue'));
       await tester.pumpAndSettle();

@@ -13,6 +13,7 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import 'background_ssh_service.dart';
+import 'clipboard_sharing_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'terminal_hyperlink_tracker.dart';
@@ -376,6 +377,9 @@ class SshService {
 
   /// Get all active sessions.
   Map<int, SshSession> get sessions => Map.unmodifiable(_sessions);
+
+  /// All active session instances.
+  Iterable<SshSession> get allSessions => _sessions.values;
 
   /// Connect to a host by ID.
   Future<SshConnectionResult> connectToHost(
@@ -1056,6 +1060,7 @@ class SshSession {
     this.terminalThemeLightId,
     this.terminalThemeDarkId,
     this.terminalFontSize,
+    this.clipboardSharingEnabled = false,
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
@@ -1088,8 +1093,14 @@ class SshSession {
   /// Session-specific terminal font size override.
   double? terminalFontSize;
 
+  /// Whether OSC 52 clipboard sharing is enabled for this session.
+  bool clipboardSharingEnabled;
+
   /// When the session was created.
   final DateTime createdAt;
+
+  final ClipboardSharingService _clipboardSharingService =
+      const ClipboardSharingService();
 
   SSHSession? _shell;
   StreamController<String>? _shellStdoutController;
@@ -1337,6 +1348,11 @@ class SshSession {
       return;
     }
 
+    if (code == ClipboardSharingService.oscCode) {
+      _handleOsc52(args);
+      return;
+    }
+
     if (code == '133') {
       final nextShellState = applyTerminalShellIntegrationOsc(
         args,
@@ -1351,6 +1367,24 @@ class SshSession {
       _lastExitCode = nextShellState.lastExitCode;
       _notifyMetadataChanged();
     }
+  }
+
+  void _handleOsc52(List<String> args) {
+    if (!clipboardSharingEnabled) return;
+
+    unawaited(
+      _clipboardSharingService
+          .handleOsc52(args)
+          .then((response) {
+            if (response != null && _shell != null) {
+              _shell!.write(utf8.encode(response));
+            }
+          })
+          .catchError((Object error, StackTrace stackTrace) {
+            debugPrint('Error handling OSC 52 sequence: $error');
+            debugPrint('$stackTrace');
+          }),
+    );
   }
 
   /// Builds a compact plain-text preview from the terminal scrollback.
@@ -1723,6 +1757,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   late final SshService _sshService;
   final Map<int, int> _connectionHostIds = {};
   final Map<int, ConnectionAttemptStatus> _connectionAttempts = {};
+  final Map<int, StreamSubscription<void>> _disconnectSubscriptions = {};
   Timer? _previewStateRefreshTimer;
   bool _previewStateRefreshQueued = false;
   Future<void> _backgroundStatusSyncQueue = Future<void>.value();
@@ -1730,7 +1765,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   @override
   Map<int, SshConnectionState> build() {
     _sshService = ref.watch(sshServiceProvider);
-    ref.onDispose(() => _previewStateRefreshTimer?.cancel());
+    ref.onDispose(() {
+      _previewStateRefreshTimer?.cancel();
+      for (final subscription in _disconnectSubscriptions.values) {
+        unawaited(subscription.cancel());
+      }
+      _disconnectSubscriptions.clear();
+    });
     _connectionHostIds.clear();
     _connectionAttempts.clear();
     return {};
@@ -1772,7 +1813,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       _connectionHostIds[connectionId] = hostId;
       final session = _sshService.getSession(connectionId);
       if (session != null) {
-        _attachSessionPreviewListener(session);
+        _attachSessionListeners(session);
       }
       state = {...state, connectionId: SshConnectionState.connected};
       _updateConnectionAttempt(
@@ -1798,9 +1839,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
-    _sshService
-        .getSession(connectionId)
-        ?.removePreviewListener(_schedulePreviewStateRefresh);
+    _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
     final next = {...state}..remove(connectionId);
@@ -1811,7 +1850,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
     for (final session in _sshService.sessions.values) {
-      session.removePreviewListener(_schedulePreviewStateRefresh);
+      _detachSessionListeners(session.connectionId, session: session);
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
@@ -1930,10 +1969,42 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
   }
 
-  void _attachSessionPreviewListener(SshSession session) {
+  void _attachSessionListeners(SshSession session) {
     session
       ..removePreviewListener(_schedulePreviewStateRefresh)
       ..addPreviewListener(_schedulePreviewStateRefresh);
+    final existingSubscription = _disconnectSubscriptions.remove(
+      session.connectionId,
+    );
+    if (existingSubscription != null) {
+      unawaited(existingSubscription.cancel());
+    }
+    _disconnectSubscriptions[session.connectionId] = session.client.done
+        .asStream()
+        .listen(
+          (_) => unawaited(
+            handleUnexpectedDisconnect(
+              session.connectionId,
+              message: 'Connection closed',
+            ),
+          ),
+          onError: (Object error, StackTrace _) => unawaited(
+            handleUnexpectedDisconnect(
+              session.connectionId,
+              message: 'Connection lost: $error',
+            ),
+          ),
+        );
+  }
+
+  void _detachSessionListeners(int connectionId, {SshSession? session}) {
+    (session ?? _sshService.getSession(connectionId))?.removePreviewListener(
+      _schedulePreviewStateRefresh,
+    );
+    final subscription = _disconnectSubscriptions.remove(connectionId);
+    if (subscription != null) {
+      unawaited(subscription.cancel());
+    }
   }
 
   void _schedulePreviewStateRefresh() {
@@ -1986,6 +2057,30 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     );
   }
 
+  /// Remove a connection that closed outside the normal user disconnect path.
+  Future<void> handleUnexpectedDisconnect(
+    int connectionId, {
+    required String message,
+  }) async {
+    final hostId = _connectionHostIds[connectionId];
+    final session = _sshService.getSession(connectionId);
+    if (hostId == null && session == null && !state.containsKey(connectionId)) {
+      return;
+    }
+
+    _detachSessionListeners(connectionId, session: session);
+    await _sshService.disconnect(connectionId);
+    _connectionHostIds.remove(connectionId);
+    final next = {...state}..remove(connectionId);
+    state = next;
+    if (hostId != null) {
+      reportConnectionAttemptError(hostId, message);
+    } else {
+      state = {...state};
+    }
+    await _queueBackgroundStatusSync();
+  }
+
   /// Update the session-specific terminal theme for an active connection.
   void updateSessionTheme(
     int connectionId,
@@ -2008,6 +2103,13 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     session.terminalFontSize = fontSize;
     state = {...state};
+  }
+
+  /// Update clipboard sharing on all active sessions.
+  void updateClipboardSharing({required bool enabled}) {
+    for (final session in _sshService.allSessions) {
+      session.clipboardSharingEnabled = enabled;
+    }
   }
 
   Future<void> _syncBackgroundStatus() async {

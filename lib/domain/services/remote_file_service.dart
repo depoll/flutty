@@ -17,6 +17,72 @@ String joinRemotePath(String directory, String name) {
   return normalized.startsWith('/') ? normalized : '/$normalized';
 }
 
+/// Normalizes an absolute remote path by collapsing `.`, `..`, and extra `/`.
+String? normalizeSftpAbsolutePath(String? path) {
+  final trimmedPath = path?.trim();
+  if (trimmedPath == null ||
+      trimmedPath.isEmpty ||
+      !trimmedPath.startsWith('/')) {
+    return null;
+  }
+
+  final segments = <String>[];
+  for (final segment in trimmedPath.split('/')) {
+    if (segment.isEmpty || segment == '.') {
+      continue;
+    }
+    if (segment == '..') {
+      if (segments.isNotEmpty) {
+        segments.removeLast();
+      }
+      continue;
+    }
+    segments.add(segment);
+  }
+
+  return segments.isEmpty ? '/' : '/${segments.join('/')}';
+}
+
+/// Resolves a requested SFTP path against terminal context.
+String? resolveRequestedSftpPath(
+  String? requestedPath, {
+  String? workingDirectory,
+  String? homeDirectory,
+}) {
+  final trimmedPath = requestedPath?.trim();
+  if (trimmedPath == null || trimmedPath.isEmpty) {
+    return null;
+  }
+
+  if (trimmedPath.startsWith('/')) {
+    return normalizeSftpAbsolutePath(trimmedPath);
+  }
+
+  if (trimmedPath == '~' || trimmedPath.startsWith('~/')) {
+    final normalizedHomeDirectory = normalizeSftpAbsolutePath(homeDirectory);
+    if (normalizedHomeDirectory == null) {
+      return null;
+    }
+    if (trimmedPath == '~') {
+      return normalizedHomeDirectory;
+    }
+    return normalizeSftpAbsolutePath(
+      joinRemotePath(normalizedHomeDirectory, trimmedPath.substring(2)),
+    );
+  }
+
+  final normalizedWorkingDirectory = normalizeSftpAbsolutePath(
+    workingDirectory,
+  );
+  if (normalizedWorkingDirectory == null) {
+    return null;
+  }
+
+  return normalizeSftpAbsolutePath(
+    joinRemotePath(normalizedWorkingDirectory, trimmedPath),
+  );
+}
+
 /// Sanitizes a filename for remote uploads.
 String sanitizeRemoteUploadFileName(String name) {
   final sanitized = path

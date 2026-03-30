@@ -157,6 +157,44 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('drops a leading swipe space after a committed newline', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho hi\n',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+      await tester.pump();
+
+      await _commitSwipeText(tester, '$_deleteDetectionMarker next');
+
+      expect(terminalOutput.join(), 'echo hi\nnext');
+
+      focusNode.dispose();
+    });
+
     testWidgets(
       'preserves the swipe separator after an input reset when text already exists',
       (tester) async {
@@ -526,6 +564,139 @@ void main() {
     );
 
     testWidgets(
+      'trims a stray leading space when replacing a word after deleting a later word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker the ');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'does not force-resync the IME while trimming a replacement-space artifact',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B the ',
+            selection: TextSelection.collapsed(offset: 7),
+            composing: TextRange(start: 2, end: 7),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B the ',
+            selection: TextSelection(baseOffset: 3, extentOffset: 6),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'the ');
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'preserves replacement text after a later word delete drops part of the marker',
       (tester) async {
         final terminalOutput = <String>[];
@@ -778,6 +949,47 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'does not reopen the keyboard when the platform closes it while focused',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+        addTearDown(focusNode.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        tester.testTextInput.log.clear();
+        (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
+            .connectionClosed();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {
@@ -861,6 +1073,138 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'does not open the keyboard after a touch tap when tapToShowKeyboard '
+      'is false',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        // The handler uses autofocus: true, which triggers _onFocusChange.
+        // With tapToShowKeyboard off, the connection is attached but not shown.
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        await tester.tapAt(target);
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('does not reopen the keyboard on focus restoration when '
+        'tapToShowKeyboard is false', (tester) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+      final outerFocusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                Focus(
+                  focusNode: outerFocusNode,
+                  child: const SizedBox(
+                    width: 50,
+                    height: 50,
+                    key: ValueKey('other'),
+                  ),
+                ),
+                Expanded(
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    deleteDetection: true,
+                    tapToShowKeyboard: false,
+                    child: const SizedBox.expand(
+                      key: ValueKey('terminal-child'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      // Move focus away from the terminal.
+      outerFocusNode.requestFocus();
+      await tester.pump();
+      expect(focusNode.hasFocus, isFalse);
+
+      // Restore focus to the terminal (simulates popup menu close or
+      // programmatic focus restore).  Keyboard must stay hidden.
+      focusNode.requestFocus();
+      await tester.pump();
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+      outerFocusNode.dispose();
+    });
+
+    testWidgets(
+      'requestKeyboard still shows keyboard when tapToShowKeyboard is false',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        // Explicit requestKeyboard (the toolbar button path) must always work.
+        controller.requestKeyboard();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        focusNode.dispose();
+      },
+    );
 
     testWidgets('does not open the keyboard after a suppressed touch tap', (
       tester,
