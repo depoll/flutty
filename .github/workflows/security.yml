@@ -339,7 +339,7 @@ jobs:
 
       - name: Upload Gitleaks SARIF to code scanning
         if: always() && hashFiles('gitleaks.sarif') != '' && (github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository)
-        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
+        uses: github/codeql-action/upload-sarif@0e9f55954318745b37b7933c693bc093f7336125 # v4.35.1
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
@@ -381,7 +381,7 @@ jobs:
       - name: Run OSV scanner
         id: osv-scan
         continue-on-error: true
-        uses: google/osv-scanner-action/osv-scanner-action@c5996e0193a3df57d695c1b8a1dec2a4c62e8730 # v2.3.3
+        uses: google/osv-scanner-action/osv-scanner-action@c51854704019a247608d928f370c98740469d4b5 # v2.3.5
         with:
           scan-args: |-
             --recursive
@@ -391,7 +391,7 @@ jobs:
 
       - name: Upload OSV SARIF to code scanning
         if: always() && hashFiles('results.sarif') != ''
-        uses: github/codeql-action/upload-sarif@38697555549f1db7851b81482ff19f1fa5c4fedc # v4
+        uses: github/codeql-action/upload-sarif@0e9f55954318745b37b7933c693bc093f7336125 # v4.35.1
         with:
           sarif_file: results.sarif
           category: osv-scan
