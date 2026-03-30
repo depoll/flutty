@@ -34,9 +34,9 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
-import '../widgets/monospace_text_style.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
+import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 
 const _minTerminalFontSize = 8.0;
@@ -2795,7 +2795,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ),
   );
 
-  /// Gets the terminal text style for the given font family using Google Fonts.
+  /// Resolves the terminal text style for the given font family and size.
   TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
     final textStyle = resolveMonospaceTextStyle(
       fontFamily,
@@ -4152,6 +4152,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       try {
         final verifiedPath = await _resolveVerifiedTerminalFilePath(
           terminalPath,
+          showErrors: false,
         );
         if (!mounted || verifiedPath == null) {
           return;
@@ -4163,7 +4164,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }());
   }
 
-  Future<String?> _resolveVerifiedTerminalFilePath(String terminalPath) async {
+  Future<String?> _resolveVerifiedTerminalFilePath(
+    String terminalPath, {
+    bool showErrors = true,
+  }) async {
     _syncVerifiedTerminalPathCacheScope();
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
@@ -4174,7 +4178,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final session = _activeSession();
     final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
     if (session == null) {
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
       }
       return null;
@@ -4195,7 +4199,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         homeDirectory: homeDirectory,
       );
       if (resolvedPath == null) {
-        if (isExplicitPath) {
+        if (showErrors && isExplicitPath) {
           _showTerminalLinkMessage(
             'Could not open "$terminalPath" in SFTP: path does not exist',
           );
@@ -4207,12 +4211,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _cacheVerifiedTerminalPath(cacheKey, resolvedPath);
       return resolvedPath;
     } on TimeoutException {
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
       }
       return null;
     } on SftpStatusError catch (error) {
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         final message = error.code == SftpStatusCode.noSuchFile
             ? 'Could not open "$terminalPath" in SFTP: path does not exist'
             : 'Could not open "$terminalPath" in SFTP';
@@ -4224,7 +4228,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'Failed to resolve terminal file path "$terminalPath": $error',
       );
       debugPrint('$stackTrace');
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
       }
       return null;

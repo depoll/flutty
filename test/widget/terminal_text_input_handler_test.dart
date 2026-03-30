@@ -954,6 +954,7 @@ void main() {
       (tester) async {
         final terminal = Terminal();
         final focusNode = FocusNode();
+        addTearDown(focusNode.dispose);
 
         await tester.pumpWidget(
           MaterialApp(

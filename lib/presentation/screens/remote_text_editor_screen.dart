@@ -3,8 +3,8 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../domain/models/terminal_theme.dart';
-import '../widgets/monospace_text_style.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
+import '../widgets/terminal_text_style.dart';
 
 const _unwrappedEditorTrailingSlack = 24.0;
 const _minRemoteEditorFontSize = 8.0;

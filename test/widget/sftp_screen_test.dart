@@ -17,6 +17,22 @@ void main() {
     });
   });
 
+  group('remote editor zoom helpers', () {
+    test('clamps remote editor font size to the supported range', () {
+      expect(clampRemoteEditorFontSize(2), 8);
+      expect(clampRemoteEditorFontSize(18), 18);
+      expect(clampRemoteEditorFontSize(64), 32);
+    });
+
+    test(
+      'applies pinch scale deltas safely when previous scale is nonpositive',
+      () {
+        expect(applyRemoteEditorScaleDelta(16, 0, 2), 32);
+        expect(applyRemoteEditorScaleDelta(16, -1, 0.5), 8);
+      },
+    );
+  });
+
   group('resolveUnwrappedEditorSelectionScrollOffset', () {
     test('scrolls right when the caret moves beyond the viewport', () {
       expect(
