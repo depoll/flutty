@@ -510,7 +510,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   double _resolveGutterWidth(BuildContext context, TextStyle style) {
     final digits = resolveRemoteEditorGutterDigitSlots(_lineCount);
     final painter = TextPainter(
-      text: TextSpan(text: '8' * digits, style: style),
+      text: TextSpan(text: ''.padRight(digits, '8'), style: style),
       textDirection: Directionality.of(context),
       textScaler: MediaQuery.textScalerOf(context),
       maxLines: 1,
