@@ -2208,6 +2208,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         : 'Show Terminal Info',
                   ),
                 ),
+              if (isMobile)
+                CheckedPopupMenuItem(
+                  value: 'toggle_tap_keyboard',
+                  checked: ref.read(tapToShowKeyboardNotifierProvider),
+                  child: const Text('Tap to Show Keyboard'),
+                ),
               const PopupMenuDivider(),
               if (!isMobile)
                 PopupMenuItem(
@@ -2871,6 +2877,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
+        break;
+      case 'toggle_tap_keyboard':
+        final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);
+        await notifier.setEnabled(
+          enabled: !ref.read(tapToShowKeyboardNotifierProvider),
+        );
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
