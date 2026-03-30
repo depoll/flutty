@@ -10,6 +10,10 @@ const _unwrappedEditorTrailingSlack = 24.0;
 const _minRemoteEditorFontSize = 8.0;
 const _maxRemoteEditorFontSize = 32.0;
 const _remoteEditorFontStep = 1.0;
+const _remoteEditorGutterDigitSlots = 4;
+const _remoteEditorGutterDigitWidthFactor = 0.55;
+const _remoteEditorGutterLeftPadding = 4.0;
+const _remoteEditorGutterRightPadding = 4.0;
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
 );
@@ -45,6 +49,11 @@ double applyRemoteEditorScaleDelta(
     currentFontSize * (nextScale / safePreviousScale),
   );
 }
+
+/// Resolves the gutter digit slots shown by default before growing further.
+@visibleForTesting
+int resolveRemoteEditorGutterDigitSlots(int lineCount) =>
+    math.max(_remoteEditorGutterDigitSlots, lineCount.toString().length);
 
 /// Measures the width needed to display unwrapped editor lines without clipping.
 @visibleForTesting
@@ -500,14 +509,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   }
 
   double _resolveGutterWidth(BuildContext context, TextStyle style) {
-    final digits = math.max(2, _lineCount.toString().length);
-    final painter = TextPainter(
-      text: TextSpan(text: '8' * digits, style: style),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      maxLines: 1,
-    )..layout();
-    return painter.width + 28;
+    final digits = resolveRemoteEditorGutterDigitSlots(_lineCount);
+    final textScaler = MediaQuery.textScalerOf(context);
+    final fontSize = style.fontSize ?? 14;
+    final digitWidth = fontSize * _remoteEditorGutterDigitWidthFactor;
+    return (digitWidth * digits * textScaler.scale(1)) +
+        _remoteEditorGutterLeftPadding +
+        _remoteEditorGutterRightPadding;
   }
 
   double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
@@ -664,7 +672,10 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
                                     Container(
                                       width: gutterWidth,
                                       height: constraints.maxHeight,
-                                      padding: const EdgeInsets.only(right: 12),
+                                      padding: const EdgeInsets.only(
+                                        left: _remoteEditorGutterLeftPadding,
+                                        right: _remoteEditorGutterRightPadding,
+                                      ),
                                       color: colors.gutterBackground,
                                       child: IgnorePointer(
                                         child: ListView.builder(

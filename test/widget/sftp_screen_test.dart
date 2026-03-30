@@ -9,6 +9,14 @@ void main() {
     });
   });
 
+  group('resolveRemoteEditorGutterDigitSlots', () {
+    test('keeps four digits by default and grows for larger files', () {
+      expect(resolveRemoteEditorGutterDigitSlots(1), 4);
+      expect(resolveRemoteEditorGutterDigitSlots(9999), 4);
+      expect(resolveRemoteEditorGutterDigitSlots(10000), 5);
+    });
+  });
+
   group('resolveUnwrappedEditorSelectionScrollOffset', () {
     test('scrolls right when the caret moves beyond the viewport', () {
       expect(
@@ -111,7 +119,7 @@ void main() {
                 ),
               )
               .width,
-          closeTo(316, 0.1),
+          closeTo(333.2, 0.1),
         );
         expect(
           tester
