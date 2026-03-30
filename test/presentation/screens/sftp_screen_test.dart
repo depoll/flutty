@@ -104,6 +104,27 @@ void main() {
       expect(isSvgFileName('diagram.png'), isFalse);
     });
 
+    test('resolves directory taps as navigation', () {
+      expect(
+        resolveSftpFileTapIntent(isDirectory: true, filename: 'Documents'),
+        SftpFileTapIntent.navigate,
+      );
+    });
+
+    test('resolves image taps as preview', () {
+      expect(
+        resolveSftpFileTapIntent(isDirectory: false, filename: 'diagram.png'),
+        SftpFileTapIntent.preview,
+      );
+    });
+
+    test('resolves other file taps as edit', () {
+      expect(
+        resolveSftpFileTapIntent(isDirectory: false, filename: 'notes.txt'),
+        SftpFileTapIntent.edit,
+      );
+    });
+
     test('measures the widest rendered line instead of the longest string', () {
       const style = TextStyle(fontSize: 20);
       const trailingSlack = 12.0;

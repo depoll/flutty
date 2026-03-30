@@ -949,6 +949,47 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'does not reopen the keyboard when the platform closes it while focused',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+        addTearDown(focusNode.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        tester.testTextInput.log.clear();
+        (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
+            .connectionClosed();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isEmpty,
+        );
+      },
+    );
+
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {

@@ -9,6 +9,30 @@ void main() {
     });
   });
 
+  group('resolveRemoteEditorGutterDigitSlots', () {
+    test('keeps four digits by default and grows for larger files', () {
+      expect(resolveRemoteEditorGutterDigitSlots(1), 4);
+      expect(resolveRemoteEditorGutterDigitSlots(9999), 4);
+      expect(resolveRemoteEditorGutterDigitSlots(10000), 5);
+    });
+  });
+
+  group('remote editor zoom helpers', () {
+    test('clamps remote editor font size to the supported range', () {
+      expect(clampRemoteEditorFontSize(2), 8);
+      expect(clampRemoteEditorFontSize(18), 18);
+      expect(clampRemoteEditorFontSize(64), 32);
+    });
+
+    test(
+      'applies pinch scale deltas safely when previous scale is nonpositive',
+      () {
+        expect(applyRemoteEditorScaleDelta(16, 0, 2), 32);
+        expect(applyRemoteEditorScaleDelta(16, -1, 0.5), 8);
+      },
+    );
+  });
+
   group('resolveUnwrappedEditorSelectionScrollOffset', () {
     test('scrolls right when the caret moves beyond the viewport', () {
       expect(
@@ -57,6 +81,26 @@ void main() {
   });
 
   group('buildRemoteTextEditorScreenForTesting', () {
+    test('uses Menlo for the system monospace font on iOS', () {
+      expect(
+        resolveRemoteEditorTextStyle(
+          'monospace',
+          platform: TargetPlatform.iOS,
+        ).fontFamily,
+        'Menlo',
+      );
+    });
+
+    test('uses the configured terminal font family when provided', () {
+      expect(
+        resolveRemoteEditorTextStyle(
+          'Custom Mono',
+          platform: TargetPlatform.android,
+        ).fontFamily,
+        'Custom Mono',
+      );
+    });
+
     testWidgets(
       'keeps the nowrap viewport fixed while scrolling the selection into view',
       (tester) async {
@@ -91,7 +135,7 @@ void main() {
                 ),
               )
               .width,
-          closeTo(316, 0.1),
+          closeTo(333.2, 0.1),
         );
         expect(
           tester
@@ -132,6 +176,7 @@ void main() {
 
       await tester.pumpWidget(
         MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.macOS),
           home: buildRemoteTextEditorScreenForTesting(
             fileName: 'notes.txt',
             controller: controller,
@@ -152,6 +197,25 @@ void main() {
 
       expect(find.text('Wrap on'), findsOneWidget);
       expect(find.byTooltip('Disable line wrap'), findsOneWidget);
+    });
+
+    testWidgets('hides zoom buttons on touch-first platforms', (tester) async {
+      final controller = TextEditingController(text: 'alpha\nbeta');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          theme: ThemeData(platform: TargetPlatform.iOS),
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Zoom out'), findsNothing);
+      expect(find.byTooltip('Zoom in'), findsNothing);
     });
   });
 }

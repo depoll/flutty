@@ -3,17 +3,57 @@ import 'dart:math' as math;
 import 'package:flutter/material.dart';
 
 import '../../domain/models/terminal_theme.dart';
+import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_style.dart';
 
 const _unwrappedEditorTrailingSlack = 24.0;
-const _minRemoteEditorFontSize = 12.0;
-const _maxRemoteEditorFontSize = 28.0;
+const _minRemoteEditorFontSize = 8.0;
+const _maxRemoteEditorFontSize = 32.0;
 const _remoteEditorFontStep = 1.0;
+const _remoteEditorGutterDigitSlots = 4;
+const _remoteEditorGutterDigitWidthFactor = 0.55;
+const _remoteEditorGutterLeftPadding = 4.0;
+const _remoteEditorGutterRightPadding = 4.0;
 const _remoteTextEditorNowrapViewportKey = ValueKey<String>(
   'remoteTextEditorNowrapViewport',
 );
 const _remoteTextEditorStatusKey = ValueKey<String>('remoteTextEditorStatus');
 const _remoteTextEditorSurfaceKey = ValueKey<String>('remoteTextEditorSurface');
+
+/// Resolves the effective text style for the remote editor.
+@visibleForTesting
+TextStyle resolveRemoteEditorTextStyle(
+  String fontFamily, {
+  required TargetPlatform platform,
+  double? fontSize,
+}) => resolveMonospaceTextStyle(
+  fontFamily,
+  platform: platform,
+  fontSize: fontSize,
+);
+
+/// Clamps the remote editor font size into the supported zoom range.
+@visibleForTesting
+double clampRemoteEditorFontSize(num size) =>
+    size.clamp(_minRemoteEditorFontSize, _maxRemoteEditorFontSize).toDouble();
+
+/// Applies an incremental pinch delta to the displayed remote editor font size.
+@visibleForTesting
+double applyRemoteEditorScaleDelta(
+  double currentFontSize,
+  double previousScale,
+  double nextScale,
+) {
+  final safePreviousScale = previousScale <= 0 ? 1.0 : previousScale;
+  return clampRemoteEditorFontSize(
+    currentFontSize * (nextScale / safePreviousScale),
+  );
+}
+
+/// Resolves the gutter digit slots shown by default before growing further.
+@visibleForTesting
+int resolveRemoteEditorGutterDigitSlots(int lineCount) =>
+    math.max(_remoteEditorGutterDigitSlots, lineCount.toString().length);
 
 /// Measures the width needed to display unwrapped editor lines without clipping.
 @visibleForTesting
@@ -211,6 +251,7 @@ class RemoteTextEditorScreen extends StatefulWidget {
 
 class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   bool _wrapLines = false;
+  late FocusNode _editorFocusNode;
   late double _fontSize;
   late ScrollController _horizontalScrollController;
   late bool _ownsHorizontalScrollController;
@@ -218,6 +259,8 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   final ScrollController _lineNumberScrollController = ScrollController();
   bool _selectionVisibilityUpdateScheduled = false;
   double _editorViewportWidth = 0;
+  double? _lastPinchScale;
+  bool _isPinchZooming = false;
   String? _cachedText;
   List<int> _cachedLineStartOffsets = const [0];
   TextSelection? _cachedSelection;
@@ -232,10 +275,8 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   @override
   void initState() {
     super.initState();
-    _fontSize = widget.initialFontSize.clamp(
-      _minRemoteEditorFontSize,
-      _maxRemoteEditorFontSize,
-    );
+    _editorFocusNode = FocusNode();
+    _fontSize = clampRemoteEditorFontSize(widget.initialFontSize);
     _horizontalScrollController =
         widget.horizontalScrollController ?? ScrollController();
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
@@ -243,6 +284,11 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     _editorScrollController.addListener(_syncLineNumberScrollOffset);
     _refreshCachedMetrics();
     _scheduleSelectionVisibilityUpdate();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        _editorFocusNode.requestFocus();
+      }
+    });
   }
 
   @override
@@ -257,6 +303,10 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       _cachedMeasuredWidth = null;
       _refreshCachedMetrics();
       _scheduleSelectionVisibilityUpdate();
+    }
+    if (oldWidget.initialFontSize != widget.initialFontSize &&
+        !_isPinchZooming) {
+      _fontSize = clampRemoteEditorFontSize(widget.initialFontSize);
     }
     if (oldWidget.horizontalScrollController !=
         widget.horizontalScrollController) {
@@ -274,6 +324,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   @override
   void dispose() {
     widget.controller.removeListener(_handleControllerChanged);
+    _editorFocusNode.dispose();
     _editorScrollController
       ..removeListener(_syncLineNumberScrollOffset)
       ..dispose();
@@ -391,10 +442,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   }
 
   void _changeFontSize(double delta) {
-    final nextFontSize = (_fontSize + delta).clamp(
-      _minRemoteEditorFontSize,
-      _maxRemoteEditorFontSize,
-    );
+    final nextFontSize = clampRemoteEditorFontSize(_fontSize + delta);
     if ((_fontSize - nextFontSize).abs() < 0.01) {
       return;
     }
@@ -402,13 +450,50 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     _scheduleSelectionVisibilityUpdate();
   }
 
+  void _handleEditorScaleStart() {
+    _lastPinchScale = 1;
+    _isPinchZooming = false;
+  }
+
+  void _handleEditorScaleUpdate(double scale) {
+    final previousScale = _lastPinchScale ?? 1;
+    final nextFontSize = applyRemoteEditorScaleDelta(
+      _fontSize,
+      previousScale,
+      scale,
+    );
+    if (_isPinchZooming && (_fontSize - nextFontSize).abs() < 0.01) {
+      return;
+    }
+
+    setState(() {
+      _isPinchZooming = true;
+      _fontSize = nextFontSize;
+      _lastPinchScale = scale;
+    });
+    _scheduleSelectionVisibilityUpdate();
+  }
+
+  void _handleEditorScaleEnd() {
+    _isPinchZooming = false;
+    _lastPinchScale = null;
+  }
+
+  bool _showDesktopZoomButtons(TargetPlatform platform) => switch (platform) {
+    TargetPlatform.windows ||
+    TargetPlatform.macOS ||
+    TargetPlatform.linux => true,
+    _ => false,
+  };
+
   TextStyle _buildEditorTextStyle(
     ThemeData theme,
     TerminalThemeData? terminalTheme,
   ) {
     final colors = _resolveEditorColors(theme, terminalTheme);
-    return resolveMonospaceTextStyle(
+    return resolveRemoteEditorTextStyle(
       widget.fontFamily,
+      platform: theme.platform,
       fontSize: _fontSize,
     ).copyWith(color: colors.foreground, height: 1.35);
   }
@@ -424,14 +509,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   }
 
   double _resolveGutterWidth(BuildContext context, TextStyle style) {
-    final digits = math.max(2, _lineCount.toString().length);
-    final painter = TextPainter(
-      text: TextSpan(text: '8' * digits, style: style),
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      maxLines: 1,
-    )..layout();
-    return painter.width + 28;
+    final digits = resolveRemoteEditorGutterDigitSlots(_lineCount);
+    final textScaler = MediaQuery.textScalerOf(context);
+    final fontSize = style.fontSize ?? 14;
+    final digitWidth = fontSize * _remoteEditorGutterDigitWidthFactor;
+    return (digitWidth * digits * textScaler.scale(1)) +
+        _remoteEditorGutterLeftPadding +
+        _remoteEditorGutterRightPadding;
   }
 
   double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
@@ -474,23 +558,30 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
     return Theme(
       data: theme.copyWith(
+        scaffoldBackgroundColor: colors.background,
         textSelectionTheme: TextSelectionThemeData(
           cursorColor: colors.cursor,
           selectionColor: colors.selection,
           selectionHandleColor: colors.cursor,
         ),
+        appBarTheme: theme.appBarTheme.copyWith(
+          backgroundColor: colors.background,
+          foregroundColor: colors.foreground,
+        ),
       ),
       child: Scaffold(
+        backgroundColor: colors.background,
         appBar: AppBar(
           title: Text('Edit ${widget.fileName}'),
           actions: [
-            IconButton(
-              onPressed: _fontSize <= _minRemoteEditorFontSize
-                  ? null
-                  : () => _changeFontSize(-_remoteEditorFontStep),
-              icon: const Icon(Icons.zoom_out),
-              tooltip: 'Zoom out',
-            ),
+            if (_showDesktopZoomButtons(theme.platform))
+              IconButton(
+                onPressed: _fontSize <= _minRemoteEditorFontSize
+                    ? null
+                    : () => _changeFontSize(-_remoteEditorFontStep),
+                icon: const Icon(Icons.zoom_out),
+                tooltip: 'Zoom out',
+              ),
             IconButton(
               onPressed: () {
                 setState(() {
@@ -503,13 +594,14 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
               icon: Icon(_wrapLines ? Icons.wrap_text : Icons.segment),
               tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
             ),
-            IconButton(
-              onPressed: _fontSize >= _maxRemoteEditorFontSize
-                  ? null
-                  : () => _changeFontSize(_remoteEditorFontStep),
-              icon: const Icon(Icons.zoom_in),
-              tooltip: 'Zoom in',
-            ),
+            if (_showDesktopZoomButtons(theme.platform))
+              IconButton(
+                onPressed: _fontSize >= _maxRemoteEditorFontSize
+                    ? null
+                    : () => _changeFontSize(_remoteEditorFontStep),
+                icon: const Icon(Icons.zoom_in),
+                tooltip: 'Zoom in',
+              ),
             TextButton(
               onPressed: () => Navigator.pop(context, widget.controller.text),
               child: const Text('Save'),
@@ -539,7 +631,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
                           final editor = TextField(
                             controller: widget.controller,
-                            autofocus: true,
+                            focusNode: _editorFocusNode,
                             expands: true,
                             maxLines: null,
                             keyboardType: TextInputType.multiline,
@@ -570,40 +662,53 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
                           return Padding(
                             padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                            child: Row(
-                              children: [
-                                if (!_wrapLines)
-                                  Container(
-                                    width: gutterWidth,
-                                    height: constraints.maxHeight,
-                                    padding: const EdgeInsets.only(right: 12),
-                                    color: colors.gutterBackground,
-                                    child: IgnorePointer(
-                                      child: ListView.builder(
-                                        controller: _lineNumberScrollController,
-                                        physics:
-                                            const NeverScrollableScrollPhysics(),
-                                        itemCount: _lineCount,
-                                        itemExtent: lineHeight,
-                                        itemBuilder: (context, index) => Align(
-                                          alignment: Alignment.centerRight,
-                                          child: Text(
-                                            '${index + 1}',
-                                            style: editorTextStyle.copyWith(
-                                              color: colors.gutterForeground,
-                                            ),
-                                            strutStyle:
-                                                StrutStyle.fromTextStyle(
-                                                  editorTextStyle,
-                                                  forceStrutHeight: true,
+                            child: TerminalPinchZoomGestureHandler(
+                              onPinchStart: _handleEditorScaleStart,
+                              onPinchUpdate: _handleEditorScaleUpdate,
+                              onPinchEnd: _handleEditorScaleEnd,
+                              child: Row(
+                                children: [
+                                  if (!_wrapLines)
+                                    Container(
+                                      width: gutterWidth,
+                                      height: constraints.maxHeight,
+                                      padding: const EdgeInsets.only(
+                                        left: _remoteEditorGutterLeftPadding,
+                                        right: _remoteEditorGutterRightPadding,
+                                      ),
+                                      color: colors.gutterBackground,
+                                      child: IgnorePointer(
+                                        child: ListView.builder(
+                                          controller:
+                                              _lineNumberScrollController,
+                                          physics:
+                                              const NeverScrollableScrollPhysics(),
+                                          itemCount: _lineCount,
+                                          itemExtent: lineHeight,
+                                          itemBuilder: (context, index) =>
+                                              Align(
+                                                alignment:
+                                                    Alignment.centerRight,
+                                                child: Text(
+                                                  '${index + 1}',
+                                                  style: editorTextStyle
+                                                      .copyWith(
+                                                        color: colors
+                                                            .gutterForeground,
+                                                      ),
+                                                  strutStyle:
+                                                      StrutStyle.fromTextStyle(
+                                                        editorTextStyle,
+                                                        forceStrutHeight: true,
+                                                      ),
                                                 ),
-                                          ),
+                                              ),
                                         ),
                                       ),
                                     ),
-                                  ),
-                                Expanded(child: editorPane),
-                              ],
+                                  Expanded(child: editorPane),
+                                ],
+                              ),
                             ),
                           );
                         },

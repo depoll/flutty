@@ -110,6 +110,34 @@ bool isPreviewableImageFileName(String filename) {
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
 
+/// How a file row tap should behave in the SFTP browser.
+@visibleForTesting
+enum SftpFileTapIntent {
+  /// Navigate into a tapped directory.
+  navigate,
+
+  /// Preview a tapped image file.
+  preview,
+
+  /// Open a tapped non-image file in the editor.
+  edit,
+}
+
+/// Resolves the primary action for tapping an SFTP entry.
+@visibleForTesting
+SftpFileTapIntent resolveSftpFileTapIntent({
+  required bool isDirectory,
+  required String filename,
+}) {
+  if (isDirectory) {
+    return SftpFileTapIntent.navigate;
+  }
+  if (isPreviewableImageFileName(filename)) {
+    return SftpFileTapIntent.preview;
+  }
+  return SftpFileTapIntent.edit;
+}
+
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
   /// Creates a new [SftpScreen].
@@ -797,12 +825,16 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   void _handleFileTap(SftpName file) {
-    if (file.attr.isDirectory) {
-      unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
-    } else if (isPreviewableImageFileName(file.filename)) {
-      unawaited(_previewImageFile(file));
-    } else {
-      _showFileOptions(file);
+    switch (resolveSftpFileTapIntent(
+      isDirectory: file.attr.isDirectory,
+      filename: file.filename,
+    )) {
+      case SftpFileTapIntent.navigate:
+        unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
+      case SftpFileTapIntent.preview:
+        unawaited(_previewImageFile(file));
+      case SftpFileTapIntent.edit:
+        unawaited(_editTextFile(file));
     }
   }
 

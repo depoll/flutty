@@ -2795,13 +2795,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ),
   );
 
-  /// Gets the terminal text style for the given font family using Google Fonts.
+  /// Resolves the terminal text style for the given font family and size.
   TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
-    final textStyle = _resolveTerminalTextStyle(fontFamily, fontSize);
-    if (textStyle != null) {
-      return TerminalStyle.fromTextStyle(textStyle);
-    }
-    return TerminalStyle(fontSize: fontSize);
+    final textStyle = resolveMonospaceTextStyle(
+      fontFamily,
+      platform: Theme.of(context).platform,
+      fontSize: fontSize,
+    );
+    return TerminalStyle.fromTextStyle(textStyle);
   }
 
   TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
@@ -2814,9 +2815,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               FontFeature.disable('calt'),
             ],
           );
-
-  TextStyle? _resolveTerminalTextStyle(String fontFamily, double fontSize) =>
-      resolveConfiguredMonospaceTextStyle(fontFamily, fontSize: fontSize);
 
   Size? _measureTerminalPathUnderlineTextSize(String text) {
     if (text.isEmpty) {
@@ -2832,9 +2830,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _host?.terminalFontFamily ??
         ref.read(fontFamilyNotifierProvider) ??
         'monospace';
-    final textStyle =
-        _resolveTerminalTextStyle(fontFamily, fontSize) ??
-        TextStyle(fontFamily: 'monospace', fontSize: fontSize);
+    final textStyle = resolveMonospaceTextStyle(
+      fontFamily,
+      platform: Theme.of(context).platform,
+      fontSize: fontSize,
+    );
     final painter = TextPainter(
       text: TextSpan(text: text, style: textStyle),
       textDirection: TextDirection.ltr,
@@ -4152,6 +4152,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       try {
         final verifiedPath = await _resolveVerifiedTerminalFilePath(
           terminalPath,
+          showErrors: false,
         );
         if (!mounted || verifiedPath == null) {
           return;
@@ -4163,7 +4164,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }());
   }
 
-  Future<String?> _resolveVerifiedTerminalFilePath(String terminalPath) async {
+  Future<String?> _resolveVerifiedTerminalFilePath(
+    String terminalPath, {
+    bool showErrors = true,
+  }) async {
     _syncVerifiedTerminalPathCacheScope();
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
@@ -4174,7 +4178,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final session = _activeSession();
     final isExplicitPath = isExplicitTerminalFilePath(terminalPath);
     if (session == null) {
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
       }
       return null;
@@ -4195,7 +4199,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         homeDirectory: homeDirectory,
       );
       if (resolvedPath == null) {
-        if (isExplicitPath) {
+        if (showErrors && isExplicitPath) {
           _showTerminalLinkMessage(
             'Could not open "$terminalPath" in SFTP: path does not exist',
           );
@@ -4207,12 +4211,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _cacheVerifiedTerminalPath(cacheKey, resolvedPath);
       return resolvedPath;
     } on TimeoutException {
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
       }
       return null;
     } on SftpStatusError catch (error) {
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         final message = error.code == SftpStatusCode.noSuchFile
             ? 'Could not open "$terminalPath" in SFTP: path does not exist'
             : 'Could not open "$terminalPath" in SFTP';
@@ -4224,7 +4228,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'Failed to resolve terminal file path "$terminalPath": $error',
       );
       debugPrint('$stackTrace');
-      if (isExplicitPath) {
+      if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
       }
       return null;
