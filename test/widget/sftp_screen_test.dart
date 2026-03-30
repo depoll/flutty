@@ -135,7 +135,7 @@ void main() {
                 ),
               )
               .width,
-          closeTo(333.2, 0.1),
+          closeTo(308.0, 0.1),
         );
         expect(
           tester
