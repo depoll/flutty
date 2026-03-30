@@ -430,9 +430,11 @@ class _TerminalSection extends ConsumerWidget {
           ),
           value: tapToShowKeyboard,
           onChanged: (value) {
-            ref
-                .read(tapToShowKeyboardNotifierProvider.notifier)
-                .setEnabled(enabled: value);
+            unawaited(
+              ref
+                  .read(tapToShowKeyboardNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
           },
         ),
       ],
