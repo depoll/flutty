@@ -1074,6 +1074,53 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'does not open the keyboard after a touch tap when tapToShowKeyboard '
+      'is false',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        tester.testTextInput.hide();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        await tester.tapAt(target);
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        // The keyboard can still be shown externally (e.g. via the toolbar
+        // button) by requesting focus, so the setting only suppresses the
+        // touch-tap path.
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('does not open the keyboard after a suppressed touch tap', (
       tester,
     ) async {

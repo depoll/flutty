@@ -2208,6 +2208,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                         : 'Show Terminal Info',
                   ),
                 ),
+              if (isMobile)
+                CheckedPopupMenuItem(
+                  value: 'toggle_tap_keyboard',
+                  checked: ref.read(tapToShowKeyboardNotifierProvider),
+                  child: const Text('Tap to Show Keyboard'),
+                ),
               const PopupMenuDivider(),
               if (!isMobile)
                 PopupMenuItem(
@@ -2546,6 +2552,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
 
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
@@ -2627,7 +2634,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
-                      color: theme.colorScheme.primary.withValues(alpha: 0.92),
+                      color: terminalTheme.foreground.withValues(alpha: 0.92),
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: SizedBox(
@@ -2654,9 +2661,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   child: IgnorePointer(
                     child: DecoratedBox(
                       decoration: BoxDecoration(
-                        color: theme.colorScheme.primary.withValues(
-                          alpha: 0.92,
-                        ),
+                        color: terminalTheme.foreground.withValues(alpha: 0.92),
                         borderRadius: BorderRadius.circular(999),
                       ),
                       child: SizedBox(
@@ -2752,6 +2757,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
+      tapToShowKeyboard: tapToShowKeyboard,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -2869,6 +2875,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
+        break;
+      case 'toggle_tap_keyboard':
+        final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);
+        await notifier.setEnabled(
+          enabled: !ref.read(tapToShowKeyboardNotifierProvider),
+        );
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
