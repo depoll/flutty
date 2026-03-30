@@ -99,6 +99,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
     this.readOnly = false,
+    this.tapToShowKeyboard = true,
     super.key,
   });
 
@@ -137,6 +138,12 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Whether input should be suppressed.
   final bool readOnly;
+
+  /// Whether tapping the terminal should show the keyboard.
+  ///
+  /// When `false`, touch taps are ignored for keyboard purposes; the keyboard
+  /// can still be opened via [requestKeyboard] (e.g. from a toolbar button).
+  final bool tapToShowKeyboard;
 
   @override
   State<TerminalTextInputHandler> createState() =>
@@ -248,11 +255,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
     final shouldSkipKeyboardRequest =
         event.kind == PointerDeviceKind.touch && _skipNextTouchKeyboardRequest;
+    final shouldSkipTapToShow =
+        event.kind == PointerDeviceKind.touch && !widget.tapToShowKeyboard;
     if (event.kind == PointerDeviceKind.touch) {
       _skipNextTouchKeyboardRequest = false;
     }
     _clearPointerTracking(event);
-    if (shouldRequestKeyboard && !shouldSkipKeyboardRequest) {
+    if (shouldRequestKeyboard &&
+        !shouldSkipKeyboardRequest &&
+        !shouldSkipTapToShow) {
       requestKeyboard();
     }
   }
