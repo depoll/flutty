@@ -2272,11 +2272,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
       _terminalFocusNode.unfocus();
     } else {
-      _restoreTerminalFocus(showSystemKeyboard: true);
+      // Explicit user action — always show the keyboard regardless of the
+      // tap-to-show setting.
+      _restoreTerminalFocus(forceShowSystemKeyboard: true);
     }
   }
 
-  void _restoreTerminalFocus({bool showSystemKeyboard = false}) {
+  void _restoreTerminalFocus({
+    bool showSystemKeyboard = false,
+    bool forceShowSystemKeyboard = false,
+  }) {
     if (!mounted) {
       return;
     }
@@ -2286,7 +2291,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
       _terminalFocusNode.requestFocus();
-      if (showSystemKeyboard && _isMobilePlatform) {
+      final shouldShowKeyboard =
+          forceShowSystemKeyboard ||
+          (showSystemKeyboard && ref.read(tapToShowKeyboardNotifierProvider));
+      if (shouldShowKeyboard && _isMobilePlatform) {
         unawaited(
           SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
         );

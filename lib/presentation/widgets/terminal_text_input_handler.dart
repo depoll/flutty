@@ -73,6 +73,14 @@ class TerminalTextInputHandlerController {
   void suppressNextTouchKeyboardRequest() {
     _state?._suppressNextTouchKeyboardRequest();
   }
+
+  /// Explicitly shows the soft keyboard.
+  ///
+  /// This always opens the keyboard regardless of the [tapToShowKeyboard]
+  /// setting and is intended for toolbar buttons or programmatic triggers.
+  void requestKeyboard() {
+    _state?.requestKeyboard();
+  }
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -186,7 +194,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
     } else if (oldWidget.readOnly && widget.focusNode.hasFocus) {
-      _openInputConnection();
+      _openInputConnection(show: widget.tapToShowKeyboard);
     }
   }
 
@@ -337,11 +345,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   /// Shows the soft keyboard.
   void requestKeyboard() {
-    if (widget.focusNode.hasFocus) {
-      _openInputConnection();
-    } else {
+    if (!widget.focusNode.hasFocus) {
       widget.focusNode.requestFocus();
     }
+    // Always show — this is an explicit request (e.g. from a toolbar button).
+    _openInputConnection();
   }
 
   /// Hides the soft keyboard.
@@ -361,7 +369,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.focusNode.hasFocus) {
       final consumedKeyboardToken = widget.focusNode.consumeKeyboardToken();
       if (!hasInputConnection || consumedKeyboardToken) {
-        _openInputConnection();
+        // Attach the input connection but only show the soft keyboard when
+        // tap-to-show is enabled.  Explicit keyboard requests go through
+        // requestKeyboard() which always passes show: true.
+        _openInputConnection(show: widget.tapToShowKeyboard);
       }
     } else if (!widget.focusNode.hasFocus) {
       _closeInputConnectionIfNeeded();
@@ -377,11 +388,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _queuedEditingValue = null;
   }
 
-  void _openInputConnection() {
+  void _openInputConnection({bool show = true}) {
     if (!_shouldCreateInputConnection) return;
 
     if (hasInputConnection) {
-      _connection!.show();
+      if (show) _connection!.show();
     } else {
       final config = TextInputConfiguration(
         // Keep these explicit because terminal IME behavior is central here.
@@ -398,7 +409,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       );
 
       _connection = TextInput.attach(this, config);
-      _connection!.show();
+      if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastSentText = '';

@@ -1095,15 +1095,11 @@ void main() {
           ),
         );
 
-        focusNode.requestFocus();
+        // The handler uses autofocus: true, which triggers _onFocusChange.
+        // With tapToShowKeyboard off, the connection is attached but not shown.
         await tester.pump();
 
         expect(focusNode.hasFocus, isTrue);
-        expect(tester.testTextInput.isVisible, isTrue);
-
-        tester.testTextInput.hide();
-        await tester.pump();
-
         expect(tester.testTextInput.isVisible, isFalse);
 
         final target =
@@ -1114,9 +1110,98 @@ void main() {
 
         expect(tester.testTextInput.isVisible, isFalse);
 
-        // The keyboard can still be shown externally (e.g. via the toolbar
-        // button) by requesting focus, so the setting only suppresses the
-        // touch-tap path.
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('does not reopen the keyboard on focus restoration when '
+        'tapToShowKeyboard is false', (tester) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+      final outerFocusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                Focus(
+                  focusNode: outerFocusNode,
+                  child: const SizedBox(
+                    width: 50,
+                    height: 50,
+                    key: ValueKey('other'),
+                  ),
+                ),
+                Expanded(
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    deleteDetection: true,
+                    tapToShowKeyboard: false,
+                    child: const SizedBox.expand(
+                      key: ValueKey('terminal-child'),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      // Move focus away from the terminal.
+      outerFocusNode.requestFocus();
+      await tester.pump();
+      expect(focusNode.hasFocus, isFalse);
+
+      // Restore focus to the terminal (simulates popup menu close or
+      // programmatic focus restore).  Keyboard must stay hidden.
+      focusNode.requestFocus();
+      await tester.pump();
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+      outerFocusNode.dispose();
+    });
+
+    testWidgets(
+      'requestKeyboard still shows keyboard when tapToShowKeyboard is false',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                tapToShowKeyboard: false,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        // Explicit requestKeyboard (the toolbar button path) must always work.
+        controller.requestKeyboard();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
         focusNode.dispose();
       },
     );
