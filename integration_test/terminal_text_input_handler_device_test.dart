@@ -9,14 +9,14 @@ import 'package:xterm/xterm.dart';
 String _terminalTextFromEvents(Iterable<String> events) {
   final visibleCharacters = <String>[];
   for (final event in events) {
-    for (final rune in event.runes) {
-      if (rune == 0x7f) {
+    for (final character in event.characters) {
+      if (character == '\x7f') {
         if (visibleCharacters.isNotEmpty) {
           visibleCharacters.removeLast();
         }
         continue;
       }
-      visibleCharacters.add(String.fromCharCode(rune));
+      visibleCharacters.add(character);
     }
   }
   return visibleCharacters.join();

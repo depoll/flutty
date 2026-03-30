@@ -460,10 +460,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return prefixLength;
   }
 
-  int _commonPrefixLength(String a, String b) {
-    final maxLength = a.length < b.length ? a.length : b.length;
+  int _commonGraphemePrefixLength(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes,
+  ) {
+    final maxLength = previousGraphemes.length < currentGraphemes.length
+        ? previousGraphemes.length
+        : currentGraphemes.length;
     var index = 0;
-    while (index < maxLength && a.codeUnitAt(index) == b.codeUnitAt(index)) {
+    while (index < maxLength &&
+        previousGraphemes[index] == currentGraphemes[index]) {
       index++;
     }
     return index;
@@ -529,10 +535,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   ({int deletedCount, String appendedText}) _computeTextDelta(
     String currentText,
   ) {
-    final commonPrefix = _commonPrefixLength(_lastSentText, currentText);
+    final previousGraphemes = _lastSentText.characters.toList(growable: false);
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final commonPrefix = _commonGraphemePrefixLength(
+      previousGraphemes,
+      currentGraphemes,
+    );
     return (
-      deletedCount: _lastSentText.length - commonPrefix,
-      appendedText: currentText.substring(commonPrefix),
+      deletedCount: previousGraphemes.length - commonPrefix,
+      appendedText: currentGraphemes.skip(commonPrefix).join(),
     );
   }
 
@@ -542,7 +553,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final delta = _computeTextDelta(currentText);
-    if (delta.appendedText.length <= 1) {
+    if (delta.appendedText.characters.length <= 1) {
       return null;
     }
 
