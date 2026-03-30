@@ -32,6 +32,9 @@ dependencies:
   # Terminal
   xterm: ^4.0.0
   
+  # Syntax highlighting
+  highlight: ^0.7.0
+  
   # Secure storage
   flutter_secure_storage: ^10.0.0
   
