@@ -328,6 +328,7 @@ class _TerminalSection extends ConsumerWidget {
       terminalPathLinkUnderlinesNotifierProvider,
     );
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
+    final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
 
     final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
@@ -418,6 +419,20 @@ class _TerminalSection extends ConsumerWidget {
             ref
                 .read(activeSessionsProvider.notifier)
                 .updateClipboardSharing(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.keyboard_outlined),
+          title: const Text('Tap to show keyboard'),
+          subtitle: const Text(
+            'Show the keyboard when tapping the terminal. '
+            'When off, use the toolbar button instead.',
+          ),
+          value: tapToShowKeyboard,
+          onChanged: (value) {
+            ref
+                .read(tapToShowKeyboardNotifierProvider.notifier)
+                .setEnabled(enabled: value);
           },
         ),
       ],

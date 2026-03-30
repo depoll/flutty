@@ -66,6 +66,11 @@ abstract final class SettingKeys {
   /// The terminal can sync through OSC 52 and remote clipboard utilities when
   /// the remote host provides them.
   static const sharedClipboard = 'shared_clipboard';
+
+  /// Whether tapping the terminal automatically shows the keyboard.
+  ///
+  /// When disabled, the keyboard can only be toggled via the toolbar button.
+  static const tapToShowKeyboard = 'tap_to_show_keyboard';
 }
 
 /// Service for managing app settings.
@@ -615,4 +620,40 @@ class SharedClipboardNotifier extends Notifier<bool> {
 final sharedClipboardNotifierProvider =
     NotifierProvider<SharedClipboardNotifier, bool>(
       SharedClipboardNotifier.new,
+    );
+
+/// Notifier for tap-to-show-keyboard with write capability.
+class TapToShowKeyboardNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.tapToShowKeyboard,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set tap-to-show-keyboard enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.tapToShowKeyboard, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for tap-to-show-keyboard setting with write capability.
+final tapToShowKeyboardNotifierProvider =
+    NotifierProvider<TapToShowKeyboardNotifier, bool>(
+      TapToShowKeyboardNotifier.new,
     );

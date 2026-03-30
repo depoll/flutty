@@ -2546,6 +2546,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
 
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
@@ -2752,6 +2753,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
+      tapToShowKeyboard: tapToShowKeyboard,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
