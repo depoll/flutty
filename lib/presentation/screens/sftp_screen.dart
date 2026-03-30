@@ -1292,8 +1292,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final decodedText = utf8.decode(bytes, allowMalformed: true);
       final detectedLanguage = detectLanguageFromFilename(file.filename);
       final useHighlighting =
-          detectedLanguage != null &&
-          decodedText.length <= syntaxHighlightSizeLimit;
+          detectedLanguage != null && bytes.length <= syntaxHighlightSizeLimit;
 
       if (!mounted) {
         return;

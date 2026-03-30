@@ -89,7 +89,6 @@ const _extensionLanguages = <String, String>{
   '.pm': 'perl',
   '.lua': 'lua',
   '.r': 'r',
-  '.R': 'r',
   '.php': 'php',
   '.tcl': 'tcl',
   '.ex': 'elixir',

@@ -35,7 +35,7 @@ void main() {
       expect(span.toPlainText(), 'void main() { print("hello"); }');
     });
 
-    test('buildTextSpan returns plain text for unknown language on empty', () {
+    test('buildTextSpan returns plain span for empty text', () {
       controller = SyntaxHighlightController(
         theme: const {'keyword': TextStyle(color: Color(0xFFFF00FF))},
         text: '',

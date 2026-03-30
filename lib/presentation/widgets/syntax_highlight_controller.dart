@@ -1,11 +1,16 @@
 import 'package:flutter/widgets.dart';
 import 'package:highlight/highlight.dart' show highlight, Node;
 
-/// Maximum text length for which syntax highlighting is applied.
+/// Maximum text length (in characters) for which syntax highlighting is
+/// applied.
 ///
 /// Files larger than this threshold are rendered as plain text to avoid
 /// frame-rate drops caused by the highlighting pass inside [buildTextSpan].
-const syntaxHighlightSizeLimit = 100 * 1024; // 100 KB
+///
+/// The SFTP screen gates on the raw byte length before creating the
+/// controller; this character-based guard is a secondary safety net inside
+/// [SyntaxHighlightController.buildTextSpan].
+const syntaxHighlightSizeLimit = 100 * 1024; // 100 K characters
 
 /// A [TextEditingController] that produces syntax-highlighted [TextSpan]s.
 ///
@@ -13,7 +18,7 @@ const syntaxHighlightSizeLimit = 100 * 1024; // 100 KB
 /// highlight.js CSS class names to [TextStyle]s via the supplied [theme] map.
 ///
 /// Highlighting is automatically skipped when the text exceeds
-/// [syntaxHighlightSizeLimit] bytes.
+/// [syntaxHighlightSizeLimit] characters.
 class SyntaxHighlightController extends TextEditingController {
   /// Creates a [SyntaxHighlightController].
   ///
