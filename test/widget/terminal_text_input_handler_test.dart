@@ -779,6 +779,55 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'forwards a terminal backspace when delete detection loses the marker with no buffered text',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          terminalOutput.join(),
+          _terminalKeyOutput(TerminalKey.backspace),
+        );
+        expect(
+          (tester.state(find.byType(TerminalTextInputHandler))
+                  as TextInputClient)
+              .currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('clears all buffered text when the IME loses the marker', (
       tester,
     ) async {

@@ -588,11 +588,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         trailingCodeUnit == 0x0D;
   }
 
-  int _sendInputDelta(String currentText, {int? cursorOffsetHint}) {
-    final delta = _computeTextDelta(
-      currentText,
-      cursorOffsetHint: cursorOffsetHint,
-    );
+  int _sendInputDelta(
+    String currentText,
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  ) {
     _moveTerminalCursorTo(delta.deleteCursorOffset);
 
     final deletedCount = delta.deletedCount;
@@ -842,12 +841,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return defaultDelta;
   }
 
-  TerminalCommandReview? _reviewForInsertedText(String currentText) {
+  TerminalCommandReview? _reviewForInsertedText(
+    String currentText,
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  ) {
     if (widget.onReviewInsertedText == null) {
       return null;
     }
-
-    final delta = _computeTextDelta(currentText);
     if (delta.appendedText.characters.length <= 1) {
       return null;
     }
@@ -1081,13 +1081,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
 
       if (_editingPrefixLength(value.text) < _initEditingState.text.length) {
-        final clearedBufferedInput = _lastSentText.isNotEmpty;
-        if (clearedBufferedInput) {
-          _notifyUserInput();
-        }
-        _moveTerminalCursorTo(_textLengthInGraphemes(_lastSentText));
         final deletedCount = _textLengthInGraphemes(_lastSentText);
-        for (var index = 0; index < deletedCount; index++) {
+        final clearedBufferedInput = deletedCount > 0;
+        _notifyUserInput();
+        _moveTerminalCursorTo(deletedCount);
+        if (clearedBufferedInput) {
+          for (var index = 0; index < deletedCount; index++) {
+            widget.terminal.keyInput(TerminalKey.backspace);
+          }
+        } else {
           widget.terminal.keyInput(TerminalKey.backspace);
         }
         _sawImeComposition = false;
@@ -1119,7 +1121,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         currentText,
         value,
       );
-
       if (currentText == _lastSentText) {
         final collapsedMoveAwayFromReplacement =
             !_lastProcessedSelectionWasCollapsed &&
@@ -1146,7 +1147,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      final review = _reviewForInsertedText(currentText);
+      final delta = _computeTextDelta(
+        currentText,
+        cursorOffsetHint: targetCursorOffset,
+      );
+      final review = _reviewForInsertedText(currentText, delta);
       if (review != null) {
         final shouldInsert = await widget.onReviewInsertedText!(review);
         if (!mounted || revision != _latestEditingValueRevision) {
@@ -1163,10 +1168,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _notifyUserInput();
       }
       final previousText = _lastSentText;
-      final newlineCount = _sendInputDelta(
-        currentText,
-        cursorOffsetHint: targetCursorOffset,
-      );
+      final newlineCount = _sendInputDelta(currentText, delta);
       if (newlineCount > 0) {
         _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
         _sawImeComposition = false;
