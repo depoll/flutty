@@ -112,7 +112,12 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     if (!mounted || _selectedGroupId != selectedGroupId) {
       return;
     }
-    setState(() => _selectedGroupId = normalizedGroupId);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || _selectedGroupId != selectedGroupId) {
+        return;
+      }
+      setState(() => _selectedGroupId = normalizedGroupId);
+    });
   }
 
   Widget _buildHostList(List<Host> hosts) {
