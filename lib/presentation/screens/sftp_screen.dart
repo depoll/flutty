@@ -93,6 +93,28 @@ resolveRequestedSftpNavigationTarget(
   highlightedFileName: isDirectory ? null : path.posix.basename(normalizedPath),
 );
 
+/// Builds the text controller for the remote SFTP editor with the caret at top.
+@visibleForTesting
+TextEditingController createSftpEditorController({
+  required String text,
+  required bool useHighlighting,
+  String? language,
+  Map<String, TextStyle>? syntaxTheme,
+}) {
+  if (useHighlighting && syntaxTheme == null) {
+    throw ArgumentError.notNull('syntaxTheme');
+  }
+
+  return (useHighlighting
+        ? SyntaxHighlightController(
+            text: text,
+            language: language,
+            theme: syntaxTheme!,
+          )
+        : TextEditingController(text: text))
+    ..selection = const TextSelection.collapsed(offset: 0);
+}
+
 /// Whether the file name should be previewable as an image.
 @visibleForTesting
 bool isPreviewableImageFileName(String filename) {
@@ -1328,17 +1350,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final initialFontSize =
           session?.terminalFontSize ?? ref.read(fontSizeNotifierProvider) ?? 14;
 
-      final TextEditingController controller;
-      if (useHighlighting) {
-        final syntaxTheme = buildSyntaxThemeFromTerminal(editorTheme);
-        controller = SyntaxHighlightController(
-          text: decodedText,
-          language: detectedLanguage,
-          theme: syntaxTheme,
-        );
-      } else {
-        controller = TextEditingController(text: decodedText);
-      }
+      final controller = createSftpEditorController(
+        text: decodedText,
+        useHighlighting: useHighlighting,
+        language: detectedLanguage,
+        syntaxTheme: useHighlighting
+            ? buildSyntaxThemeFromTerminal(editorTheme)
+            : null,
+      );
 
       if (!mounted) {
         controller.dispose();
