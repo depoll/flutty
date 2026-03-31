@@ -916,6 +916,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return;
     }
 
+    if (!value.composing.isCollapsed) {
+      _sawImeComposition = true;
+    }
+
     _currentEditingState = value;
     _queuedEditingValue = value;
     _latestEditingValueRevision++;

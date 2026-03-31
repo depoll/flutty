@@ -564,6 +564,42 @@ void main() {
       expectedTerminalCursorOffset: 'echo th'.length,
       run: _runRepeatedSelectionReplaceThenBackspaceCase,
     ),
+    _ValidationCase(
+      id: '20-replace-move-later-backspace',
+      title:
+          'Replacing one word then backspacing later elsewhere keeps the later caret anchored',
+      expectedVisibleText: 'echo the worl',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'echo the worl',
+      expectedSelectionOffset: 15,
+      expectedTerminalCursorOffset: 'echo the worl'.length,
+      run: _runReplaceThenLaterBackspaceCase,
+    ),
+    _ValidationCase(
+      id: '21-replacement-separator-reinsert',
+      title:
+          'Deleting and reinserting the replacement separator restores the intended spacing without drift',
+      expectedVisibleText: 'echo the world',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      expectedSelectionOffset: 11,
+      expectedTerminalCursorOffset: 'echo the '.length,
+      run: _runReplacementSeparatorReinsertCase,
+    ),
+    _ValidationCase(
+      id: '22-replace-elsewhere',
+      title:
+          'Replacing one word and then replacing a later word keeps both edits anchored',
+      expectedVisibleText: 'echo the earth',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'echo the earth',
+      expectedSelectionOffset: 16,
+      expectedTerminalCursorOffset: 'echo the earth'.length,
+      run: _runReplaceThenLaterReplacementCase,
+    ),
   ];
 
   testWidgets('runs the terminal text input validation matrix', (tester) async {
@@ -1169,6 +1205,162 @@ Future<void> _runRepeatedSelectionReplaceThenBackspaceCase(
           '$_deleteDetectionMarker'
           'echo th world',
       selection: TextSelection.collapsed(offset: 9),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runReplaceThenLaterBackspaceCase(WidgetTester tester) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection.collapsed(offset: 16),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection.collapsed(offset: 11),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection.collapsed(offset: 11),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection.collapsed(offset: 16),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the worl',
+      selection: TextSelection.collapsed(offset: 15),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runReplacementSeparatorReinsertCase(WidgetTester tester) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection.collapsed(offset: 16),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection(baseOffset: 7, extentOffset: 11),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection.collapsed(offset: 11),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo theworld',
+      selection: TextSelection.collapsed(offset: 10),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection.collapsed(offset: 11),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runReplaceThenLaterReplacementCase(WidgetTester tester) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection.collapsed(offset: 16),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection.collapsed(offset: 11),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection.collapsed(offset: 11),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection(baseOffset: 11, extentOffset: 16),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the earth',
+      selection: TextSelection.collapsed(offset: 16),
     ),
   );
   await tester.pump();
