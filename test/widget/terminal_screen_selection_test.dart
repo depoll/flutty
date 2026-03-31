@@ -102,6 +102,15 @@ void main() {
       );
       expect(trimTerminalFilePathCandidate('/tmp/output;'), '/tmp/output');
     });
+
+    test('drops wrapped result-count suffixes after unmatched parentheses', () {
+      expect(
+        trimTerminalFilePathCandidate(
+          '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/test/widget/terminal_text_input_handler_test.dart)6',
+        ),
+        '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/test/widget/terminal_text_input_handler_test.dart',
+      );
+    });
   });
 
   group('resolvePickedTerminalUploadFileName', () {
@@ -348,6 +357,56 @@ void main() {
       );
     });
 
+    test('detects local paths split across three wrapped lines', () {
+      const text =
+          'Read ~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/\n'
+          'presentation/widgets/terminal_text_input_handler.dar\n'
+          't';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.lastIndexOf('t'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/presentation/widgets/terminal_text_input_handler.dart',
+      );
+    });
+
+    test('detects local paths split across three TUI continuation rows', () {
+      const text =
+          '│ Read ~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/\n'
+          '│ presentation/widgets/terminal_text_input_handler.dar\n'
+          '│ t';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.lastIndexOf('t'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/presentation/widgets/terminal_text_input_handler.dart',
+      );
+    });
+
+    test('drops wrapped result counts from grep-style file path matches', () {
+      const text =
+          '(~/Code/flutty.worktrees/fix-swipe-keyboard-typing/test/\n'
+          'widget/terminal_text_input_handler_test.dart)6 lines found';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('terminal_text_input_handler_test.dart'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/test/widget/terminal_text_input_handler_test.dart',
+      );
+    });
+
     test('keeps suffix taps inside the hit-test range for stack traces', () {
       const line = 'Error in /srv/app/lib/main.dart:42:7';
       final detectedPath = detectTerminalFilePathAtTextOffset(
@@ -539,6 +598,44 @@ void main() {
         );
       },
     );
+
+    test('resolves single-character third-line path continuations', () {
+      const snapshotText =
+          'Read ~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/\n'
+          'presentation/widgets/terminal_text_input_handler.dar\n'
+          't';
+      const rowText = 't';
+      expect(
+        resolveTerminalFilePathSegmentOnRowForPath(
+          snapshotText: snapshotText,
+          rowText: rowText,
+          rowStartOffset: snapshotText.lastIndexOf(rowText),
+          rowColumnOffsets: List<int>.generate(rowText.length + 1, (i) => i),
+          path:
+              '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/presentation/widgets/terminal_text_input_handler.dart',
+        ),
+        (text: 't', startColumn: 0, endColumn: 0),
+      );
+    });
+
+    test('resolves guided single-character third-line path continuations', () {
+      const snapshotText =
+          '│ Read ~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/\n'
+          '│ presentation/widgets/terminal_text_input_handler.dar\n'
+          '│ t';
+      const rowText = '│ t';
+      expect(
+        resolveTerminalFilePathSegmentOnRowForPath(
+          snapshotText: snapshotText,
+          rowText: rowText,
+          rowStartOffset: snapshotText.lastIndexOf(rowText),
+          rowColumnOffsets: List<int>.generate(rowText.length + 1, (i) => i),
+          path:
+              '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/lib/presentation/widgets/terminal_text_input_handler.dart',
+        ),
+        (text: 't', startColumn: 2, endColumn: 2),
+      );
+    });
   });
 
   group('normalizeTerminalLinkCandidate', () {

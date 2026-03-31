@@ -63,6 +63,7 @@ final _terminalFilePathStackTraceSuffixPattern = RegExp(
 final _terminalFilePathShellOperatorSuffixPattern = RegExp(
   r'(?:&&|\|\||[&;|])+$',
 );
+final _terminalWrappedCountSuffixPattern = RegExp(r'\d+$');
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
 
@@ -223,7 +224,27 @@ String trimTerminalFilePathCandidate(String text) {
     _terminalFilePathShellOperatorSuffixPattern,
     '',
   );
+  candidate = _trimWrappedTerminalFilePathCountSuffix(candidate);
   return trimTerminalLinkCandidate(candidate);
+}
+
+String _trimWrappedTerminalFilePathCountSuffix(String text) {
+  final match = _terminalWrappedCountSuffixPattern.firstMatch(text);
+  if (match == null || match.start == 0) {
+    return text;
+  }
+
+  final prefix = text.substring(0, match.start);
+  if (!prefix.endsWith(')')) {
+    return text;
+  }
+
+  final trimmedPrefix = trimTerminalLinkCandidate(prefix);
+  if (trimmedPrefix == prefix || trimmedPrefix.split('/').last.contains('.')) {
+    return trimmedPrefix == prefix ? text : trimmedPrefix;
+  }
+
+  return text;
 }
 
 /// Whether a character can safely appear before a supported terminal path.
@@ -3770,16 +3791,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final rowStart = pathSnapshot.rowStarts[rowIndex];
     final rowColumnOffsets = pathSnapshot.columnOffsets[rowIndex];
-    final rowEnd = rowStart + rowColumnOffsets.last;
-    final rowText = pathSnapshot.text.substring(rowStart, rowEnd);
+    final rowText = pathSnapshot.text.substring(
+      rowStart,
+      rowStart + rowColumnOffsets.last,
+    );
     final relativeCandidatesToPrime = <String>{};
     final segments =
         <({String path, String text, int startColumn, int endColumn})>[];
     for (final detectedPath in snapshotAnalysis.detectedPaths) {
-      if (detectedPath.end <= rowStart || detectedPath.start >= rowEnd) {
-        continue;
-      }
-
       final path = detectedPath.path;
       if (_isInteractiveTerminalFilePath(path)) {
         final visibleSegment = resolveTerminalFilePathSegmentOnRow(
