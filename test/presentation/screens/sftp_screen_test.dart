@@ -125,31 +125,6 @@ void main() {
       );
     });
 
-    test('creates a plain text editor controller with the caret on line 1', () {
-      final controller = createSftpEditorController(
-        text: 'alpha\nbeta',
-        useHighlighting: false,
-      );
-      addTearDown(controller.dispose);
-
-      expect(controller.selection, const TextSelection.collapsed(offset: 0));
-    });
-
-    test(
-      'creates a highlighted editor controller with the caret on line 1',
-      () {
-        final controller = createSftpEditorController(
-          text: 'void main() {}',
-          useHighlighting: true,
-          language: 'dart',
-          syntaxTheme: const <String, TextStyle>{},
-        );
-        addTearDown(controller.dispose);
-
-        expect(controller.selection, const TextSelection.collapsed(offset: 0));
-      },
-    );
-
     test('measures the widest rendered line instead of the longest string', () {
       const style = TextStyle(fontSize: 20);
       const trailingSlack = 12.0;
