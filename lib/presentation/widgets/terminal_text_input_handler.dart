@@ -169,6 +169,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
   bool _isProcessingEditingValue = false;
+  bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   String _lastSentText = '';
@@ -416,6 +417,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
+      _lastProcessedUserSelectionWasValid = false;
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
       _lastSentText = '';
@@ -433,6 +435,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
+    _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _lastSentText = '';
@@ -584,19 +587,26 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       .characters
       .length;
 
-  int? _collapsedSelectionCursorOffset(
+  TextSelection? _userSelectionForEditingValue(
     String userText,
     TextEditingValue value,
   ) {
     final rawPrefixLength = _editingPrefixLength(value.text);
     final rawUserText = _extractRawInputText(value.text);
     final trimmedLeadingCharacters = rawUserText.length - userText.length;
-    final userSelection = _normalizeSelectionForUserText(
+    return _normalizeSelectionForUserText(
       selection: value.selection,
       rawPrefixLength: rawPrefixLength,
       trimmedLeadingCharacters: trimmedLeadingCharacters,
       userTextLength: userText.length,
     );
+  }
+
+  int? _collapsedSelectionCursorOffset(
+    String userText,
+    TextEditingValue value,
+  ) {
+    final userSelection = _userSelectionForEditingValue(userText, value);
     if (userSelection == null || !userSelection.isCollapsed) {
       return null;
     }
@@ -965,6 +975,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   Future<void> _updateEditingValue(TextEditingValue value, int revision) async {
     _currentEditingState = value;
+    var processedUserSelectionWasValid = false;
+    var processedUserSelection = const TextSelection.collapsed(offset: 0);
     try {
       // Handle composing (IME input in progress).
       if (!value.composing.isCollapsed) {
@@ -989,14 +1001,25 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
 
       final currentText = _extractInputText(value.text);
+      final userSelection = _userSelectionForEditingValue(currentText, value);
+      processedUserSelectionWasValid = userSelection != null;
+      processedUserSelection =
+          userSelection ?? TextSelection.collapsed(offset: currentText.length);
       final targetCursorOffset = _collapsedSelectionCursorOffset(
         currentText,
         value,
       );
 
       if (currentText == _lastSentText) {
+        final collapsedMoveAwayFromReplacement =
+            !_lastProcessedSelectionWasCollapsed &&
+            targetCursorOffset != null &&
+            targetCursorOffset != _lastSentCursorOffset &&
+            targetCursorOffset != _lastSentCursorOffset + 1;
         final movedCollapsedCursor =
-            _lastProcessedSelectionWasCollapsed &&
+            _lastProcessedUserSelectionWasValid &&
+            (_lastProcessedSelectionWasCollapsed ||
+                collapsedMoveAwayFromReplacement) &&
             targetCursorOffset != null &&
             targetCursorOffset != _lastSentCursorOffset;
         if (targetCursorOffset != null &&
@@ -1047,7 +1070,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _syncEditingStateWithUserText(currentText, sourceValue: value);
       _sawImeComposition = false;
     } finally {
-      _lastProcessedSelectionWasCollapsed = value.selection.isCollapsed;
+      _lastProcessedUserSelectionWasValid = processedUserSelectionWasValid;
+      _lastProcessedSelectionWasCollapsed = processedUserSelection.isCollapsed;
     }
   }
 
@@ -1083,6 +1107,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _sawImeComposition = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _pendingEnterActionSuppressions = 0;

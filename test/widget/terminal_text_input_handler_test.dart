@@ -758,6 +758,68 @@ void main() {
     );
 
     testWidgets(
+      'resyncs the IME state when a replacement selection collapses to a different caret position',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'echo teh world',
+            selectionOffset: 'echo teh world'.length,
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}echo the world',
+            selection: TextSelection(baseOffset: 7, extentOffset: 10),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('echo the world', selectionOffset: 'echo '.length),
+        );
+        await tester.pump();
+
+        expect(
+          terminalOutput.join(),
+          List.filled(3, _terminalKeyOutput(TerminalKey.arrowLeft)).join(),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          hasLength(1),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'preserves terminal cursor position through mid-line replace and backspace',
       (tester) async {
         final terminalOutput = <String>[];
@@ -2757,6 +2819,76 @@ void main() {
             initialCursorOffset: 'teh world '.length,
           ),
           (text: 'the wo', cursorOffset: 'the wo'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'resyncs the IME state when an earlier-word replacement is followed by a caret move',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('the ', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        expect(
+          terminalOutput.join(),
+          List.filled(2, _terminalKeyOutput(TerminalKey.arrowLeft)).join(),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          hasLength(1),
         );
 
         focusNode.dispose();
