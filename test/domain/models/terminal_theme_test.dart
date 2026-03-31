@@ -1,7 +1,17 @@
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = math.max(luminanceA, luminanceB);
+  final darkest = math.min(luminanceA, luminanceB);
+  return (brightest + 0.05) / (darkest + 0.05);
+}
 
 void main() {
   group('TerminalThemeData', () {
@@ -261,6 +271,18 @@ void main() {
       expect(TerminalThemes.getById('clean-white'), isNotNull);
       expect(TerminalThemes.getById('vivid'), isNotNull);
       expect(TerminalThemes.getById('ocean-dark'), isNotNull);
+    });
+
+    test('all built-in themes keep tmux status colors legible', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(theme.green, theme.black),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep tmux black-on-green status '
+              'lines readable.',
+        );
+      }
     });
   });
 }
