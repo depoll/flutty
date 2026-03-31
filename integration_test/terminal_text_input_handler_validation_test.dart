@@ -310,12 +310,12 @@ class _SummaryScreen extends StatelessWidget {
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
                           Text(
-                            '${result.passed ? "PASS" : "FAIL"} ${result.testCase.id}',
+                            '${result.passed ? 'PASS' : 'FAIL'} ${result.testCase.id}',
                             style: Theme.of(context).textTheme.titleMedium,
                           ),
                           Text(result.testCase.title),
                           Text(
-                            'Expected raw: ${result.testCase.expectedRawOutput ?? "(n/a)"}',
+                            'Expected raw: ${result.testCase.expectedRawOutput ?? '(n/a)'}',
                           ),
                           Text('Actual raw: ${result.rawOutput}'),
                           Text(
@@ -324,7 +324,7 @@ class _SummaryScreen extends StatelessWidget {
                           Text('Actual visible: ${result.visibleText}'),
                           Text(
                             'Expected terminal cursor: '
-                            '${result.testCase.expectedTerminalCursorOffset?.toString() ?? "(n/a)"}',
+                            '${result.testCase.expectedTerminalCursorOffset?.toString() ?? '(n/a)'}',
                           ),
                           Text(
                             'Actual terminal cursor: ${result.terminalCursorOffset}',

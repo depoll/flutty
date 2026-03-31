@@ -305,6 +305,39 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     widget.onUserInput?.call();
   }
 
+  void _trackHandledHardwareCursorKey(
+    TerminalKey key, {
+    required bool hasShortcutModifier,
+  }) {
+    if (hasShortcutModifier) {
+      return;
+    }
+
+    final maxOffset = _textLengthInGraphemes(_lastSentText);
+    switch (key) {
+      case TerminalKey.arrowLeft:
+        _lastSentCursorOffset = _clampTextOffset(
+          _lastSentCursorOffset - 1,
+          maxOffset,
+        );
+        return;
+      case TerminalKey.arrowRight:
+        _lastSentCursorOffset = _clampTextOffset(
+          _lastSentCursorOffset + 1,
+          maxOffset,
+        );
+        return;
+      case TerminalKey.arrowUp:
+      case TerminalKey.arrowDown:
+        if (_lastSentText.isNotEmpty || _lastSentCursorOffset != 0) {
+          _resetCommittedInputState();
+        }
+        return;
+      default:
+        return;
+    }
+  }
+
   // -- Hardware key event handling --
 
   KeyEventResult _onKeyEvent(FocusNode focusNode, KeyEvent event) {
@@ -338,6 +371,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     if (handled) {
       _notifyUserInput();
+      _trackHandledHardwareCursorKey(
+        key,
+        hasShortcutModifier: hasShortcutModifier,
+      );
     }
 
     return handled ? KeyEventResult.handled : KeyEventResult.ignored;
@@ -617,19 +654,28 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   void _moveTerminalCursorTo(int targetOffset) {
+    final maxOffset = _textLengthInGraphemes(_lastSentText);
+    final clampedTargetOffset = _clampTextOffset(targetOffset, maxOffset);
     final currentOffset = _lastSentCursorOffset;
-    if (targetOffset == currentOffset) {
+    final isCurrentOffsetValid =
+        currentOffset >= 0 && currentOffset <= maxOffset;
+    if (!isCurrentOffsetValid) {
+      _lastSentCursorOffset = clampedTargetOffset;
       return;
     }
 
-    final key = targetOffset < currentOffset
+    if (clampedTargetOffset == currentOffset) {
+      return;
+    }
+
+    final key = clampedTargetOffset < currentOffset
         ? TerminalKey.arrowLeft
         : TerminalKey.arrowRight;
-    final moveCount = (targetOffset - currentOffset).abs();
+    final moveCount = (clampedTargetOffset - currentOffset).abs();
     for (var index = 0; index < moveCount; index++) {
       widget.terminal.keyInput(key);
     }
-    _lastSentCursorOffset = targetOffset;
+    _lastSentCursorOffset = clampedTargetOffset;
   }
 
   ({int deletedCount, String appendedText, int deleteCursorOffset})
@@ -984,13 +1030,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      if (value.text.length < _initEditingState.text.length) {
+      if (_editingPrefixLength(value.text) < _initEditingState.text.length) {
         final clearedBufferedInput = _lastSentText.isNotEmpty;
-        _notifyUserInput();
+        if (clearedBufferedInput) {
+          _notifyUserInput();
+        }
         _moveTerminalCursorTo(_textLengthInGraphemes(_lastSentText));
-        final deletedCount = value.text.isEmpty
-            ? _textLengthInGraphemes(_lastSentText)
-            : 1;
+        final deletedCount = _textLengthInGraphemes(_lastSentText);
         for (var index = 0; index < deletedCount; index++) {
           widget.terminal.keyInput(TerminalKey.backspace);
         }

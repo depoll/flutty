@@ -767,7 +767,11 @@ void main() {
       );
       await tester.pump();
 
-      expect(terminalOutput.join(), 'ok\x7fre');
+      expect(terminalOutput.join(), 'ok\x7f\x7fre');
+      expect(_terminalStateFromEvents(terminalOutput), (
+        text: 're',
+        cursorOffset: 2,
+      ));
 
       focusNode.dispose();
     });
@@ -901,6 +905,64 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'keeps the tracked cursor aligned after a hardware left arrow before IME insertion',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hello'.length),
+        );
+        await tester.pump();
+
+        await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 'hell'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hellXo', selectionOffset: 'hellX'.length),
+        );
+        await tester.pump();
+
+        expect(terminalOutput.join(), 'X');
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'hello',
+            initialCursorOffset: 'hell'.length,
+          ),
+          (text: 'hellXo', cursorOffset: 'hellX'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
 
     testWidgets(
       'moves the terminal cursor when the IME caret moves without text changes',
