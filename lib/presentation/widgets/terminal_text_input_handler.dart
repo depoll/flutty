@@ -1058,11 +1058,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         currentText,
         value,
       );
-      final delta = _computeTextDelta(
-        currentText,
-        cursorOffsetHint: targetCursorOffset,
-      );
-
       if (currentText == _lastSentText) {
         final collapsedMoveAwayFromReplacement =
             !_lastProcessedSelectionWasCollapsed &&
@@ -1089,6 +1084,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
+      final delta = _computeTextDelta(
+        currentText,
+        cursorOffsetHint: targetCursorOffset,
+      );
       final review = _reviewForInsertedText(currentText, delta);
       if (review != null) {
         final shouldInsert = await widget.onReviewInsertedText!(review);
