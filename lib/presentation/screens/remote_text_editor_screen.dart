@@ -279,6 +279,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     _horizontalScrollController =
         widget.horizontalScrollController ?? ScrollController();
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
+    _ensureInitialSelectionIsVisibleFromStart(widget.controller);
     widget.controller.addListener(_handleControllerChanged);
     _editorScrollController.addListener(_syncLineNumberScrollOffset);
     _refreshCachedMetrics();
@@ -295,6 +296,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_handleControllerChanged);
+      _ensureInitialSelectionIsVisibleFromStart(widget.controller);
       widget.controller.addListener(_handleControllerChanged);
       _cachedText = null;
       _cachedSelection = null;
@@ -318,6 +320,15 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
           widget.horizontalScrollController == null;
       _scheduleSelectionVisibilityUpdate();
     }
+  }
+
+  void _ensureInitialSelectionIsVisibleFromStart(
+    TextEditingController controller,
+  ) {
+    if (controller.selection.isValid) {
+      return;
+    }
+    controller.selection = const TextSelection.collapsed(offset: 0);
   }
 
   @override
