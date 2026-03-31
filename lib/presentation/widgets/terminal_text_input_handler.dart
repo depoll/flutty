@@ -169,6 +169,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
   bool _isProcessingEditingValue = false;
+  bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
@@ -415,6 +416,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
+      _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
       _lastSentText = '';
       _lastSentCursorOffset = 0;
@@ -431,6 +433,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
+    _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
@@ -867,6 +870,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _syncEditingStateWithUserText(
     String userText, {
     TextEditingValue? sourceValue,
+    bool forceResyncState = false,
   }) {
     final rawPrefixLength = sourceValue == null
         ? _initEditingState.text.length
@@ -901,6 +905,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         sourceValue.selection.isValid &&
         !sourceValue.selection.isCollapsed;
     final shouldResyncText =
+        forceResyncState ||
         sourceValue == null ||
         (sourceValue.text != nextState.text &&
             !(trimmedLeadingCharacters > 0 && hasActiveReplacementSelection));
@@ -960,79 +965,90 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   Future<void> _updateEditingValue(TextEditingValue value, int revision) async {
     _currentEditingState = value;
-
-    // Handle composing (IME input in progress).
-    if (!value.composing.isCollapsed) {
-      _sawImeComposition = true;
-      return;
-    }
-
-    if (value.text.length < _initEditingState.text.length) {
-      final clearedBufferedInput = _lastSentText.isNotEmpty;
-      _notifyUserInput();
-      _moveTerminalCursorTo(_textLengthInGraphemes(_lastSentText));
-      final deletedCount = value.text.isEmpty
-          ? _textLengthInGraphemes(_lastSentText)
-          : 1;
-      for (var index = 0; index < deletedCount; index++) {
-        widget.terminal.keyInput(TerminalKey.backspace);
+    try {
+      // Handle composing (IME input in progress).
+      if (!value.composing.isCollapsed) {
+        _sawImeComposition = true;
+        return;
       }
-      _sawImeComposition = false;
-      _resetCommittedInputState();
-      _trimLeadingSwipeSpaceAfterBufferClear = clearedBufferedInput;
-      return;
-    }
 
-    final currentText = _extractInputText(value.text);
-    final targetCursorOffset = _collapsedSelectionCursorOffset(
-      currentText,
-      value,
-    );
-
-    if (currentText == _lastSentText) {
-      if (targetCursorOffset != null &&
-          targetCursorOffset != _lastSentCursorOffset) {
+      if (value.text.length < _initEditingState.text.length) {
+        final clearedBufferedInput = _lastSentText.isNotEmpty;
         _notifyUserInput();
+        _moveTerminalCursorTo(_textLengthInGraphemes(_lastSentText));
+        final deletedCount = value.text.isEmpty
+            ? _textLengthInGraphemes(_lastSentText)
+            : 1;
+        for (var index = 0; index < deletedCount; index++) {
+          widget.terminal.keyInput(TerminalKey.backspace);
+        }
+        _sawImeComposition = false;
+        _resetCommittedInputState();
+        _trimLeadingSwipeSpaceAfterBufferClear = clearedBufferedInput;
+        return;
+      }
+
+      final currentText = _extractInputText(value.text);
+      final targetCursorOffset = _collapsedSelectionCursorOffset(
+        currentText,
+        value,
+      );
+
+      if (currentText == _lastSentText) {
+        final movedCollapsedCursor =
+            _lastProcessedSelectionWasCollapsed &&
+            targetCursorOffset != null &&
+            targetCursorOffset != _lastSentCursorOffset;
+        if (targetCursorOffset != null &&
+            targetCursorOffset != _lastSentCursorOffset) {
+          _notifyUserInput();
+          _moveTerminalCursorTo(targetCursorOffset);
+        }
+        _syncEditingStateWithUserText(
+          currentText,
+          sourceValue: value,
+          forceResyncState: movedCollapsedCursor,
+        );
+        _sawImeComposition = false;
+        return;
+      }
+
+      final review = _reviewForInsertedText(currentText);
+      if (review != null) {
+        final shouldInsert = await widget.onReviewInsertedText!(review);
+        if (!mounted || revision != _latestEditingValueRevision) {
+          return;
+        }
+        if (!shouldInsert) {
+          _syncEditingStateWithUserText(_lastSentText);
+          _sawImeComposition = false;
+          return;
+        }
+      }
+
+      if (currentText != _lastSentText) {
+        _notifyUserInput();
+      }
+      final previousText = _lastSentText;
+      final newlineCount = _sendInputDelta(
+        currentText,
+        cursorOffsetHint: targetCursorOffset,
+      );
+      if (newlineCount > 0) {
+        _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
+        _sawImeComposition = false;
+        return;
+      }
+      _trimLeadingSwipeSpaceAfterBufferClear =
+          previousText.isNotEmpty && currentText.isEmpty;
+      if (targetCursorOffset != null) {
         _moveTerminalCursorTo(targetCursorOffset);
       }
       _syncEditingStateWithUserText(currentText, sourceValue: value);
       _sawImeComposition = false;
-      return;
+    } finally {
+      _lastProcessedSelectionWasCollapsed = value.selection.isCollapsed;
     }
-
-    final review = _reviewForInsertedText(currentText);
-    if (review != null) {
-      final shouldInsert = await widget.onReviewInsertedText!(review);
-      if (!mounted || revision != _latestEditingValueRevision) {
-        return;
-      }
-      if (!shouldInsert) {
-        _syncEditingStateWithUserText(_lastSentText);
-        _sawImeComposition = false;
-        return;
-      }
-    }
-
-    if (currentText != _lastSentText) {
-      _notifyUserInput();
-    }
-    final previousText = _lastSentText;
-    final newlineCount = _sendInputDelta(
-      currentText,
-      cursorOffsetHint: targetCursorOffset,
-    );
-    if (newlineCount > 0) {
-      _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
-      _sawImeComposition = false;
-      return;
-    }
-    _trimLeadingSwipeSpaceAfterBufferClear =
-        previousText.isNotEmpty && currentText.isEmpty;
-    if (targetCursorOffset != null) {
-      _moveTerminalCursorTo(targetCursorOffset);
-    }
-    _syncEditingStateWithUserText(currentText, sourceValue: value);
-    _sawImeComposition = false;
   }
 
   @override
@@ -1067,6 +1083,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _sawImeComposition = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();

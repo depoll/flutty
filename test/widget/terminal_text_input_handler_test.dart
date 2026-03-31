@@ -704,6 +704,60 @@ void main() {
     );
 
     testWidgets(
+      'resyncs the IME state when the caret moves within existing text',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'echo teh world',
+            selectionOffset: 'echo teh world'.length,
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('echo teh world', selectionOffset: 'echo '.length),
+        );
+        await tester.pump();
+
+        expect(
+          terminalOutput.join(),
+          List.filled(9, _terminalKeyOutput(TerminalKey.arrowLeft)).join(),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          hasLength(1),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'preserves terminal cursor position through mid-line replace and backspace',
       (tester) async {
         final terminalOutput = <String>[];
@@ -2544,6 +2598,166 @@ void main() {
         await _commitSwipeText(tester, '$_deleteDetectionMarker the ');
 
         expect(_terminalTextFromEvents(terminalOutput), 'the ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'keeps the cursor aligned when replacing an earlier word after deleting a later swiped word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh world ',
+            initialCursorOffset: 'teh world '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh world ',
+            initialCursorOffset: 'teh world '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'keeps the cursor aligned when replacing an earlier word after partially deleting a later word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh world ',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh wo',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh wo',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bthe wo',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh world ',
+            initialCursorOffset: 'teh world '.length,
+          ),
+          (text: 'the wo', cursorOffset: 'the wo'.length),
+        );
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh world ',
+            initialCursorOffset: 'teh world '.length,
+          ),
+          (text: 'the wo', cursorOffset: 'the wo'.length),
+        );
 
         focusNode.dispose();
       },
