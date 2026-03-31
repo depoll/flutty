@@ -339,6 +339,24 @@ Future<_ComparisonResult> _runTerminalSequence(
   return result;
 }
 
+Future<void> _expectTextFieldComparisonScenario(
+  WidgetTester tester, {
+  required List<TextEditingValue> sequence,
+  int? expectedTextFieldEchoCount = 0,
+  int? expectedTerminalEchoCount,
+}) async {
+  final textFieldResult = await _runTextFieldSequence(tester, sequence);
+  final terminalResult = await _runTerminalSequence(tester, sequence);
+
+  expect(terminalResult.finalState, textFieldResult.finalState);
+  if (expectedTextFieldEchoCount != null) {
+    expect(textFieldResult.echoedStates, hasLength(expectedTextFieldEchoCount));
+  }
+  if (expectedTerminalEchoCount != null) {
+    expect(terminalResult.echoedStates, hasLength(expectedTerminalEchoCount));
+  }
+}
+
 void main() {
   group('TerminalTextInputHandler', () {
     testWidgets('preserves swipe typing context across short pauses', (
@@ -4999,5 +5017,336 @@ void main() {
         expect(terminalResult.echoedStates, isEmpty);
       },
     );
+
+    final matrixScenarios =
+        <
+          ({
+            String name,
+            List<TextEditingValue> sequence,
+            int? textFieldEchoes,
+            int? terminalEchoes,
+          })
+        >[
+          (
+            name: 'matches insertion at a moved caret',
+            sequence: const [
+              TextEditingValue(
+                text: 'foo bar',
+                selection: TextSelection.collapsed(offset: 7),
+              ),
+              TextEditingValue(
+                text: 'foo bar',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              TextEditingValue(
+                text: 'foo Xbar',
+                selection: TextSelection.collapsed(offset: 5),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches beginning-of-line insertion',
+            sequence: const [
+              TextEditingValue(
+                text: 'hello',
+                selection: TextSelection.collapsed(offset: 5),
+              ),
+              TextEditingValue(
+                text: 'hello',
+                selection: TextSelection.collapsed(offset: 0),
+              ),
+              TextEditingValue(
+                text: 'Xhello',
+                selection: TextSelection.collapsed(offset: 1),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches deletion at a moved caret',
+            sequence: const [
+              TextEditingValue(
+                text: 'foo Xbar',
+                selection: TextSelection.collapsed(offset: 8),
+              ),
+              TextEditingValue(
+                text: 'foo Xbar',
+                selection: TextSelection.collapsed(offset: 5),
+              ),
+              TextEditingValue(
+                text: 'foo bar',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches identical-character insertion at a moved caret',
+            sequence: const [
+              TextEditingValue(
+                text: 'aaaa',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              TextEditingValue(
+                text: 'aaaa',
+                selection: TextSelection.collapsed(offset: 1),
+              ),
+              TextEditingValue(
+                text: 'aaaaa',
+                selection: TextSelection.collapsed(offset: 2),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches punctuation replacement at a moved caret',
+            sequence: const [
+              TextEditingValue(
+                text: 'hello, world',
+                selection: TextSelection.collapsed(offset: 12),
+              ),
+              TextEditingValue(
+                text: 'hello, world',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+              TextEditingValue(
+                text: 'hello; world',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches insertion and backspace at a space boundary',
+            sequence: const [
+              TextEditingValue(
+                text: 'foo bar',
+                selection: TextSelection.collapsed(offset: 7),
+              ),
+              TextEditingValue(
+                text: 'foo bar',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              TextEditingValue(
+                text: 'foo Xbar',
+                selection: TextSelection.collapsed(offset: 5),
+              ),
+              TextEditingValue(
+                text: 'foo bar',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches insertion and backspace between repeated spaces',
+            sequence: const [
+              TextEditingValue(
+                text: 'foo  bar',
+                selection: TextSelection.collapsed(offset: 8),
+              ),
+              TextEditingValue(
+                text: 'foo  bar',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              TextEditingValue(
+                text: 'foo X bar',
+                selection: TextSelection.collapsed(offset: 5),
+              ),
+              TextEditingValue(
+                text: 'foo  bar',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches repeated-word replacement then backspace',
+            sequence: const [
+              TextEditingValue(
+                text: 'go go go',
+                selection: TextSelection.collapsed(offset: 8),
+              ),
+              TextEditingValue(
+                text: 'go go go',
+                selection: TextSelection(baseOffset: 3, extentOffset: 5),
+              ),
+              TextEditingValue(
+                text: 'go gone go',
+                selection: TextSelection.collapsed(offset: 7),
+              ),
+              TextEditingValue(
+                text: 'go gon go',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 0,
+          ),
+          (
+            name:
+                'matches repeated non-collapsed replacements before backspace',
+            sequence: const [
+              TextEditingValue(
+                text: 'echo teh world',
+                selection: TextSelection.collapsed(offset: 14),
+              ),
+              TextEditingValue(
+                text: 'echo teh world',
+                selection: TextSelection(baseOffset: 5, extentOffset: 8),
+              ),
+              TextEditingValue(
+                text: 'echo the world',
+                selection: TextSelection(baseOffset: 5, extentOffset: 8),
+              ),
+              TextEditingValue(
+                text: 'echo then world',
+                selection: TextSelection(baseOffset: 5, extentOffset: 9),
+              ),
+              TextEditingValue(
+                text: 'echo the world',
+                selection: TextSelection(baseOffset: 5, extentOffset: 8),
+              ),
+              TextEditingValue(
+                text: 'echo th world',
+                selection: TextSelection.collapsed(offset: 7),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 0,
+          ),
+          (
+            name: 'matches whitespace-cluster replacement before backspace',
+            sequence: const [
+              TextEditingValue(
+                text: 'foo  bar',
+                selection: TextSelection.collapsed(offset: 8),
+              ),
+              TextEditingValue(
+                text: 'foo  bar',
+                selection: TextSelection(baseOffset: 4, extentOffset: 8),
+              ),
+              TextEditingValue(
+                text: 'foo baz',
+                selection: TextSelection.collapsed(offset: 7),
+              ),
+              TextEditingValue(
+                text: 'foo ba',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 0,
+          ),
+          (
+            name:
+                'matches punctuation and double-space replacement before backspace',
+            sequence: const [
+              TextEditingValue(
+                text: 'hello,  world',
+                selection: TextSelection.collapsed(offset: 13),
+              ),
+              TextEditingValue(
+                text: 'hello,  world',
+                selection: TextSelection(baseOffset: 5, extentOffset: 8),
+              ),
+              TextEditingValue(
+                text: 'hello; world',
+                selection: TextSelection.collapsed(offset: 7),
+              ),
+              TextEditingValue(
+                text: 'hello;world',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 0,
+          ),
+          (
+            name: 'matches emoji insertion after a caret move',
+            sequence: const [
+              TextEditingValue(
+                text: 'a🎉b',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              TextEditingValue(
+                text: 'a🎉b',
+                selection: TextSelection.collapsed(offset: 1),
+              ),
+              TextEditingValue(
+                text: 'aX🎉b',
+                selection: TextSelection.collapsed(offset: 2),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 1,
+          ),
+          (
+            name: 'matches earlier-word replacement after deleting newer text',
+            sequence: const [
+              TextEditingValue(
+                text: 'teh world ',
+                selection: TextSelection.collapsed(offset: 10),
+              ),
+              TextEditingValue(
+                text: 'teh ',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+              TextEditingValue(
+                text: 'the ',
+                selection: TextSelection(baseOffset: 0, extentOffset: 3),
+              ),
+              TextEditingValue(
+                text: 'the ',
+                selection: TextSelection.collapsed(offset: 4),
+              ),
+            ],
+            textFieldEchoes: 0,
+            terminalEchoes: 0,
+          ),
+          (
+            name:
+                'matches earlier-word replacement after partially deleting newer text',
+            sequence: const [
+              TextEditingValue(
+                text: 'teh world ',
+                selection: TextSelection.collapsed(offset: 10),
+              ),
+              TextEditingValue(
+                text: 'teh wo',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+              TextEditingValue(
+                text: 'the wo',
+                selection: TextSelection(baseOffset: 0, extentOffset: 3),
+              ),
+              TextEditingValue(
+                text: 'the wo',
+                selection: TextSelection.collapsed(offset: 6),
+              ),
+            ],
+            textFieldEchoes: null,
+            terminalEchoes: null,
+          ),
+        ];
+
+    for (final scenario in matrixScenarios) {
+      testWidgets(scenario.name, (tester) async {
+        await _expectTextFieldComparisonScenario(
+          tester,
+          sequence: scenario.sequence,
+          expectedTextFieldEchoCount: scenario.textFieldEchoes,
+          expectedTerminalEchoCount: scenario.terminalEchoes,
+        );
+      });
+    }
   });
 }
