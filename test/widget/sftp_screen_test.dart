@@ -102,6 +102,27 @@ void main() {
     });
 
     testWidgets(
+      'starts at line 1 when the incoming controller selection is invalid',
+      (tester) async {
+        final controller = TextEditingController(text: 'alpha\nbeta');
+        addTearDown(controller.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: buildRemoteTextEditorScreenForTesting(
+              fileName: 'notes.txt',
+              controller: controller,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(controller.selection, const TextSelection.collapsed(offset: 0));
+        expect(find.text('Line 1, Column 1'), findsOneWidget);
+      },
+    );
+
+    testWidgets(
       'keeps the nowrap viewport fixed while scrolling the selection into view',
       (tester) async {
         final longLine = List<String>.filled(80, '0123456789').join();
