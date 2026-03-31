@@ -464,13 +464,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _commonGraphemePrefixLength(
     List<String> previousGraphemes,
-    List<String> currentGraphemes,
-  ) {
-    final maxLength = previousGraphemes.length < currentGraphemes.length
+    List<String> currentGraphemes, {
+    int? maxLength,
+  }) {
+    final sharedLength = previousGraphemes.length < currentGraphemes.length
         ? previousGraphemes.length
         : currentGraphemes.length;
+    final prefixLimit = maxLength == null || maxLength > sharedLength
+        ? sharedLength
+        : maxLength;
     var index = 0;
-    while (index < maxLength &&
+    while (index < prefixLimit &&
         previousGraphemes[index] == currentGraphemes[index]) {
       index++;
     }
@@ -529,8 +533,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         trailingCodeUnit == 0x0D;
   }
 
-  int _sendInputDelta(String currentText) {
-    final delta = _computeTextDelta(currentText);
+  int _sendInputDelta(String currentText, {int? cursorOffsetHint}) {
+    final delta = _computeTextDelta(
+      currentText,
+      cursorOffsetHint: cursorOffsetHint,
+    );
     _moveTerminalCursorTo(delta.deleteCursorOffset);
 
     final deletedCount = delta.deletedCount;
@@ -605,12 +612,42 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   ({int deletedCount, String appendedText, int deleteCursorOffset})
-  _computeTextDelta(String currentText) {
+  _computeTextDelta(String currentText, {int? cursorOffsetHint}) {
     final previousGraphemes = _lastSentText.characters.toList(growable: false);
     final currentGraphemes = currentText.characters.toList(growable: false);
+    final defaultDelta = _computeTextDeltaCandidate(
+      previousGraphemes,
+      currentGraphemes,
+    );
+    if (cursorOffsetHint == null) {
+      return defaultDelta;
+    }
+
+    final anchoredPrefixLimit = _lastSentCursorOffset < cursorOffsetHint
+        ? _lastSentCursorOffset
+        : cursorOffsetHint;
+    final anchoredDelta = _computeTextDeltaCandidate(
+      previousGraphemes,
+      currentGraphemes,
+      maxCommonPrefixLength: anchoredPrefixLimit,
+    );
+    return _selectPreferredTextDelta(
+      defaultDelta: defaultDelta,
+      anchoredDelta: anchoredDelta,
+      cursorOffsetHint: cursorOffsetHint,
+    );
+  }
+
+  ({int deletedCount, String appendedText, int deleteCursorOffset})
+  _computeTextDeltaCandidate(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes, {
+    int? maxCommonPrefixLength,
+  }) {
     final commonPrefix = _commonGraphemePrefixLength(
       previousGraphemes,
       currentGraphemes,
+      maxLength: maxCommonPrefixLength,
     );
     final commonSuffix = _commonGraphemeSuffixLength(
       previousGraphemes,
@@ -625,6 +662,67 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           .join(),
       deleteCursorOffset: deleteCursorOffset,
     );
+  }
+
+  int _deltaPostEditCursorOffset(
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  ) =>
+      delta.deleteCursorOffset -
+      delta.deletedCount +
+      delta.appendedText.characters.length;
+
+  int _deltaCursorScore(
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+    int cursorOffsetHint,
+  ) => (_deltaPostEditCursorOffset(delta) - cursorOffsetHint).abs();
+
+  int _deltaMovementScore(
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  ) => (delta.deleteCursorOffset - _lastSentCursorOffset).abs();
+
+  int _deltaRewriteScore(
+    ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
+  ) => delta.deletedCount + delta.appendedText.characters.length;
+
+  ({int deletedCount, String appendedText, int deleteCursorOffset})
+  _selectPreferredTextDelta({
+    required ({int deletedCount, String appendedText, int deleteCursorOffset})
+    defaultDelta,
+    required ({int deletedCount, String appendedText, int deleteCursorOffset})
+    anchoredDelta,
+    required int cursorOffsetHint,
+  }) {
+    final defaultCursorScore = _deltaCursorScore(
+      defaultDelta,
+      cursorOffsetHint,
+    );
+    final anchoredCursorScore = _deltaCursorScore(
+      anchoredDelta,
+      cursorOffsetHint,
+    );
+    if (anchoredCursorScore != defaultCursorScore) {
+      return anchoredCursorScore < defaultCursorScore
+          ? anchoredDelta
+          : defaultDelta;
+    }
+
+    final defaultMovementScore = _deltaMovementScore(defaultDelta);
+    final anchoredMovementScore = _deltaMovementScore(anchoredDelta);
+    if (anchoredMovementScore != defaultMovementScore) {
+      return anchoredMovementScore < defaultMovementScore
+          ? anchoredDelta
+          : defaultDelta;
+    }
+
+    final defaultRewriteScore = _deltaRewriteScore(defaultDelta);
+    final anchoredRewriteScore = _deltaRewriteScore(anchoredDelta);
+    if (anchoredRewriteScore != defaultRewriteScore) {
+      return anchoredRewriteScore < defaultRewriteScore
+          ? anchoredDelta
+          : defaultDelta;
+    }
+
+    return defaultDelta;
   }
 
   TerminalCommandReview? _reviewForInsertedText(String currentText) {
@@ -904,7 +1002,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (currentText != _lastSentText) {
       _notifyUserInput();
     }
-    final newlineCount = _sendInputDelta(currentText);
+    final newlineCount = _sendInputDelta(
+      currentText,
+      cursorOffsetHint: targetCursorOffset,
+    );
     if (newlineCount > 0) {
       _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
       _sawImeComposition = false;

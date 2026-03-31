@@ -528,6 +528,42 @@ void main() {
       expectedTerminalCursorOffset: 'echo th'.length,
       run: _runReplacementSelectionThenBackspaceCase,
     ),
+    _ValidationCase(
+      id: '17-identical-char-insert',
+      title:
+          'Inserting an identical character at a moved caret stays anchored to that caret',
+      expectedVisibleText: 'aaaaa',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'aaaaa',
+      expectedSelectionOffset: 4,
+      expectedTerminalCursorOffset: 2,
+      run: _runIdenticalCharacterInsertCase,
+    ),
+    _ValidationCase(
+      id: '18-identical-char-delete',
+      title:
+          'Deleting an identical character at a moved caret backspaces at that caret',
+      expectedVisibleText: 'aaaa',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'aaaa',
+      expectedSelectionOffset: 3,
+      expectedTerminalCursorOffset: 1,
+      run: _runIdenticalCharacterDeleteCase,
+    ),
+    _ValidationCase(
+      id: '19-repeated-selection-replace-backspace',
+      title:
+          'Repeated non-collapsed replacement updates still leave backspace on the intended word',
+      expectedVisibleText: 'echo th world',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'echo th world',
+      expectedSelectionOffset: 9,
+      expectedTerminalCursorOffset: 'echo th'.length,
+      run: _runRepeatedSelectionReplaceThenBackspaceCase,
+    ),
   ];
 
   testWidgets('runs the terminal text input validation matrix', (tester) async {
@@ -985,6 +1021,134 @@ Future<void> _runReplacementSelectionThenBackspaceCase(
           '$_deleteDetectionMarker'
           'echo teh world',
       selection: TextSelection(baseOffset: 7, extentOffset: 10),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection(baseOffset: 7, extentOffset: 10),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo th world',
+      selection: TextSelection.collapsed(offset: 9),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runIdenticalCharacterInsertCase(WidgetTester tester) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'aaaa',
+      selection: TextSelection.collapsed(offset: 6),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'aaaa',
+      selection: TextSelection.collapsed(offset: 3),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'aaaaa',
+      selection: TextSelection.collapsed(offset: 4),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runIdenticalCharacterDeleteCase(WidgetTester tester) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'aaaaa',
+      selection: TextSelection.collapsed(offset: 7),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'aaaaa',
+      selection: TextSelection.collapsed(offset: 4),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'aaaa',
+      selection: TextSelection.collapsed(offset: 3),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runRepeatedSelectionReplaceThenBackspaceCase(
+  WidgetTester tester,
+) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection.collapsed(offset: 16),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo teh world',
+      selection: TextSelection(baseOffset: 7, extentOffset: 10),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo the world',
+      selection: TextSelection(baseOffset: 7, extentOffset: 10),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'echo then world',
+      selection: TextSelection(baseOffset: 7, extentOffset: 11),
     ),
   );
   await tester.pump();
