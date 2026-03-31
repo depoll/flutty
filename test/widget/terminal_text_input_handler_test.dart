@@ -417,6 +417,55 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'trims a leading swipe space after typed input is fully backspaced away',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'echo ready',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('tmp', selectionOffset: 'tmp'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('', selectionOffset: 0),
+        );
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker hello');
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'echo ready',
+            initialCursorOffset: 'echo ready'.length,
+          ),
+          (text: 'echo readyhello', cursorOffset: 'echo readyhello'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('resyncs delete-detection marker after backspacing past it', (
       tester,
     ) async {

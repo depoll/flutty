@@ -169,6 +169,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
   bool _isProcessingEditingValue = false;
+  bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   int _pendingEnterActionSuppressions = 0;
@@ -414,6 +415,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
+      _trimLeadingSwipeSpaceAfterBufferClear = false;
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _pendingEnterActionSuppressions = 0;
@@ -429,6 +431,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
+    _trimLeadingSwipeSpaceAfterBufferClear = false;
     _lastSentText = '';
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
@@ -519,6 +522,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   bool _shouldTrimLeadingSwipeSpace() {
+    if (_trimLeadingSwipeSpaceAfterBufferClear) {
+      return true;
+    }
+
     final textBeforeCursor = widget.resolveTextBeforeCursor?.call();
     if (textBeforeCursor == null || textBeforeCursor.isEmpty) {
       return true;
@@ -563,6 +570,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
+    _trimLeadingSwipeSpaceAfterBufferClear = false;
     _syncEditingStateWithUserText('');
   }
 
@@ -960,6 +968,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     if (value.text.length < _initEditingState.text.length) {
+      final clearedBufferedInput = _lastSentText.isNotEmpty;
       _notifyUserInput();
       _moveTerminalCursorTo(_textLengthInGraphemes(_lastSentText));
       final deletedCount = value.text.isEmpty
@@ -970,6 +979,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
       _sawImeComposition = false;
       _resetCommittedInputState();
+      _trimLeadingSwipeSpaceAfterBufferClear = clearedBufferedInput;
       return;
     }
 
@@ -1006,6 +1016,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (currentText != _lastSentText) {
       _notifyUserInput();
     }
+    final previousText = _lastSentText;
     final newlineCount = _sendInputDelta(
       currentText,
       cursorOffsetHint: targetCursorOffset,
@@ -1015,6 +1026,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _sawImeComposition = false;
       return;
     }
+    _trimLeadingSwipeSpaceAfterBufferClear =
+        previousText.isNotEmpty && currentText.isEmpty;
     if (targetCursorOffset != null) {
       _moveTerminalCursorTo(targetCursorOffset);
     }
@@ -1054,6 +1067,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _sawImeComposition = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _trimLeadingSwipeSpaceAfterBufferClear = false;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }
