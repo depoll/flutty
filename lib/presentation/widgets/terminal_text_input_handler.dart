@@ -170,6 +170,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _sawImeComposition = false;
   bool _isProcessingEditingValue = false;
   String _lastSentText = '';
+  int _lastSentCursorOffset = 0;
   int _pendingEnterActionSuppressions = 0;
   int _latestEditingValueRevision = 0;
   TextEditingValue? _queuedEditingValue;
@@ -414,6 +415,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
       _lastSentText = '';
+      _lastSentCursorOffset = 0;
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
       _connection!.setEditingState(_initEditingState);
@@ -475,6 +477,24 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return index;
   }
 
+  int _commonGraphemeSuffixLength(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes, {
+    required int commonPrefixLength,
+  }) {
+    final previousRemainingLength =
+        previousGraphemes.length - commonPrefixLength;
+    final currentRemainingLength = currentGraphemes.length - commonPrefixLength;
+    var index = 0;
+    while (index < previousRemainingLength &&
+        index < currentRemainingLength &&
+        previousGraphemes[previousGraphemes.length - 1 - index] ==
+            currentGraphemes[currentGraphemes.length - 1 - index]) {
+      index++;
+    }
+    return index;
+  }
+
   String _extractRawInputText(String text) =>
       text.substring(_editingPrefixLength(text));
 
@@ -511,6 +531,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _sendInputDelta(String currentText) {
     final delta = _computeTextDelta(currentText);
+    _moveTerminalCursorTo(delta.deleteCursorOffset);
+
     final deletedCount = delta.deletedCount;
 
     for (var i = 0; i < deletedCount; i++) {
@@ -523,27 +545,85 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     _lastSentText = currentText;
+    _lastSentCursorOffset =
+        delta.deleteCursorOffset -
+        deletedCount +
+        appendedText.characters.length;
     return '\n'.allMatches(appendedText).length;
   }
 
   void _resetCommittedInputState({int pendingEnterSuppressions = 0}) {
     _lastSentText = '';
+    _lastSentCursorOffset = 0;
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
     _syncEditingStateWithUserText('');
   }
 
-  ({int deletedCount, String appendedText}) _computeTextDelta(
-    String currentText,
+  int _textLengthInGraphemes(String text) => text.characters.length;
+
+  int _graphemeOffsetForCodeUnitOffset(String text, int codeUnitOffset) => text
+      .substring(0, _clampTextOffset(codeUnitOffset, text.length))
+      .characters
+      .length;
+
+  int? _collapsedSelectionCursorOffset(
+    String userText,
+    TextEditingValue value,
   ) {
+    final rawPrefixLength = _editingPrefixLength(value.text);
+    final rawUserText = _extractRawInputText(value.text);
+    final trimmedLeadingCharacters = rawUserText.length - userText.length;
+    final userSelection = _normalizeSelectionForUserText(
+      selection: value.selection,
+      rawPrefixLength: rawPrefixLength,
+      trimmedLeadingCharacters: trimmedLeadingCharacters,
+      userTextLength: userText.length,
+    );
+    if (userSelection == null || !userSelection.isCollapsed) {
+      return null;
+    }
+    return _graphemeOffsetForCodeUnitOffset(
+      userText,
+      userSelection.extentOffset,
+    );
+  }
+
+  void _moveTerminalCursorTo(int targetOffset) {
+    final currentOffset = _lastSentCursorOffset;
+    if (targetOffset == currentOffset) {
+      return;
+    }
+
+    final key = targetOffset < currentOffset
+        ? TerminalKey.arrowLeft
+        : TerminalKey.arrowRight;
+    final moveCount = (targetOffset - currentOffset).abs();
+    for (var index = 0; index < moveCount; index++) {
+      widget.terminal.keyInput(key);
+    }
+    _lastSentCursorOffset = targetOffset;
+  }
+
+  ({int deletedCount, String appendedText, int deleteCursorOffset})
+  _computeTextDelta(String currentText) {
     final previousGraphemes = _lastSentText.characters.toList(growable: false);
     final currentGraphemes = currentText.characters.toList(growable: false);
     final commonPrefix = _commonGraphemePrefixLength(
       previousGraphemes,
       currentGraphemes,
     );
+    final commonSuffix = _commonGraphemeSuffixLength(
+      previousGraphemes,
+      currentGraphemes,
+      commonPrefixLength: commonPrefix,
+    );
+    final deleteCursorOffset = previousGraphemes.length - commonSuffix;
     return (
-      deletedCount: previousGraphemes.length - commonPrefix,
-      appendedText: currentGraphemes.skip(commonPrefix).join(),
+      deletedCount: previousGraphemes.length - commonPrefix - commonSuffix,
+      appendedText: currentGraphemes
+          .sublist(commonPrefix, currentGraphemes.length - commonSuffix)
+          .join(),
+      deleteCursorOffset: deleteCursorOffset,
     );
   }
 
@@ -558,7 +638,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final reviewText =
-        widget.buildReviewTextForInsertedText?.call(delta, currentText) ??
+        widget.buildReviewTextForInsertedText?.call((
+          deletedCount: delta.deletedCount,
+          appendedText: delta.appendedText,
+        ), currentText) ??
         currentText;
     final review = assessClipboardPasteCommand(
       reviewText,
@@ -776,13 +859,35 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     if (value.text.length < _initEditingState.text.length) {
       _notifyUserInput();
-      widget.terminal.keyInput(TerminalKey.backspace);
+      _moveTerminalCursorTo(_textLengthInGraphemes(_lastSentText));
+      final deletedCount = value.text.isEmpty
+          ? _textLengthInGraphemes(_lastSentText)
+          : 1;
+      for (var index = 0; index < deletedCount; index++) {
+        widget.terminal.keyInput(TerminalKey.backspace);
+      }
       _sawImeComposition = false;
       _resetCommittedInputState();
       return;
     }
 
     final currentText = _extractInputText(value.text);
+    final targetCursorOffset = _collapsedSelectionCursorOffset(
+      currentText,
+      value,
+    );
+
+    if (currentText == _lastSentText) {
+      if (targetCursorOffset != null &&
+          targetCursorOffset != _lastSentCursorOffset) {
+        _notifyUserInput();
+        _moveTerminalCursorTo(targetCursorOffset);
+      }
+      _syncEditingStateWithUserText(currentText, sourceValue: value);
+      _sawImeComposition = false;
+      return;
+    }
+
     final review = _reviewForInsertedText(currentText);
     if (review != null) {
       final shouldInsert = await widget.onReviewInsertedText!(review);
@@ -804,6 +909,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
       _sawImeComposition = false;
       return;
+    }
+    if (targetCursorOffset != null) {
+      _moveTerminalCursorTo(targetCursorOffset);
     }
     _syncEditingStateWithUserText(currentText, sourceValue: value);
     _sawImeComposition = false;
@@ -840,6 +948,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _lastSentText = '';
+    _lastSentCursorOffset = 0;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }
