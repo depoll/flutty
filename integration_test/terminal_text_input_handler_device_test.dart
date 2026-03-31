@@ -6,20 +6,48 @@ import 'package:monkeyssh/domain/models/auto_connect_command.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
 import 'package:xterm/xterm.dart';
 
-String _terminalTextFromEvents(Iterable<String> events) {
+({String text, int cursorOffset}) _terminalStateFromEvents(
+  Iterable<String> events,
+) {
   final visibleCharacters = <String>[];
+  var cursorOffset = 0;
   for (final event in events) {
-    for (final character in event.characters) {
+    var offset = 0;
+    while (offset < event.length) {
+      if (event.startsWith('\u001b[D', offset)) {
+        if (cursorOffset > 0) {
+          cursorOffset--;
+        }
+        offset += 3;
+        continue;
+      }
+      if (event.startsWith('\u001b[C', offset)) {
+        if (cursorOffset < visibleCharacters.length) {
+          cursorOffset++;
+        }
+        offset += 3;
+        continue;
+      }
+
+      final character = event.substring(offset).characters.first;
+      offset += character.length;
       if (character == '\x7f') {
-        if (visibleCharacters.isNotEmpty) {
-          visibleCharacters.removeLast();
+        if (cursorOffset > 0) {
+          visibleCharacters.removeAt(cursorOffset - 1);
+          cursorOffset--;
         }
         continue;
       }
-      visibleCharacters.add(character);
+      visibleCharacters.insert(cursorOffset, character);
+      cursorOffset++;
     }
   }
-  return visibleCharacters.join();
+  return (text: visibleCharacters.join(), cursorOffset: cursorOffset);
+}
+
+String _terminalTextFromEvents(Iterable<String> events) {
+  final state = _terminalStateFromEvents(events);
+  return state.text;
 }
 
 void main() {
