@@ -1414,6 +1414,69 @@ void main() {
     );
 
     testWidgets(
+      'preserves replacement text after backspacing to a shorter prefix in the same buffer',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('I still have', selectionOffset: 'I still have'.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('I sti', selectionOffset: 'I sti'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text:
+                '$_deleteDetectionMarker'
+                'I stink',
+            selection: TextSelection(baseOffset: 4, extentOffset: 9),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('I stink', selectionOffset: 'I stink'.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'I still have',
+            initialCursorOffset: 'I still have'.length,
+          ),
+          (text: 'I stink', cursorOffset: 'I stink'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'keeps the cursor aligned when a replacement selection includes a trailing space before backspace',
       (tester) async {
         final terminalOutput = <String>[];
@@ -3048,14 +3111,6 @@ void main() {
           ),
           (text: 'the ', cursorOffset: 'the '.length),
         );
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh world ',
-            initialCursorOffset: 'teh world '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
 
         focusNode.dispose();
       },
@@ -3120,14 +3175,6 @@ void main() {
         );
         await tester.pump();
 
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh world ',
-            initialCursorOffset: 'teh world '.length,
-          ),
-          (text: 'the wo', cursorOffset: 'the wo'.length),
-        );
         expect(
           _terminalStateFromEvents(
             terminalOutput,

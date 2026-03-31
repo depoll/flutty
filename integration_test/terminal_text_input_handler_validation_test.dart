@@ -600,6 +600,18 @@ void main() {
       expectedTerminalCursorOffset: 'echo the earth'.length,
       run: _runReplaceThenLaterReplacementCase,
     ),
+    _ValidationCase(
+      id: '23-shorter-prefix-replacement',
+      title:
+          'Backspacing to a shorter prefix before choosing a replacement keeps the replacement text ordered correctly',
+      expectedVisibleText: 'I stink',
+      expectedEditingText:
+          '$_deleteDetectionMarker'
+          'I stink',
+      expectedSelectionOffset: 9,
+      expectedTerminalCursorOffset: 'I stink'.length,
+      run: _runShorterPrefixReplacementCase,
+    ),
   ];
 
   testWidgets('runs the terminal text input validation matrix', (tester) async {
@@ -1361,6 +1373,48 @@ Future<void> _runReplaceThenLaterReplacementCase(WidgetTester tester) async {
           '$_deleteDetectionMarker'
           'echo the earth',
       selection: TextSelection.collapsed(offset: 16),
+    ),
+  );
+  await tester.pump();
+}
+
+Future<void> _runShorterPrefixReplacementCase(WidgetTester tester) async {
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'I still have',
+      selection: TextSelection.collapsed(offset: 14),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'I sti',
+      selection: TextSelection.collapsed(offset: 7),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'I stink',
+      selection: TextSelection(baseOffset: 4, extentOffset: 9),
+    ),
+  );
+  await tester.pump();
+
+  tester.testTextInput.updateEditingValue(
+    const TextEditingValue(
+      text:
+          '$_deleteDetectionMarker'
+          'I stink',
+      selection: TextSelection.collapsed(offset: 9),
     ),
   );
   await tester.pump();
