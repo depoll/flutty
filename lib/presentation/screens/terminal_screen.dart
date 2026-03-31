@@ -239,9 +239,19 @@ String _trimWrappedTerminalFilePathCountSuffix(String text) {
     return text;
   }
 
+  final openParenCount = '('.allMatches(prefix).length;
+  final closeParenCount = ')'.allMatches(prefix).length;
+  if (closeParenCount <= openParenCount) {
+    return text;
+  }
+
   final trimmedPrefix = trimTerminalLinkCandidate(prefix);
-  if (trimmedPrefix == prefix || trimmedPrefix.split('/').last.contains('.')) {
-    return trimmedPrefix == prefix ? text : trimmedPrefix;
+  if (trimmedPrefix == prefix) {
+    return text;
+  }
+
+  if (isSupportedTerminalFilePath(trimmedPrefix)) {
+    return trimmedPrefix;
   }
 
   return text;
@@ -3791,14 +3801,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final rowStart = pathSnapshot.rowStarts[rowIndex];
     final rowColumnOffsets = pathSnapshot.columnOffsets[rowIndex];
-    final rowText = pathSnapshot.text.substring(
-      rowStart,
-      rowStart + rowColumnOffsets.last,
-    );
+    final rowEnd = rowStart + rowColumnOffsets.last;
+    final rowText = pathSnapshot.text.substring(rowStart, rowEnd);
+    final rowNormalizedStart = snapshotAnalysis
+        .normalizedSnapshot
+        .originalToNormalizedOffsets[rowStart];
+    final rowNormalizedEnd =
+        snapshotAnalysis.normalizedSnapshot.originalToNormalizedOffsets[rowEnd];
     final relativeCandidatesToPrime = <String>{};
     final segments =
         <({String path, String text, int startColumn, int endColumn})>[];
     for (final detectedPath in snapshotAnalysis.detectedPaths) {
+      if (detectedPath.normalizedEnd <= rowNormalizedStart ||
+          detectedPath.normalizedStart >= rowNormalizedEnd) {
+        continue;
+      }
+
       final path = detectedPath.path;
       if (_isInteractiveTerminalFilePath(path)) {
         final visibleSegment = resolveTerminalFilePathSegmentOnRow(

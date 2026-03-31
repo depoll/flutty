@@ -111,6 +111,11 @@ void main() {
         '~/Code/flutty.worktrees/fix-swipe-keyboard-typing/test/widget/terminal_text_input_handler_test.dart',
       );
     });
+
+    test('drops wrapped result-count suffixes from dotless explicit paths', () {
+      expect(trimTerminalFilePathCandidate('/etc/hosts)6'), '/etc/hosts');
+      expect(trimTerminalFilePathCandidate('~/README)6'), '~/README');
+    });
   });
 
   group('resolvePickedTerminalUploadFileName', () {
