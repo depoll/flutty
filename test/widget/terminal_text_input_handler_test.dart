@@ -357,6 +357,9 @@ Future<void> _expectTextFieldComparisonScenario(
   }
 }
 
+TextInputClient _terminalTextInputClient(WidgetTester tester) =>
+    tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient;
+
 void main() {
   group('TerminalTextInputHandler', () {
     testWidgets('preserves swipe typing context across short pauses', (
@@ -3943,6 +3946,132 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'ignores a stale newline edit when the IME action arrives first',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        var reviewCount = 0;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (_) async {
+                  reviewCount++;
+                  return true;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho hi',
+            selection: TextSelection.collapsed(offset: 9),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho hi\n',
+            selection: TextSelection.collapsed(offset: 10),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput.join(), '\r');
+        expect(reviewCount, 0);
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: '\u200B\u200B',
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'accepts new text after swallowing an action-first newline commit',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        var reviewCount = 0;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (_) async {
+                  reviewCount++;
+                  return true;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho hi',
+            selection: TextSelection.collapsed(offset: 9),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho hi\nn',
+            selection: TextSelection.collapsed(offset: 11),
+          ),
+        );
+        await tester.pump();
+
+        expect(terminalOutput.join(), '\rn');
+        expect(reviewCount, 0);
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: '\u200B\u200Bn',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
 
     testWidgets('opens the keyboard after a touch tap', (tester) async {
       final terminal = Terminal();

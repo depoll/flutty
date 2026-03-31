@@ -14,6 +14,7 @@ import '../../domain/models/auto_connect_command.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
+const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 
 /// Confirms suspicious text inserted through the system keyboard or IME.
 typedef TerminalTextInputReviewCallback =
@@ -174,6 +175,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
+  String? _pendingPerformedEnterText;
   int _pendingEnterActionSuppressions = 0;
   int _latestEditingValueRevision = 0;
   TextEditingValue? _queuedEditingValue;
@@ -459,6 +461,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _trimLeadingSwipeSpaceAfterBufferClear = false;
       _lastSentText = '';
       _lastSentCursorOffset = 0;
+      _pendingPerformedEnterText = null;
       _pendingEnterActionSuppressions = 0;
       _currentEditingState = _initEditingState.copyWith();
       _connection!.setEditingState(_initEditingState);
@@ -477,6 +480,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _pendingPerformedEnterText = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }
@@ -610,12 +614,57 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return '\n'.allMatches(appendedText).length;
   }
 
-  void _resetCommittedInputState({int pendingEnterSuppressions = 0}) {
+  void _resetCommittedInputState({
+    int pendingEnterSuppressions = 0,
+    bool clearPendingPerformedEnterText = true,
+  }) {
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    if (clearPendingPerformedEnterText) {
+      _pendingPerformedEnterText = null;
+    }
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _syncEditingStateWithUserText('');
+  }
+
+  ({String? currentText, bool strippedPendingEnter, bool ignored})
+  _normalizePendingPerformedEnterText(String currentText) {
+    final pendingPerformedEnterText = _pendingPerformedEnterText;
+    if (pendingPerformedEnterText == null) {
+      return (
+        currentText: currentText,
+        strippedPendingEnter: false,
+        ignored: false,
+      );
+    }
+
+    if (currentText.isEmpty || currentText == pendingPerformedEnterText) {
+      return (currentText: null, strippedPendingEnter: false, ignored: true);
+    }
+
+    for (final newlineSequence in _enterCommitNewlineSequences) {
+      final prefix = '$pendingPerformedEnterText$newlineSequence';
+      if (currentText == prefix) {
+        _pendingPerformedEnterText = null;
+        return (currentText: null, strippedPendingEnter: false, ignored: false);
+      }
+      if (currentText.startsWith(prefix)) {
+        _pendingPerformedEnterText = null;
+        return (
+          currentText: currentText.substring(prefix.length),
+          strippedPendingEnter: true,
+          ignored: false,
+        );
+      }
+    }
+
+    _pendingPerformedEnterText = null;
+    return (
+      currentText: currentText,
+      strippedPendingEnter: false,
+      ignored: false,
+    );
   }
 
   int _textLengthInGraphemes(String text) => text.characters.length;
@@ -1047,7 +1096,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      final currentText = _extractInputText(value.text);
+      final normalizedPendingEnter = _normalizePendingPerformedEnterText(
+        _extractInputText(value.text),
+      );
+      if (normalizedPendingEnter.ignored) {
+        _syncEditingStateWithUserText('');
+        _sawImeComposition = false;
+        return;
+      }
+      if (normalizedPendingEnter.currentText == null) {
+        _resetCommittedInputState();
+        _sawImeComposition = false;
+        return;
+      }
+
+      final currentText = normalizedPendingEnter.currentText!;
       final userSelection = _userSelectionForEditingValue(currentText, value);
       processedUserSelectionWasValid = userSelection != null;
       processedUserSelection =
@@ -1114,7 +1177,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       if (targetCursorOffset != null) {
         _moveTerminalCursorTo(targetCursorOffset);
       }
-      _syncEditingStateWithUserText(currentText, sourceValue: value);
+      _syncEditingStateWithUserText(
+        currentText,
+        sourceValue: normalizedPendingEnter.strippedPendingEnter ? null : value,
+      );
       _sawImeComposition = false;
     } finally {
       _lastProcessedUserSelectionWasValid = processedUserSelectionWasValid;
@@ -1133,7 +1199,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.enter);
-      _resetCommittedInputState();
+      _pendingPerformedEnterText = _lastSentText;
+      _resetCommittedInputState(clearPendingPerformedEnterText: false);
       _sawImeComposition = false;
     }
   }
@@ -1154,6 +1221,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _sawImeComposition = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
+    _pendingPerformedEnterText = null;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
