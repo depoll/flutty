@@ -13,6 +13,19 @@ import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
+typedef _LoggedEditingState = ({
+  String text,
+  int selectionBase,
+  int selectionExtent,
+  int composingBase,
+  int composingExtent,
+});
+
+typedef _ComparisonResult = ({
+  _LoggedEditingState finalState,
+  List<_LoggedEditingState> echoedStates,
+});
+
 Future<void> _commitSwipeText(WidgetTester tester, String text) async {
   final selection = TextSelection.collapsed(offset: text.length);
   tester.testTextInput.updateEditingValue(
@@ -101,6 +114,229 @@ String _terminalKeyOutput(TerminalKey key) {
   final output = <String>[];
   Terminal(onOutput: output.add).keyInput(key);
   return output.join();
+}
+
+int _normalizeOffsetToUserSpace(int offset, int prefixLength, int maxLength) {
+  if (offset < 0) {
+    return offset;
+  }
+  final normalized = offset - prefixLength;
+  if (normalized < 0) {
+    return 0;
+  }
+  if (normalized > maxLength) {
+    return maxLength;
+  }
+  return normalized;
+}
+
+_LoggedEditingState _loggedStateFromTextEditingValue(TextEditingValue value) =>
+    (
+      text: value.text,
+      selectionBase: value.selection.baseOffset,
+      selectionExtent: value.selection.extentOffset,
+      composingBase: value.composing.start,
+      composingExtent: value.composing.end,
+    );
+
+TextEditingValue _terminalEditingValueFromUserValue(TextEditingValue value) {
+  const prefixLength = _deleteDetectionMarker.length;
+  final selection = value.selection.isValid
+      ? TextSelection(
+          baseOffset: prefixLength + value.selection.baseOffset,
+          extentOffset: prefixLength + value.selection.extentOffset,
+          affinity: value.selection.affinity,
+          isDirectional: value.selection.isDirectional,
+        )
+      : value.selection;
+  final composing = value.composing.isValid && !value.composing.isCollapsed
+      ? TextRange(
+          start: prefixLength + value.composing.start,
+          end: prefixLength + value.composing.end,
+        )
+      : value.composing;
+  return TextEditingValue(
+    text: '$_deleteDetectionMarker${value.text}',
+    selection: selection,
+    composing: composing,
+  );
+}
+
+_LoggedEditingState _loggedStateFromSetEditingStateCall(
+  MethodCall call, {
+  bool stripTerminalMarker = false,
+}) {
+  final arguments = call.arguments as Map<dynamic, dynamic>;
+  var text = arguments['text'] as String? ?? '';
+  var selectionBase = arguments['selectionBase'] as int? ?? -1;
+  var selectionExtent = arguments['selectionExtent'] as int? ?? -1;
+  var composingBase = arguments['composingBase'] as int? ?? -1;
+  var composingExtent = arguments['composingExtent'] as int? ?? -1;
+
+  if (stripTerminalMarker && text.startsWith(_deleteDetectionMarker)) {
+    const prefixLength = _deleteDetectionMarker.length;
+    text = text.substring(prefixLength);
+    selectionBase = _normalizeOffsetToUserSpace(
+      selectionBase,
+      prefixLength,
+      text.length,
+    );
+    selectionExtent = _normalizeOffsetToUserSpace(
+      selectionExtent,
+      prefixLength,
+      text.length,
+    );
+    if (composingBase >= 0) {
+      composingBase = _normalizeOffsetToUserSpace(
+        composingBase,
+        prefixLength,
+        text.length,
+      );
+      composingExtent = _normalizeOffsetToUserSpace(
+        composingExtent,
+        prefixLength,
+        text.length,
+      );
+    }
+  }
+
+  return (
+    text: text,
+    selectionBase: selectionBase,
+    selectionExtent: selectionExtent,
+    composingBase: composingBase,
+    composingExtent: composingExtent,
+  );
+}
+
+List<_LoggedEditingState> _setEditingStateStates(
+  Iterable<MethodCall> log, {
+  bool stripTerminalMarker = false,
+}) => log
+    .where((call) => call.method == 'TextInput.setEditingState')
+    .map(
+      (call) => _loggedStateFromSetEditingStateCall(
+        call,
+        stripTerminalMarker: stripTerminalMarker,
+      ),
+    )
+    .toList(growable: false);
+
+_LoggedEditingState _loggedTerminalClientState(TextEditingValue value) {
+  const prefixLength = _deleteDetectionMarker.length;
+  final text = value.text.startsWith(_deleteDetectionMarker)
+      ? value.text.substring(prefixLength)
+      : value.text;
+  return (
+    text: text,
+    selectionBase: _normalizeOffsetToUserSpace(
+      value.selection.baseOffset,
+      prefixLength,
+      text.length,
+    ),
+    selectionExtent: _normalizeOffsetToUserSpace(
+      value.selection.extentOffset,
+      prefixLength,
+      text.length,
+    ),
+    composingBase: value.composing.isValid && !value.composing.isCollapsed
+        ? _normalizeOffsetToUserSpace(
+            value.composing.start,
+            prefixLength,
+            text.length,
+          )
+        : -1,
+    composingExtent: value.composing.isValid && !value.composing.isCollapsed
+        ? _normalizeOffsetToUserSpace(
+            value.composing.end,
+            prefixLength,
+            text.length,
+          )
+        : -1,
+  );
+}
+
+Future<_ComparisonResult> _runTextFieldSequence(
+  WidgetTester tester,
+  List<TextEditingValue> userValues,
+) async {
+  final controller = TextEditingController();
+  final focusNode = FocusNode();
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: TextField(controller: controller, focusNode: focusNode),
+      ),
+    ),
+  );
+
+  focusNode.requestFocus();
+  await tester.pump();
+  tester.testTextInput.log.clear();
+
+  for (final value in userValues) {
+    tester.testTextInput.updateEditingValue(value);
+    await tester.pump();
+  }
+
+  final result = (
+    finalState: _loggedStateFromTextEditingValue(controller.value),
+    echoedStates: _setEditingStateStates(tester.testTextInput.log),
+  );
+
+  await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+  await tester.pump();
+  controller.dispose();
+  focusNode.dispose();
+  return result;
+}
+
+Future<_ComparisonResult> _runTerminalSequence(
+  WidgetTester tester,
+  List<TextEditingValue> userValues,
+) async {
+  final terminal = Terminal();
+  final focusNode = FocusNode();
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: TerminalTextInputHandler(
+          terminal: terminal,
+          focusNode: focusNode,
+          deleteDetection: true,
+          child: const SizedBox.expand(),
+        ),
+      ),
+    ),
+  );
+
+  focusNode.requestFocus();
+  await tester.pump();
+  tester.testTextInput.log.clear();
+
+  for (final value in userValues) {
+    tester.testTextInput.updateEditingValue(
+      _terminalEditingValueFromUserValue(value),
+    );
+    await tester.pump();
+  }
+
+  final client =
+      tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient;
+  final result = (
+    finalState: _loggedTerminalClientState(client.currentTextEditingValue!),
+    echoedStates: _setEditingStateStates(
+      tester.testTextInput.log,
+      stripTerminalMarker: true,
+    ),
+  );
+
+  await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+  await tester.pump();
+  focusNode.dispose();
+  return result;
 }
 
 void main() {
@@ -4653,5 +4889,115 @@ void main() {
         isFalse,
       );
     });
+  });
+
+  group('TerminalTextInputHandler compared with TextField', () {
+    testWidgets(
+      'matches TextField user state for collapsed caret moves while issuing one terminal resync',
+      (tester) async {
+        final sequence = <TextEditingValue>[
+          const TextEditingValue(
+            text: 'echo teh world',
+            selection: TextSelection.collapsed(offset: 14),
+          ),
+          const TextEditingValue(
+            text: 'echo teh world',
+            selection: TextSelection.collapsed(offset: 5),
+          ),
+        ];
+
+        final textFieldResult = await _runTextFieldSequence(tester, sequence);
+        final terminalResult = await _runTerminalSequence(tester, sequence);
+
+        expect(terminalResult.finalState, textFieldResult.finalState);
+        expect(textFieldResult.echoedStates, isEmpty);
+        expect(terminalResult.echoedStates, [textFieldResult.finalState]);
+      },
+    );
+
+    testWidgets(
+      'matches TextField user state when a replacement selection collapses elsewhere',
+      (tester) async {
+        final sequence = <TextEditingValue>[
+          const TextEditingValue(
+            text: 'echo teh world',
+            selection: TextSelection.collapsed(offset: 14),
+          ),
+          const TextEditingValue(
+            text: 'echo the world',
+            selection: TextSelection(baseOffset: 5, extentOffset: 8),
+          ),
+          const TextEditingValue(
+            text: 'echo the world',
+            selection: TextSelection.collapsed(offset: 5),
+          ),
+        ];
+
+        final textFieldResult = await _runTextFieldSequence(tester, sequence);
+        final terminalResult = await _runTerminalSequence(tester, sequence);
+
+        expect(terminalResult.finalState, textFieldResult.finalState);
+        expect(textFieldResult.echoedStates, isEmpty);
+        expect(terminalResult.echoedStates, [textFieldResult.finalState]);
+      },
+    );
+
+    testWidgets(
+      'matches TextField user state after deleting newer text, replacing earlier text, and moving again',
+      (tester) async {
+        final sequence = <TextEditingValue>[
+          const TextEditingValue(
+            text: 'teh world ',
+            selection: TextSelection.collapsed(offset: 10),
+          ),
+          const TextEditingValue(
+            text: 'teh ',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+          const TextEditingValue(
+            text: 'the ',
+            selection: TextSelection(baseOffset: 0, extentOffset: 3),
+          ),
+          const TextEditingValue(
+            text: 'the ',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+        ];
+
+        final textFieldResult = await _runTextFieldSequence(tester, sequence);
+        final terminalResult = await _runTerminalSequence(tester, sequence);
+
+        expect(terminalResult.finalState, textFieldResult.finalState);
+        expect(textFieldResult.echoedStates, isEmpty);
+        expect(terminalResult.echoedStates, [textFieldResult.finalState]);
+      },
+    );
+
+    testWidgets(
+      'matches TextField replacement finalization without an extra terminal resync',
+      (tester) async {
+        final sequence = <TextEditingValue>[
+          const TextEditingValue(
+            text: 'teh ',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+          const TextEditingValue(
+            text: 'the ',
+            selection: TextSelection(baseOffset: 0, extentOffset: 3),
+          ),
+          const TextEditingValue(
+            text: 'the ',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        ];
+
+        final textFieldResult = await _runTextFieldSequence(tester, sequence);
+        final terminalResult = await _runTerminalSequence(tester, sequence);
+
+        expect(terminalResult.finalState, textFieldResult.finalState);
+        expect(textFieldResult.echoedStates, isEmpty);
+        expect(terminalResult.echoedStates, isEmpty);
+      },
+    );
   });
 }
