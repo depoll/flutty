@@ -2,6 +2,29 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 
+Widget _buildRemoteEditorWithKeyboardInset({
+  required ValueNotifier<double> keyboardInset,
+  required TextEditingController controller,
+  required ScrollController horizontalScrollController,
+}) => MaterialApp(
+  theme: ThemeData(platform: TargetPlatform.macOS),
+  home: Builder(
+    builder: (context) => ValueListenableBuilder<double>(
+      valueListenable: keyboardInset,
+      builder: (context, inset, _) => MediaQuery(
+        data: MediaQuery.of(
+          context,
+        ).copyWith(viewInsets: EdgeInsets.only(bottom: inset)),
+        child: buildRemoteTextEditorScreenForTesting(
+          fileName: 'notes.txt',
+          controller: controller,
+          horizontalScrollController: horizontalScrollController,
+        ),
+      ),
+    ),
+  ),
+);
+
 void main() {
   group('currentLinePrefixAtTextOffset', () {
     test('returns the current line prefix for a multiline selection', () {
@@ -184,6 +207,60 @@ void main() {
         );
         expect(horizontalScrollController.offset, greaterThan(0));
         expect(find.byType(InputDecorator), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'rebuilds the horizontal scrollbar when the keyboard is dismissed',
+      (tester) async {
+        final longLine = List<String>.filled(80, '0123456789').join();
+        final controller = TextEditingController(text: longLine)
+          ..selection = TextSelection.collapsed(offset: longLine.length);
+        final horizontalScrollController = ScrollController();
+        final keyboardInset = ValueNotifier<double>(260);
+
+        addTearDown(() async {
+          await tester.binding.setSurfaceSize(null);
+          keyboardInset.dispose();
+          horizontalScrollController.dispose();
+          controller.dispose();
+        });
+
+        await tester.binding.setSurfaceSize(const Size(420, 720));
+        await tester.pumpWidget(
+          _buildRemoteEditorWithKeyboardInset(
+            keyboardInset: keyboardInset,
+            controller: controller,
+            horizontalScrollController: horizontalScrollController,
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final scrollbarFinder = find.descendant(
+          of: find.byKey(
+            const ValueKey<String>('remoteTextEditorNowrapViewport'),
+          ),
+          matching: find.byWidgetPredicate(
+            (widget) =>
+                widget is Scrollbar && widget.key is ValueKey<(double, double)>,
+          ),
+        );
+        final openScrollbarElement = tester.element(scrollbarFinder);
+        final openViewportRect = tester.getRect(
+          find.byKey(const ValueKey<String>('remoteTextEditorNowrapViewport')),
+        );
+
+        keyboardInset.value = 0;
+        await tester.pump();
+        await tester.pumpAndSettle();
+
+        final closedScrollbarElement = tester.element(scrollbarFinder);
+        final closedViewportRect = tester.getRect(
+          find.byKey(const ValueKey<String>('remoteTextEditorNowrapViewport')),
+        );
+
+        expect(closedScrollbarElement, isNot(same(openScrollbarElement)));
+        expect(closedViewportRect.height, greaterThan(openViewportRect.height));
       },
     );
 
