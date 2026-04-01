@@ -1431,6 +1431,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _queueTerminalScrollToBottom();
   }
 
+  void _handleTerminalDoubleTapDown(
+    TapDownDetails tapDetails,
+    CellOffset cellOffset,
+  ) {
+    _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    _terminal.textInput(
+      resolveTerminalTabInput(shiftActive: _toolbarController.isShiftActive),
+    );
+    _followLiveOutput();
+    _toolbarController.consumeOneShot();
+  }
+
   void _queueTerminalScrollToBottom() {
     if (_isTerminalScrollToBottomQueued) {
       return;
@@ -2608,6 +2620,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTapDown:
           _terminalTextInputController.suppressNextTouchKeyboardRequest,
       onLinkTap: _handleTerminalLinkTap,
+      onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,

@@ -128,6 +128,54 @@ void main() {
     expect(tapUps, 0);
   });
 
+  testWidgets('double taps invoke explicit callback when provided', (
+    tester,
+  ) async {
+    final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            key: terminalViewKey,
+            Terminal(),
+            readOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    final terminalViewState = terminalViewKey.currentState!;
+    var doubleTapDowns = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalGestureHandler(
+            terminalView: terminalViewState,
+            terminalController: TerminalController(),
+            readOnly: true,
+            onDoubleTapDown: (_) => doubleTapDowns += 1,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onDoubleTapDown!(
+      TapDownDetails(localPosition: const Offset(10, 10)),
+    );
+
+    expect(doubleTapDowns, 1);
+  });
+
   testWidgets('touch scroll clears any pending link tap', (tester) async {
     final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
 

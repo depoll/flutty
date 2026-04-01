@@ -6,6 +6,14 @@ import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:xterm/xterm.dart';
 
 void main() {
+  test('resolveTerminalTabInput returns plain tab by default', () {
+    expect(resolveTerminalTabInput(shiftActive: false), '\t');
+  });
+
+  test('resolveTerminalTabInput returns reverse-tab when shift is active', () {
+    expect(resolveTerminalTabInput(shiftActive: true), '\x1b[Z');
+  });
+
   group('KeyboardToolbar', () {
     late Terminal terminal;
 

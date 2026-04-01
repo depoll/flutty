@@ -54,6 +54,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.focusNode,
     this.autofocus = false,
     this.onTapUp,
+    this.onDoubleTapDown,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.resolveLinkTap,
@@ -111,6 +112,9 @@ class MonkeyTerminalView extends StatefulWidget {
 
   /// Callback for when the user taps on the terminal.
   final void Function(TapUpDetails, CellOffset)? onTapUp;
+
+  /// Callback for when the user double taps on the terminal.
+  final void Function(TapDownDetails, CellOffset)? onDoubleTapDown;
 
   /// Function called when the user taps on the terminal with a secondary
   /// button.
@@ -394,6 +398,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
       terminalController: _controller,
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
+      onDoubleTapDown: widget.onDoubleTapDown != null ? _onDoubleTapDown : null,
       onSecondaryTapDown: widget.onSecondaryTapDown != null
           ? _onSecondaryTapDown
           : null,
@@ -462,6 +467,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
         _focusNode.requestFocus();
       }
     }
+  }
+
+  void _onDoubleTapDown(TapDownDetails details) {
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onDoubleTapDown?.call(details, offset);
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {
