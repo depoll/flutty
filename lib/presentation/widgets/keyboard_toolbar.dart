@@ -12,6 +12,13 @@ import 'package:xterm/xterm.dart';
 bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
     mediaQuery.viewInsets.bottom == 0;
 
+/// Resolves the terminal output sequence for a Tab action.
+///
+/// An explicit Shift modifier from the terminal toolbar turns Tab into the
+/// reverse-tab escape sequence. Plain Tab remains a literal tab character.
+String resolveTerminalTabInput({required bool shiftActive}) =>
+    shiftActive ? '\x1b[Z' : '\t';
+
 int? _ctrlCodeForCharacter(String text) {
   if (text.length != 1) {
     return null;
@@ -407,15 +414,9 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendTab() {
     HapticFeedback.lightImpact();
-    if (_controller.isShiftActive) {
-      // Only the toolbar's explicit Shift modifier should turn Tab into
-      // reverse-tab. The system keyboard can keep Shift latched after typing an
-      // uppercase character, and that should not block shell completion.
-      // Shift+Tab sends reverse-tab escape sequence
-      widget.terminal.textInput('\x1b[Z');
-    } else {
-      widget.terminal.textInput('\t');
-    }
+    widget.terminal.textInput(
+      resolveTerminalTabInput(shiftActive: _controller.isShiftActive),
+    );
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }
