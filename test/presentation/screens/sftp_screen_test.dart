@@ -140,6 +140,25 @@ void main() {
       },
     );
 
+    test('uses the file name when a single upload is unreadable', () {
+      expect(
+        resolveUnreadableSftpUploadMessage([
+          PlatformFile(name: 'notes.txt', size: 0),
+        ]),
+        'Unable to read "notes.txt"',
+      );
+    });
+
+    test('uses a pluralized count when multiple uploads are unreadable', () {
+      expect(
+        resolveUnreadableSftpUploadMessage([
+          PlatformFile(name: 'notes.txt', size: 0),
+          PlatformFile(name: 'todo.txt', size: 0),
+        ]),
+        'Unable to read 2 selected files',
+      );
+    });
+
     test('resolves directory taps as navigation', () {
       expect(
         resolveSftpFileTapIntent(isDirectory: true, filename: 'Documents'),

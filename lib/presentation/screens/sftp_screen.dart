@@ -123,6 +123,18 @@ bool isSvgFileName(String filename) =>
 Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) =>
     file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
 
+/// Resolves the error message shown when selected SFTP upload files are unreadable.
+@visibleForTesting
+String resolveUnreadableSftpUploadMessage(List<PlatformFile> files) {
+  if (files.length == 1) {
+    final name = files.single.name.trim();
+    return name.isEmpty
+        ? 'Unable to read the selected file'
+        : 'Unable to read "$name"';
+  }
+  return 'Unable to read ${files.length} selected files';
+}
+
 /// How a file row tap should behave in the SFTP browser.
 @visibleForTesting
 enum SftpFileTapIntent {
@@ -1153,13 +1165,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       for (final file in selectedFiles)
         (file: file, readStream: resolvePickedSftpUploadReadStream(file)),
     ];
-    final unreadableUpload = uploads.where(
-      (upload) => upload.readStream == null,
-    );
-    if (unreadableUpload.isNotEmpty) {
+    final unreadableUploads = uploads
+        .where((upload) => upload.readStream == null)
+        .toList();
+    if (unreadableUploads.isNotEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to read selected file')),
+          SnackBar(
+            content: Text(
+              resolveUnreadableSftpUploadMessage([
+                for (final upload in unreadableUploads) upload.file,
+              ]),
+            ),
+          ),
         );
       }
       return;
