@@ -303,12 +303,29 @@ jobs:
             const repo = context.repo.repo;
             const issueNumber = Number('${{ inputs.pr-number }}');
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const previewMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
             const statusMarker = '<!-- preview-deploy-status -->';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
               return body.match(pattern)?.[1] ?? '';
+            };
+
+            const resolvePreviewCommentUrl = ({comments, deploySha, fallbackUrl}) => {
+              const latestPreviewComment = [...comments].reverse().find((comment) => {
+                if (!comment.body?.includes(previewMarker)) {
+                  return false;
+                }
+
+                if (!deploySha) {
+                  return true;
+                }
+
+                return readMeta(comment.body, 'preview-build-source-sha') === deploySha;
+              });
+
+              return latestPreviewComment?.html_url ?? fallbackUrl;
             };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -335,7 +352,7 @@ jobs:
             const requestCommentUrl =
               '${{ inputs.request-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-request-comment-url');
-            const previewCommentUrl =
+            const requestedPreviewCommentUrl =
               '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
                 ? ''
                 : '${{ inputs.request-preview-comment-url }}' ||
@@ -343,6 +360,11 @@ jobs:
             const deploySha =
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha');
+            const previewCommentUrl = resolvePreviewCommentUrl({
+              comments,
+              deploySha,
+              fallbackUrl: requestedPreviewCommentUrl,
+            });
             const requestDetails = requestCommentId
               ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
@@ -500,12 +522,29 @@ jobs:
             const repo = context.repo.repo;
             const issueNumber = Number('${{ inputs.pr-number }}');
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${context.runId}`;
+            const previewMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
             const statusMarker = '<!-- preview-deploy-status -->';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
             const readMeta = (body, key) => {
               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
               return body.match(pattern)?.[1] ?? '';
+            };
+
+            const resolvePreviewCommentUrl = ({comments, deploySha, fallbackUrl}) => {
+              const latestPreviewComment = [...comments].reverse().find((comment) => {
+                if (!comment.body?.includes(previewMarker)) {
+                  return false;
+                }
+
+                if (!deploySha) {
+                  return true;
+                }
+
+                return readMeta(comment.body, 'preview-build-source-sha') === deploySha;
+              });
+
+              return latestPreviewComment?.html_url ?? fallbackUrl;
             };
 
             const comments = await github.paginate(github.rest.issues.listComments, {
@@ -532,7 +571,7 @@ jobs:
             const requestCommentUrl =
               '${{ inputs.request-comment-url }}' ||
               readMeta(existingBody, 'preview-deploy-request-comment-url');
-            const previewCommentUrl =
+            const requestedPreviewCommentUrl =
               '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
                 ? ''
                 : '${{ inputs.request-preview-comment-url }}' ||
@@ -541,6 +580,11 @@ jobs:
               '${{ needs.validate-pr.outputs.deploy-sha }}' ||
               readMeta(existingBody, 'preview-deploy-source-sha') ||
               '${{ inputs.source-sha }}';
+            const previewCommentUrl = resolvePreviewCommentUrl({
+              comments,
+              deploySha,
+              fallbackUrl: requestedPreviewCommentUrl,
+            });
             const requestDetails = requestCommentId
               ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
