@@ -723,6 +723,94 @@ void main() {
       },
     );
 
+    testWidgets(
+      'trims a leading swipe space after swipe input is fully backspaced away',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker hello');
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('', selectionOffset: 0),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a leading suggestion space after input is fully backspaced away',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker hello');
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('', selectionOffset: 0),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text:
+                '$_deleteDetectionMarker'
+                ' world',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'world');
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('resyncs delete-detection marker after backspacing past it', (
       tester,
     ) async {
@@ -1522,6 +1610,127 @@ void main() {
             initialCursorOffset: 'I still have'.length,
           ),
           (text: 'I stink', cursorOffset: 'I stink'.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'preserves spaces and letters when replacing a word after backspacing from its separator',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('teh ', selectionOffset: 'teh '.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('te', selectionOffset: 'te'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text:
+                '$_deleteDetectionMarker'
+                'the ',
+            selection: TextSelection(baseOffset: 2, extentOffset: 5),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('the ', selectionOffset: 'the '.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh ',
+            initialCursorOffset: 'teh '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a leading suggestion space when replacing a word after backspacing from its separator',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('teh ', selectionOffset: 'teh '.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('te', selectionOffset: 'te'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text:
+                '$_deleteDetectionMarker'
+                ' the ',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh ',
+            initialCursorOffset: 'teh '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
         );
 
         focusNode.dispose();

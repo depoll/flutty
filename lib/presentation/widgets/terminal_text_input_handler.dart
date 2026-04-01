@@ -172,6 +172,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _isProcessingEditingValue = false;
   bool _lastProcessedUserSelectionWasValid = false;
   bool _lastProcessedSelectionWasCollapsed = true;
+  bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
@@ -458,6 +459,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _sawImeComposition = false;
       _lastProcessedUserSelectionWasValid = false;
       _lastProcessedSelectionWasCollapsed = true;
+      _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
       _lastSentText = '';
       _lastSentCursorOffset = 0;
@@ -477,6 +479,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _sawImeComposition = false;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
+    _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
@@ -559,7 +562,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _leadingSwipeNewlineArtifactPattern,
       '',
     );
-    if (_sawImeComposition &&
+    if ((_sawImeComposition ||
+            _trimLeadingSuggestionSpaceAfterDelete ||
+            _trimLeadingSwipeSpaceAfterBufferClear) &&
         sanitizedText.startsWith(' ') &&
         !sanitizedText.startsWith('  ') &&
         sanitizedText.trimLeft().isNotEmpty &&
@@ -623,6 +628,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _pendingPerformedEnterText = null;
     }
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
+    _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _syncEditingStateWithUserText('');
   }
@@ -1174,6 +1180,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _sawImeComposition = false;
         return;
       }
+      _trimLeadingSuggestionSpaceAfterDelete =
+          previousText.isNotEmpty &&
+          currentText.characters.length < previousText.characters.length;
       _trimLeadingSwipeSpaceAfterBufferClear =
           previousText.isNotEmpty && currentText.isEmpty;
       if (targetCursorOffset != null) {
@@ -1226,6 +1235,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingPerformedEnterText = null;
     _lastProcessedUserSelectionWasValid = false;
     _lastProcessedSelectionWasCollapsed = true;
+    _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
