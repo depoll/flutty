@@ -170,6 +170,30 @@ void main() {
     });
   });
 
+  group('resolveTerminalUploadPickerRequest', () {
+    test('allows selecting multiple images for terminal uploads', () {
+      final request = resolveTerminalUploadPickerRequest(images: true);
+
+      expect(request.dialogTitle, 'Select images to upload');
+      expect(request.pickerType, FileType.image);
+      expect(request.itemLabelSingular, 'image');
+      expect(request.itemLabelPlural, 'images');
+      expect(request.allowMultiple, isTrue);
+      expect(request.failureContext, 'Image picker upload');
+    });
+
+    test('allows selecting multiple files for terminal uploads', () {
+      final request = resolveTerminalUploadPickerRequest(images: false);
+
+      expect(request.dialogTitle, 'Select files to upload');
+      expect(request.pickerType, FileType.any);
+      expect(request.itemLabelSingular, 'file');
+      expect(request.itemLabelPlural, 'files');
+      expect(request.allowMultiple, isTrue);
+      expect(request.failureContext, 'File picker upload');
+    });
+  });
+
   group('detectTerminalFilePaths', () {
     test('returns supported file path ranges in text order', () {
       const text =

@@ -169,6 +169,25 @@ String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
 Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) =>
     file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
 
+/// Resolves the picker request used for terminal uploads.
+@visibleForTesting
+({
+  String dialogTitle,
+  FileType pickerType,
+  String itemLabelSingular,
+  String itemLabelPlural,
+  bool allowMultiple,
+  String failureContext,
+})
+resolveTerminalUploadPickerRequest({required bool images}) => (
+  dialogTitle: images ? 'Select images to upload' : 'Select files to upload',
+  pickerType: images ? FileType.image : FileType.any,
+  itemLabelSingular: images ? 'image' : 'file',
+  itemLabelPlural: images ? 'images' : 'files',
+  allowMultiple: true,
+  failureContext: images ? 'Image picker upload' : 'File picker upload',
+);
+
 /// Trims punctuation that terminals commonly render immediately after a link.
 @visibleForTesting
 String trimTerminalLinkCandidate(String text) {
@@ -2298,11 +2317,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
               const PopupMenuItem(
                 value: 'paste_image',
-                child: Text('Paste Image'),
+                child: Text('Paste Images'),
               ),
               const PopupMenuItem(
                 value: 'paste_file',
-                child: Text('Paste File'),
+                child: Text('Paste Files'),
               ),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
               const PopupMenuDivider(),
@@ -4429,24 +4448,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pastePickedImage() async {
+    final pickerRequest = resolveTerminalUploadPickerRequest(images: true);
     await _pickAndPasteFiles(
-      dialogTitle: 'Select image to upload',
-      pickerType: FileType.image,
-      itemLabelSingular: 'image',
-      itemLabelPlural: 'images',
-      allowMultiple: false,
-      failureContext: 'Image picker upload',
+      dialogTitle: pickerRequest.dialogTitle,
+      pickerType: pickerRequest.pickerType,
+      itemLabelSingular: pickerRequest.itemLabelSingular,
+      itemLabelPlural: pickerRequest.itemLabelPlural,
+      allowMultiple: pickerRequest.allowMultiple,
+      failureContext: pickerRequest.failureContext,
     );
   }
 
   Future<void> _pastePickedFiles() async {
+    final pickerRequest = resolveTerminalUploadPickerRequest(images: false);
     await _pickAndPasteFiles(
-      dialogTitle: 'Select file to upload',
-      pickerType: FileType.any,
-      itemLabelSingular: 'file',
-      itemLabelPlural: 'files',
-      allowMultiple: true,
-      failureContext: 'File picker upload',
+      dialogTitle: pickerRequest.dialogTitle,
+      pickerType: pickerRequest.pickerType,
+      itemLabelSingular: pickerRequest.itemLabelSingular,
+      itemLabelPlural: pickerRequest.itemLabelPlural,
+      allowMultiple: pickerRequest.allowMultiple,
+      failureContext: pickerRequest.failureContext,
     );
   }
 
