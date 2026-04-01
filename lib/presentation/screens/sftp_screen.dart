@@ -113,6 +113,28 @@ bool isPreviewableImageFileName(String filename) {
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
 
+/// Resolves the picker request used for local SFTP uploads.
+@visibleForTesting
+({bool allowMultiple, bool withReadStream}) resolveSftpUploadPickerRequest() =>
+    (allowMultiple: true, withReadStream: true);
+
+/// Resolves a readable stream for a picked SFTP upload file when available.
+@visibleForTesting
+Stream<List<int>>? resolvePickedSftpUploadReadStream(PlatformFile file) =>
+    file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
+
+/// Resolves the error message shown when selected SFTP upload files are unreadable.
+@visibleForTesting
+String resolveUnreadableSftpUploadMessage(List<PlatformFile> files) {
+  if (files.length == 1) {
+    final name = files.single.name.trim();
+    return name.isEmpty
+        ? 'Unable to read the selected file'
+        : 'Unable to read "$name"';
+  }
+  return 'Unable to read ${files.length} selected files';
+}
+
 /// How a file row tap should behave in the SFTP browser.
 @visibleForTesting
 enum SftpFileTapIntent {
@@ -1129,38 +1151,55 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final result = await FilePicker.platform.pickFiles(withReadStream: true);
+    final pickerRequest = resolveSftpUploadPickerRequest();
+    final result = await FilePicker.platform.pickFiles(
+      allowMultiple: pickerRequest.allowMultiple,
+      withReadStream: pickerRequest.withReadStream,
+    );
     if (result == null || result.files.isEmpty) {
       return;
     }
 
-    final file = result.files.single;
-    final readStream =
-        file.readStream ??
-        (file.path == null ? null : File(file.path!).openRead());
-    if (readStream == null) {
+    final selectedFiles = result.files;
+    final uploads = <({PlatformFile file, Stream<List<int>>? readStream})>[
+      for (final file in selectedFiles)
+        (file: file, readStream: resolvePickedSftpUploadReadStream(file)),
+    ];
+    final unreadableUploads = uploads
+        .where((upload) => upload.readStream == null)
+        .toList();
+    if (unreadableUploads.isNotEmpty) {
       if (mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(content: Text('Unable to read selected file')),
+          SnackBar(
+            content: Text(
+              resolveUnreadableSftpUploadMessage([
+                for (final upload in unreadableUploads) upload.file,
+              ]),
+            ),
+          ),
         );
       }
       return;
     }
 
     try {
-      final remotePath = _joinRemotePath(_currentPath, file.name);
-      await ref
-          .read(remoteFileServiceProvider)
-          .uploadStream(
-            sftp: _sftp!,
-            remotePath: remotePath,
-            stream: readStream,
-          );
+      final remoteFileService = ref.read(remoteFileServiceProvider);
+      for (final upload in uploads) {
+        await remoteFileService.uploadStream(
+          sftp: _sftp!,
+          remotePath: _joinRemotePath(_currentPath, upload.file.name),
+          stream: upload.readStream!,
+        );
+      }
       await _loadDirectory(_currentPath);
       if (mounted) {
+        final message = selectedFiles.length == 1
+            ? 'Uploaded "${selectedFiles.single.name}"'
+            : 'Uploaded ${selectedFiles.length} files';
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(SnackBar(content: Text('Uploaded "${file.name}"')));
+        ).showSnackBar(SnackBar(content: Text(message)));
       }
     } on Exception catch (e) {
       if (mounted) {
