@@ -46,6 +46,7 @@ const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
 const _selectionActionsBottomPadding = 12.0;
+const _maxTerminalFilePathVerificationCandidates = 12;
 const _terminalFilePathVerificationExtensions = <String>[
   'properties',
   'gradle',
@@ -53,6 +54,7 @@ const _terminalFilePathVerificationExtensions = <String>[
   'jpeg',
   'plist',
   'swift',
+  'tar',
   'yaml',
   'dart',
   'html',
@@ -388,13 +390,33 @@ bool shouldActivateTerminalFilePath(
 bool hasAmbiguousTerminalFilePathParsing(String path) =>
     resolveTerminalFilePathVerificationCandidates(path).length > 1;
 
+bool _startsWithKnownTerminalFilePathExtensionAndMore(String suffix) {
+  if (!suffix.startsWith('.')) {
+    return false;
+  }
+
+  final lowercaseSuffix = suffix.toLowerCase();
+  for (final extension in _terminalFilePathVerificationExtensions) {
+    final extensionMarker = '.$extension';
+    if (lowercaseSuffix.startsWith(extensionMarker) &&
+        suffix.length > extensionMarker.length) {
+      return true;
+    }
+  }
+  return false;
+}
+
 /// Alternative terminal-path parses to check when a candidate looks ambiguous.
 @visibleForTesting
 List<String> resolveTerminalFilePathVerificationCandidates(String path) {
   final candidates = <String>[];
   final seen = <String>{};
+  final seedCandidates = <String>[];
 
   void addCandidate(String candidate) {
+    if (candidates.length >= _maxTerminalFilePathVerificationCandidates) {
+      return;
+    }
     final normalizedCandidate = trimTerminalFilePathCandidate(candidate);
     if (normalizedCandidate.isEmpty ||
         !isSupportedTerminalFilePath(normalizedCandidate) ||
@@ -404,9 +426,17 @@ List<String> resolveTerminalFilePathVerificationCandidates(String path) {
     candidates.add(normalizedCandidate);
   }
 
-  addCandidate(path);
+  void addSeedCandidate(String candidate) {
+    final beforeCount = candidates.length;
+    addCandidate(candidate);
+    if (candidates.length > beforeCount) {
+      seedCandidates.add(candidates.last);
+    }
+  }
 
-  var trailingBracketCandidate = path;
+  addSeedCandidate(path);
+
+  var trailingBracketCandidate = trimTerminalFilePathCandidate(path);
   while (trailingBracketCandidate.isNotEmpty &&
       ')]}'.contains(
         trailingBracketCandidate[trailingBracketCandidate.length - 1],
@@ -415,28 +445,37 @@ List<String> resolveTerminalFilePathVerificationCandidates(String path) {
       0,
       trailingBracketCandidate.length - 1,
     );
-    addCandidate(trailingBracketCandidate);
+    addSeedCandidate(trailingBracketCandidate);
   }
 
-  final lastSlashIndex = path.lastIndexOf('/');
-  final basename = lastSlashIndex >= 0
-      ? path.substring(lastSlashIndex + 1)
-      : path;
-  final lowercaseBasename = basename.toLowerCase();
-  for (final extension in _terminalFilePathVerificationExtensions) {
-    final extensionMarker = '.$extension';
-    var markerIndex = lowercaseBasename.indexOf(extensionMarker);
-    while (markerIndex >= 0) {
-      final candidateEnd = markerIndex + extensionMarker.length;
-      if (candidateEnd < basename.length &&
-          RegExp('[A-Za-z0-9_-]').hasMatch(basename[candidateEnd])) {
-        addCandidate(
-          lastSlashIndex >= 0
-              ? '${path.substring(0, lastSlashIndex + 1)}${basename.substring(0, candidateEnd)}'
-              : basename.substring(0, candidateEnd),
+  for (final seed in seedCandidates) {
+    final lastSlashIndex = seed.lastIndexOf('/');
+    final basename = lastSlashIndex >= 0
+        ? seed.substring(lastSlashIndex + 1)
+        : seed;
+    final basenamePrefix = lastSlashIndex >= 0
+        ? seed.substring(0, lastSlashIndex + 1)
+        : '';
+    final lowercaseBasename = basename.toLowerCase();
+    for (final extension in _terminalFilePathVerificationExtensions) {
+      final extensionMarker = '.$extension';
+      var markerIndex = lowercaseBasename.indexOf(extensionMarker);
+      while (markerIndex >= 0) {
+        final candidateEnd = markerIndex + extensionMarker.length;
+        if (candidateEnd < basename.length) {
+          final remainder = basename.substring(candidateEnd);
+          if (RegExp('[A-Za-z0-9_-]').hasMatch(basename[candidateEnd]) ||
+              _startsWithKnownTerminalFilePathExtensionAndMore(remainder)) {
+            addCandidate(
+              '$basenamePrefix${basename.substring(0, candidateEnd)}',
+            );
+          }
+        }
+        markerIndex = lowercaseBasename.indexOf(
+          extensionMarker,
+          markerIndex + 1,
         );
       }
-      markerIndex = lowercaseBasename.indexOf(extensionMarker, markerIndex + 1);
     }
   }
 

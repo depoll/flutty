@@ -120,13 +120,19 @@ void main() {
 
   group('resolveTerminalFilePathVerificationCandidates', () {
     test(
-      'offers shorter known-extension parses for ambiguous explicit paths',
+      'offers multiple known-extension parses for ambiguous explicit paths',
       () {
+        final candidates = resolveTerminalFilePathVerificationCandidates(
+          '/srv/app/archive.tar.gzbackup',
+        );
+
         expect(
-          resolveTerminalFilePathVerificationCandidates(
-            '/srv/app/lib/main.dartlines',
-          ),
-          ['/srv/app/lib/main.dartlines', '/srv/app/lib/main.dart'],
+          candidates,
+          containsAllInOrder([
+            '/srv/app/archive.tar.gzbackup',
+            '/srv/app/archive.tar.gz',
+            '/srv/app/archive.tar',
+          ]),
         );
       },
     );
