@@ -555,6 +555,8 @@ jobs:
               `| **Preview SHA** | \`${deploySha}\` |`,
               `| **Version** | \`${{ needs.finalize-version.outputs.build-name }}\` |`,
               `| **Build** | \`${{ needs.finalize-version.outputs.build-number }}\` |`,
+              '| **Android Status** | ⏳ Deploying to Play internal |',
+              '| **iOS Status** | ⏳ Uploading to TestFlight |',
               artifactDetails,
               requestCommentUrl
                 ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`
@@ -602,6 +604,11 @@ jobs:
   deploy:
     name: Deploy to TestFlight & Play Internal
     needs: [validate-pr, finalize-version, resolve-preview-artifacts]
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.finalize-version.outputs.build-name }}
@@ -620,6 +627,7 @@ jobs:
       ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
+      update-pr-deploy-comment: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -766,7 +774,7 @@ jobs:
                 ? `| **Artifacts** | Reused unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Built fresh deploy artifacts in this run because matching preview intermediates were unavailable |';
 
-            const replaceEyesReactionWithRocket = async () => {
+            const syncRequestCommentReaction = async (targetReaction) => {
               if (!requestCommentId) {
                 return;
               }
@@ -782,12 +790,14 @@ jobs:
                   headers: {accept: 'application/vnd.github+json'},
                 },
               );
-              const botEyesReactions = reactions.filter(
+              const managedReactionContents = new Set(['eyes', 'rocket', '-1']);
+              const botManagedReactions = reactions.filter(
                 (reaction) =>
-                  reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]',
+                  managedReactionContents.has(reaction.content) &&
+                  reaction.user?.login === 'github-actions[bot]',
               );
 
-              for (const reaction of botEyesReactions) {
+              for (const reaction of botManagedReactions) {
                 await github.request(
                   'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
                   {
@@ -800,12 +810,7 @@ jobs:
                 );
               }
 
-              if (
-                reactions.some(
-                  (reaction) =>
-                    reaction.content === 'rocket' && reaction.user?.login === 'github-actions[bot]',
-                )
-              ) {
+              if (!targetReaction) {
                 return;
               }
 
@@ -815,7 +820,7 @@ jobs:
                   owner,
                   repo,
                   comment_id: commentId,
-                  content: 'rocket',
+                  content: targetReaction,
                   headers: {accept: 'application/vnd.github+json'},
                 },
               );
@@ -850,6 +855,32 @@ jobs:
               status = '❌ Deployed artifacts did not match the requested preview SHA';
             }
 
+            let targetReaction = '';
+            if (state === 'success') {
+              targetReaction = 'rocket';
+            } else if (state === 'failed') {
+              targetReaction = '-1';
+            }
+
+            const androidPlatformStatus =
+              ${{ toJSON(needs.deploy.outputs.android-deploy-status) }} ||
+              (validationResult !== 'success'
+                ? '⏭️ Not started'
+                : deployResult === 'cancelled'
+                  ? '⛔ Android deploy cancelled'
+                  : deployResult !== 'success'
+                    ? '❌ Android deploy failed'
+                    : '⏳ Android status unavailable');
+            const iosPlatformStatus =
+              ${{ toJSON(needs.deploy.outputs.ios-deploy-status) }} ||
+              (validationResult !== 'success'
+                ? '⏭️ Not started'
+                : deployResult === 'cancelled'
+                  ? '⛔ iOS deploy cancelled'
+                  : deployResult !== 'success'
+                    ? '❌ iOS deploy failed'
+                    : '⏳ iOS status unavailable');
+
             const body = [
               '## 🚀 Preview Deploy',
               '',
@@ -864,6 +895,8 @@ jobs:
               '${{ needs.finalize-version.outputs.build-number }}'
                 ? `| **Build** | \`${{ needs.finalize-version.outputs.build-number }}\` |`
                 : null,
+              `| **Android Status** | ${androidPlatformStatus} |`,
+              `| **iOS Status** | ${iosPlatformStatus} |`,
               artifactDetails,
               requestCommentUrl
                 ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`
@@ -909,7 +942,7 @@ jobs:
             }
 
             try {
-              await replaceEyesReactionWithRocket();
+              await syncRequestCommentReaction(targetReaction);
             } catch (error) {
               core.warning(`Failed to update deploy reaction: ${String(error)}`);
             }
