@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
 
-import 'package:collection/collection.dart';
 import 'package:cryptography/cryptography.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -12,6 +11,7 @@ import 'package:uuid/uuid.dart';
 
 import 'secure_transfer_service.dart';
 import 'settings_service.dart';
+import 'sync_vault_file_io.dart';
 
 /// Conflict resolution choices when both local and remote sync vault data changed.
 enum SyncVaultConflictResolution {
@@ -414,6 +414,17 @@ class SyncVaultService {
         );
       }
 
+      final vaultLength = await vaultFile.length();
+      if (vaultLength > maxSyncVaultBytes) {
+        return _storeFailureResult(
+          const SyncVaultSyncResult(
+            outcome: SyncVaultSyncOutcome.needsRelink,
+            message:
+                'The linked sync vault file is too large and needs to be relinked',
+          ),
+        );
+      }
+
       final encryptedVault = await vaultFile.readAsString();
       if (encryptedVault.trim().isEmpty) {
         final uploadedVault = await _encryptSnapshot(
@@ -615,17 +626,12 @@ class SyncVaultService {
       secretKey: secretKey,
       nonce: nonce,
     );
-    final checksum = await _sha256.hash(payloadBytes);
     final envelope = {
       'v': _envelopeVersion,
       'alg': 'AES-GCM-256',
       'nonce': base64Url.encode(nonce),
       'ciphertext': base64Url.encode(encryptedBox.cipherText),
       'mac': base64Url.encode(encryptedBox.mac.bytes),
-      'checksum': base64Url.encode(checksum.bytes),
-      'snapshotHash': snapshot.snapshotHash,
-      'updatedAt': snapshot.updatedAt.toUtc().toIso8601String(),
-      'updatedByDeviceId': snapshot.updatedByDeviceId,
     };
     return '$_vaultPrefix${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
   }
@@ -681,15 +687,6 @@ class SyncVaultService {
       throw const FormatException('Invalid recovery key or sync vault file');
     }
 
-    final checksumBytes = _decodeEnvelopeField(envelopeMap, 'checksum');
-    final actualChecksum = await _sha256.hash(payloadBytes);
-    if (!const ListEquality<int>().equals(
-      checksumBytes,
-      actualChecksum.bytes,
-    )) {
-      throw const FormatException('Sync vault checksum mismatch');
-    }
-
     late _SyncVaultSnapshot snapshot;
     try {
       final payloadJson = jsonDecode(utf8.decode(payloadBytes));
@@ -706,7 +703,15 @@ class SyncVaultService {
       throw const FormatException('Invalid sync vault payload');
     }
 
-    final computedHash = await _hashSyncData(snapshot.data);
+    late String computedHash;
+    try {
+      computedHash = await _hashSyncData(snapshot.data);
+    } on FormatException catch (error) {
+      if (error.message == 'Invalid sync vault payload') {
+        rethrow;
+      }
+      throw const FormatException('Invalid sync vault payload');
+    }
     if (computedHash != snapshot.snapshotHash) {
       throw const FormatException('Sync vault payload hash mismatch');
     }
@@ -997,18 +1002,32 @@ class SyncVaultService {
     Map<String, dynamic> data,
     String key,
   ) {
-    final raw = data[key];
-    if (raw is! List) {
+    if (!data.containsKey(key)) {
       return const <Map<String, dynamic>>[];
     }
+    final raw = data[key];
+    if (raw is! List) {
+      throw const FormatException('Invalid sync vault payload');
+    }
     return raw
-        .map((item) => Map<String, dynamic>.from(item as Map))
+        .map((item) {
+          if (item is! Map) {
+            throw const FormatException('Invalid sync vault payload');
+          }
+          return Map<String, dynamic>.from(item);
+        })
         .toList(growable: false);
   }
 
   Map<String, dynamic> _mapFromSnapshot(Map<String, dynamic> data, String key) {
+    if (!data.containsKey(key)) {
+      return <String, dynamic>{};
+    }
     final raw = data[key];
-    return raw is Map ? Map<String, dynamic>.from(raw) : <String, dynamic>{};
+    if (raw is! Map) {
+      throw const FormatException('Invalid sync vault payload');
+    }
+    return Map<String, dynamic>.from(raw);
   }
 
   Map<String, dynamic> _canonicalizeScalarMap(Map<String, dynamic> values) {
@@ -1040,27 +1059,8 @@ class SyncVaultService {
     return null;
   }
 
-  Future<void> _writeVaultAtomically(
-    File vaultFile,
-    String encryptedVault,
-  ) async {
-    final tempFile = File(
-      p.join(
-        vaultFile.parent.path,
-        '.${p.basename(vaultFile.path)}.${_uuid.v4()}.tmp',
-      ),
-    );
-    await tempFile.writeAsString(encryptedVault, flush: true);
-    try {
-      await tempFile.rename(vaultFile.path);
-    } on FileSystemException {
-      // ignore: avoid_slow_async_io
-      if (await vaultFile.exists()) {
-        await vaultFile.delete();
-      }
-      await tempFile.rename(vaultFile.path);
-    }
-  }
+  Future<void> _writeVaultAtomically(File vaultFile, String encryptedVault) =>
+      writeStringToFileAtomically(vaultFile, encryptedVault);
 
   Future<String> _getOrCreateDeviceId() async {
     final existing = await _settings.getString(SettingKeys.syncVaultDeviceId);

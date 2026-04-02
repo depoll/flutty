@@ -5,12 +5,11 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../domain/services/sync_vault_file_io.dart';
 import 'transfer_screen.dart';
 
 /// File extension used for encrypted MonkeySSH sync vault files.
 const monkeySshSyncVaultFileExtension = 'monkeysync';
-
-const _maxSyncVaultBytes = 10 * 1024 * 1024;
 
 /// Result of selecting an encrypted sync vault file from disk.
 class SelectedSyncVaultFile {
@@ -88,7 +87,7 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
   final file = result.files.single;
   final bytes = file.bytes;
   if (bytes != null && bytes.isNotEmpty) {
-    if (bytes.length > _maxSyncVaultBytes) {
+    if (bytes.length > maxSyncVaultBytes) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sync vault file is too large')),
@@ -124,7 +123,7 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
   final localFile = File(path);
   try {
     final length = await localFile.length();
-    if (length > _maxSyncVaultBytes) {
+    if (length > maxSyncVaultBytes) {
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Sync vault file is too large')),
@@ -154,16 +153,5 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
 }
 
 Future<void> _writeBytesAtomically(File targetFile, Uint8List bytes) async {
-  final tempFile = File(
-    '${targetFile.parent.path}/.${targetFile.uri.pathSegments.last}.tmp',
-  );
-  await tempFile.writeAsBytes(bytes, flush: true);
-  try {
-    await tempFile.rename(targetFile.path);
-  } on FileSystemException {
-    if (targetFile.existsSync()) {
-      await targetFile.delete();
-    }
-    await tempFile.rename(targetFile.path);
-  }
+  await writeBytesToFileAtomically(targetFile, bytes);
 }

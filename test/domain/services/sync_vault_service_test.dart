@@ -1,7 +1,9 @@
 // ignore_for_file: public_member_api_docs, directives_ordering
 
+import 'dart:convert';
 import 'dart:io';
 
+import 'package:cryptography/cryptography.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
@@ -14,6 +16,7 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/sync_vault_file_io.dart';
 import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 
 class MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
@@ -220,6 +223,23 @@ void main() {
       },
     );
 
+    test('keeps sync metadata inside the encrypted payload', () async {
+      final device = await _createFixture();
+      addTearDown(device.close);
+
+      final provisioning = await device.syncService.prepareNewVault();
+      final envelope = _decodeVaultEnvelope(provisioning.encryptedVault);
+
+      for (final forbiddenKey in <String>[
+        'checksum',
+        'snapshotHash',
+        'updatedAt',
+        'updatedByDeviceId',
+      ]) {
+        expect(envelope.keys, isNot(contains(forbiddenKey)));
+      }
+    });
+
     test('rejects cyclic sync snapshot hierarchies', () async {
       final device = await _createFixture();
       addTearDown(device.close);
@@ -244,6 +264,163 @@ void main() {
         ),
       );
     });
+
+    test(
+      'requires relinking when the linked vault file is too large',
+      () async {
+        final device = await _createFixture();
+        addTearDown(device.close);
+
+        final provisioning = await device.syncService.prepareNewVault();
+        final vaultFile = File('${tempDir.path}/oversized.monkeysync');
+        await vaultFile.writeAsString(provisioning.encryptedVault, flush: true);
+        await device.syncService.enablePreparedVault(
+          vaultPath: vaultFile.path,
+          provisioning: provisioning,
+        );
+
+        await vaultFile.writeAsString(
+          'A' * (maxSyncVaultBytes + 1),
+          flush: true,
+        );
+
+        final result = await device.syncService.syncNow();
+        expect(result.outcome, SyncVaultSyncOutcome.needsRelink);
+        expect(
+          result.message,
+          'The linked sync vault file is too large and needs to be relinked',
+        );
+      },
+    );
+
+    test(
+      'treats malformed snapshot lists as an invalid vault payload',
+      () async {
+        final device = await _createFixture();
+        addTearDown(device.close);
+
+        final provisioning = await device.syncService.prepareNewVault();
+        final malformedVault = await _encryptTestVault(
+          recoveryKey: provisioning.recoveryKey,
+          snapshot: {
+            'schemaVersion': 1,
+            'updatedAt': DateTime.now().toUtc().toIso8601String(),
+            'updatedByDeviceId': 'device-a',
+            'snapshotHash': 'placeholder-hash',
+            'data': {
+              'settings': <String, String>{},
+              'groups': [123],
+              'keys': <Map<String, dynamic>>[],
+              'hosts': <Map<String, dynamic>>[],
+              'snippetFolders': <Map<String, dynamic>>[],
+              'snippets': <Map<String, dynamic>>[],
+              'portForwards': <Map<String, dynamic>>[],
+            },
+          },
+        );
+
+        await expectLater(
+          device.syncService.linkExistingVault(
+            vaultPath: '${tempDir.path}/invalid.monkeysync',
+            encryptedVault: malformedVault,
+            recoveryKey: provisioning.recoveryKey,
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'message',
+              'Invalid sync vault payload',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'treats malformed top-level snapshot collections as an invalid vault payload',
+      () async {
+        final device = await _createFixture();
+        addTearDown(device.close);
+
+        final provisioning = await device.syncService.prepareNewVault();
+        final malformedVault = await _encryptTestVault(
+          recoveryKey: provisioning.recoveryKey,
+          snapshot: {
+            'schemaVersion': 1,
+            'updatedAt': DateTime.now().toUtc().toIso8601String(),
+            'updatedByDeviceId': 'device-a',
+            'snapshotHash': 'placeholder-hash',
+            'data': {
+              'settings': <String, String>{},
+              'groups': 'not-a-list',
+              'keys': <Map<String, dynamic>>[],
+              'hosts': <Map<String, dynamic>>[],
+              'snippetFolders': <Map<String, dynamic>>[],
+              'snippets': <Map<String, dynamic>>[],
+              'portForwards': <Map<String, dynamic>>[],
+            },
+          },
+        );
+
+        await expectLater(
+          device.syncService.linkExistingVault(
+            vaultPath: '${tempDir.path}/invalid-collections.monkeysync',
+            encryptedVault: malformedVault,
+            recoveryKey: provisioning.recoveryKey,
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'message',
+              'Invalid sync vault payload',
+            ),
+          ),
+        );
+      },
+    );
+
+    test(
+      'treats malformed top-level snapshot settings as an invalid vault payload',
+      () async {
+        final device = await _createFixture();
+        addTearDown(device.close);
+
+        final provisioning = await device.syncService.prepareNewVault();
+        final malformedVault = await _encryptTestVault(
+          recoveryKey: provisioning.recoveryKey,
+          snapshot: {
+            'schemaVersion': 1,
+            'updatedAt': DateTime.now().toUtc().toIso8601String(),
+            'updatedByDeviceId': 'device-a',
+            'snapshotHash': 'placeholder-hash',
+            'data': {
+              'settings': 'not-a-map',
+              'groups': <Map<String, dynamic>>[],
+              'keys': <Map<String, dynamic>>[],
+              'hosts': <Map<String, dynamic>>[],
+              'snippetFolders': <Map<String, dynamic>>[],
+              'snippets': <Map<String, dynamic>>[],
+              'portForwards': <Map<String, dynamic>>[],
+            },
+          },
+        );
+
+        await expectLater(
+          device.syncService.linkExistingVault(
+            vaultPath: '${tempDir.path}/invalid-settings.monkeysync',
+            encryptedVault: malformedVault,
+            recoveryKey: provisioning.recoveryKey,
+          ),
+          throwsA(
+            isA<FormatException>().having(
+              (error) => error.message,
+              'message',
+              'Invalid sync vault payload',
+            ),
+          ),
+        );
+      },
+    );
   });
 }
 
@@ -305,6 +482,49 @@ Future<void> _insertHost(
 
 Future<int> _insertGroup(AppDatabase db, {required String name}) =>
     db.into(db.groups).insert(GroupsCompanion.insert(name: name));
+
+Map<String, dynamic> _decodeVaultEnvelope(String encryptedVault) {
+  final encodedEnvelope = encryptedVault.startsWith('MSYNC1:')
+      ? encryptedVault.substring('MSYNC1:'.length)
+      : encryptedVault;
+  return Map<String, dynamic>.from(
+    jsonDecode(
+          utf8.decode(base64Url.decode(base64Url.normalize(encodedEnvelope))),
+        )
+        as Map,
+  );
+}
+
+Future<String> _encryptTestVault({
+  required String recoveryKey,
+  required Map<String, dynamic> snapshot,
+}) async {
+  final normalizedRecoveryKey = recoveryKey.trim().toUpperCase();
+  final recoveryHex = normalizedRecoveryKey
+      .replaceFirst(RegExp('^MSYNC1-?'), '')
+      .replaceAll('-', '');
+  final recoverySeed = <int>[
+    for (var i = 0; i < recoveryHex.length; i += 2)
+      int.parse(recoveryHex.substring(i, i + 2), radix: 16),
+  ];
+  final payloadBytes = utf8.encode(jsonEncode(snapshot));
+  final secretKey = SecretKey((await Sha256().hash(recoverySeed)).bytes);
+  final algorithm = AesGcm.with256bits();
+  final nonce = List<int>.generate(12, (index) => index + 1, growable: false);
+  final encryptedBox = await algorithm.encrypt(
+    payloadBytes,
+    secretKey: secretKey,
+    nonce: nonce,
+  );
+  final envelope = <String, dynamic>{
+    'v': 1,
+    'alg': 'AES-GCM-256',
+    'nonce': base64Url.encode(nonce),
+    'ciphertext': base64Url.encode(encryptedBox.cipherText),
+    'mac': base64Url.encode(encryptedBox.mac.bytes),
+  };
+  return 'MSYNC1:${base64Url.encode(utf8.encode(jsonEncode(envelope)))}';
+}
 
 class _SyncFixture {
   const _SyncFixture({
