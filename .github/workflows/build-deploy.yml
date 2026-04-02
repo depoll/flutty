@@ -700,6 +700,8 @@ jobs:
         env:
           BUILD_ANDROID_ENABLED: ${{ inputs.build-android }}
           BUILD_IOS_ENABLED: ${{ inputs.build-ios }}
+          RUN_ANDROID_DEPLOY: ${{ inputs.run-android-deploy }}
+          RUN_IOS_DEPLOY: ${{ inputs.run-ios-deploy }}
           ANDROID_TARGET: ${{ inputs.deploy-android-to }}
           IOS_TARGET: ${{ inputs.deploy-ios-to }}
           ANDROID_RESULT: ${{ needs.build-android.result }}
@@ -707,46 +709,54 @@ jobs:
         run: |
           android_status=''
           if [ "$BUILD_ANDROID_ENABLED" = 'true' ] && [ "$ANDROID_TARGET" != 'none' ]; then
-            case "$ANDROID_RESULT" in
-              success)
-                if [ "$ANDROID_TARGET" = 'production' ]; then
-                  android_status='✅ Deployed to Play production'
-                else
-                  android_status='✅ Deployed to Play internal'
-                fi
-                ;;
-              cancelled)
-                android_status='⛔ Android deploy cancelled'
-                ;;
-              skipped)
-                android_status='⏭️ Android deploy skipped'
-                ;;
-              *)
-                android_status='❌ Android deploy failed'
-                ;;
-            esac
+            if [ "$RUN_ANDROID_DEPLOY" != 'true' ]; then
+              android_status='⏭️ Android deploy skipped (run-android-deploy=false)'
+            else
+              case "$ANDROID_RESULT" in
+                success)
+                  if [ "$ANDROID_TARGET" = 'production' ]; then
+                    android_status='✅ Deployed to Play production'
+                  else
+                    android_status='✅ Deployed to Play internal'
+                  fi
+                  ;;
+                cancelled)
+                  android_status='⛔ Android deploy cancelled'
+                  ;;
+                skipped)
+                  android_status='⏭️ Android deploy skipped'
+                  ;;
+                *)
+                  android_status='❌ Android deploy failed'
+                  ;;
+              esac
+            fi
           fi
 
           ios_status=''
           if [ "$BUILD_IOS_ENABLED" = 'true' ] && [ "$IOS_TARGET" != 'none' ]; then
-            case "$IOS_RESULT" in
-              success)
-                if [ "$IOS_TARGET" = 'appstore' ]; then
-                  ios_status='✅ Uploaded to App Store Connect'
-                else
-                  ios_status='✅ Uploaded to TestFlight'
-                fi
-                ;;
-              cancelled)
-                ios_status='⛔ iOS deploy cancelled'
-                ;;
-              skipped)
-                ios_status='⏭️ iOS deploy skipped'
-                ;;
-              *)
-                ios_status='❌ iOS deploy failed'
-                ;;
-            esac
+            if [ "$RUN_IOS_DEPLOY" != 'true' ]; then
+              ios_status='⏭️ iOS deploy skipped (run-ios-deploy=false)'
+            else
+              case "$IOS_RESULT" in
+                success)
+                  if [ "$IOS_TARGET" = 'appstore' ]; then
+                    ios_status='✅ Uploaded to App Store Connect'
+                  else
+                    ios_status='✅ Uploaded to TestFlight'
+                  fi
+                  ;;
+                cancelled)
+                  ios_status='⛔ iOS deploy cancelled'
+                  ;;
+                skipped)
+                  ios_status='⏭️ iOS deploy skipped'
+                  ;;
+                *)
+                  ios_status='❌ iOS deploy failed'
+                  ;;
+              esac
+            fi
           fi
 
           echo "android-deploy-status=$android_status" >> "$GITHUB_OUTPUT"
@@ -755,7 +765,7 @@ jobs:
   update-android-deploy-comment:
     name: Update Android Deploy Comment
     needs: [build-android]
-    if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-android && inputs.deploy-android-to != 'none'
+    if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-android && inputs.run-android-deploy && inputs.deploy-android-to != 'none'
     runs-on: ubuntu-latest
     permissions:
       issues: write
@@ -820,7 +830,7 @@ jobs:
   update-ios-deploy-comment:
     name: Update iOS Deploy Comment
     needs: [build-ios]
-    if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-ios && inputs.deploy-ios-to != 'none'
+    if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-ios && inputs.run-ios-deploy && inputs.deploy-ios-to != 'none'
     runs-on: ubuntu-latest
     permissions:
       issues: write
