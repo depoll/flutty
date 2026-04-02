@@ -70,6 +70,11 @@ on:
         type: boolean
         default: true
         description: 'Whether to upload iOS artifacts to App Store Connect when deploy-ios-to != none'
+      update-pr-deploy-comment:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to update the preview deploy PR comment as each platform finishes'
       android-reuse-run-id:
         required: false
         type: string
@@ -153,6 +158,12 @@ on:
       ios-source-sha:
         description: 'Git SHA used for iOS build checkout'
         value: ${{ jobs.build-ios.outputs.source-sha }}
+      android-deploy-status:
+        description: 'Final Android deploy status summary for preview deploy comments'
+        value: ${{ jobs.deploy-status-summary.outputs.android-deploy-status }}
+      ios-deploy-status:
+        description: 'Final iOS deploy status summary for preview deploy comments'
+        value: ${{ jobs.deploy-status-summary.outputs.ios-deploy-status }}
 
 permissions:
   actions: read
@@ -674,3 +685,226 @@ jobs:
         with:
           name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/Runner-unsigned.ipa
+
+  deploy-status-summary:
+    name: Summarize Deploy Status
+    needs: [build-android, build-ios]
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      android-deploy-status: ${{ steps.summary.outputs.android-deploy-status }}
+      ios-deploy-status: ${{ steps.summary.outputs.ios-deploy-status }}
+    steps:
+      - name: Summarize platform deploy results
+        id: summary
+        env:
+          BUILD_ANDROID_ENABLED: ${{ inputs.build-android }}
+          BUILD_IOS_ENABLED: ${{ inputs.build-ios }}
+          RUN_ANDROID_DEPLOY: ${{ inputs.run-android-deploy }}
+          RUN_IOS_DEPLOY: ${{ inputs.run-ios-deploy }}
+          ANDROID_TARGET: ${{ inputs.deploy-android-to }}
+          IOS_TARGET: ${{ inputs.deploy-ios-to }}
+          ANDROID_RESULT: ${{ needs.build-android.result }}
+          IOS_RESULT: ${{ needs.build-ios.result }}
+        run: |
+          android_status=''
+          if [ "$BUILD_ANDROID_ENABLED" = 'true' ] && [ "$ANDROID_TARGET" != 'none' ]; then
+            if [ "$RUN_ANDROID_DEPLOY" != 'true' ]; then
+              android_status='⏭️ Android deploy skipped (run-android-deploy=false)'
+            else
+              case "$ANDROID_RESULT" in
+                success)
+                  if [ "$ANDROID_TARGET" = 'production' ]; then
+                    android_status='✅ Deployed to Play production'
+                  else
+                    android_status='✅ Deployed to Play internal'
+                  fi
+                  ;;
+                cancelled)
+                  android_status='⛔ Android deploy cancelled'
+                  ;;
+                skipped)
+                  android_status='⏭️ Android deploy skipped'
+                  ;;
+                *)
+                  android_status='❌ Android deploy failed'
+                  ;;
+              esac
+            fi
+          fi
+
+          ios_status=''
+          if [ "$BUILD_IOS_ENABLED" = 'true' ] && [ "$IOS_TARGET" != 'none' ]; then
+            if [ "$RUN_IOS_DEPLOY" != 'true' ]; then
+              ios_status='⏭️ iOS deploy skipped (run-ios-deploy=false)'
+            else
+              case "$IOS_RESULT" in
+                success)
+                  if [ "$IOS_TARGET" = 'appstore' ]; then
+                    ios_status='✅ Uploaded to App Store Connect'
+                  else
+                    ios_status='✅ Uploaded to TestFlight'
+                  fi
+                  ;;
+                cancelled)
+                  ios_status='⛔ iOS deploy cancelled'
+                  ;;
+                skipped)
+                  ios_status='⏭️ iOS deploy skipped'
+                  ;;
+                *)
+                  ios_status='❌ iOS deploy failed'
+                  ;;
+              esac
+            fi
+          fi
+
+          echo "android-deploy-status=$android_status" >> "$GITHUB_OUTPUT"
+          echo "ios-deploy-status=$ios_status" >> "$GITHUB_OUTPUT"
+
+  update-android-deploy-comment:
+    name: Update Android Deploy Comment
+    needs: [build-android]
+    if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-android && inputs.run-android-deploy && inputs.deploy-android-to != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Update Android status row
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = Number('${{ inputs.pr-number }}');
+            const statusMarker = '<!-- preview-deploy-status -->';
+            const androidTarget = '${{ inputs.deploy-android-to }}';
+            const androidResult = '${{ needs.build-android.result }}';
+
+            let androidStatus = '❌ Android deploy failed';
+            if (androidResult === 'success') {
+              androidStatus =
+                androidTarget === 'production'
+                  ? '✅ Deployed to Play production'
+                  : '✅ Deployed to Play internal';
+            } else if (androidResult === 'cancelled') {
+              androidStatus = '⛔ Android deploy cancelled';
+            } else if (androidResult === 'skipped') {
+              androidStatus = '⏭️ Android deploy skipped';
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(statusMarker));
+            if (!existing || !existing.body) {
+              core.info(`No preview deploy status comment found for PR #${issueNumber}.`);
+              return;
+            }
+
+            const updatedBody = existing.body
+              .split('\n')
+              .map((line) =>
+                line.startsWith('| **Android Status** |')
+                  ? `| **Android Status** | ${androidStatus} |`
+                  : line,
+              )
+              .join('\n');
+
+            if (updatedBody === existing.body) {
+              core.info(`Android status row missing on preview deploy comment for PR #${issueNumber}.`);
+              return;
+            }
+
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: existing.id,
+              body: updatedBody,
+            });
+
+  update-ios-deploy-comment:
+    name: Update iOS Deploy Comment
+    needs: [build-ios]
+    if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-ios && inputs.run-ios-deploy && inputs.deploy-ios-to != 'none'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Update iOS status row
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const issueNumber = Number('${{ inputs.pr-number }}');
+            const statusMarker = '<!-- preview-deploy-status -->';
+            const iosTarget = '${{ inputs.deploy-ios-to }}';
+            const iosResult = '${{ needs.build-ios.result }}';
+
+            let iosStatus = '❌ iOS deploy failed';
+            if (iosResult === 'success') {
+              iosStatus =
+                iosTarget === 'appstore'
+                  ? '✅ Uploaded to App Store Connect'
+                  : '✅ Uploaded to TestFlight';
+            } else if (iosResult === 'cancelled') {
+              iosStatus = '⛔ iOS deploy cancelled';
+            } else if (iosResult === 'skipped') {
+              iosStatus = '⏭️ iOS deploy skipped';
+            }
+
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: issueNumber,
+              per_page: 100,
+            });
+            const existing = comments.find((comment) => comment.body?.includes(statusMarker));
+            if (!existing || !existing.body) {
+              core.info(`No preview deploy status comment found for PR #${issueNumber}.`);
+              return;
+            }
+
+            const updatedBody = existing.body
+              .split('\n')
+              .map((line) =>
+                line.startsWith('| **iOS Status** |')
+                  ? `| **iOS Status** | ${iosStatus} |`
+                  : line,
+              )
+              .join('\n');
+
+            if (updatedBody === existing.body) {
+              core.info(`iOS status row missing on preview deploy comment for PR #${issueNumber}.`);
+              return;
+            }
+
+            await github.rest.issues.updateComment({
+              owner,
+              repo,
+              comment_id: existing.id,
+              body: updatedBody,
+            });
+
+  record-private-deploy-build-number:
+    name: Record Private Deploy Build Number
+    needs: [build-android, build-ios]
+    if: inputs.flavor == 'private' && (inputs.deploy-ios-to != 'none' || inputs.deploy-android-to != 'none') && needs.build-android.result == 'success' && needs.build-ios.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write private deploy build marker
+        run: |
+          mkdir -p build/private-deploy-marker
+          printf '%s\n' '${{ inputs.build-number }}' > build/private-deploy-marker/build-number.txt
+
+      - name: Upload private deploy build marker
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: private-deploy-build-number-${{ inputs.build-number }}
+          path: build/private-deploy-marker/build-number.txt

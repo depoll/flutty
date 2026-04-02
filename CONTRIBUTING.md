@@ -168,7 +168,7 @@ Include:
 
 ## Releases & Deployment
 
-- **PR Preview Builds**: Every PR automatically builds a `private` preview and posts a downloadable APK. Comment `/deploy` on the PR to queue the current preview SHA for TestFlight + Play internal deployment, or run `Deploy PR Preview` manually from the Actions tab.
+- **PR Preview Builds**: Every PR automatically builds a `private` preview and posts a downloadable APK. Comment `/deploy` on the PR to queue the current preview SHA for TestFlight + Play internal deployment, or run `Deploy PR Preview` manually from the Actions tab. The deploy workflow reuses preview artifacts when their build number is still newer than the last deployed private build; otherwise it rebuilds with a fresh build number first.
 - **Production Releases**: Create a GitHub Release with a `vX.Y.Z` tag, or use the manual workflow dispatch. This deploys the `production` flavor to the App Store and Play Store.
 - **Flavors**: The app has two build flavors — `private` (for testing) and `production` (for store releases). See [docs/deployment.md](docs/deployment.md).
 

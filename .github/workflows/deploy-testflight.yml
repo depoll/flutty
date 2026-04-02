@@ -49,7 +49,7 @@ on:
         type: string
 
 concurrency:
-  group: deploy-testflight-pr-${{ inputs.pr-number }}
+  group: deploy-private
   cancel-in-progress: false
 
 permissions:
@@ -144,9 +144,164 @@ jobs:
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
+  finalize-version:
+    name: Finalize Deploy Version
+    needs: [validate-pr, compute-version]
+    if: needs.validate-pr.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    outputs:
+      build-name: ${{ steps.finalize.outputs.build-name }}
+      build-number: ${{ steps.finalize.outputs.build-number }}
+      requested-build-name: ${{ steps.finalize.outputs.requested-build-name }}
+      requested-build-number: ${{ steps.finalize.outputs.requested-build-number }}
+      rebuild-required: ${{ steps.finalize.outputs.rebuild-required }}
+      rebuild-note: ${{ steps.finalize.outputs.rebuild-note }}
+      previous-private-deploy-build-number: ${{ steps.finalize.outputs.previous-private-deploy-build-number }}
+    steps:
+      - name: Keep deploy build number monotonic
+        id: finalize
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const requestedBuildName = '${{ needs.compute-version.outputs.build-name }}'.trim();
+            const requestedBuildNumber = '${{ needs.compute-version.outputs.build-number }}'.trim();
+            const workflowIds = ['deploy-testflight.yml', 'develop.yml'];
+            const markerArtifactPattern = /^private-deploy-build-number-(\d+)$/;
+            const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)$/;
+            const maxDiscoveredBuildNumbersPerWorkflow = 20;
+            const maxWorkflowRunPages = 3;
+
+            let previousPrivateDeployBuildNumber = 0;
+
+            const listArtifacts = async (runId) =>
+              github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+                owner,
+                repo,
+                run_id: Number(runId),
+                per_page: 100,
+              });
+
+            const extractBuildNumbers = ({artifacts, allowLegacyArtifacts}) =>
+              artifacts
+                .flatMap((artifact) => {
+                  if (artifact.expired) {
+                    return [];
+                  }
+
+                  const markerMatch = artifact.name.match(markerArtifactPattern);
+                  if (markerMatch) {
+                    return [Number(markerMatch[1])];
+                  }
+
+                  if (!allowLegacyArtifacts) {
+                    return [];
+                  }
+
+                  const legacyMatch = artifact.name.match(legacyArtifactPattern);
+                  return legacyMatch ? [Number(legacyMatch[1])] : [];
+                })
+                .filter((value) => Number.isFinite(value));
+
+            const collectRecentBuildNumbers = async (workflowId) => {
+              const buildNumbers = [];
+              let scannedPages = 0;
+
+              for await (const response of github.paginate.iterator(
+                github.rest.actions.listWorkflowRuns,
+                {
+                  owner,
+                  repo,
+                  workflow_id: workflowId,
+                  status: 'completed',
+                  per_page: 100,
+                },
+              )) {
+                scannedPages += 1;
+
+                const workflowRuns = Array.isArray(response.data)
+                  ? response.data
+                  : response.data?.workflow_runs ?? [];
+
+                for (const run of workflowRuns) {
+                  const artifacts = await listArtifacts(run.id);
+                  const runBuildNumbers = extractBuildNumbers({
+                    artifacts,
+                    allowLegacyArtifacts: run.conclusion === 'success',
+                  });
+
+                  if (runBuildNumbers.length === 0) {
+                    continue;
+                  }
+
+                  buildNumbers.push(...runBuildNumbers);
+                  if (buildNumbers.length >= maxDiscoveredBuildNumbersPerWorkflow) {
+                    return buildNumbers;
+                  }
+                }
+
+                if (scannedPages >= maxWorkflowRunPages) {
+                  break;
+                }
+              }
+
+              return buildNumbers;
+            };
+
+            for (const workflowId of workflowIds) {
+              const runBuildNumbers = await collectRecentBuildNumbers(workflowId);
+              if (runBuildNumbers.length > 0) {
+                previousPrivateDeployBuildNumber = Math.max(
+                  previousPrivateDeployBuildNumber,
+                  ...runBuildNumbers,
+                );
+              }
+            }
+
+            let buildNumber = requestedBuildNumber;
+            let rebuildRequired = 'false';
+            let rebuildNote = '';
+
+            if (
+              requestedBuildNumber &&
+              previousPrivateDeployBuildNumber > 0 &&
+              Number(requestedBuildNumber) <= previousPrivateDeployBuildNumber
+            ) {
+              const freshBuildNumber = Math.floor(Date.now() / 1000 / 10);
+              buildNumber = String(
+                Math.max(freshBuildNumber, previousPrivateDeployBuildNumber + 1),
+              );
+              rebuildRequired = 'true';
+              rebuildNote =
+                `> Rebuild triggered because requested preview build \`${requestedBuildNumber}\` ` +
+                `was not newer than the highest recent private deploy build ` +
+                `\`${previousPrivateDeployBuildNumber}\`. This run is using freshly built ` +
+                `deploy artifacts with build \`${buildNumber}\` instead of reusing preview artifacts.`;
+              core.notice(
+                `Requested preview build ${requestedBuildNumber} is not newer than the highest ` +
+                  `recent ` +
+                  `private deploy build ${previousPrivateDeployBuildNumber}; using fresh ` +
+                  `deploy build ${buildNumber}.`,
+              );
+            }
+
+            core.setOutput('build-name', requestedBuildName);
+            core.setOutput('build-number', buildNumber);
+            core.setOutput('requested-build-name', requestedBuildName);
+            core.setOutput('requested-build-number', requestedBuildNumber);
+            core.setOutput('rebuild-required', rebuildRequired);
+            core.setOutput('rebuild-note', rebuildNote);
+            core.setOutput(
+              'previous-private-deploy-build-number',
+              String(previousPrivateDeployBuildNumber),
+            );
+
   resolve-preview-artifacts:
     name: Resolve Preview Artifacts
-    needs: [validate-pr, compute-version]
+    needs: [validate-pr, finalize-version]
     if: needs.validate-pr.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -165,8 +320,10 @@ jobs:
             const repo = context.repo.repo;
             const deploySha = '${{ needs.validate-pr.outputs.deploy-sha }}';
             const prNumber = '${{ inputs.pr-number }}';
-            const buildName = '${{ needs.compute-version.outputs.build-name }}';
-            const buildNumber = '${{ needs.compute-version.outputs.build-number }}';
+            const buildName = '${{ needs.finalize-version.outputs.build-name }}';
+            const buildNumber = '${{ needs.finalize-version.outputs.build-number }}';
+            const rebuildRequired =
+              '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
             const workflowId = 'preview.yml';
             const requiredArtifactNames = [
               `android-unsigned-private-${buildName}-${buildNumber}`,
@@ -183,6 +340,15 @@ jobs:
               core.setOutput('reuse-artifacts', reuseArtifacts);
               core.setOutput('preview-run-id', previewRunId);
             };
+
+            if (rebuildRequired) {
+              core.notice(
+                `Skipping preview artifact reuse for ${deploySha} because deploy build ` +
+                  `${buildNumber} was regenerated to stay ahead of prior private deploys.`,
+              );
+              setOutputs({});
+              return;
+            }
 
             const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -288,7 +454,7 @@ jobs:
 
   comment-start:
     name: Update PR deploy comment (start)
-    needs: [validate-pr, compute-version, resolve-preview-artifacts]
+    needs: [validate-pr, finalize-version, resolve-preview-artifacts]
     if: needs.validate-pr.result == 'success'
     runs-on: ubuntu-latest
     permissions:
@@ -368,8 +534,14 @@ jobs:
             const requestDetails = requestCommentId
               ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
+            const rebuildRequired =
+              '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
+            const rebuildNote =
+              ${{ toJSON(needs.finalize-version.outputs.rebuild-note) }};
             const artifactDetails =
-              '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
+              rebuildRequired
+                ? `| **Artifacts** | Rebuilding deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` is not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
+                : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
                 ? `| **Artifacts** | Reusing unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Preview intermediates unavailable, so this run is building deploy artifacts from source |';
 
@@ -381,8 +553,10 @@ jobs:
               '| **Status** | 🔒 Lock acquired — deploying |',
               `| **Requested by** | ${requestDetails} |`,
               `| **Preview SHA** | \`${deploySha}\` |`,
-              `| **Version** | \`${{ needs.compute-version.outputs.build-name }}\` |`,
-              `| **Build** | \`${{ needs.compute-version.outputs.build-number }}\` |`,
+              `| **Version** | \`${{ needs.finalize-version.outputs.build-name }}\` |`,
+              `| **Build** | \`${{ needs.finalize-version.outputs.build-number }}\` |`,
+              '| **Android Status** | ⏳ Deploying to Play internal |',
+              '| **iOS Status** | ⏳ Uploading to TestFlight |',
               artifactDetails,
               requestCommentUrl
                 ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`
@@ -393,6 +567,7 @@ jobs:
               requestedAt ? `| **Requested at** | ${requestedAt} |` : null,
               `| **Workflow** | [View deploy run](${runUrl}) |`,
               '',
+              rebuildNote,
               '> Duplicate requests stay locked out while this deploy is queued or running.',
               statusMarker,
               '<!-- preview-deploy-state:in_progress -->',
@@ -402,8 +577,10 @@ jobs:
               `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
               `<!-- preview-deploy-source-sha:${deploySha} -->`,
-              `<!-- preview-deploy-build-name:${{ needs.compute-version.outputs.build-name }} -->`,
-              `<!-- preview-deploy-build-number:${{ needs.compute-version.outputs.build-number }} -->`,
+              `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
+              `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
+              `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
+              `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
             ]
               .filter(Boolean)
               .join('\n');
@@ -426,11 +603,16 @@ jobs:
 
   deploy:
     name: Deploy to TestFlight & Play Internal
-    needs: [validate-pr, compute-version, resolve-preview-artifacts]
+    needs: [validate-pr, finalize-version, resolve-preview-artifacts]
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
     uses: ./.github/workflows/build-deploy.yml
     with:
-      build-name: ${{ needs.compute-version.outputs.build-name }}
-      build-number: ${{ needs.compute-version.outputs.build-number }}
+      build-name: ${{ needs.finalize-version.outputs.build-name }}
+      build-number: ${{ needs.finalize-version.outputs.build-number }}
       pr-number: ${{ inputs.pr-number }}
       pr-title: ${{ needs.validate-pr.outputs.pr-title }}
       flavor: private
@@ -438,13 +620,14 @@ jobs:
       deploy-ios-to: testflight
       deploy-android-to: internal
       android-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
+      android-reuse-aab-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('android-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
       android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}', 'private', needs.compute-version.outputs.build-name, needs.compute-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
       ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
+      update-pr-deploy-comment: true
     secrets:
       ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
       ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
@@ -499,15 +682,7 @@ jobs:
 
   comment-finish:
     name: Update PR deploy comment (finish)
-    needs:
-      [
-        validate-pr,
-        compute-version,
-        resolve-preview-artifacts,
-        comment-start,
-        deploy,
-        verify-pr-source,
-      ]
+    needs: [validate-pr, finalize-version, resolve-preview-artifacts, comment-start, deploy, verify-pr-source]
     if: always()
     runs-on: ubuntu-latest
     permissions:
@@ -588,12 +763,18 @@ jobs:
             const requestDetails = requestCommentId
               ? `@${requestedBy} via \`/deploy\` comment`
               : `@${requestedBy} via workflow dispatch`;
+            const rebuildRequired =
+              '${{ needs.finalize-version.outputs.rebuild-required }}' === 'true';
+            const rebuildNote =
+              ${{ toJSON(needs.finalize-version.outputs.rebuild-note) }};
             const artifactDetails =
-              '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
+              rebuildRequired
+                ? `| **Artifacts** | Built fresh deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` was not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
+                : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
                 ? `| **Artifacts** | Reused unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Built fresh deploy artifacts in this run because matching preview intermediates were unavailable |';
 
-            const replaceEyesReactionWithRocket = async () => {
+            const syncRequestCommentReaction = async (targetReaction) => {
               if (!requestCommentId) {
                 return;
               }
@@ -609,12 +790,14 @@ jobs:
                   headers: {accept: 'application/vnd.github+json'},
                 },
               );
-              const botEyesReactions = reactions.filter(
+              const managedReactionContents = new Set(['eyes', 'rocket', '-1']);
+              const botManagedReactions = reactions.filter(
                 (reaction) =>
-                  reaction.content === 'eyes' && reaction.user?.login === 'github-actions[bot]',
+                  managedReactionContents.has(reaction.content) &&
+                  reaction.user?.login === 'github-actions[bot]',
               );
 
-              for (const reaction of botEyesReactions) {
+              for (const reaction of botManagedReactions) {
                 await github.request(
                   'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
                   {
@@ -627,12 +810,7 @@ jobs:
                 );
               }
 
-              if (
-                reactions.some(
-                  (reaction) =>
-                    reaction.content === 'rocket' && reaction.user?.login === 'github-actions[bot]',
-                )
-              ) {
+              if (!targetReaction) {
                 return;
               }
 
@@ -642,7 +820,7 @@ jobs:
                   owner,
                   repo,
                   comment_id: commentId,
-                  content: 'rocket',
+                  content: targetReaction,
                   headers: {accept: 'application/vnd.github+json'},
                 },
               );
@@ -677,6 +855,32 @@ jobs:
               status = '❌ Deployed artifacts did not match the requested preview SHA';
             }
 
+            let targetReaction = '';
+            if (state === 'success') {
+              targetReaction = 'rocket';
+            } else if (state === 'failed') {
+              targetReaction = '-1';
+            }
+
+            const androidPlatformStatus =
+              ${{ toJSON(needs.deploy.outputs.android-deploy-status) }} ||
+              (validationResult !== 'success'
+                ? '⏭️ Not started'
+                : deployResult === 'cancelled'
+                  ? '⛔ Android deploy cancelled'
+                  : deployResult !== 'success'
+                    ? '❌ Android deploy failed'
+                    : '⏳ Android status unavailable');
+            const iosPlatformStatus =
+              ${{ toJSON(needs.deploy.outputs.ios-deploy-status) }} ||
+              (validationResult !== 'success'
+                ? '⏭️ Not started'
+                : deployResult === 'cancelled'
+                  ? '⛔ iOS deploy cancelled'
+                  : deployResult !== 'success'
+                    ? '❌ iOS deploy failed'
+                    : '⏳ iOS status unavailable');
+
             const body = [
               '## 🚀 Preview Deploy',
               '',
@@ -685,12 +889,14 @@ jobs:
               `| **Status** | ${status} |`,
               `| **Requested by** | ${requestDetails} |`,
               deploySha ? `| **Preview SHA** | \`${deploySha}\` |` : null,
-              '${{ needs.compute-version.outputs.build-name }}'
-                ? `| **Version** | \`${{ needs.compute-version.outputs.build-name }}\` |`
+              '${{ needs.finalize-version.outputs.build-name }}'
+                ? `| **Version** | \`${{ needs.finalize-version.outputs.build-name }}\` |`
                 : null,
-              '${{ needs.compute-version.outputs.build-number }}'
-                ? `| **Build** | \`${{ needs.compute-version.outputs.build-number }}\` |`
+              '${{ needs.finalize-version.outputs.build-number }}'
+                ? `| **Build** | \`${{ needs.finalize-version.outputs.build-number }}\` |`
                 : null,
+              `| **Android Status** | ${androidPlatformStatus} |`,
+              `| **iOS Status** | ${iosPlatformStatus} |`,
               artifactDetails,
               requestCommentUrl
                 ? `| **Request** | [View /deploy comment](${requestCommentUrl}) |`
@@ -701,6 +907,7 @@ jobs:
               requestedAt ? `| **Requested at** | ${requestedAt} |` : null,
               `| **Workflow** | [View deploy run](${runUrl}) |`,
               '',
+              rebuildNote,
               '> Add a new `/deploy` comment if you want to request another deploy.',
               statusMarker,
               `<!-- preview-deploy-state:${state} -->`,
@@ -710,8 +917,10 @@ jobs:
               `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
               `<!-- preview-deploy-source-sha:${deploySha} -->`,
-              `<!-- preview-deploy-build-name:${{ needs.compute-version.outputs.build-name }} -->`,
-              `<!-- preview-deploy-build-number:${{ needs.compute-version.outputs.build-number }} -->`,
+              `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
+              `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
+              `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
+              `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
             ]
               .filter(Boolean)
               .join('\n');
@@ -733,7 +942,7 @@ jobs:
             }
 
             try {
-              await replaceEyesReactionWithRocket();
+              await syncRequestCommentReaction(targetReaction);
             } catch (error) {
               core.warning(`Failed to update deploy reaction: ${String(error)}`);
             }
