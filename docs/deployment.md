@@ -101,6 +101,8 @@ Triggered automatically on PRs to `main` or `develop`. Builds the **private** fl
 - **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
 - **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
 
+When `/deploy` promotes a PR preview, it reuses the existing unsigned preview artifacts when their build number is still ahead of the latest private deploy. If a newer private build has already been deployed, the workflow automatically rebuilds with a fresh build number before uploading to TestFlight and Play internal.
+
 ### Deploy Private (`develop.yml`)
 
 Triggered on push to `main`. Builds the **private** flavor and deploys to:
