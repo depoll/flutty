@@ -387,8 +387,39 @@ bool shouldActivateTerminalFilePath(
 
 /// Whether a supported terminal path has multiple plausible parse boundaries.
 @visibleForTesting
-bool hasAmbiguousTerminalFilePathParsing(String path) =>
-    resolveTerminalFilePathVerificationCandidates(path).length > 1;
+bool hasAmbiguousTerminalFilePathParsing(String path) {
+  final lastSlashIndex = path.lastIndexOf('/');
+  final basename = lastSlashIndex >= 0
+      ? path.substring(lastSlashIndex + 1)
+      : path;
+  final lowercaseBasename = basename.toLowerCase();
+  final lastDotIndex = lowercaseBasename.lastIndexOf('.');
+  if (lastDotIndex > 0 && lastDotIndex < lowercaseBasename.length - 1) {
+    final extension = lowercaseBasename.substring(lastDotIndex + 1);
+    if (_terminalFilePathVerificationExtensions.contains(extension)) {
+      final marker = '.$extension';
+      if (lowercaseBasename.indexOf(marker) == lastDotIndex &&
+          lowercaseBasename.lastIndexOf(marker) == lastDotIndex) {
+        return false;
+      }
+    }
+  }
+
+  return resolveTerminalFilePathVerificationCandidates(path).length > 1;
+}
+
+bool _isTerminalFilePathVerificationSuffixCharacter(String character) {
+  if (character.isEmpty) {
+    return false;
+  }
+
+  final codeUnit = character.codeUnitAt(0);
+  return (codeUnit >= 48 && codeUnit <= 57) ||
+      (codeUnit >= 65 && codeUnit <= 90) ||
+      (codeUnit >= 97 && codeUnit <= 122) ||
+      codeUnit == 45 ||
+      codeUnit == 95;
+}
 
 bool _startsWithKnownTerminalFilePathExtensionAndMore(String suffix) {
   if (!suffix.startsWith('.')) {
@@ -464,7 +495,9 @@ List<String> resolveTerminalFilePathVerificationCandidates(String path) {
         final candidateEnd = markerIndex + extensionMarker.length;
         if (candidateEnd < basename.length) {
           final remainder = basename.substring(candidateEnd);
-          if (RegExp('[A-Za-z0-9_-]').hasMatch(basename[candidateEnd]) ||
+          if (_isTerminalFilePathVerificationSuffixCharacter(
+                basename[candidateEnd],
+              ) ||
               _startsWithKnownTerminalFilePathExtensionAndMore(remainder)) {
             addCandidate(
               '$basenamePrefix${basename.substring(0, candidateEnd)}',
@@ -4066,11 +4099,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       final path = detectedPath.path;
-      if (_isInteractiveTerminalFilePath(path)) {
-        final activePath = _interactiveTerminalFilePathCandidate(path);
-        if (activePath == null) {
-          continue;
-        }
+      final activePath = _interactiveTerminalFilePathCandidate(path);
+      if (activePath != null) {
         final visibleSegment = resolveTerminalFilePathSegmentOnRow(
           rowText: rowText,
           rowStartOffset: rowStart,

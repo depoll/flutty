@@ -145,6 +145,29 @@ void main() {
     });
   });
 
+  group('hasAmbiguousTerminalFilePathParsing', () {
+    test(
+      'returns false for ordinary explicit paths with a final known extension',
+      () {
+        expect(
+          hasAmbiguousTerminalFilePathParsing('/srv/app/lib/main.dart'),
+          isFalse,
+        );
+        expect(hasAmbiguousTerminalFilePathParsing('~/.ssh/config'), isFalse);
+      },
+    );
+
+    test(
+      'returns true when a known extension is followed by extra suffix text',
+      () {
+        expect(
+          hasAmbiguousTerminalFilePathParsing('/srv/app/archive.tar.gzbackup'),
+          isTrue,
+        );
+      },
+    );
+  });
+
   group('resolvePickedTerminalUploadFileName', () {
     test('prefers the picker-provided name when present', () {
       final file = PlatformFile(name: 'Screenshot.png', size: 0);
