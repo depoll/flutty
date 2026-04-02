@@ -1095,6 +1095,7 @@ class _SyncSection extends ConsumerWidget {
     }
 
     final syncService = ref.read(syncVaultServiceProvider);
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     var result = await syncService.syncNow();
     if (!context.mounted) {
       return;
@@ -1113,6 +1114,10 @@ class _SyncSection extends ConsumerWidget {
 
     ref.invalidate(syncVaultStatusProvider);
     if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
+      await sessionsNotifier.disconnectAll();
+      if (!context.mounted) {
+        return;
+      }
       invalidateSyncedDataProviders(ref.invalidate);
     }
 
@@ -1351,6 +1356,7 @@ class _MigrationSection extends ConsumerWidget {
 
     try {
       final transferService = ref.read(secureTransferServiceProvider);
+      final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
       final payload = await transferService.decryptPayload(
         encodedPayload: encodedPayload,
         transferPassphrase: transferPassphrase,
@@ -1378,6 +1384,9 @@ class _MigrationSection extends ConsumerWidget {
         payload: payload,
         mode: mode,
       );
+      if (mode == MigrationImportMode.replace) {
+        await sessionsNotifier.disconnectAll();
+      }
       ref
         ..invalidate(themeModeNotifierProvider)
         ..invalidate(fontSizeNotifierProvider)

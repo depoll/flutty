@@ -156,6 +156,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ).showSnackBar(SnackBar(content: Text('Imported key: ${key.name}')));
           break;
         case TransferPayloadType.fullMigration:
+          final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
           final preview = transferService.previewMigrationPayload(payload);
           if (!mounted) {
             return;
@@ -173,6 +174,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             payload: payload,
             mode: mode,
           );
+          if (mode == MigrationImportMode.replace) {
+            await sessionsNotifier.disconnectAll();
+          }
           ref
             ..invalidate(themeModeNotifierProvider)
             ..invalidate(fontSizeNotifierProvider)
@@ -618,6 +622,7 @@ class HostsPanel extends ConsumerWidget {
 
   Future<void> _refreshHosts(BuildContext context, WidgetRef ref) async {
     final syncService = ref.read(syncVaultServiceProvider);
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final syncStatus = await syncService.getStatus();
     if (!context.mounted) {
       return;
@@ -636,6 +641,7 @@ class HostsPanel extends ConsumerWidget {
 
     ref.invalidate(syncVaultStatusProvider);
     if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
+      await sessionsNotifier.disconnectAll();
       invalidateSyncedDataProviders(ref.invalidate);
     }
     ref.invalidate(allHostsProvider);
