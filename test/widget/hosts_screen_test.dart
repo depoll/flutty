@@ -35,6 +35,10 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
 }
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(<int>[]);
+  });
+
   group('normalizeSelectedGroupId', () {
     test('keeps the selected group when it still exists', () {
       final groups = [

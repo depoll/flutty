@@ -825,10 +825,7 @@ class SyncVaultService {
       normalizedEntries.add(MapEntry(index, canonical));
     }
 
-    normalizedEntries.sort(
-      (first, second) =>
-          jsonEncode(first.value).compareTo(jsonEncode(second.value)),
-    );
+    _sortCanonicalEntries(normalizedEntries);
 
     final signaturesById = <int, String>{};
     final canonicalRecords = <Map<String, dynamic>>[];
@@ -909,10 +906,7 @@ class SyncVaultService {
       );
     }
 
-    normalizedEntries.sort(
-      (first, second) =>
-          jsonEncode(first.value).compareTo(jsonEncode(second.value)),
-    );
+    _sortCanonicalEntries(normalizedEntries);
 
     final signaturesById = <int, String>{};
     final canonicalRecords = <Map<String, dynamic>>[];
@@ -969,10 +963,7 @@ class SyncVaultService {
       baseEntries.add(MapEntry(index, normalized));
     }
 
-    baseEntries.sort(
-      (first, second) =>
-          jsonEncode(first.value).compareTo(jsonEncode(second.value)),
-    );
+    _sortCanonicalEntries(baseEntries);
 
     final baseSignaturesById = <int, String>{};
     for (final entry in baseEntries) {
@@ -1049,6 +1040,23 @@ class SyncVaultService {
   String? _referenceSignature(Map<int, String> signaturesById, Object? rawId) {
     final id = _optionalInt(rawId);
     return id == null ? null : signaturesById[id];
+  }
+
+  void _sortCanonicalEntries(
+    List<MapEntry<int, Map<String, dynamic>>> entries,
+  ) {
+    final encodedRecordsByIndex = <int, String>{
+      for (final entry in entries) entry.key: jsonEncode(entry.value),
+    };
+    entries.sort((first, second) {
+      final encodedComparison = encodedRecordsByIndex[first.key]!.compareTo(
+        encodedRecordsByIndex[second.key]!,
+      );
+      if (encodedComparison != 0) {
+        return encodedComparison;
+      }
+      return first.key.compareTo(second.key);
+    });
   }
 
   String _signatureForRecord(Map<String, dynamic> record) => jsonEncode(record);

@@ -12,6 +12,10 @@ import 'package:monkeyssh/presentation/screens/snippets_screen.dart';
 class _MockSnippetRepository extends Mock implements SnippetRepository {}
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(<int>[]);
+  });
+
   group('SnippetsScreen', () {
     testWidgets('shows loading indicator initially', (tester) async {
       await tester.pumpWidget(
