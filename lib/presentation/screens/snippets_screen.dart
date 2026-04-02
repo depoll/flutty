@@ -126,13 +126,7 @@ class _SnippetsScreenState extends ConsumerState<SnippetsScreen> {
           onTap: () => _copySnippet(context, snippet),
           onEdit: () => context.push('/snippets/edit/${snippet.id}'),
           onDelete: () => _deleteSnippet(context, ref, snippet),
-          reorderHandle: ReorderableDragStartListener(
-            index: index,
-            child: const Padding(
-              padding: EdgeInsetsDirectional.only(start: 4),
-              child: Icon(Icons.drag_handle),
-            ),
-          ),
+          reorderHandle: ReorderGrip(index: index),
         );
       },
     );

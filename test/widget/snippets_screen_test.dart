@@ -63,6 +63,8 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      expect(find.byTooltip('Reorder'), findsNWidgets(2));
+
       final list = tester.widget<ReorderableListView>(
         find.byType(ReorderableListView),
       );

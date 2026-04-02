@@ -198,13 +198,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
           onNewConnection: () => unawaited(_openNewConnection(host)),
           onEdit: () => context.push('/hosts/edit/${host.id}'),
           onDelete: () => _deleteHost(host),
-          reorderHandle: ReorderableDragStartListener(
-            index: index,
-            child: const Padding(
-              padding: EdgeInsetsDirectional.only(start: 4),
-              child: Icon(Icons.drag_handle),
-            ),
-          ),
+          reorderHandle: ReorderGrip(index: index),
         );
       },
     );

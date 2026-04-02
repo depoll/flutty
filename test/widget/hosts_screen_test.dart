@@ -193,6 +193,8 @@ void main() {
     );
     await tester.pumpAndSettle();
 
+    expect(find.byTooltip('Reorder').first, findsOneWidget);
+
     await tester.drag(find.byType(Scrollable).first, const Offset(0, 300));
     await tester.pump();
     await tester.pump(const Duration(seconds: 1));
@@ -272,6 +274,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
+
+    expect(find.byTooltip('Reorder'), findsNWidgets(2));
 
     final list = tester.widget<ReorderableListView>(
       find.byType(ReorderableListView),
