@@ -13,6 +13,7 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
@@ -169,6 +170,60 @@ void main() {
         expect(secondSync.outcome, SyncVaultSyncOutcome.noChanges);
       },
     );
+
+    test('preserves host and snippet ordering across sync devices', () async {
+      final deviceA = await _createFixture();
+      final deviceB = await _createFixture();
+      addTearDown(deviceA.close);
+      addTearDown(deviceB.close);
+
+      final alphaId = await _insertHost(deviceA.hostRepository, label: 'Alpha');
+      final betaId = await _insertHost(deviceA.hostRepository, label: 'Beta');
+      final gammaId = await _insertHost(deviceA.hostRepository, label: 'Gamma');
+      await deviceA.hostRepository.reorderByIds([gammaId, alphaId, betaId]);
+
+      final firstSnippetId = await deviceA.snippetRepository.insert(
+        SnippetsCompanion.insert(name: 'First', command: 'echo first'),
+      );
+      final secondSnippetId = await deviceA.snippetRepository.insert(
+        SnippetsCompanion.insert(name: 'Second', command: 'echo second'),
+      );
+      final thirdSnippetId = await deviceA.snippetRepository.insert(
+        SnippetsCompanion.insert(name: 'Third', command: 'echo third'),
+      );
+      await deviceA.snippetRepository.reorderByIds([
+        thirdSnippetId,
+        firstSnippetId,
+        secondSnippetId,
+      ]);
+
+      final provisioning = await deviceA.syncService.prepareNewVault();
+      final vaultFile = File('${tempDir.path}/ordered.monkeysync');
+      await vaultFile.writeAsString(provisioning.encryptedVault, flush: true);
+      await deviceA.syncService.enablePreparedVault(
+        vaultPath: vaultFile.path,
+        provisioning: provisioning,
+      );
+
+      await deviceB.syncService.linkExistingVault(
+        vaultPath: vaultFile.path,
+        encryptedVault: await vaultFile.readAsString(),
+        recoveryKey: provisioning.recoveryKey,
+      );
+
+      final result = await deviceB.syncService.syncNow();
+      expect(result.outcome, SyncVaultSyncOutcome.downloadedRemote);
+      expect(
+        (await deviceB.hostRepository.getAll()).map((host) => host.label),
+        ['Gamma', 'Alpha', 'Beta'],
+      );
+      expect(
+        (await deviceB.snippetRepository.getAll()).map(
+          (snippet) => snippet.name,
+        ),
+        ['Third', 'First', 'Second'],
+      );
+    });
 
     test(
       'treats duplicate-equivalent references as unchanged across devices',
@@ -459,6 +514,7 @@ Future<_SyncFixture> _createFixture() async {
   final db = AppDatabase.forTesting(NativeDatabase.memory());
   final encryptionService = SecretEncryptionService.forTesting();
   final hostRepository = HostRepository(db, encryptionService);
+  final snippetRepository = SnippetRepository(db);
   final keyRepository = KeyRepository(db, encryptionService);
   final settings = SettingsService(db);
   final transferService = SecureTransferService(
@@ -492,24 +548,23 @@ Future<_SyncFixture> _createFixture() async {
     db: db,
     settings: settings,
     hostRepository: hostRepository,
+    snippetRepository: snippetRepository,
     syncService: SyncVaultService(settings, transferService, storage: storage),
   );
 }
 
-Future<void> _insertHost(
+Future<int> _insertHost(
   HostRepository repository, {
   required String label,
   int? groupId,
-}) async {
-  await repository.insert(
-    HostsCompanion.insert(
-      label: label,
-      hostname: '${label.toLowerCase().replaceAll(' ', '-')}.example.com',
-      username: 'root',
-      groupId: Value(groupId),
-    ),
-  );
-}
+}) => repository.insert(
+  HostsCompanion.insert(
+    label: label,
+    hostname: '${label.toLowerCase().replaceAll(' ', '-')}.example.com',
+    username: 'root',
+    groupId: Value(groupId),
+  ),
+);
 
 Future<int> _insertGroup(AppDatabase db, {required String name}) =>
     db.into(db.groups).insert(GroupsCompanion.insert(name: name));
@@ -562,12 +617,14 @@ class _SyncFixture {
     required this.db,
     required this.settings,
     required this.hostRepository,
+    required this.snippetRepository,
     required this.syncService,
   });
 
   final AppDatabase db;
   final SettingsService settings;
   final HostRepository hostRepository;
+  final SnippetRepository snippetRepository;
   final SyncVaultService syncService;
 
   Future<void> close() => db.close();

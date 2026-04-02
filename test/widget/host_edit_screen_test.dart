@@ -34,6 +34,7 @@ Host _testHost({
   autoConnectCommand: autoConnectCommand,
   autoConnectSnippetId: autoConnectSnippetId,
   autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+  sortOrder: 0,
 );
 
 Snippet _testSnippet({
@@ -47,6 +48,7 @@ Snippet _testSnippet({
   autoExecute: false,
   createdAt: DateTime(2024),
   usageCount: 0,
+  sortOrder: 0,
 );
 
 class _FakeHostRepository extends HostRepository {

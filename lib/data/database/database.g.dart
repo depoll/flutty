@@ -1471,6 +1471,18 @@ class $SnippetsTable extends Snippets with TableInfo<$SnippetsTable, Snippet> {
     requiredDuringInsert: false,
     defaultValue: const Constant(0),
   );
+  static const VerificationMeta _sortOrderMeta = const VerificationMeta(
+    'sortOrder',
+  );
+  @override
+  late final GeneratedColumn<int> sortOrder = GeneratedColumn<int>(
+    'sort_order',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1482,6 +1494,7 @@ class $SnippetsTable extends Snippets with TableInfo<$SnippetsTable, Snippet> {
     createdAt,
     lastUsedAt,
     usageCount,
+    sortOrder,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1559,6 +1572,12 @@ class $SnippetsTable extends Snippets with TableInfo<$SnippetsTable, Snippet> {
         usageCount.isAcceptableOrUnknown(data['usage_count']!, _usageCountMeta),
       );
     }
+    if (data.containsKey('sort_order')) {
+      context.handle(
+        _sortOrderMeta,
+        sortOrder.isAcceptableOrUnknown(data['sort_order']!, _sortOrderMeta),
+      );
+    }
     return context;
   }
 
@@ -1604,6 +1623,10 @@ class $SnippetsTable extends Snippets with TableInfo<$SnippetsTable, Snippet> {
         DriftSqlType.int,
         data['${effectivePrefix}usage_count'],
       )!,
+      sortOrder: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}sort_order'],
+      )!,
     );
   }
 
@@ -1640,6 +1663,9 @@ class Snippet extends DataClass implements Insertable<Snippet> {
 
   /// Usage count for sorting by frequency.
   final int usageCount;
+
+  /// Display order within the snippets list.
+  final int sortOrder;
   const Snippet({
     required this.id,
     required this.name,
@@ -1650,6 +1676,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
     required this.createdAt,
     this.lastUsedAt,
     required this.usageCount,
+    required this.sortOrder,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1669,6 +1696,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
       map['last_used_at'] = Variable<DateTime>(lastUsedAt);
     }
     map['usage_count'] = Variable<int>(usageCount);
+    map['sort_order'] = Variable<int>(sortOrder);
     return map;
   }
 
@@ -1689,6 +1717,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
           ? const Value.absent()
           : Value(lastUsedAt),
       usageCount: Value(usageCount),
+      sortOrder: Value(sortOrder),
     );
   }
 
@@ -1707,6 +1736,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
       createdAt: serializer.fromJson<DateTime>(json['createdAt']),
       lastUsedAt: serializer.fromJson<DateTime?>(json['lastUsedAt']),
       usageCount: serializer.fromJson<int>(json['usageCount']),
+      sortOrder: serializer.fromJson<int>(json['sortOrder']),
     );
   }
   @override
@@ -1722,6 +1752,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
       'createdAt': serializer.toJson<DateTime>(createdAt),
       'lastUsedAt': serializer.toJson<DateTime?>(lastUsedAt),
       'usageCount': serializer.toJson<int>(usageCount),
+      'sortOrder': serializer.toJson<int>(sortOrder),
     };
   }
 
@@ -1735,6 +1766,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
     DateTime? createdAt,
     Value<DateTime?> lastUsedAt = const Value.absent(),
     int? usageCount,
+    int? sortOrder,
   }) => Snippet(
     id: id ?? this.id,
     name: name ?? this.name,
@@ -1745,6 +1777,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
     createdAt: createdAt ?? this.createdAt,
     lastUsedAt: lastUsedAt.present ? lastUsedAt.value : this.lastUsedAt,
     usageCount: usageCount ?? this.usageCount,
+    sortOrder: sortOrder ?? this.sortOrder,
   );
   Snippet copyWithCompanion(SnippetsCompanion data) {
     return Snippet(
@@ -1765,6 +1798,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
       usageCount: data.usageCount.present
           ? data.usageCount.value
           : this.usageCount,
+      sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
 
@@ -1779,7 +1813,8 @@ class Snippet extends DataClass implements Insertable<Snippet> {
           ..write('autoExecute: $autoExecute, ')
           ..write('createdAt: $createdAt, ')
           ..write('lastUsedAt: $lastUsedAt, ')
-          ..write('usageCount: $usageCount')
+          ..write('usageCount: $usageCount, ')
+          ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
   }
@@ -1795,6 +1830,7 @@ class Snippet extends DataClass implements Insertable<Snippet> {
     createdAt,
     lastUsedAt,
     usageCount,
+    sortOrder,
   );
   @override
   bool operator ==(Object other) =>
@@ -1808,7 +1844,8 @@ class Snippet extends DataClass implements Insertable<Snippet> {
           other.autoExecute == this.autoExecute &&
           other.createdAt == this.createdAt &&
           other.lastUsedAt == this.lastUsedAt &&
-          other.usageCount == this.usageCount);
+          other.usageCount == this.usageCount &&
+          other.sortOrder == this.sortOrder);
 }
 
 class SnippetsCompanion extends UpdateCompanion<Snippet> {
@@ -1821,6 +1858,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
   final Value<DateTime> createdAt;
   final Value<DateTime?> lastUsedAt;
   final Value<int> usageCount;
+  final Value<int> sortOrder;
   const SnippetsCompanion({
     this.id = const Value.absent(),
     this.name = const Value.absent(),
@@ -1831,6 +1869,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
     this.createdAt = const Value.absent(),
     this.lastUsedAt = const Value.absent(),
     this.usageCount = const Value.absent(),
+    this.sortOrder = const Value.absent(),
   });
   SnippetsCompanion.insert({
     this.id = const Value.absent(),
@@ -1842,6 +1881,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
     this.createdAt = const Value.absent(),
     this.lastUsedAt = const Value.absent(),
     this.usageCount = const Value.absent(),
+    this.sortOrder = const Value.absent(),
   }) : name = Value(name),
        command = Value(command);
   static Insertable<Snippet> custom({
@@ -1854,6 +1894,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
     Expression<DateTime>? createdAt,
     Expression<DateTime>? lastUsedAt,
     Expression<int>? usageCount,
+    Expression<int>? sortOrder,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1865,6 +1906,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
       if (createdAt != null) 'created_at': createdAt,
       if (lastUsedAt != null) 'last_used_at': lastUsedAt,
       if (usageCount != null) 'usage_count': usageCount,
+      if (sortOrder != null) 'sort_order': sortOrder,
     });
   }
 
@@ -1878,6 +1920,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
     Value<DateTime>? createdAt,
     Value<DateTime?>? lastUsedAt,
     Value<int>? usageCount,
+    Value<int>? sortOrder,
   }) {
     return SnippetsCompanion(
       id: id ?? this.id,
@@ -1889,6 +1932,7 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
       createdAt: createdAt ?? this.createdAt,
       lastUsedAt: lastUsedAt ?? this.lastUsedAt,
       usageCount: usageCount ?? this.usageCount,
+      sortOrder: sortOrder ?? this.sortOrder,
     );
   }
 
@@ -1922,6 +1966,9 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
     if (usageCount.present) {
       map['usage_count'] = Variable<int>(usageCount.value);
     }
+    if (sortOrder.present) {
+      map['sort_order'] = Variable<int>(sortOrder.value);
+    }
     return map;
   }
 
@@ -1936,7 +1983,8 @@ class SnippetsCompanion extends UpdateCompanion<Snippet> {
           ..write('autoExecute: $autoExecute, ')
           ..write('createdAt: $createdAt, ')
           ..write('lastUsedAt: $lastUsedAt, ')
-          ..write('usageCount: $usageCount')
+          ..write('usageCount: $usageCount, ')
+          ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
   }
@@ -2214,6 +2262,18 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
         defaultValue: const Constant(false),
       );
+  static const VerificationMeta _sortOrderMeta = const VerificationMeta(
+    'sortOrder',
+  );
+  @override
+  late final GeneratedColumn<int> sortOrder = GeneratedColumn<int>(
+    'sort_order',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultValue: const Constant(0),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -2238,6 +2298,7 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     autoConnectCommand,
     autoConnectSnippetId,
     autoConnectRequiresConfirmation,
+    sortOrder,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -2410,6 +2471,12 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
       );
     }
+    if (data.containsKey('sort_order')) {
+      context.handle(
+        _sortOrderMeta,
+        sortOrder.isAcceptableOrUnknown(data['sort_order']!, _sortOrderMeta),
+      );
+    }
     return context;
   }
 
@@ -2507,6 +2574,10 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.bool,
         data['${effectivePrefix}auto_connect_requires_confirmation'],
       )!,
+      sortOrder: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}sort_order'],
+      )!,
     );
   }
 
@@ -2582,6 +2653,9 @@ class Host extends DataClass implements Insertable<Host> {
 
   /// Whether auto-connect should require user review before it can run.
   final bool autoConnectRequiresConfirmation;
+
+  /// Display order within the hosts list.
+  final int sortOrder;
   const Host({
     required this.id,
     required this.label,
@@ -2605,6 +2679,7 @@ class Host extends DataClass implements Insertable<Host> {
     this.autoConnectCommand,
     this.autoConnectSnippetId,
     required this.autoConnectRequiresConfirmation,
+    required this.sortOrder,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -2659,6 +2734,7 @@ class Host extends DataClass implements Insertable<Host> {
     map['auto_connect_requires_confirmation'] = Variable<bool>(
       autoConnectRequiresConfirmation,
     );
+    map['sort_order'] = Variable<int>(sortOrder);
     return map;
   }
 
@@ -2710,6 +2786,7 @@ class Host extends DataClass implements Insertable<Host> {
           ? const Value.absent()
           : Value(autoConnectSnippetId),
       autoConnectRequiresConfirmation: Value(autoConnectRequiresConfirmation),
+      sortOrder: Value(sortOrder),
     );
   }
 
@@ -2753,6 +2830,7 @@ class Host extends DataClass implements Insertable<Host> {
       autoConnectRequiresConfirmation: serializer.fromJson<bool>(
         json['autoConnectRequiresConfirmation'],
       ),
+      sortOrder: serializer.fromJson<int>(json['sortOrder']),
     );
   }
   @override
@@ -2783,6 +2861,7 @@ class Host extends DataClass implements Insertable<Host> {
       'autoConnectRequiresConfirmation': serializer.toJson<bool>(
         autoConnectRequiresConfirmation,
       ),
+      'sortOrder': serializer.toJson<int>(sortOrder),
     };
   }
 
@@ -2809,6 +2888,7 @@ class Host extends DataClass implements Insertable<Host> {
     Value<String?> autoConnectCommand = const Value.absent(),
     Value<int?> autoConnectSnippetId = const Value.absent(),
     bool? autoConnectRequiresConfirmation,
+    int? sortOrder,
   }) => Host(
     id: id ?? this.id,
     label: label ?? this.label,
@@ -2845,6 +2925,7 @@ class Host extends DataClass implements Insertable<Host> {
         : this.autoConnectSnippetId,
     autoConnectRequiresConfirmation:
         autoConnectRequiresConfirmation ?? this.autoConnectRequiresConfirmation,
+    sortOrder: sortOrder ?? this.sortOrder,
   );
   Host copyWithCompanion(HostsCompanion data) {
     return Host(
@@ -2889,6 +2970,7 @@ class Host extends DataClass implements Insertable<Host> {
           data.autoConnectRequiresConfirmation.present
           ? data.autoConnectRequiresConfirmation.value
           : this.autoConnectRequiresConfirmation,
+      sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
 
@@ -2917,8 +2999,9 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('autoConnectCommand: $autoConnectCommand, ')
           ..write('autoConnectSnippetId: $autoConnectSnippetId, ')
           ..write(
-            'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation',
+            'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation, ',
           )
+          ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
   }
@@ -2947,6 +3030,7 @@ class Host extends DataClass implements Insertable<Host> {
     autoConnectCommand,
     autoConnectSnippetId,
     autoConnectRequiresConfirmation,
+    sortOrder,
   ]);
   @override
   bool operator ==(Object other) =>
@@ -2974,7 +3058,8 @@ class Host extends DataClass implements Insertable<Host> {
           other.autoConnectCommand == this.autoConnectCommand &&
           other.autoConnectSnippetId == this.autoConnectSnippetId &&
           other.autoConnectRequiresConfirmation ==
-              this.autoConnectRequiresConfirmation);
+              this.autoConnectRequiresConfirmation &&
+          other.sortOrder == this.sortOrder);
 }
 
 class HostsCompanion extends UpdateCompanion<Host> {
@@ -3000,6 +3085,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<String?> autoConnectCommand;
   final Value<int?> autoConnectSnippetId;
   final Value<bool> autoConnectRequiresConfirmation;
+  final Value<int> sortOrder;
   const HostsCompanion({
     this.id = const Value.absent(),
     this.label = const Value.absent(),
@@ -3023,6 +3109,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.autoConnectCommand = const Value.absent(),
     this.autoConnectSnippetId = const Value.absent(),
     this.autoConnectRequiresConfirmation = const Value.absent(),
+    this.sortOrder = const Value.absent(),
   });
   HostsCompanion.insert({
     this.id = const Value.absent(),
@@ -3047,6 +3134,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.autoConnectCommand = const Value.absent(),
     this.autoConnectSnippetId = const Value.absent(),
     this.autoConnectRequiresConfirmation = const Value.absent(),
+    this.sortOrder = const Value.absent(),
   }) : label = Value(label),
        hostname = Value(hostname),
        username = Value(username);
@@ -3073,6 +3161,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<String>? autoConnectCommand,
     Expression<int>? autoConnectSnippetId,
     Expression<bool>? autoConnectRequiresConfirmation,
+    Expression<int>? sortOrder,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -3103,6 +3192,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
         'auto_connect_snippet_id': autoConnectSnippetId,
       if (autoConnectRequiresConfirmation != null)
         'auto_connect_requires_confirmation': autoConnectRequiresConfirmation,
+      if (sortOrder != null) 'sort_order': sortOrder,
     });
   }
 
@@ -3129,6 +3219,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<String?>? autoConnectCommand,
     Value<int?>? autoConnectSnippetId,
     Value<bool>? autoConnectRequiresConfirmation,
+    Value<int>? sortOrder,
   }) {
     return HostsCompanion(
       id: id ?? this.id,
@@ -3155,6 +3246,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
       autoConnectRequiresConfirmation:
           autoConnectRequiresConfirmation ??
           this.autoConnectRequiresConfirmation,
+      sortOrder: sortOrder ?? this.sortOrder,
     );
   }
 
@@ -3235,6 +3327,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
         autoConnectRequiresConfirmation.value,
       );
     }
+    if (sortOrder.present) {
+      map['sort_order'] = Variable<int>(sortOrder.value);
+    }
     return map;
   }
 
@@ -3263,8 +3358,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('autoConnectCommand: $autoConnectCommand, ')
           ..write('autoConnectSnippetId: $autoConnectSnippetId, ')
           ..write(
-            'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation',
+            'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation, ',
           )
+          ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
   }
@@ -5857,6 +5953,7 @@ typedef $$SnippetsTableCreateCompanionBuilder =
       Value<DateTime> createdAt,
       Value<DateTime?> lastUsedAt,
       Value<int> usageCount,
+      Value<int> sortOrder,
     });
 typedef $$SnippetsTableUpdateCompanionBuilder =
     SnippetsCompanion Function({
@@ -5869,6 +5966,7 @@ typedef $$SnippetsTableUpdateCompanionBuilder =
       Value<DateTime> createdAt,
       Value<DateTime?> lastUsedAt,
       Value<int> usageCount,
+      Value<int> sortOrder,
     });
 
 final class $$SnippetsTableReferences
@@ -5962,6 +6060,11 @@ class $$SnippetsTableFilterComposer
 
   ColumnFilters<int> get usageCount => $composableBuilder(
     column: $table.usageCount,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get sortOrder => $composableBuilder(
+    column: $table.sortOrder,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6063,6 +6166,11 @@ class $$SnippetsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<int> get sortOrder => $composableBuilder(
+    column: $table.sortOrder,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$SnippetFoldersTableOrderingComposer get folderId {
     final $$SnippetFoldersTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6127,6 +6235,9 @@ class $$SnippetsTableAnnotationComposer
     column: $table.usageCount,
     builder: (column) => column,
   );
+
+  GeneratedColumn<int> get sortOrder =>
+      $composableBuilder(column: $table.sortOrder, builder: (column) => column);
 
   $$SnippetFoldersTableAnnotationComposer get folderId {
     final $$SnippetFoldersTableAnnotationComposer composer = $composerBuilder(
@@ -6214,6 +6325,7 @@ class $$SnippetsTableTableManager
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<DateTime?> lastUsedAt = const Value.absent(),
                 Value<int> usageCount = const Value.absent(),
+                Value<int> sortOrder = const Value.absent(),
               }) => SnippetsCompanion(
                 id: id,
                 name: name,
@@ -6224,6 +6336,7 @@ class $$SnippetsTableTableManager
                 createdAt: createdAt,
                 lastUsedAt: lastUsedAt,
                 usageCount: usageCount,
+                sortOrder: sortOrder,
               ),
           createCompanionCallback:
               ({
@@ -6236,6 +6349,7 @@ class $$SnippetsTableTableManager
                 Value<DateTime> createdAt = const Value.absent(),
                 Value<DateTime?> lastUsedAt = const Value.absent(),
                 Value<int> usageCount = const Value.absent(),
+                Value<int> sortOrder = const Value.absent(),
               }) => SnippetsCompanion.insert(
                 id: id,
                 name: name,
@@ -6246,6 +6360,7 @@ class $$SnippetsTableTableManager
                 createdAt: createdAt,
                 lastUsedAt: lastUsedAt,
                 usageCount: usageCount,
+                sortOrder: sortOrder,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -6352,6 +6467,7 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<String?> autoConnectCommand,
       Value<int?> autoConnectSnippetId,
       Value<bool> autoConnectRequiresConfirmation,
+      Value<int> sortOrder,
     });
 typedef $$HostsTableUpdateCompanionBuilder =
     HostsCompanion Function({
@@ -6377,6 +6493,7 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<String?> autoConnectCommand,
       Value<int?> autoConnectSnippetId,
       Value<bool> autoConnectRequiresConfirmation,
+      Value<int> sortOrder,
     });
 
 final class $$HostsTableReferences
@@ -6572,6 +6689,11 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<bool> get autoConnectRequiresConfirmation => $composableBuilder(
     column: $table.autoConnectRequiresConfirmation,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get sortOrder => $composableBuilder(
+    column: $table.sortOrder,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6793,6 +6915,11 @@ class $$HostsTableOrderingComposer
         builder: (column) => ColumnOrderings(column),
       );
 
+  ColumnOrderings<int> get sortOrder => $composableBuilder(
+    column: $table.sortOrder,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   $$SshKeysTableOrderingComposer get keyId {
     final $$SshKeysTableOrderingComposer composer = $composerBuilder(
       composer: this,
@@ -6963,6 +7090,9 @@ class $$HostsTableAnnotationComposer
         column: $table.autoConnectRequiresConfirmation,
         builder: (column) => column,
       );
+
+  GeneratedColumn<int> get sortOrder =>
+      $composableBuilder(column: $table.sortOrder, builder: (column) => column);
 
   $$SshKeysTableAnnotationComposer get keyId {
     final $$SshKeysTableAnnotationComposer composer = $composerBuilder(
@@ -7139,6 +7269,7 @@ class $$HostsTableTableManager
                 Value<int?> autoConnectSnippetId = const Value.absent(),
                 Value<bool> autoConnectRequiresConfirmation =
                     const Value.absent(),
+                Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion(
                 id: id,
                 label: label,
@@ -7163,6 +7294,7 @@ class $$HostsTableTableManager
                 autoConnectSnippetId: autoConnectSnippetId,
                 autoConnectRequiresConfirmation:
                     autoConnectRequiresConfirmation,
+                sortOrder: sortOrder,
               ),
           createCompanionCallback:
               ({
@@ -7189,6 +7321,7 @@ class $$HostsTableTableManager
                 Value<int?> autoConnectSnippetId = const Value.absent(),
                 Value<bool> autoConnectRequiresConfirmation =
                     const Value.absent(),
+                Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion.insert(
                 id: id,
                 label: label,
@@ -7213,6 +7346,7 @@ class $$HostsTableTableManager
                 autoConnectSnippetId: autoConnectSnippetId,
                 autoConnectRequiresConfirmation:
                     autoConnectRequiresConfirmation,
+                sortOrder: sortOrder,
               ),
           withReferenceMapper: (p0) => p0
               .map(

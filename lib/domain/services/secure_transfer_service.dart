@@ -217,8 +217,18 @@ class SecureTransferService {
     final groups = await _db.select(_db.groups).get();
     final keys = await _keyRepository.getAll();
     final hosts = await _hostRepository.getAll();
-    final snippetFolders = await _db.select(_db.snippetFolders).get();
-    final snippets = await _db.select(_db.snippets).get();
+    final snippetFolders =
+        await (_db.select(_db.snippetFolders)..orderBy([
+              (folder) => OrderingTerm.asc(folder.sortOrder),
+              (folder) => OrderingTerm.asc(folder.id),
+            ]))
+            .get();
+    final snippets =
+        await (_db.select(_db.snippets)..orderBy([
+              (snippet) => OrderingTerm.asc(snippet.sortOrder),
+              (snippet) => OrderingTerm.asc(snippet.id),
+            ]))
+            .get();
     final portForwards = await _db.select(_db.portForwards).get();
     final knownHosts = includeKnownHosts
         ? await _db.select(_db.knownHosts).get()
@@ -785,6 +795,7 @@ class SecureTransferService {
           autoConnectCommand: Value(autoConnectCommand),
           autoConnectSnippetId: Value(mappedSnippetId),
           autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
+          sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
         ),
       );
 
@@ -902,6 +913,7 @@ class SecureTransferService {
               ),
               lastUsedAt: Value(_optionalDateTime(item['lastUsedAt'])),
               usageCount: Value(_optionalInt(item['usageCount']) ?? 0),
+              sortOrder: Value(_optionalInt(item['sortOrder']) ?? 0),
             ),
           );
       if (oldId != null) {

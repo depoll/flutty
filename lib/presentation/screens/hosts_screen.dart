@@ -16,6 +16,7 @@ import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/reorder_helpers.dart';
 
 /// Screen displaying list of saved hosts.
 class HostsScreen extends ConsumerStatefulWidget {
@@ -175,18 +176,35 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
       );
     }
 
-    return ListView.builder(
+    return ReorderableListView.builder(
+      buildDefaultDragHandles: false,
       physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 88),
       itemCount: filteredHosts.length,
+      onReorder: (oldIndex, newIndex) => unawaited(
+        _reorderHosts(
+          allHosts: hosts,
+          visibleHosts: filteredHosts,
+          oldIndex: oldIndex,
+          newIndex: newIndex,
+        ),
+      ),
       itemBuilder: (context, index) {
         final host = filteredHosts[index];
         return _HostListTile(
+          key: ValueKey(host.id),
           host: host,
           onTap: () => _connectToHost(host),
           onNewConnection: () => unawaited(_openNewConnection(host)),
           onEdit: () => context.push('/hosts/edit/${host.id}'),
           onDelete: () => _deleteHost(host),
+          reorderHandle: ReorderableDragStartListener(
+            index: index,
+            child: const Padding(
+              padding: EdgeInsetsDirectional.only(start: 4),
+              child: Icon(Icons.drag_handle),
+            ),
+          ),
         );
       },
     );
@@ -247,6 +265,21 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  Future<void> _reorderHosts({
+    required List<Host> allHosts,
+    required List<Host> visibleHosts,
+    required int oldIndex,
+    required int newIndex,
+  }) async {
+    final reorderedIds = reorderVisibleIdsInFullOrder(
+      allIds: allHosts.map((host) => host.id).toList(growable: false),
+      visibleIds: visibleHosts.map((host) => host.id).toList(growable: false),
+      oldIndex: oldIndex,
+      newIndex: newIndex,
+    );
+    await ref.read(hostRepositoryProvider).reorderByIds(reorderedIds);
   }
 
   Future<void> _openNewConnection(Host host) async {
@@ -615,6 +648,8 @@ class _HostListTile extends ConsumerWidget {
     required this.onNewConnection,
     required this.onEdit,
     required this.onDelete,
+    required this.reorderHandle,
+    super.key,
   });
 
   final Host host;
@@ -622,6 +657,7 @@ class _HostListTile extends ConsumerWidget {
   final VoidCallback onNewConnection;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final Widget reorderHandle;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -744,6 +780,7 @@ class _HostListTile extends ConsumerWidget {
                                   ),
                                 ),
                               ),
+                            reorderHandle,
                             IconButton(
                               icon: const Icon(Icons.add),
                               tooltip: 'New connection',

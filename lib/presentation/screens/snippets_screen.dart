@@ -7,6 +7,7 @@ import 'package:go_router/go_router.dart';
 
 import '../../data/database/database.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../widgets/reorder_helpers.dart';
 
 /// Screen displaying list of saved snippets.
 class SnippetsScreen extends ConsumerStatefulWidget {
@@ -111,16 +112,27 @@ class _SnippetsScreenState extends ConsumerState<SnippetsScreen> {
       );
     }
 
-    return ListView.builder(
+    return ReorderableListView.builder(
+      buildDefaultDragHandles: false,
       padding: const EdgeInsets.only(bottom: 88),
       itemCount: snippets.length,
+      onReorder: (oldIndex, newIndex) =>
+          unawaited(_reorderSnippets(ref, snippets, oldIndex, newIndex)),
       itemBuilder: (context, index) {
         final snippet = snippets[index];
         return _SnippetListTile(
+          key: ValueKey(snippet.id),
           snippet: snippet,
           onTap: () => _copySnippet(context, snippet),
           onEdit: () => context.push('/snippets/edit/${snippet.id}'),
           onDelete: () => _deleteSnippet(context, ref, snippet),
+          reorderHandle: ReorderableDragStartListener(
+            index: index,
+            child: const Padding(
+              padding: EdgeInsetsDirectional.only(start: 4),
+              child: Icon(Icons.drag_handle),
+            ),
+          ),
         );
       },
     );
@@ -168,6 +180,26 @@ class _SnippetsScreenState extends ConsumerState<SnippetsScreen> {
         ).showSnackBar(SnackBar(content: Text('Deleted "${snippet.name}"')));
       }
     }
+  }
+
+  Future<void> _reorderSnippets(
+    WidgetRef ref,
+    List<Snippet> visibleSnippets,
+    int oldIndex,
+    int newIndex,
+  ) async {
+    final repository = ref.read(snippetRepositoryProvider);
+    final allSnippets = await repository.getAll();
+    final reorderedIds = reorderVisibleIdsInFullOrder(
+      allIds: allSnippets.map((snippet) => snippet.id).toList(growable: false),
+      visibleIds: visibleSnippets
+          .map((snippet) => snippet.id)
+          .toList(growable: false),
+      oldIndex: oldIndex,
+      newIndex: newIndex,
+    );
+    await repository.reorderByIds(reorderedIds);
+    ref.invalidate(_snippetsProvider(_selectedFolderId));
   }
 
   Future<void> _showFoldersDialog(BuildContext context) async {
@@ -325,12 +357,15 @@ class _SnippetListTile extends StatelessWidget {
     required this.onTap,
     required this.onEdit,
     required this.onDelete,
+    required this.reorderHandle,
+    super.key,
   });
 
   final Snippet snippet;
   final VoidCallback onTap;
   final VoidCallback onEdit;
   final VoidCallback onDelete;
+  final Widget reorderHandle;
 
   @override
   Widget build(BuildContext context) {
@@ -352,24 +387,30 @@ class _SnippetListTile extends StatelessWidget {
           color: theme.colorScheme.outline,
         ),
       ),
-      trailing: PopupMenuButton<String>(
-        onSelected: (action) {
-          switch (action) {
-            case 'edit':
-              onEdit();
-            case 'delete':
-              onDelete();
-          }
-        },
-        itemBuilder: (context) => [
-          const PopupMenuItem(value: 'edit', child: Text('Edit')),
-          PopupMenuItem(
-            value: 'delete',
-            child: Text(
-              'Delete',
-              style: TextStyle(color: theme.colorScheme.error),
-            ),
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          PopupMenuButton<String>(
+            onSelected: (action) {
+              switch (action) {
+                case 'edit':
+                  onEdit();
+                case 'delete':
+                  onDelete();
+              }
+            },
+            itemBuilder: (context) => [
+              const PopupMenuItem(value: 'edit', child: Text('Edit')),
+              PopupMenuItem(
+                value: 'delete',
+                child: Text(
+                  'Delete',
+                  style: TextStyle(color: theme.colorScheme.error),
+                ),
+              ),
+            ],
           ),
+          reorderHandle,
         ],
       ),
       onTap: onTap,
