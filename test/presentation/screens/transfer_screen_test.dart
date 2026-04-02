@@ -1,3 +1,4 @@
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -48,6 +49,59 @@ void main() {
 
     test('strips leading and trailing dots and separators', () {
       expect(sanitizeTransferFileBaseName('.. key export ..'), 'key-export');
+    });
+  });
+
+  group('picker helpers', () {
+    test('uses the native unfiltered picker on iOS', () {
+      expect(
+        pickerFileTypeForCustomExtension(TargetPlatform.iOS),
+        FileType.any,
+      );
+      expect(
+        pickerAllowedExtensionsForCustomExtension(TargetPlatform.iOS, const [
+          monkeySshTransferFileExtension,
+        ]),
+        isNull,
+      );
+    });
+
+    test('uses filtered custom extensions on non-iOS platforms', () {
+      expect(
+        pickerFileTypeForCustomExtension(TargetPlatform.android),
+        FileType.custom,
+      );
+      expect(
+        pickerAllowedExtensionsForCustomExtension(
+          TargetPlatform.android,
+          const [monkeySshTransferFileExtension],
+        ),
+        const [monkeySshTransferFileExtension],
+      );
+    });
+
+    test('validates extensions from file metadata, name, or path', () {
+      expect(
+        platformFileMatchesExpectedExtension(
+          PlatformFile(name: 'vault.MONKEYSSHX', size: 1),
+          monkeySshTransferFileExtension,
+        ),
+        isTrue,
+      );
+      expect(
+        platformFileMatchesExpectedExtension(
+          PlatformFile(name: 'vault', path: '/tmp/vault.monkeysshx', size: 1),
+          monkeySshTransferFileExtension,
+        ),
+        isTrue,
+      );
+      expect(
+        platformFileMatchesExpectedExtension(
+          PlatformFile(name: 'vault.txt', size: 1),
+          monkeySshTransferFileExtension,
+        ),
+        isFalse,
+      );
     });
   });
 

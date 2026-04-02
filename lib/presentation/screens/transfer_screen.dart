@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
 
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -23,6 +24,37 @@ String sanitizeTransferFileBaseName(String input) {
       .replaceAll(RegExp(r'^\.+|\.+$'), '')
       .replaceAll(RegExp(r'^-+|-+$'), '');
   return normalized.isEmpty ? _defaultTransferFileBaseName : normalized;
+}
+
+/// Returns the native picker type to use for custom-extension files.
+FileType pickerFileTypeForCustomExtension(TargetPlatform platform) =>
+    platform == TargetPlatform.iOS ? FileType.any : FileType.custom;
+
+/// Returns the picker extension filter for a custom-extension file selection.
+List<String>? pickerAllowedExtensionsForCustomExtension(
+  TargetPlatform platform,
+  List<String> allowedExtensions,
+) => platform == TargetPlatform.iOS ? null : allowedExtensions;
+
+/// Returns whether the selected [file] matches [expectedExtension].
+bool platformFileMatchesExpectedExtension(
+  PlatformFile file,
+  String expectedExtension,
+) {
+  final normalizedExpectedExtension = expectedExtension
+      .toLowerCase()
+      .replaceFirst(RegExp(r'^\.'), '');
+  final extensionCandidates = <String?>[
+    file.extension,
+    p.extension(file.name),
+    if (file.path case final path?) p.extension(path),
+  ];
+  return extensionCandidates
+      .whereType<String>()
+      .map(
+        (extension) => extension.toLowerCase().replaceFirst(RegExp(r'^\.'), ''),
+      )
+      .any((extension) => extension == normalizedExpectedExtension);
 }
 
 /// Exports payload bytes to an encrypted transfer file.
@@ -80,8 +112,11 @@ Future<void> saveTransferPayloadToFile({
 Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
   final result = await FilePicker.platform.pickFiles(
     dialogTitle: 'Select encrypted MonkeySSH transfer file',
-    type: FileType.custom,
-    allowedExtensions: const [monkeySshTransferFileExtension],
+    type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
+    allowedExtensions: pickerAllowedExtensionsForCustomExtension(
+      defaultTargetPlatform,
+      const [monkeySshTransferFileExtension],
+    ),
     withData: kIsWeb,
   );
 
@@ -89,7 +124,20 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
-  final bytes = result.files.single.bytes;
+  final selectedFile = result.files.single;
+  if (!platformFileMatchesExpectedExtension(
+    selectedFile,
+    monkeySshTransferFileExtension,
+  )) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a .monkeysshx transfer file')),
+      );
+    }
+    return null;
+  }
+
+  final bytes = selectedFile.bytes;
   if (bytes != null && bytes.isNotEmpty) {
     if (bytes.length > _maxTransferPayloadBytes) {
       if (context.mounted) {
@@ -111,7 +159,7 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     }
   }
 
-  final path = result.files.single.path;
+  final path = selectedFile.path;
   if (path == null || path.isEmpty) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

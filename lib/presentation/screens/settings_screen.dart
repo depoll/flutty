@@ -13,6 +13,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/sync_vault_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/recovery_key_qr_dialogs.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'sync_vault_file_helpers.dart';
 import 'transfer_screen.dart';
@@ -907,7 +908,7 @@ class _SyncSection extends ConsumerWidget {
       return;
     }
 
-    await _showRecoveryKeyDialog(context, provisioning.recoveryKey);
+    await showRecoveryKeyQrDialog(context, provisioning.recoveryKey);
     if (!context.mounted) {
       return;
     }
@@ -944,7 +945,7 @@ class _SyncSection extends ConsumerWidget {
       return;
     }
 
-    final recoveryKey = await _showRecoveryKeyEntryDialog(context);
+    final recoveryKey = await showRecoveryKeyEntryDialog(context);
     if (!context.mounted || recoveryKey == null) {
       return;
     }
@@ -994,7 +995,7 @@ class _SyncSection extends ConsumerWidget {
       if (!context.mounted) {
         return;
       }
-      await _showRecoveryKeyDialog(context, recoveryKey);
+      await showRecoveryKeyQrDialog(context, recoveryKey);
     } on FormatException catch (error) {
       if (!context.mounted) {
         return;
@@ -1133,74 +1134,6 @@ class _SyncSection extends ConsumerWidget {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(result.message)));
-  }
-
-  Future<void> _showRecoveryKeyDialog(
-    BuildContext context,
-    String recoveryKey,
-  ) async {
-    await showDialog<void>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Sync recovery key'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Save this key somewhere safe. You need it to set up another device or recover encrypted sync access.',
-            ),
-            const SizedBox(height: 16),
-            SelectableText(
-              recoveryKey,
-              style: Theme.of(dialogContext).textTheme.titleMedium,
-            ),
-          ],
-        ),
-        actions: [
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Done'),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Future<String?> _showRecoveryKeyEntryDialog(BuildContext context) async {
-    final controller = TextEditingController();
-    try {
-      return await showDialog<String>(
-        context: context,
-        builder: (dialogContext) => AlertDialog(
-          title: const Text('Enter recovery key'),
-          content: TextField(
-            controller: controller,
-            autofocus: true,
-            decoration: const InputDecoration(
-              labelText: 'Recovery key',
-              helperText:
-                  'Used to decrypt and enroll this device into the sync vault',
-            ),
-            textCapitalization: TextCapitalization.characters,
-            maxLines: 2,
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(dialogContext),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () =>
-                  Navigator.pop(dialogContext, controller.text.trim()),
-              child: const Text('Continue'),
-            ),
-          ],
-        ),
-      );
-    } finally {
-      controller.dispose();
-    }
   }
 
   Future<SyncVaultConflictResolution?> _showConflictResolutionDialog(

@@ -75,8 +75,11 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
 ) async {
   final result = await FilePicker.platform.pickFiles(
     dialogTitle: 'Select encrypted MonkeySSH sync vault',
-    type: FileType.custom,
-    allowedExtensions: const [monkeySshSyncVaultFileExtension],
+    type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
+    allowedExtensions: pickerAllowedExtensionsForCustomExtension(
+      defaultTargetPlatform,
+      const [monkeySshSyncVaultFileExtension],
+    ),
     withData: kIsWeb,
   );
 
@@ -85,6 +88,17 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
   }
 
   final file = result.files.single;
+  if (!platformFileMatchesExpectedExtension(
+    file,
+    monkeySshSyncVaultFileExtension,
+  )) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a .monkeysync sync vault file')),
+      );
+    }
+    return null;
+  }
   final bytes = file.bytes;
   if (bytes != null && bytes.isNotEmpty) {
     if (bytes.length > maxSyncVaultBytes) {
