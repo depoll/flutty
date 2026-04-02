@@ -46,6 +46,59 @@ const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
 const _selectionActionsBottomPadding = 12.0;
+const _maxTerminalFilePathVerificationCandidates = 12;
+const _terminalFilePathVerificationExtensions = <String>[
+  'properties',
+  'gradle',
+  'sqlite',
+  'jpeg',
+  'plist',
+  'swift',
+  'tar',
+  'yaml',
+  'dart',
+  'html',
+  'json',
+  'lock',
+  'scss',
+  'toml',
+  'tsx',
+  'webp',
+  'bash',
+  'conf',
+  'cpp',
+  'css',
+  'csv',
+  'gif',
+  'ini',
+  'jpg',
+  'log',
+  'png',
+  'sql',
+  'svg',
+  'txt',
+  'xml',
+  'yml',
+  'zsh',
+  'cc',
+  'db',
+  'go',
+  'gz',
+  'js',
+  'kt',
+  'md',
+  'mm',
+  'py',
+  'rb',
+  'rs',
+  'sh',
+  'ts',
+  'c',
+  'h',
+  'm',
+];
+final _terminalFilePathVerificationExtensionSet =
+    _terminalFilePathVerificationExtensions.toSet();
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 const _clipboardContentChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/clipboard_content',
@@ -92,6 +145,7 @@ typedef _TerminalPathSnapshotAnalysis = ({
   List<_TerminalPathMatch> detectedPaths,
   _NormalizedTerminalPathSnapshot normalizedSnapshot,
 });
+typedef _VerifiedTerminalPath = ({String terminalPath, String resolvedPath});
 
 enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
@@ -306,6 +360,10 @@ bool requiresTerminalFilePathVerification(String path) {
     return true;
   }
 
+  if (hasAmbiguousTerminalFilePathParsing(path)) {
+    return true;
+  }
+
   if (!path.startsWith('/')) {
     return false;
   }
@@ -327,6 +385,187 @@ bool shouldActivateTerminalFilePath(
   }
 
   return isExplicitTerminalFilePath(path);
+}
+
+/// Whether a supported terminal path has multiple plausible parse boundaries.
+@visibleForTesting
+bool hasAmbiguousTerminalFilePathParsing(String path) {
+  final lastSlashIndex = path.lastIndexOf('/');
+  final basename = lastSlashIndex >= 0
+      ? path.substring(lastSlashIndex + 1)
+      : path;
+  final lowercaseBasename = basename.toLowerCase();
+  if (!lowercaseBasename.contains('.')) {
+    return false;
+  }
+
+  final lastDotIndex = lowercaseBasename.lastIndexOf('.');
+  if (lastDotIndex > 0 && lastDotIndex < lowercaseBasename.length - 1) {
+    final extension = lowercaseBasename.substring(lastDotIndex + 1);
+    if (_terminalFilePathVerificationExtensionSet.contains(extension)) {
+      final marker = '.$extension';
+      if (lowercaseBasename.indexOf(marker) == lastDotIndex &&
+          lowercaseBasename.lastIndexOf(marker) == lastDotIndex) {
+        return false;
+      }
+    }
+  }
+
+  return resolveTerminalFilePathVerificationCandidates(path).length > 1;
+}
+
+bool _isTerminalFilePathVerificationSuffixCharacter(String character) {
+  if (character.isEmpty) {
+    return false;
+  }
+
+  final codeUnit = character.codeUnitAt(0);
+  return (codeUnit >= 48 && codeUnit <= 57) ||
+      (codeUnit >= 65 && codeUnit <= 90) ||
+      (codeUnit >= 97 && codeUnit <= 122) ||
+      codeUnit == 45 ||
+      codeUnit == 95;
+}
+
+bool _startsWithKnownTerminalFilePathExtensionAndMore(String suffix) {
+  if (!suffix.startsWith('.')) {
+    return false;
+  }
+
+  final lowercaseSuffix = suffix.toLowerCase();
+  for (final extension in _terminalFilePathVerificationExtensions) {
+    final extensionMarker = '.$extension';
+    if (lowercaseSuffix.startsWith(extensionMarker) &&
+        suffix.length > extensionMarker.length) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool _hasExcessClosingTerminalFilePathBrackets(String value) {
+  var openParens = 0;
+  var closeParens = 0;
+  var openBrackets = 0;
+  var closeBrackets = 0;
+  var openBraces = 0;
+  var closeBraces = 0;
+
+  for (var index = 0; index < value.length; index++) {
+    switch (value[index]) {
+      case '(':
+        openParens++;
+        break;
+      case ')':
+        closeParens++;
+        break;
+      case '[':
+        openBrackets++;
+        break;
+      case ']':
+        closeBrackets++;
+        break;
+      case '{':
+        openBraces++;
+        break;
+      case '}':
+        closeBraces++;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return closeParens > openParens ||
+      closeBrackets > openBrackets ||
+      closeBraces > openBraces;
+}
+
+/// Alternative terminal-path parses to check when a candidate looks ambiguous.
+@visibleForTesting
+List<String> resolveTerminalFilePathVerificationCandidates(String path) {
+  final candidates = <String>[];
+  final seen = <String>{};
+  final seedCandidates = <String>[];
+
+  void addCandidate(String candidate) {
+    if (candidates.length >= _maxTerminalFilePathVerificationCandidates) {
+      return;
+    }
+    final normalizedCandidate = trimTerminalFilePathCandidate(candidate);
+    if (normalizedCandidate.isEmpty ||
+        !isSupportedTerminalFilePath(normalizedCandidate) ||
+        !seen.add(normalizedCandidate)) {
+      return;
+    }
+    candidates.add(normalizedCandidate);
+  }
+
+  void addSeedCandidate(String candidate) {
+    final beforeCount = candidates.length;
+    addCandidate(candidate);
+    if (candidates.length > beforeCount) {
+      seedCandidates.add(candidates.last);
+    }
+  }
+
+  addSeedCandidate(path);
+
+  var trailingBracketCandidate = trimTerminalFilePathCandidate(path);
+  if (_hasExcessClosingTerminalFilePathBrackets(trailingBracketCandidate)) {
+    while (trailingBracketCandidate.isNotEmpty &&
+        ')]}'.contains(
+          trailingBracketCandidate[trailingBracketCandidate.length - 1],
+        )) {
+      trailingBracketCandidate = trailingBracketCandidate.substring(
+        0,
+        trailingBracketCandidate.length - 1,
+      );
+      addSeedCandidate(trailingBracketCandidate);
+    }
+  }
+
+  for (final seed in seedCandidates) {
+    final lastSlashIndex = seed.lastIndexOf('/');
+    final basename = lastSlashIndex >= 0
+        ? seed.substring(lastSlashIndex + 1)
+        : seed;
+    final basenamePrefix = lastSlashIndex >= 0
+        ? seed.substring(0, lastSlashIndex + 1)
+        : '';
+    final lowercaseBasename = basename.toLowerCase();
+    for (final extension in _terminalFilePathVerificationExtensions) {
+      final extensionMarker = '.$extension';
+      var markerIndex = lowercaseBasename.indexOf(extensionMarker);
+      while (markerIndex >= 0) {
+        final candidateEnd = markerIndex + extensionMarker.length;
+        if (candidateEnd < basename.length) {
+          final remainder = basename.substring(candidateEnd);
+          if (_isTerminalFilePathVerificationSuffixCharacter(
+                basename[candidateEnd],
+              ) ||
+              _startsWithKnownTerminalFilePathExtensionAndMore(remainder)) {
+            addCandidate(
+              '$basenamePrefix${basename.substring(0, candidateEnd)}',
+            );
+          }
+        }
+        markerIndex = lowercaseBasename.indexOf(
+          extensionMarker,
+          markerIndex + 1,
+        );
+      }
+    }
+  }
+
+  if (candidates.length > 2) {
+    final primaryCandidate = candidates.first;
+    final alternativeCandidates = candidates.sublist(1)
+      ..sort((left, right) => right.length.compareTo(left.length));
+    return [primaryCandidate, ...alternativeCandidates];
+  }
+
+  return candidates;
 }
 
 /// Candidate terminal cells to probe for a touch-friendly path hit test.
@@ -399,8 +638,8 @@ Rect? resolveTerminalPathUnderlineRect({
   final effectiveRowHeight = (rowHeight ?? lineHeight) < lineHeight
       ? lineHeight
       : (rowHeight ?? lineHeight);
-  final thickness = (lineHeight * 0.08).clamp(1.5, 2.0);
   final effectiveTextHeight = textHeight ?? effectiveRowHeight;
+  final thickness = (effectiveTextHeight * 0.08).clamp(0.75, 2.5);
   final rowBottom = lineTopLeft.dy + effectiveRowHeight;
   final preferredTop = lineTopLeft.dy + effectiveTextHeight + 0.25;
   final maxTopWithinRow = rowBottom - thickness - 0.5;
@@ -1037,7 +1276,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
-  final Map<String, String> _verifiedTerminalPathCache = <String, String>{};
+  final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
+      <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   String? _terminalPathCacheScope;
@@ -3434,15 +3674,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final pathTextOffset =
         pathSnapshot.rowStarts[pathRowIndex] + rowColumnOffsets[column];
-    final detectedPath = detectTerminalFilePathAtTextOffset(
-      pathSnapshot.text,
-      pathTextOffset,
-    );
-    if (detectedPath == null) {
-      return null;
+    final snapshotAnalysis = _analyzeTerminalPathSnapshot(pathSnapshot);
+    for (final detectedPath in snapshotAnalysis.detectedPaths) {
+      final activePath = _interactiveTerminalFilePathCandidate(
+        detectedPath.path,
+      );
+      final activeEnd = activePath == null
+          ? detectedPath.hitTestEnd
+          : _resolveOriginalTerminalPathMatchEnd(
+              normalizedSnapshot: snapshotAnalysis.normalizedSnapshot,
+              normalizedStart: detectedPath.normalizedStart,
+              normalizedLength: activePath.length,
+            );
+      if (activeEnd == null) {
+        continue;
+      }
+      if (pathTextOffset >= detectedPath.start && pathTextOffset < activeEnd) {
+        return detectedPath.path;
+      }
     }
-
-    return detectedPath.path;
+    return null;
   }
 
   _TerminalPathTapSnapshot? _buildWrappedTerminalLinkSnapshot(int row) {
@@ -3894,7 +4145,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       final path = detectedPath.path;
-      if (_isInteractiveTerminalFilePath(path)) {
+      final activePath = _interactiveTerminalFilePathCandidate(path);
+      if (activePath != null) {
         final visibleSegment = resolveTerminalFilePathSegmentOnRow(
           rowText: rowText,
           rowStartOffset: rowStart,
@@ -3902,7 +4154,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           originalToNormalizedOffsets:
               snapshotAnalysis.normalizedSnapshot.originalToNormalizedOffsets,
           normalizedPathStart: detectedPath.normalizedStart,
-          normalizedPathEnd: detectedPath.normalizedEnd,
+          normalizedPathEnd: detectedPath.normalizedStart + activePath.length,
         );
         if (visibleSegment == null) {
           continue;
@@ -4182,9 +4434,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _verifyingTerminalPathCacheKeys.clear();
   }
 
-  void _cacheVerifiedTerminalPath(String cacheKey, String resolvedPath) {
+  void _cacheVerifiedTerminalPath(
+    String cacheKey, {
+    required String terminalPath,
+    required String resolvedPath,
+  }) {
     _verifiedTerminalPathCache.remove(cacheKey);
-    _verifiedTerminalPathCache[cacheKey] = resolvedPath;
+    _verifiedTerminalPathCache[cacheKey] = (
+      terminalPath: terminalPath,
+      resolvedPath: resolvedPath,
+    );
     _verifiedTerminalPathCacheOrder
       ..remove(cacheKey)
       ..addLast(cacheKey);
@@ -4261,17 +4520,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return homeDirectory;
   }
 
-  bool _hasVerifiedRelativeTerminalPath(String terminalPath) {
+  _VerifiedTerminalPath? _verifiedTerminalPath(String terminalPath) {
     _syncVerifiedTerminalPathCacheScope();
-    return _verifiedTerminalPathCache.containsKey(
-      _terminalPathCacheKey(terminalPath),
-    );
+    return _verifiedTerminalPathCache[_terminalPathCacheKey(terminalPath)];
+  }
+
+  String? _interactiveTerminalFilePathCandidate(String terminalPath) {
+    final verifiedPath = _verifiedTerminalPath(terminalPath);
+    if (verifiedPath != null) {
+      return verifiedPath.terminalPath;
+    }
+    if (!_isInteractiveTerminalFilePath(terminalPath)) {
+      return null;
+    }
+    return terminalPath;
   }
 
   bool _isInteractiveTerminalFilePath(String terminalPath) =>
       shouldActivateTerminalFilePath(
         terminalPath,
-        hasVerifiedPath: _hasVerifiedRelativeTerminalPath(terminalPath),
+        hasVerifiedPath: _verifiedTerminalPath(terminalPath) != null,
       );
 
   void _primeTerminalFilePathVerification(String terminalPath) {
@@ -4311,7 +4579,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final cacheKey = _terminalPathCacheKey(terminalPath);
     final cachedPath = _verifiedTerminalPathCache[cacheKey];
     if (cachedPath != null) {
-      return cachedPath;
+      return cachedPath.resolvedPath;
     }
 
     final session = _activeSession();
@@ -4328,27 +4596,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (sftp == null) {
         return null;
       }
-      final homeDirectory = await _resolveTerminalPathVerificationHomeDirectory(
-        sftp,
-        terminalPath,
-      );
-      final resolvedPath = resolveRequestedSftpPath(
-        terminalPath,
-        workingDirectory: _workingDirectoryPath,
-        homeDirectory: homeDirectory,
-      );
-      if (resolvedPath == null) {
-        if (showErrors && isExplicitPath) {
-          _showTerminalLinkMessage(
-            'Could not open "$terminalPath" in SFTP: path does not exist',
-          );
+      final verificationCandidates =
+          requiresTerminalFilePathVerification(terminalPath)
+          ? resolveTerminalFilePathVerificationCandidates(terminalPath)
+          : <String>[terminalPath];
+      for (final candidate in verificationCandidates) {
+        final homeDirectory =
+            await _resolveTerminalPathVerificationHomeDirectory(
+              sftp,
+              candidate,
+            );
+        final resolvedPath = resolveRequestedSftpPath(
+          candidate,
+          workingDirectory: _workingDirectoryPath,
+          homeDirectory: homeDirectory,
+        );
+        if (resolvedPath == null) {
+          continue;
         }
-        return null;
+
+        try {
+          await sftp
+              .stat(resolvedPath)
+              .timeout(_terminalPathVerificationTimeout);
+        } on SftpStatusError catch (error) {
+          if (error.code == SftpStatusCode.noSuchFile) {
+            continue;
+          }
+          rethrow;
+        }
+
+        _cacheVerifiedTerminalPath(
+          cacheKey,
+          terminalPath: candidate,
+          resolvedPath: resolvedPath,
+        );
+        return resolvedPath;
       }
 
-      await sftp.stat(resolvedPath).timeout(_terminalPathVerificationTimeout);
-      _cacheVerifiedTerminalPath(cacheKey, resolvedPath);
-      return resolvedPath;
+      if (showErrors && isExplicitPath) {
+        _showTerminalLinkMessage(
+          'Could not open "$terminalPath" in SFTP: path does not exist',
+        );
+      }
+      return null;
     } on TimeoutException {
       if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Timed out opening "$terminalPath" in SFTP');
@@ -4372,6 +4663,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       return null;
     }
+  }
+
+  int? _resolveOriginalTerminalPathMatchEnd({
+    required _NormalizedTerminalPathSnapshot normalizedSnapshot,
+    required int normalizedStart,
+    required int normalizedLength,
+  }) {
+    if (normalizedLength <= 0) {
+      return null;
+    }
+
+    final normalizedEnd = normalizedStart + normalizedLength;
+    if (normalizedEnd > normalizedSnapshot.normalizedToOriginalEnds.length) {
+      return null;
+    }
+
+    return normalizedSnapshot.normalizedToOriginalEnds[normalizedEnd - 1];
   }
 
   Future<void> _pasteClipboard() async {
