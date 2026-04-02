@@ -204,6 +204,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.byIcon(Icons.more_vert), findsNothing);
+    expect(find.byIcon(Icons.edit_outlined), findsNothing);
 
     await tester.longPress(find.text('Alpha'));
     await tester.pumpAndSettle();

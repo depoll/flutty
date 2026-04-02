@@ -859,10 +859,6 @@ class _HostRow extends ConsumerWidget {
                         onTap: () =>
                             unawaited(_openNewConnection(context, ref)),
                       ),
-                      _SmallIconButton(
-                        icon: Icons.edit_outlined,
-                        onTap: () => context.push('/hosts/edit/${host.id}'),
-                      ),
                       reorderHandle,
                     ],
                   ),
