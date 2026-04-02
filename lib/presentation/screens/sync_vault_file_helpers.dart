@@ -15,22 +15,32 @@ const monkeySshSyncVaultFileExtension = 'monkeysync';
 /// Result of selecting an encrypted sync vault file from disk.
 class SelectedSyncVaultFile {
   /// Creates a new [SelectedSyncVaultFile].
-  const SelectedSyncVaultFile({required this.contents, required this.path});
+  const SelectedSyncVaultFile({
+    required this.contents,
+    required this.path,
+    this.bookmark,
+  });
 
   /// Full file contents read from the selected vault file.
   final String contents;
 
   /// Filesystem path for the selected file.
   final String path;
+
+  /// Security-scoped bookmark used by iOS to reopen the linked file later.
+  final String? bookmark;
 }
 
 /// Result of saving a new encrypted sync vault file.
 class SavedSyncVaultFile {
   /// Creates a new [SavedSyncVaultFile].
-  const SavedSyncVaultFile({required this.path});
+  const SavedSyncVaultFile({required this.path, this.bookmark});
 
   /// Stored label for the saved file.
   final String path;
+
+  /// Security-scoped bookmark used by iOS to reopen the linked file later.
+  final String? bookmark;
 }
 
 /// Saves an encrypted sync vault file and returns the selected output path.
@@ -55,7 +65,10 @@ Future<SavedSyncVaultFile?> saveSyncVaultToFile({
         );
         return null;
       }
-      return SavedSyncVaultFile(path: linkedVault.path);
+      return SavedSyncVaultFile(
+        path: linkedVault.path,
+        bookmark: linkedVault.bookmark,
+      );
     } on FormatException catch (error) {
       if (!context.mounted) {
         return null;
@@ -129,6 +142,7 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
       return SelectedSyncVaultFile(
         contents: linkedVault.contents,
         path: linkedVault.path,
+        bookmark: linkedVault.bookmark,
       );
     } on FormatException catch (error) {
       if (context.mounted) {

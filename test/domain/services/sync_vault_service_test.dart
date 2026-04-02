@@ -6,6 +6,7 @@ import 'dart:io';
 import 'package:cryptography/cryptography.dart';
 import 'package:drift/drift.dart' show Value;
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -17,20 +18,55 @@ import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/sync_vault_document_service.dart';
 import 'package:monkeyssh/domain/services/sync_vault_file_io.dart';
 import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 
 class MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
+
+class FakeSyncVaultDocumentService extends SyncVaultDocumentService {
+  PickedSyncVaultDocument? readResult;
+  SavedSyncVaultDocument? writeResult;
+  String? lastReadBookmark;
+  String? lastWriteBookmark;
+  String? lastWrittenVault;
+
+  @override
+  Future<PickedSyncVaultDocument> readLinkedVault({
+    required String bookmark,
+  }) async {
+    lastReadBookmark = bookmark;
+    if (readResult case final result?) {
+      return result;
+    }
+    throw const FileSystemException('Could not access the linked sync vault');
+  }
+
+  @override
+  Future<SavedSyncVaultDocument> writeLinkedVault({
+    required String bookmark,
+    required String encryptedVault,
+  }) async {
+    lastWriteBookmark = bookmark;
+    lastWrittenVault = encryptedVault;
+    if (writeResult case final result?) {
+      return result;
+    }
+    throw const FileSystemException('Could not access the linked sync vault');
+  }
+}
 
 void main() {
   group('SyncVaultService', () {
     late Directory tempDir;
 
     setUp(() async {
+      debugDefaultTargetPlatformOverride = null;
       tempDir = await Directory.systemTemp.createTemp('monkeyssh-sync-vault');
     });
 
     tearDown(() async {
+      debugDefaultTargetPlatformOverride = null;
       if (tempDir.existsSync()) {
         await tempDir.delete(recursive: true);
       }
@@ -504,6 +540,89 @@ void main() {
               'Invalid sync vault payload',
             ),
           ),
+        );
+      },
+    );
+
+    test(
+      'uses native iOS bookmarks to read and write the linked vault',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+
+        final encryptionService = SecretEncryptionService.forTesting();
+        final hostRepository = HostRepository(db, encryptionService);
+        final keyRepository = KeyRepository(db, encryptionService);
+        final settings = SettingsService(db);
+        final transferService = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+        );
+        final storage = MockFlutterSecureStorage();
+        final secureState = <String, String>{};
+        final documentService = FakeSyncVaultDocumentService();
+
+        when(() => storage.read(key: any(named: 'key'))).thenAnswer(
+          (invocation) async =>
+              secureState[invocation.namedArguments[#key] as String],
+        );
+        when(
+          () => storage.write(
+            key: any(named: 'key'),
+            value: any(named: 'value'),
+          ),
+        ).thenAnswer((invocation) async {
+          secureState[invocation.namedArguments[#key] as String] =
+              invocation.namedArguments[#value] as String;
+        });
+        when(() => storage.delete(key: any(named: 'key'))).thenAnswer((
+          invocation,
+        ) async {
+          secureState.remove(invocation.namedArguments[#key] as String);
+        });
+
+        final syncService = SyncVaultService(
+          settings,
+          transferService,
+          storage: storage,
+          documentService: documentService,
+        );
+
+        final provisioning = await syncService.prepareNewVault();
+        documentService
+          ..readResult = const PickedSyncVaultDocument(
+            contents: '',
+            path: '/provider/live.monkeysync',
+            bookmark: 'bookmark-read',
+          )
+          ..writeResult = const SavedSyncVaultDocument(
+            path: '/provider/live.monkeysync',
+            bookmark: 'bookmark-write',
+          );
+
+        await syncService.enablePreparedVault(
+          vaultPath: '/provider/old.monkeysync',
+          vaultBookmark: 'bookmark-initial',
+          provisioning: provisioning,
+        );
+        await _insertHost(hostRepository, label: 'Uploaded host');
+
+        final result = await syncService.syncNow();
+
+        expect(result.outcome, SyncVaultSyncOutcome.uploadedLocal);
+        expect(documentService.lastReadBookmark, 'bookmark-initial');
+        expect(documentService.lastWriteBookmark, 'bookmark-read');
+        expect(documentService.lastWrittenVault, isNotEmpty);
+        expect(
+          await settings.getString(SettingKeys.syncVaultPath),
+          '/provider/live.monkeysync',
+        );
+        expect(
+          await settings.getString(SettingKeys.syncVaultBookmark),
+          'bookmark-write',
         );
       },
     );

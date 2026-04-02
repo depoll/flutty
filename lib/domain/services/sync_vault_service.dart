@@ -11,6 +11,7 @@ import 'package:uuid/uuid.dart';
 
 import 'secure_transfer_service.dart';
 import 'settings_service.dart';
+import 'sync_vault_document_service.dart';
 import 'sync_vault_file_io.dart';
 
 /// Conflict resolution choices when both local and remote sync vault data changed.
@@ -195,6 +196,18 @@ class _CanonicalHosts {
   final Map<int, String> baseSignaturesById;
 }
 
+class _LinkedSyncVaultContents {
+  const _LinkedSyncVaultContents({
+    required this.contents,
+    required this.path,
+    this.bookmark,
+  });
+
+  final String contents;
+  final String path;
+  final String? bookmark;
+}
+
 /// Service for optional end-to-end encrypted sync via a user-managed vault file.
 class SyncVaultService {
   /// Creates a new [SyncVaultService].
@@ -202,10 +215,12 @@ class SyncVaultService {
     this._settings,
     this._transferService, {
     FlutterSecureStorage? storage,
+    SyncVaultDocumentService? documentService,
     AesGcm? algorithm,
     Random? random,
     Uuid? uuid,
   }) : _storage = storage ?? const FlutterSecureStorage(),
+       _documentService = documentService ?? SyncVaultDocumentService(),
        _algorithm = algorithm ?? AesGcm.with256bits(),
        _random = random ?? Random.secure(),
        _uuid = uuid ?? const Uuid();
@@ -213,6 +228,7 @@ class SyncVaultService {
   final SettingsService _settings;
   final SecureTransferService _transferService;
   final FlutterSecureStorage _storage;
+  final SyncVaultDocumentService _documentService;
   final AesGcm _algorithm;
   final Random _random;
   final Uuid _uuid;
@@ -284,12 +300,16 @@ class SyncVaultService {
   Future<void> enablePreparedVault({
     required String vaultPath,
     required SyncVaultProvisioning provisioning,
+    String? vaultBookmark,
   }) async {
     await _storage.write(
       key: _storageRecoveryKey,
       value: _normalizeRecoveryKey(provisioning.recoveryKey),
     );
-    await _settings.setString(SettingKeys.syncVaultPath, vaultPath);
+    await _storeLinkedVaultReference(
+      vaultPath: vaultPath,
+      vaultBookmark: vaultBookmark,
+    );
     await _settings.setBool(SettingKeys.syncVaultEnabled, value: true);
     await _settings.setString(
       SettingKeys.syncVaultLastSnapshotHash,
@@ -308,6 +328,7 @@ class SyncVaultService {
     required String vaultPath,
     required String encryptedVault,
     required String recoveryKey,
+    String? vaultBookmark,
   }) async {
     final normalizedRecoveryKey = _normalizeRecoveryKey(recoveryKey);
     final recoverySeed = _parseRecoveryKey(normalizedRecoveryKey);
@@ -316,7 +337,10 @@ class SyncVaultService {
       key: _storageRecoveryKey,
       value: normalizedRecoveryKey,
     );
-    await _settings.setString(SettingKeys.syncVaultPath, vaultPath);
+    await _storeLinkedVaultReference(
+      vaultPath: vaultPath,
+      vaultBookmark: vaultBookmark,
+    );
     await _settings.setBool(SettingKeys.syncVaultEnabled, value: true);
     await _settings.delete(SettingKeys.syncVaultLastSnapshotHash);
     await _settings.delete(SettingKeys.syncVaultLastSyncedAt);
@@ -328,6 +352,7 @@ class SyncVaultService {
   Future<void> relinkVault({
     required String vaultPath,
     required String encryptedVault,
+    String? vaultBookmark,
   }) async {
     final recoveryKey = await _readStoredRecoveryKey();
     if (recoveryKey == null) {
@@ -337,7 +362,10 @@ class SyncVaultService {
     }
     final recoverySeed = _parseRecoveryKey(recoveryKey);
     await _decryptVault(encryptedVault, recoverySeed: recoverySeed);
-    await _settings.setString(SettingKeys.syncVaultPath, vaultPath);
+    await _storeLinkedVaultReference(
+      vaultPath: vaultPath,
+      vaultBookmark: vaultBookmark,
+    );
     await _settings.delete(SettingKeys.syncVaultLastError);
   }
 
@@ -357,6 +385,7 @@ class SyncVaultService {
     await _storage.delete(key: _storageRecoveryKey);
     await _settings.delete(SettingKeys.syncVaultEnabled);
     await _settings.delete(SettingKeys.syncVaultPath);
+    await _settings.delete(SettingKeys.syncVaultBookmark);
     await _settings.delete(SettingKeys.syncVaultLastSyncedAt);
     await _settings.delete(SettingKeys.syncVaultLastSnapshotHash);
     await _settings.delete(SettingKeys.syncVaultLastError);
@@ -404,36 +433,20 @@ class SyncVaultService {
       final lastSyncedHash = await _settings.getString(
         SettingKeys.syncVaultLastSnapshotHash,
       );
-
-      final vaultFile = File(vaultPath);
-      // ignore: avoid_slow_async_io
-      if (!await vaultFile.exists()) {
-        return _storeFailureResult(
-          const SyncVaultSyncResult(
-            outcome: SyncVaultSyncOutcome.needsRelink,
-            message: 'The linked sync vault file is missing',
-          ),
-        );
-      }
-
-      final vaultLength = await vaultFile.length();
-      if (vaultLength > maxSyncVaultBytes) {
-        return _storeFailureResult(
-          const SyncVaultSyncResult(
-            outcome: SyncVaultSyncOutcome.needsRelink,
-            message:
-                'The linked sync vault file is too large and needs to be relinked',
-          ),
-        );
-      }
-
-      final encryptedVault = await vaultFile.readAsString();
+      final linkedVault = await _readLinkedVault(vaultPath);
+      final encryptedVault = linkedVault.contents;
+      final resolvedVaultPath = linkedVault.path;
+      final resolvedVaultBookmark = linkedVault.bookmark;
       if (encryptedVault.trim().isEmpty) {
         final uploadedVault = await _encryptSnapshot(
           snapshot: localSnapshot,
           recoverySeed: recoverySeed,
         );
-        await _writeVaultAtomically(vaultFile, uploadedVault);
+        await _writeLinkedVault(
+          vaultPath: resolvedVaultPath,
+          vaultBookmark: resolvedVaultBookmark,
+          encryptedVault: uploadedVault,
+        );
         await _recordSuccessfulSync(
           snapshotHash: localSnapshot.snapshotHash,
           syncedAt: localSnapshot.updatedAt,
@@ -481,7 +494,8 @@ class SyncVaultService {
 
       if (localChanged && !remoteChanged) {
         return _uploadLocalSnapshot(
-          vaultFile: vaultFile,
+          vaultPath: resolvedVaultPath,
+          vaultBookmark: resolvedVaultBookmark,
           snapshot: localSnapshot,
           recoverySeed: recoverySeed,
         );
@@ -511,7 +525,8 @@ class SyncVaultService {
 
       return switch (resolution) {
         SyncVaultConflictResolution.uploadLocal => _uploadLocalSnapshot(
-          vaultFile: vaultFile,
+          vaultPath: resolvedVaultPath,
+          vaultBookmark: resolvedVaultBookmark,
           snapshot: localSnapshot,
           recoverySeed: recoverySeed,
         ),
@@ -520,11 +535,13 @@ class SyncVaultService {
           remotePreview: remotePreview,
         ),
       };
-    } on FileSystemException {
+    } on FileSystemException catch (error) {
       return _storeFailureResult(
-        const SyncVaultSyncResult(
+        SyncVaultSyncResult(
           outcome: SyncVaultSyncOutcome.needsRelink,
-          message: 'Could not access the linked sync vault file',
+          message: error.message.isNotEmpty
+              ? error.message
+              : 'Could not access the linked sync vault file',
         ),
       );
     } on FormatException catch (error) {
@@ -538,7 +555,8 @@ class SyncVaultService {
   }
 
   Future<SyncVaultSyncResult> _uploadLocalSnapshot({
-    required File vaultFile,
+    required String vaultPath,
+    required String? vaultBookmark,
     required _SyncVaultSnapshot snapshot,
     required List<int> recoverySeed,
   }) async {
@@ -546,7 +564,11 @@ class SyncVaultService {
       snapshot: snapshot,
       recoverySeed: recoverySeed,
     );
-    await _writeVaultAtomically(vaultFile, encryptedVault);
+    await _writeLinkedVault(
+      vaultPath: vaultPath,
+      vaultBookmark: vaultBookmark,
+      encryptedVault: encryptedVault,
+    );
     await _recordSuccessfulSync(
       snapshotHash: snapshot.snapshotHash,
       syncedAt: snapshot.updatedAt,
@@ -1145,6 +1167,82 @@ class SyncVaultService {
   List<int> _randomBytes(int length) =>
       List<int>.generate(length, (_) => _random.nextInt(256), growable: false);
 
+  bool get _shouldUseNativeIosDocumentIo =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  Future<void> _storeLinkedVaultReference({
+    required String vaultPath,
+    String? vaultBookmark,
+  }) async {
+    await _settings.setString(SettingKeys.syncVaultPath, vaultPath);
+    if (vaultBookmark == null || vaultBookmark.isEmpty) {
+      await _settings.delete(SettingKeys.syncVaultBookmark);
+      return;
+    }
+    await _settings.setString(SettingKeys.syncVaultBookmark, vaultBookmark);
+  }
+
+  Future<_LinkedSyncVaultContents> _readLinkedVault(String vaultPath) async {
+    final vaultBookmark = await _settings.getString(
+      SettingKeys.syncVaultBookmark,
+    );
+    if (_shouldUseNativeIosDocumentIo &&
+        vaultBookmark != null &&
+        vaultBookmark.isNotEmpty) {
+      final linkedVault = await _documentService.readLinkedVault(
+        bookmark: vaultBookmark,
+      );
+      await _storeLinkedVaultReference(
+        vaultPath: linkedVault.path,
+        vaultBookmark: linkedVault.bookmark,
+      );
+      return _LinkedSyncVaultContents(
+        contents: linkedVault.contents,
+        path: linkedVault.path,
+        bookmark: linkedVault.bookmark,
+      );
+    }
+
+    final vaultFile = File(vaultPath);
+    // ignore: avoid_slow_async_io
+    if (!await vaultFile.exists()) {
+      throw const FileSystemException('The linked sync vault file is missing');
+    }
+    final vaultLength = await vaultFile.length();
+    if (vaultLength > maxSyncVaultBytes) {
+      throw const FormatException(
+        'The linked sync vault file is too large and needs to be relinked',
+      );
+    }
+    return _LinkedSyncVaultContents(
+      contents: await vaultFile.readAsString(),
+      path: vaultPath,
+      bookmark: vaultBookmark,
+    );
+  }
+
+  Future<void> _writeLinkedVault({
+    required String vaultPath,
+    required String? vaultBookmark,
+    required String encryptedVault,
+  }) async {
+    if (_shouldUseNativeIosDocumentIo &&
+        vaultBookmark != null &&
+        vaultBookmark.isNotEmpty) {
+      final linkedVault = await _documentService.writeLinkedVault(
+        bookmark: vaultBookmark,
+        encryptedVault: encryptedVault,
+      );
+      await _storeLinkedVaultReference(
+        vaultPath: linkedVault.path,
+        vaultBookmark: linkedVault.bookmark,
+      );
+      return;
+    }
+
+    await _writeVaultAtomically(File(vaultPath), encryptedVault);
+  }
+
   bool _hasPreviewData(MigrationPreview preview) =>
       preview.settingsCount > 0 ||
       preview.hostCount > 0 ||
@@ -1160,6 +1258,7 @@ final syncVaultServiceProvider = Provider<SyncVaultService>(
   (ref) => SyncVaultService(
     ref.watch(settingsServiceProvider),
     ref.watch(secureTransferServiceProvider),
+    documentService: ref.watch(syncVaultDocumentServiceProvider),
   ),
 );
 

@@ -447,6 +447,7 @@ void main() {
 
         final documentService = FakeSyncVaultDocumentService(
           pickedDocument: const PickedSyncVaultDocument(
+            bookmark: 'bookmark-token',
             contents: 'encrypted-vault',
             path: '/provider/vault.monkeysync',
           ),

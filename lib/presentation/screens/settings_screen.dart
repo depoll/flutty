@@ -904,6 +904,7 @@ class _SyncSection extends ConsumerWidget {
 
     await syncService.enablePreparedVault(
       vaultPath: savedVault.path,
+      vaultBookmark: savedVault.bookmark,
       provisioning: provisioning,
     );
     ref.invalidate(syncVaultStatusProvider);
@@ -952,6 +953,7 @@ class _SyncSection extends ConsumerWidget {
           .read(syncVaultServiceProvider)
           .linkExistingVault(
             vaultPath: selectedFile.path,
+            vaultBookmark: selectedFile.bookmark,
             encryptedVault: selectedFile.contents,
             recoveryKey: recoveryKey,
           );
@@ -1017,6 +1019,7 @@ class _SyncSection extends ConsumerWidget {
           .read(syncVaultServiceProvider)
           .relinkVault(
             vaultPath: selectedFile.path,
+            vaultBookmark: selectedFile.bookmark,
             encryptedVault: selectedFile.contents,
           );
       ref.invalidate(syncVaultStatusProvider);

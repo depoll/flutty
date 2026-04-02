@@ -179,6 +179,10 @@ import UniformTypeIdentifiers
       handleCreateLinkedVault(call, result: result)
     case "pickLinkedVault":
       handlePickLinkedVault(result: result)
+    case "readLinkedVault":
+      handleReadLinkedVault(call, result: result)
+    case "writeLinkedVault":
+      handleWriteLinkedVault(call, result: result)
     default:
       result(FlutterMethodNotImplemented)
     }
@@ -336,6 +340,73 @@ import UniformTypeIdentifiers
       try presentSyncVaultPicker(picker)
     } catch {
       cleanupPendingSyncVaultOperation()
+      result(flutterSyncVaultError(from: error))
+    }
+  }
+
+  private func handleReadLinkedVault(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    guard
+      let arguments = call.arguments as? [String: Any],
+      let bookmark = arguments["bookmark"] as? String,
+      !bookmark.isEmpty
+    else {
+      result(
+        flutterSyncVaultError(
+          code: .invalidArguments,
+          message: "Missing sync vault bookmark"
+        )
+      )
+      return
+    }
+
+    do {
+      let payload = try accessSyncVaultBookmark(bookmark) { accessedURL in
+        try validateSyncVaultExtension(for: accessedURL)
+        return [
+          "path": accessedURL.path,
+          "bookmark": try syncVaultBookmarkString(for: accessedURL),
+          "contents": try readSyncVaultContents(from: accessedURL),
+        ]
+      }
+      result(payload)
+    } catch {
+      result(flutterSyncVaultError(from: error))
+    }
+  }
+
+  private func handleWriteLinkedVault(
+    _ call: FlutterMethodCall,
+    result: @escaping FlutterResult
+  ) {
+    guard
+      let arguments = call.arguments as? [String: Any],
+      let bookmark = arguments["bookmark"] as? String,
+      !bookmark.isEmpty,
+      let encryptedVault = arguments["encryptedVault"] as? String
+    else {
+      result(
+        flutterSyncVaultError(
+          code: .invalidArguments,
+          message: "Missing sync vault write arguments"
+        )
+      )
+      return
+    }
+
+    do {
+      let payload = try accessSyncVaultBookmark(bookmark) { accessedURL in
+        try validateSyncVaultExtension(for: accessedURL)
+        try coordinatedWriteString(encryptedVault, to: accessedURL)
+        return [
+          "path": accessedURL.path,
+          "bookmark": try syncVaultBookmarkString(for: accessedURL),
+        ]
+      }
+      result(payload)
+    } catch {
       result(flutterSyncVaultError(from: error))
     }
   }
@@ -558,10 +629,13 @@ import UniformTypeIdentifiers
   }
 
   private func createdSyncVaultResult(for url: URL) throws -> [String: Any] {
-    try validateSyncVaultExtension(for: url)
-    return [
-      "path": url.path
-    ]
+    return try accessSyncVaultURL(url) { accessedURL in
+      try validateSyncVaultExtension(for: accessedURL)
+      return [
+        "path": accessedURL.path,
+        "bookmark": try syncVaultBookmarkString(for: accessedURL),
+      ]
+    }
   }
 
   private func pickedSyncVaultResult(for url: URL) throws -> [String: Any] {
@@ -569,6 +643,7 @@ import UniformTypeIdentifiers
     return try accessSyncVaultURL(url) { accessedURL in
       [
         "path": accessedURL.path,
+        "bookmark": try syncVaultBookmarkString(for: accessedURL),
         "contents": try readSyncVaultContents(from: accessedURL)
       ]
     }
@@ -585,6 +660,37 @@ import UniformTypeIdentifiers
       }
     }
     return try body(url)
+  }
+
+  private func accessSyncVaultBookmark<T>(
+    _ encodedBookmark: String,
+    _ body: (URL) throws -> T
+  ) throws -> T {
+    try accessSyncVaultURL(try resolvedSyncVaultURL(from: encodedBookmark), body)
+  }
+
+  private func syncVaultBookmarkString(for url: URL) throws -> String {
+    try url.bookmarkData(
+      options: [],
+      includingResourceValuesForKeys: nil,
+      relativeTo: nil
+    ).base64EncodedString()
+  }
+
+  private func resolvedSyncVaultURL(from encodedBookmark: String) throws -> URL {
+    guard let bookmarkData = Data(base64Encoded: encodedBookmark) else {
+      throw syncVaultError(
+        code: .invalidArguments,
+        message: "Invalid sync vault bookmark"
+      )
+    }
+    var isStale = false
+    return try URL(
+      resolvingBookmarkData: bookmarkData,
+      options: [],
+      relativeTo: nil,
+      bookmarkDataIsStale: &isStale
+    )
   }
 
   private func validateSyncVaultExtension(for url: URL) throws {
@@ -660,6 +766,26 @@ import UniformTypeIdentifiers
       throw readError
     }
     return data
+  }
+
+  private func coordinatedWriteString(_ contents: String, to url: URL) throws {
+    let coordinator = NSFileCoordinator(filePresenter: nil)
+    var coordinationError: NSError?
+    var writeError: Error?
+    coordinator.coordinate(writingItemAt: url, options: [.forReplacing], error: &coordinationError)
+    { coordinatedURL in
+      do {
+        try Data(contents.utf8).write(to: coordinatedURL, options: .atomic)
+      } catch {
+        writeError = error
+      }
+    }
+    if let coordinationError {
+      throw coordinationError
+    }
+    if let writeError {
+      throw writeError
+    }
   }
 
   private func syncVaultError(

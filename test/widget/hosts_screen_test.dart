@@ -146,6 +146,30 @@ void main() {
     expect(find.text('Encrypted sync is already up to date'), findsOneWidget);
   });
 
+  testWidgets('loading state stays scrollable for pull to refresh', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+
+    final hostsController = StreamController<List<Host>>();
+    addTearDown(hostsController.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith((ref) => hostsController.stream),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(CustomScrollView), findsOneWidget);
+  });
+
   testWidgets('reordering hosts persists the new order', (tester) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);

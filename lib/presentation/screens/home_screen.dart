@@ -498,8 +498,9 @@ class HostsPanel extends ConsumerWidget {
   ) => RefreshIndicator(
     onRefresh: () => _refreshHosts(context, ref),
     child: hostsAsync.when(
-      loading: () =>
-          const Center(child: CircularProgressIndicator(strokeWidth: 2)),
+      loading: () => _buildCenteredHostsState(
+        child: const CircularProgressIndicator(strokeWidth: 2),
+      ),
       error: (error, _) => _buildCenteredHostsState(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,

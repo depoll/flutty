@@ -67,6 +67,9 @@ abstract final class SettingKeys {
   /// Linked encrypted sync vault file path.
   static const syncVaultPath = 'sync_vault_path';
 
+  /// Security-scoped bookmark for reopening the linked iOS sync vault file.
+  static const syncVaultBookmark = 'sync_vault_bookmark';
+
   /// Last successful encrypted sync timestamp.
   static const syncVaultLastSyncedAt = 'sync_vault_last_synced_at';
 

@@ -92,10 +92,17 @@ class FakeFilePicker extends FilePicker {
 }
 
 class FakeSyncVaultDocumentService extends SyncVaultDocumentService {
-  FakeSyncVaultDocumentService({this.savedDocument, this.pickedDocument});
+  FakeSyncVaultDocumentService({
+    this.savedDocument,
+    this.pickedDocument,
+    this.readDocument,
+    this.writtenDocument,
+  });
 
   final SavedSyncVaultDocument? savedDocument;
   final PickedSyncVaultDocument? pickedDocument;
+  final PickedSyncVaultDocument? readDocument;
+  final SavedSyncVaultDocument? writtenDocument;
 
   @override
   Future<SavedSyncVaultDocument?> createLinkedVault({
@@ -105,6 +112,27 @@ class FakeSyncVaultDocumentService extends SyncVaultDocumentService {
 
   @override
   Future<PickedSyncVaultDocument?> pickLinkedVault() async => pickedDocument;
+
+  @override
+  Future<PickedSyncVaultDocument> readLinkedVault({
+    required String bookmark,
+  }) async {
+    if (readDocument case final document?) {
+      return document;
+    }
+    throw const FileSystemException('Could not access the linked sync vault');
+  }
+
+  @override
+  Future<SavedSyncVaultDocument> writeLinkedVault({
+    required String bookmark,
+    required String encryptedVault,
+  }) async {
+    if (writtenDocument case final document?) {
+      return document;
+    }
+    throw const FileSystemException('Could not access the linked sync vault');
+  }
 }
 
 class FakeSecureTransferService extends SecureTransferService {
