@@ -97,6 +97,8 @@ const _terminalFilePathVerificationExtensions = <String>[
   'h',
   'm',
 ];
+final _terminalFilePathVerificationExtensionSet =
+    _terminalFilePathVerificationExtensions.toSet();
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
 const _clipboardContentChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/clipboard_content',
@@ -393,10 +395,14 @@ bool hasAmbiguousTerminalFilePathParsing(String path) {
       ? path.substring(lastSlashIndex + 1)
       : path;
   final lowercaseBasename = basename.toLowerCase();
+  if (!lowercaseBasename.contains('.')) {
+    return false;
+  }
+
   final lastDotIndex = lowercaseBasename.lastIndexOf('.');
   if (lastDotIndex > 0 && lastDotIndex < lowercaseBasename.length - 1) {
     final extension = lowercaseBasename.substring(lastDotIndex + 1);
-    if (_terminalFilePathVerificationExtensions.contains(extension)) {
+    if (_terminalFilePathVerificationExtensionSet.contains(extension)) {
       final marker = '.$extension';
       if (lowercaseBasename.indexOf(marker) == lastDotIndex &&
           lowercaseBasename.lastIndexOf(marker) == lastDotIndex) {
@@ -437,6 +443,44 @@ bool _startsWithKnownTerminalFilePathExtensionAndMore(String suffix) {
   return false;
 }
 
+bool _hasExcessClosingTerminalFilePathBrackets(String value) {
+  var openParens = 0;
+  var closeParens = 0;
+  var openBrackets = 0;
+  var closeBrackets = 0;
+  var openBraces = 0;
+  var closeBraces = 0;
+
+  for (var index = 0; index < value.length; index++) {
+    switch (value[index]) {
+      case '(':
+        openParens++;
+        break;
+      case ')':
+        closeParens++;
+        break;
+      case '[':
+        openBrackets++;
+        break;
+      case ']':
+        closeBrackets++;
+        break;
+      case '{':
+        openBraces++;
+        break;
+      case '}':
+        closeBraces++;
+        break;
+      default:
+        break;
+    }
+  }
+
+  return closeParens > openParens ||
+      closeBrackets > openBrackets ||
+      closeBraces > openBraces;
+}
+
 /// Alternative terminal-path parses to check when a candidate looks ambiguous.
 @visibleForTesting
 List<String> resolveTerminalFilePathVerificationCandidates(String path) {
@@ -468,15 +512,17 @@ List<String> resolveTerminalFilePathVerificationCandidates(String path) {
   addSeedCandidate(path);
 
   var trailingBracketCandidate = trimTerminalFilePathCandidate(path);
-  while (trailingBracketCandidate.isNotEmpty &&
-      ')]}'.contains(
-        trailingBracketCandidate[trailingBracketCandidate.length - 1],
-      )) {
-    trailingBracketCandidate = trailingBracketCandidate.substring(
-      0,
-      trailingBracketCandidate.length - 1,
-    );
-    addSeedCandidate(trailingBracketCandidate);
+  if (_hasExcessClosingTerminalFilePathBrackets(trailingBracketCandidate)) {
+    while (trailingBracketCandidate.isNotEmpty &&
+        ')]}'.contains(
+          trailingBracketCandidate[trailingBracketCandidate.length - 1],
+        )) {
+      trailingBracketCandidate = trailingBracketCandidate.substring(
+        0,
+        trailingBracketCandidate.length - 1,
+      );
+      addSeedCandidate(trailingBracketCandidate);
+    }
   }
 
   for (final seed in seedCandidates) {

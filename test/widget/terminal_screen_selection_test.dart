@@ -143,6 +143,27 @@ void main() {
         ['/srv/app/lib/main.dart'],
       );
     });
+
+    test('keeps balanced trailing brackets that are part of the filename', () {
+      expect(
+        resolveTerminalFilePathVerificationCandidates(
+          '/srv/app/archive(test).dart',
+        ),
+        ['/srv/app/archive(test).dart'],
+      );
+    });
+
+    test(
+      'normalizes unmatched trailing brackets before candidate generation',
+      () {
+        expect(
+          resolveTerminalFilePathVerificationCandidates(
+            '/srv/app/archive.dart)',
+          ),
+          ['/srv/app/archive.dart'],
+        );
+      },
+    );
   });
 
   group('hasAmbiguousTerminalFilePathParsing', () {
@@ -154,6 +175,7 @@ void main() {
           isFalse,
         );
         expect(hasAmbiguousTerminalFilePathParsing('~/.ssh/config'), isFalse);
+        expect(hasAmbiguousTerminalFilePathParsing('/etc/hosts'), isFalse);
       },
     );
 
