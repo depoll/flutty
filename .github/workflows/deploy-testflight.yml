@@ -49,7 +49,7 @@ on:
         type: string
 
 concurrency:
-  group: deploy-testflight-pr-${{ inputs.pr-number }}
+  group: deploy-private
   cancel-in-progress: false
 
 permissions:
@@ -170,19 +170,12 @@ jobs:
             const requestedBuildName = '${{ needs.compute-version.outputs.build-name }}'.trim();
             const requestedBuildNumber = '${{ needs.compute-version.outputs.build-number }}'.trim();
             const workflowIds = ['deploy-testflight.yml', 'develop.yml'];
-            const maxSuccessfulRunsPerWorkflow = 20;
-            const artifactPattern = /^(?:android|ios)-private-.+-(\d+)$/;
+            const markerArtifactPattern = /^private-deploy-build-number-(\d+)$/;
+            const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)$/;
+            const maxDiscoveredBuildNumbersPerWorkflow = 20;
+            const maxWorkflowRunPages = 3;
 
             let previousPrivateDeployBuildNumber = 0;
-            const scannedRunIds = new Set();
-
-            const listWorkflowRuns = async (workflowId) =>
-              github.paginate(github.rest.actions.listWorkflowRuns, {
-                owner,
-                repo,
-                workflow_id: workflowId,
-                per_page: 100,
-              });
 
             const listArtifacts = async (runId) =>
               github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
@@ -192,29 +185,71 @@ jobs:
                 per_page: 100,
               });
 
+            const extractBuildNumbers = ({artifacts, allowLegacyArtifacts}) =>
+              artifacts
+                .flatMap((artifact) => {
+                  if (artifact.expired) {
+                    return [];
+                  }
+
+                  const markerMatch = artifact.name.match(markerArtifactPattern);
+                  if (markerMatch) {
+                    return [Number(markerMatch[1])];
+                  }
+
+                  if (!allowLegacyArtifacts) {
+                    return [];
+                  }
+
+                  const legacyMatch = artifact.name.match(legacyArtifactPattern);
+                  return legacyMatch ? [Number(legacyMatch[1])] : [];
+                })
+                .filter((value) => Number.isFinite(value));
+
+            const collectRecentBuildNumbers = async (workflowId) => {
+              const buildNumbers = [];
+              let scannedPages = 0;
+
+              for await (const response of github.paginate.iterator(
+                github.rest.actions.listWorkflowRuns,
+                {
+                  owner,
+                  repo,
+                  workflow_id: workflowId,
+                  status: 'completed',
+                  per_page: 100,
+                },
+              )) {
+                scannedPages += 1;
+
+                for (const run of response.data.workflow_runs) {
+                  const artifacts = await listArtifacts(run.id);
+                  const runBuildNumbers = extractBuildNumbers({
+                    artifacts,
+                    allowLegacyArtifacts: run.conclusion === 'success',
+                  });
+
+                  if (runBuildNumbers.length === 0) {
+                    continue;
+                  }
+
+                  buildNumbers.push(...runBuildNumbers);
+                  if (buildNumbers.length >= maxDiscoveredBuildNumbersPerWorkflow) {
+                    return buildNumbers;
+                  }
+                }
+
+                if (scannedPages >= maxWorkflowRunPages) {
+                  break;
+                }
+              }
+
+              return buildNumbers;
+            };
+
             for (const workflowId of workflowIds) {
-              const runs = await listWorkflowRuns(workflowId);
-              const successfulRuns = runs
-                .filter((run) => run.status === 'completed' && run.conclusion === 'success')
-                .slice(0, maxSuccessfulRunsPerWorkflow);
-
-              for (const run of successfulRuns) {
-                if (scannedRunIds.has(run.id)) {
-                  continue;
-                }
-                scannedRunIds.add(run.id);
-
-                const artifacts = await listArtifacts(run.id);
-                const runBuildNumbers = artifacts
-                  .map((artifact) => artifact.name.match(artifactPattern)?.[1] ?? '')
-                  .filter(Boolean)
-                  .map((value) => Number(value))
-                  .filter((value) => Number.isFinite(value));
-
-                if (runBuildNumbers.length === 0) {
-                  continue;
-                }
-
+              const runBuildNumbers = await collectRecentBuildNumbers(workflowId);
+              if (runBuildNumbers.length > 0) {
                 previousPrivateDeployBuildNumber = Math.max(
                   previousPrivateDeployBuildNumber,
                   ...runBuildNumbers,
@@ -635,15 +670,7 @@ jobs:
 
   comment-finish:
     name: Update PR deploy comment (finish)
-    needs:
-        [
-          validate-pr,
-          finalize-version,
-          resolve-preview-artifacts,
-          comment-start,
-          deploy,
-          verify-pr-source,
-        ]
+    needs: [validate-pr, finalize-version, resolve-preview-artifacts, comment-start, deploy, verify-pr-source]
     if: always()
     runs-on: ubuntu-latest
     permissions:

@@ -674,3 +674,20 @@ jobs:
         with:
           name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/Runner-unsigned.ipa
+
+  record-private-deploy-build-number:
+    name: Record Private Deploy Build Number
+    needs: [build-android, build-ios]
+    if: inputs.flavor == 'private' && (inputs.deploy-ios-to != 'none' || inputs.deploy-android-to != 'none') && needs.build-android.result == 'success' && needs.build-ios.result == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write private deploy build marker
+        run: |
+          mkdir -p build/private-deploy-marker
+          printf '%s\n' '${{ inputs.build-number }}' > build/private-deploy-marker/build-number.txt
+
+      - name: Upload private deploy build marker
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        with:
+          name: private-deploy-build-number-${{ inputs.build-number }}
+          path: build/private-deploy-marker/build-number.txt
