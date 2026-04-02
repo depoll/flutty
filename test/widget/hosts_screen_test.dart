@@ -181,4 +181,38 @@ void main() {
 
     verify(() => hostRepository.reorderByIds([2, 1])).called(1);
   });
+
+  testWidgets('long press opens host context menu without overflow button', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith(
+            (ref) =>
+                Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
+          ),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byIcon(Icons.more_vert), findsNothing);
+
+    await tester.longPress(find.text('Alpha'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('Connect'), findsOneWidget);
+    expect(find.text('New connection'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Duplicate'), findsOneWidget);
+    expect(find.text('Export Encrypted File'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
+  });
 }

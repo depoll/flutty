@@ -652,6 +652,15 @@ class HostsPanel extends ConsumerWidget {
   }
 }
 
+enum _HostContextAction {
+  connect,
+  newConnection,
+  edit,
+  duplicate,
+  export,
+  delete,
+}
+
 class _HostRow extends ConsumerWidget {
   const _HostRow({required this.host, required this.reorderHandle, super.key});
 
@@ -716,6 +725,9 @@ class _HostRow extends ConsumerWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: () => unawaited(_openHostConnection(context, ref)),
+        onLongPress: () => unawaited(_showContextMenuAtCenter(context, ref)),
+        onSecondaryTapDown: (details) =>
+            unawaited(_showContextMenu(context, ref, details.globalPosition)),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
@@ -842,7 +854,6 @@ class _HostRow extends ConsumerWidget {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      reorderHandle,
                       _SmallIconButton(
                         icon: Icons.add,
                         onTap: () =>
@@ -852,10 +863,7 @@ class _HostRow extends ConsumerWidget {
                         icon: Icons.edit_outlined,
                         onTap: () => context.push('/hosts/edit/${host.id}'),
                       ),
-                      _SmallIconButton(
-                        icon: Icons.more_vert,
-                        onTap: () => _showMenu(context, ref),
-                      ),
+                      reorderHandle,
                     ],
                   ),
                 ],
@@ -971,6 +979,21 @@ class _HostRow extends ConsumerWidget {
     }
   }
 
+  Future<void> _showContextMenuAtCenter(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null) {
+      return;
+    }
+
+    final globalPosition = renderBox.localToGlobal(
+      renderBox.size.center(Offset.zero),
+    );
+    await _showContextMenu(context, ref, globalPosition);
+  }
+
   Future<void> _openNewConnection(BuildContext context, WidgetRef ref) async {
     final result = await connectToHostWithProgressDialog(context, ref, host);
 
@@ -987,44 +1010,101 @@ class _HostRow extends ConsumerWidget {
     );
   }
 
-  void _showMenu(BuildContext context, WidgetRef ref) {
-    final parentContext = context;
+  Future<void> _showContextMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Offset globalPosition,
+  ) async {
     final colorScheme = Theme.of(context).colorScheme;
 
-    showModalBottomSheet<void>(
-      context: parentContext,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('Duplicate'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_duplicateHost(parentContext, ref));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.save_alt),
-              title: const Text('Export Encrypted File'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_exportEncryptedFile(parentContext, ref));
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: colorScheme.error),
-              title: Text('Delete', style: TextStyle(color: colorScheme.error)),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _confirmDelete(parentContext, ref);
-              },
-            ),
-          ],
-        ),
+    final overlay = Overlay.maybeOf(context);
+    final overlayBox = overlay?.context.findRenderObject() as RenderBox?;
+    if (overlayBox == null) {
+      return;
+    }
+    final selection = await showMenu<_HostContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 0, 0),
+        Offset.zero & overlayBox.size,
       ),
+      items: [
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.connect,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.link),
+            title: Text('Connect'),
+          ),
+        ),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.newConnection,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.add),
+            title: Text('New connection'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.edit,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.edit_outlined),
+            title: Text('Edit'),
+          ),
+        ),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.duplicate,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.copy),
+            title: Text('Duplicate'),
+          ),
+        ),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.export,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.save_alt),
+            title: Text('Export Encrypted File'),
+          ),
+        ),
+        PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.delete,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.delete_outline, color: colorScheme.error),
+            title: Text('Delete', style: TextStyle(color: colorScheme.error)),
+          ),
+        ),
+      ],
     );
+
+    if (!context.mounted || selection == null) {
+      return;
+    }
+
+    switch (selection) {
+      case _HostContextAction.connect:
+        await _openHostConnection(context, ref);
+        return;
+      case _HostContextAction.newConnection:
+        await _openNewConnection(context, ref);
+        return;
+      case _HostContextAction.edit:
+        unawaited(context.push('/hosts/edit/${host.id}'));
+        return;
+      case _HostContextAction.duplicate:
+        await _duplicateHost(context, ref);
+        return;
+      case _HostContextAction.export:
+        await _exportEncryptedFile(context, ref);
+        return;
+      case _HostContextAction.delete:
+        await _confirmDelete(context, ref);
+        return;
+    }
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
