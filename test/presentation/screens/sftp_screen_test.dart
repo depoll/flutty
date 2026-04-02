@@ -1,3 +1,6 @@
+import 'dart:io';
+
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
@@ -102,6 +105,58 @@ void main() {
       expect(isSvgFileName('diagram.svg'), isTrue);
       expect(isSvgFileName('diagram.SVG'), isTrue);
       expect(isSvgFileName('diagram.png'), isFalse);
+    });
+
+    test('allows selecting multiple files for SFTP uploads', () {
+      final request = resolveSftpUploadPickerRequest();
+
+      expect(request.allowMultiple, isTrue);
+      expect(request.withReadStream, isTrue);
+    });
+
+    test(
+      'opens an upload stream from the picked file path when needed',
+      () async {
+        final tempDirectory = await Directory.systemTemp.createTemp(
+          'sftp-upload-test',
+        );
+        addTearDown(() => tempDirectory.delete(recursive: true));
+
+        final fileOnDisk = File('${tempDirectory.path}/notes.txt');
+        await fileOnDisk.writeAsString('copilot');
+
+        final file = PlatformFile(
+          name: 'notes.txt',
+          path: fileOnDisk.path,
+          size: 7,
+        );
+        final stream = resolvePickedSftpUploadReadStream(file);
+
+        expect(stream, isNotNull);
+        expect(
+          await stream!.transform(const SystemEncoding().decoder).join(),
+          'copilot',
+        );
+      },
+    );
+
+    test('uses the file name when a single upload is unreadable', () {
+      expect(
+        resolveUnreadableSftpUploadMessage([
+          PlatformFile(name: 'notes.txt', size: 0),
+        ]),
+        'Unable to read "notes.txt"',
+      );
+    });
+
+    test('uses a pluralized count when multiple uploads are unreadable', () {
+      expect(
+        resolveUnreadableSftpUploadMessage([
+          PlatformFile(name: 'notes.txt', size: 0),
+          PlatformFile(name: 'todo.txt', size: 0),
+        ]),
+        'Unable to read 2 selected files',
+      );
     });
 
     test('resolves directory taps as navigation', () {

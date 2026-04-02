@@ -66,6 +66,7 @@ final _terminalFilePathShellOperatorSuffixPattern = RegExp(
 final _terminalWrappedCountSuffixPattern = RegExp(r'\d+$');
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
+const _terminalInputIndicatorDuration = Duration(milliseconds: 700);
 
 typedef _TerminalPathMatch = ({
   String path,
@@ -144,6 +145,11 @@ String trimTerminalSelectionText(String text) =>
 double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
 
+/// Resolves the transient indicator label for a terminal double-tap Tab gesture.
+@visibleForTesting
+String resolveTerminalTabGestureIndicatorLabel({required bool shiftActive}) =>
+    shiftActive ? 'Shift+Tab' : 'Tab';
+
 /// Resolves a readable display name for a picked upload file.
 @visibleForTesting
 String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
@@ -162,6 +168,25 @@ String resolvePickedTerminalUploadFileName(PlatformFile file, {int index = 0}) {
 @visibleForTesting
 Stream<List<int>>? resolvePickedTerminalUploadReadStream(PlatformFile file) =>
     file.readStream ?? (file.path == null ? null : File(file.path!).openRead());
+
+/// Resolves the picker request used for terminal uploads.
+@visibleForTesting
+({
+  String dialogTitle,
+  FileType pickerType,
+  String itemLabelSingular,
+  String itemLabelPlural,
+  bool allowMultiple,
+  String failureContext,
+})
+resolveTerminalUploadPickerRequest({required bool images}) => (
+  dialogTitle: images ? 'Select images to upload' : 'Select files to upload',
+  pickerType: images ? FileType.image : FileType.any,
+  itemLabelSingular: images ? 'image' : 'file',
+  itemLabelPlural: images ? 'images' : 'files',
+  allowMultiple: true,
+  failureContext: images ? 'Image picker upload' : 'File picker upload',
+);
 
 /// Trims punctuation that terminals commonly render immediately after a link.
 @visibleForTesting
@@ -1033,6 +1058,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
+  Timer? _terminalInputIndicatorTimer;
   bool _isPollingRemoteClipboard = false;
   bool _isPushingLocalClipboard = false;
   bool _remoteClipboardUnsupported = false;
@@ -1040,6 +1066,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
+  String? _terminalInputIndicatorLabel;
 
   // Theme state
   Host? _host;
@@ -1429,6 +1456,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _followLiveOutput() {
     _shouldFollowLiveOutput = true;
     _queueTerminalScrollToBottom();
+  }
+
+  void _handleTerminalDoubleTapDown(
+    TapDownDetails tapDetails,
+    CellOffset cellOffset,
+  ) {
+    final shiftActive = _toolbarController.isShiftActive;
+    _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    _terminal.textInput(resolveTerminalTabInput(shiftActive: shiftActive));
+    _followLiveOutput();
+    _toolbarController.consumeOneShot();
+    _showTerminalInputIndicator(
+      resolveTerminalTabGestureIndicatorLabel(shiftActive: shiftActive),
+    );
+  }
+
+  void _showTerminalInputIndicator(String label) {
+    _terminalInputIndicatorTimer?.cancel();
+    setState(() => _terminalInputIndicatorLabel = label);
+    _terminalInputIndicatorTimer = Timer(_terminalInputIndicatorDuration, () {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _terminalInputIndicatorLabel = null);
+    });
   }
 
   void _queueTerminalScrollToBottom() {
@@ -1990,6 +2042,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.removeObserver(this);
     _sharedClipboardSubscription.close();
     _stopSharedClipboardSync();
+    _terminalInputIndicatorTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
@@ -2264,11 +2317,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               const PopupMenuItem(value: 'paste', child: Text('Paste')),
               const PopupMenuItem(
                 value: 'paste_image',
-                child: Text('Paste Image'),
+                child: Text('Paste Images'),
               ),
               const PopupMenuItem(
                 value: 'paste_file',
-                child: Text('Paste File'),
+                child: Text('Paste Files'),
               ),
               const PopupMenuItem(value: 'clear', child: Text('Clear')),
               const PopupMenuDivider(),
@@ -2386,6 +2439,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .read(activeSessionsProvider.notifier)
         .updateSessionFontSize(connectionId, nextFontSize);
   }
+
+  Widget _buildTerminalTransientIndicator({
+    required ThemeData theme,
+    required String label,
+  }) => IgnorePointer(
+    child: DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surface.withAlpha(220),
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(color: theme.colorScheme.outlineVariant),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: Text(
+          label,
+          style: theme.textTheme.labelMedium?.copyWith(
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+      ),
+    ),
+  );
 
   Future<void> _showThemePicker() async {
     final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
@@ -2608,6 +2683,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTapDown:
           _terminalTextInputController.suppressNextTouchKeyboardRequest,
       onLinkTap: _handleTerminalLinkTap,
+      onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
@@ -2760,34 +2836,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
     }
 
-    if (_isPinchZooming) {
+    final terminalInputIndicatorLabel = _terminalInputIndicatorLabel;
+    if (_isPinchZooming || terminalInputIndicatorLabel != null) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          Positioned(
-            top: 12,
-            right: 12,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                color: theme.colorScheme.surface.withAlpha(220),
-                borderRadius: BorderRadius.circular(999),
-                border: Border.all(color: theme.colorScheme.outlineVariant),
-              ),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 6,
-                ),
-                child: Text(
-                  '${fontSize.toStringAsFixed(0)} pt',
-                  style: theme.textTheme.labelMedium?.copyWith(
-                    fontWeight: FontWeight.w600,
-                  ),
+          if (terminalInputIndicatorLabel != null)
+            Positioned(
+              top: 12,
+              left: 0,
+              right: 0,
+              child: Align(
+                alignment: Alignment.topCenter,
+                child: _buildTerminalTransientIndicator(
+                  theme: theme,
+                  label: terminalInputIndicatorLabel,
                 ),
               ),
             ),
-          ),
+          if (_isPinchZooming)
+            Positioned(
+              top: 12,
+              right: 12,
+              child: _buildTerminalTransientIndicator(
+                theme: theme,
+                label: '${fontSize.toStringAsFixed(0)} pt',
+              ),
+            ),
         ],
       );
     }
@@ -4372,24 +4448,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _pastePickedImage() async {
+    final pickerRequest = resolveTerminalUploadPickerRequest(images: true);
     await _pickAndPasteFiles(
-      dialogTitle: 'Select image to upload',
-      pickerType: FileType.image,
-      itemLabelSingular: 'image',
-      itemLabelPlural: 'images',
-      allowMultiple: false,
-      failureContext: 'Image picker upload',
+      dialogTitle: pickerRequest.dialogTitle,
+      pickerType: pickerRequest.pickerType,
+      itemLabelSingular: pickerRequest.itemLabelSingular,
+      itemLabelPlural: pickerRequest.itemLabelPlural,
+      allowMultiple: pickerRequest.allowMultiple,
+      failureContext: pickerRequest.failureContext,
     );
   }
 
   Future<void> _pastePickedFiles() async {
+    final pickerRequest = resolveTerminalUploadPickerRequest(images: false);
     await _pickAndPasteFiles(
-      dialogTitle: 'Select file to upload',
-      pickerType: FileType.any,
-      itemLabelSingular: 'file',
-      itemLabelPlural: 'files',
-      allowMultiple: true,
-      failureContext: 'File picker upload',
+      dialogTitle: pickerRequest.dialogTitle,
+      pickerType: pickerRequest.pickerType,
+      itemLabelSingular: pickerRequest.itemLabelSingular,
+      itemLabelPlural: pickerRequest.itemLabelPlural,
+      allowMultiple: pickerRequest.allowMultiple,
+      failureContext: pickerRequest.failureContext,
     );
   }
 

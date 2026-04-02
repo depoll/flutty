@@ -69,6 +69,34 @@ void main() {
     expect(output.join(), isNot(contains('\u001b[B')));
   });
 
+  testWidgets('double taps invoke the terminal view callback', (tester) async {
+    final terminal = Terminal();
+    var doubleTapDowns = 0;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            terminal,
+            hardwareKeyboardOnly: true,
+            onDoubleTapDown: (tapDetails, cellOffset) => doubleTapDowns += 1,
+          ),
+        ),
+      ),
+    );
+
+    final terminalFinder = find.byType(MonkeyTerminalView);
+    final tapPosition = tester.getCenter(terminalFinder);
+    await tester.tapAt(tapPosition);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tapAt(tapPosition);
+    await tester.pump();
+
+    expect(doubleTapDowns, 1);
+  });
+
   testWidgets('desktop text insertion can be blocked by review callback', (
     tester,
   ) async {

@@ -41,4 +41,20 @@ void main() {
       );
     });
   });
+
+  group('terminal tab gesture indicator helpers', () {
+    test('shows a plain Tab label by default', () {
+      expect(
+        resolveTerminalTabGestureIndicatorLabel(shiftActive: false),
+        'Tab',
+      );
+    });
+
+    test('shows Shift+Tab when the toolbar shift modifier is active', () {
+      expect(
+        resolveTerminalTabGestureIndicatorLabel(shiftActive: true),
+        'Shift+Tab',
+      );
+    });
+  });
 }
