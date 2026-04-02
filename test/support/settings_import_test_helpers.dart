@@ -12,6 +12,7 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/sync_vault_document_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 
 void setFakeFilePickerResult({required FilePickerResult? result}) {
@@ -88,6 +89,22 @@ class FakeFilePicker extends FilePicker {
     bool lockParentWindow = false,
     bool readSequential = false,
   }) async => result;
+}
+
+class FakeSyncVaultDocumentService extends SyncVaultDocumentService {
+  FakeSyncVaultDocumentService({this.savedDocument, this.pickedDocument});
+
+  final SavedSyncVaultDocument? savedDocument;
+  final PickedSyncVaultDocument? pickedDocument;
+
+  @override
+  Future<SavedSyncVaultDocument?> createLinkedVault({
+    required String encryptedVault,
+    required String suggestedFileName,
+  }) async => savedDocument;
+
+  @override
+  Future<PickedSyncVaultDocument?> pickLinkedVault() async => pickedDocument;
 }
 
 class FakeSecureTransferService extends SecureTransferService {

@@ -16,6 +16,7 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/sync_vault_document_service.dart';
 import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
@@ -444,15 +445,11 @@ void main() {
         final db = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(db.close);
 
-        setFakeFilePickerResult(
-          result: FilePickerResult([
-            PlatformFile(
-              name: 'vault.monkeysync',
-              size: 15,
-              path: '/tmp/vault.monkeysync',
-              bytes: Uint8List.fromList(utf8.encode('encrypted-vault')),
-            ),
-          ]),
+        final documentService = FakeSyncVaultDocumentService(
+          pickedDocument: const PickedSyncVaultDocument(
+            contents: 'encrypted-vault',
+            path: '/provider/vault.monkeysync',
+          ),
         );
 
         await tester.pumpWidget(
@@ -461,6 +458,9 @@ void main() {
               databaseProvider.overrideWithValue(db),
               authServiceProvider.overrideWithValue(FakeAuthService()),
               authStateProvider.overrideWith(MockAuthStateNotifier.new),
+              syncVaultDocumentServiceProvider.overrideWithValue(
+                documentService,
+              ),
               syncVaultStatusProvider.overrideWith(
                 (ref) async => const SyncVaultStatus(
                   enabled: false,

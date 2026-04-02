@@ -11,6 +11,7 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/sync_vault_document_service.dart';
 import '../../domain/services/sync_vault_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/recovery_key_qr_dialogs.dart';
@@ -885,22 +886,24 @@ class _SyncSection extends ConsumerWidget {
     }
 
     final syncService = ref.read(syncVaultServiceProvider);
+    final documentService = ref.read(syncVaultDocumentServiceProvider);
     final provisioning = await syncService.prepareNewVault();
     if (!context.mounted) {
       return;
     }
 
-    final vaultPath = await saveSyncVaultToFile(
+    final savedVault = await saveSyncVaultToFile(
       context: context,
+      documentService: documentService,
       encryptedVault: provisioning.encryptedVault,
       defaultFileName: 'monkeyssh-sync-vault',
     );
-    if (!context.mounted || vaultPath == null) {
+    if (!context.mounted || savedVault == null) {
       return;
     }
 
     await syncService.enablePreparedVault(
-      vaultPath: vaultPath,
+      vaultPath: savedVault.path,
       provisioning: provisioning,
     );
     ref.invalidate(syncVaultStatusProvider);
@@ -931,17 +934,11 @@ class _SyncSection extends ConsumerWidget {
       return;
     }
 
-    final selectedFile = await pickSyncVaultFromFile(context);
+    final selectedFile = await pickSyncVaultFromFile(
+      context,
+      ref.read(syncVaultDocumentServiceProvider),
+    );
     if (!context.mounted || selectedFile == null) {
-      return;
-    }
-    final vaultPath = selectedFile.path;
-    if (vaultPath == null || vaultPath.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This platform did not provide a reusable vault path'),
-        ),
-      );
       return;
     }
 
@@ -954,7 +951,7 @@ class _SyncSection extends ConsumerWidget {
       await ref
           .read(syncVaultServiceProvider)
           .linkExistingVault(
-            vaultPath: vaultPath,
+            vaultPath: selectedFile.path,
             encryptedVault: selectedFile.contents,
             recoveryKey: recoveryKey,
           );
@@ -1007,17 +1004,11 @@ class _SyncSection extends ConsumerWidget {
   }
 
   Future<void> _relinkVault(BuildContext context, WidgetRef ref) async {
-    final selectedFile = await pickSyncVaultFromFile(context);
+    final selectedFile = await pickSyncVaultFromFile(
+      context,
+      ref.read(syncVaultDocumentServiceProvider),
+    );
     if (!context.mounted || selectedFile == null) {
-      return;
-    }
-    final vaultPath = selectedFile.path;
-    if (vaultPath == null || vaultPath.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('This platform did not provide a reusable vault path'),
-        ),
-      );
       return;
     }
 
@@ -1025,7 +1016,7 @@ class _SyncSection extends ConsumerWidget {
       await ref
           .read(syncVaultServiceProvider)
           .relinkVault(
-            vaultPath: vaultPath,
+            vaultPath: selectedFile.path,
             encryptedVault: selectedFile.contents,
           );
       ref.invalidate(syncVaultStatusProvider);

@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../domain/services/sync_vault_document_service.dart';
 import '../../domain/services/sync_vault_file_io.dart';
 import '../widgets/file_picker_helpers.dart';
 
@@ -19,16 +20,61 @@ class SelectedSyncVaultFile {
   /// Full file contents read from the selected vault file.
   final String contents;
 
-  /// Filesystem path for the selected file, if the platform provides one.
-  final String? path;
+  /// Filesystem path for the selected file.
+  final String path;
+}
+
+/// Result of saving a new encrypted sync vault file.
+class SavedSyncVaultFile {
+  /// Creates a new [SavedSyncVaultFile].
+  const SavedSyncVaultFile({required this.path});
+
+  /// Stored label for the saved file.
+  final String path;
 }
 
 /// Saves an encrypted sync vault file and returns the selected output path.
-Future<String?> saveSyncVaultToFile({
+Future<SavedSyncVaultFile?> saveSyncVaultToFile({
   required BuildContext context,
+  required SyncVaultDocumentService documentService,
   required String encryptedVault,
   required String defaultFileName,
 }) async {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+    try {
+      final linkedVault = await documentService.createLinkedVault(
+        encryptedVault: encryptedVault,
+        suggestedFileName: '$defaultFileName.$monkeySshSyncVaultFileExtension',
+      );
+      if (!context.mounted) {
+        return null;
+      }
+      if (linkedVault == null) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Sync vault setup cancelled')),
+        );
+        return null;
+      }
+      return SavedSyncVaultFile(path: linkedVault.path);
+    } on FormatException catch (error) {
+      if (!context.mounted) {
+        return null;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(error.message)));
+      return null;
+    } on FileSystemException {
+      if (!context.mounted) {
+        return null;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to write sync vault file')),
+      );
+      return null;
+    }
+  }
+
   final bytes = Uint8List.fromList(utf8.encode(encryptedVault));
   final sanitizedBaseName = sanitizeTransferFileBaseName(defaultFileName);
   final targetPath = await FilePicker.platform.saveFile(
@@ -66,13 +112,43 @@ Future<String?> saveSyncVaultToFile({
     }
   }
 
-  return targetPath;
+  return SavedSyncVaultFile(path: targetPath);
 }
 
 /// Opens an encrypted sync vault file selected by the user.
 Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
   BuildContext context,
+  SyncVaultDocumentService documentService,
 ) async {
+  if (!kIsWeb && defaultTargetPlatform == TargetPlatform.iOS) {
+    try {
+      final linkedVault = await documentService.pickLinkedVault();
+      if (linkedVault == null) {
+        return null;
+      }
+      return SelectedSyncVaultFile(
+        contents: linkedVault.contents,
+        path: linkedVault.path,
+      );
+    } on FormatException catch (error) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(error.message)));
+      }
+      return null;
+    } on FileSystemException {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not read the selected sync vault'),
+          ),
+        );
+      }
+      return null;
+    }
+  }
+
   final result = await FilePicker.platform.pickFiles(
     dialogTitle: 'Select encrypted MonkeySSH sync vault',
     type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
@@ -112,7 +188,7 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
     try {
       return SelectedSyncVaultFile(
         contents: utf8.decode(bytes),
-        path: file.path,
+        path: file.path ?? file.name,
       );
     } on FormatException {
       if (context.mounted) {
