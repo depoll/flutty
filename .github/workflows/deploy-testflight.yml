@@ -222,7 +222,11 @@ jobs:
               )) {
                 scannedPages += 1;
 
-                for (const run of response.data.workflow_runs) {
+                const workflowRuns = Array.isArray(response.data)
+                  ? response.data
+                  : response.data?.workflow_runs ?? [];
+
+                for (const run of workflowRuns) {
                   const artifacts = await listArtifacts(run.id);
                   const runBuildNumbers = extractBuildNumbers({
                     artifacts,
