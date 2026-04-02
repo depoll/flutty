@@ -384,9 +384,11 @@ class SyncVaultService {
 
     final recoveryKey = await _readStoredRecoveryKey();
     if (recoveryKey == null) {
-      return const SyncVaultSyncResult(
-        outcome: SyncVaultSyncOutcome.disabled,
-        message: 'Recovery key is not available on this device',
+      return _storeFailureResult(
+        const SyncVaultSyncResult(
+          outcome: SyncVaultSyncOutcome.needsRelink,
+          message: 'Recovery key is not available on this device',
+        ),
       );
     }
 

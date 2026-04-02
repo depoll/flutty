@@ -6,7 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../domain/services/sync_vault_file_io.dart';
-import 'transfer_screen.dart';
+import '../widgets/file_picker_helpers.dart';
 
 /// File extension used for encrypted MonkeySSH sync vault files.
 const monkeySshSyncVaultFileExtension = 'monkeysync';

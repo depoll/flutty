@@ -6,6 +6,7 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/presentation/screens/transfer_screen.dart';
+import 'package:monkeyssh/presentation/widgets/file_picker_helpers.dart';
 
 class _MockAuthService extends Mock implements AuthService {}
 

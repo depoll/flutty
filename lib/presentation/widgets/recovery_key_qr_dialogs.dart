@@ -9,9 +9,8 @@ bool supportsRecoveryKeyQrScanning(TargetPlatform platform) {
     return true;
   }
   return switch (platform) {
-    TargetPlatform.android ||
-    TargetPlatform.iOS ||
-    TargetPlatform.macOS => true,
+    TargetPlatform.android || TargetPlatform.iOS => true,
+    TargetPlatform.macOS ||
     TargetPlatform.fuchsia ||
     TargetPlatform.linux ||
     TargetPlatform.windows => false,

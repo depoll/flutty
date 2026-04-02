@@ -11,6 +11,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/sync_vault_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
@@ -68,26 +69,28 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
       ),
       body: hostsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              Icon(
-                Icons.error_outline,
-                size: 48,
-                color: theme.colorScheme.error,
-              ),
-              const SizedBox(height: 16),
-              Text('Error loading hosts: $error'),
-              const SizedBox(height: 16),
-              ElevatedButton(
-                onPressed: () => ref.invalidate(allHostsProvider),
-                child: const Text('Retry'),
-              ),
-            ],
+        error: (error, stack) => _buildRefreshableHostsBody(
+          _buildCenteredHostsState(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 48,
+                  color: theme.colorScheme.error,
+                ),
+                const SizedBox(height: 16),
+                Text('Error loading hosts: $error'),
+                const SizedBox(height: 16),
+                ElevatedButton(
+                  onPressed: () => unawaited(_refreshHosts()),
+                  child: const Text('Retry'),
+                ),
+              ],
+            ),
           ),
         ),
-        data: _buildHostList,
+        data: (hosts) => _buildRefreshableHostsBody(_buildHostList(hosts)),
       ),
       floatingActionButton: FloatingActionButton.extended(
         onPressed: () => context.push('/hosts/add'),
@@ -144,7 +147,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     }
 
     if (filteredHosts.isEmpty) {
-      return Center(
+      return _buildCenteredHostsState(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
@@ -173,6 +176,7 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
     }
 
     return ListView.builder(
+      physics: const AlwaysScrollableScrollPhysics(),
       padding: const EdgeInsets.only(bottom: 88),
       itemCount: filteredHosts.length,
       itemBuilder: (context, index) {
@@ -186,6 +190,63 @@ class _HostsScreenState extends ConsumerState<HostsScreen> {
         );
       },
     );
+  }
+
+  Widget _buildRefreshableHostsBody(Widget child) =>
+      RefreshIndicator(onRefresh: _refreshHosts, child: child);
+
+  Widget _buildCenteredHostsState({required Widget child}) => CustomScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    slivers: [
+      SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: child,
+          ),
+        ),
+      ),
+    ],
+  );
+
+  Future<void> _refreshHosts() async {
+    final syncService = ref.read(syncVaultServiceProvider);
+    final syncStatus = await syncService.getStatus();
+    if (!mounted) {
+      return;
+    }
+
+    if (!syncStatus.enabled) {
+      await Future.wait<void>([
+        ref.refresh(allHostsProvider.future),
+        ref.refresh(allGroupsProvider.future),
+      ]);
+      return;
+    }
+
+    final result = await syncService.syncNow();
+    if (!mounted) {
+      return;
+    }
+    ref.invalidate(syncVaultStatusProvider);
+    if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
+      invalidateSyncedDataProviders(ref.invalidate);
+    }
+    await Future.wait<void>([
+      ref.refresh(allHostsProvider.future),
+      ref.refresh(allGroupsProvider.future),
+    ]);
+    if (!mounted) {
+      return;
+    }
+
+    final message = result.outcome == SyncVaultSyncOutcome.conflict
+        ? 'Sync conflict detected. Open Settings > Sync to resolve it.'
+        : result.message;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Future<void> _openNewConnection(Host host) async {

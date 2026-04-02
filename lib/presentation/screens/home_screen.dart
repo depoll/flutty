@@ -23,6 +23,7 @@ import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/file_picker_helpers.dart';
 import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.

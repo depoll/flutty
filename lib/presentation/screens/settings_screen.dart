@@ -1119,16 +1119,7 @@ class _SyncSection extends ConsumerWidget {
 
     ref.invalidate(syncVaultStatusProvider);
     if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
-      ref
-        ..invalidate(themeModeNotifierProvider)
-        ..invalidate(fontSizeNotifierProvider)
-        ..invalidate(fontFamilyNotifierProvider)
-        ..invalidate(cursorStyleNotifierProvider)
-        ..invalidate(bellSoundNotifierProvider)
-        ..invalidate(terminalThemeSettingsProvider)
-        ..invalidate(allHostsProvider)
-        ..invalidate(allKeysProvider)
-        ..invalidate(allGroupsProvider);
+      invalidateSyncedDataProviders(ref.invalidate);
     }
 
     ScaffoldMessenger.of(

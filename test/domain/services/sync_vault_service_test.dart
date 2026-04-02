@@ -294,6 +294,37 @@ void main() {
     );
 
     test(
+      'requires relinking when the recovery key is missing on this device',
+      () async {
+        final device = await _createFixture();
+        addTearDown(device.close);
+
+        final provisioning = await device.syncService.prepareNewVault();
+        final vaultFile = File(
+          '${tempDir.path}/missing-recovery-key.monkeysync',
+        );
+        await vaultFile.writeAsString(provisioning.encryptedVault, flush: true);
+        await device.settings.setBool(
+          SettingKeys.syncVaultEnabled,
+          value: true,
+        );
+        await device.settings.setString(
+          SettingKeys.syncVaultPath,
+          vaultFile.path,
+        );
+
+        final result = await device.syncService.syncNow();
+
+        expect(result.outcome, SyncVaultSyncOutcome.needsRelink);
+        expect(result.message, 'Recovery key is not available on this device');
+        expect(
+          await device.settings.getString(SettingKeys.syncVaultLastError),
+          'Recovery key is not available on this device',
+        );
+      },
+    );
+
+    test(
       'treats malformed snapshot lists as an invalid vault payload',
       () async {
         final device = await _createFixture();

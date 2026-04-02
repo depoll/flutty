@@ -6,11 +6,15 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/group_repository.dart';
+import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
+
+class _MockSyncVaultService extends Mock implements SyncVaultService {}
 
 void main() {
   group('normalizeSelectedGroupId', () {
@@ -111,6 +115,69 @@ void main() {
       expect(find.text('Staging'), findsOneWidget);
     },
   );
+
+  testWidgets('pull to refresh runs encrypted sync when enabled', (
+    tester,
+  ) async {
+    final syncVaultService = _MockSyncVaultService();
+    when(syncVaultService.getStatus).thenAnswer(
+      (_) async => const SyncVaultStatus(enabled: true, hasRecoveryKey: true),
+    );
+    when(syncVaultService.syncNow).thenAnswer(
+      (_) async => const SyncVaultSyncResult(
+        outcome: SyncVaultSyncOutcome.noChanges,
+        message: 'Encrypted sync is already up to date',
+      ),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          syncVaultServiceProvider.overrideWithValue(syncVaultService),
+          allGroupsProvider.overrideWith((ref) => Stream.value(<Group>[])),
+          allHostsProvider.overrideWith(
+            (ref) => Stream.value([
+              Host(
+                id: 1,
+                label: 'Production',
+                hostname: 'prod.example.com',
+                port: 22,
+                username: 'root',
+                password: null,
+                keyId: null,
+                groupId: null,
+                jumpHostId: null,
+                isFavorite: false,
+                color: null,
+                notes: null,
+                tags: null,
+                createdAt: DateTime(2026),
+                updatedAt: DateTime(2026),
+                lastConnectedAt: null,
+                terminalThemeLightId: null,
+                terminalThemeDarkId: null,
+                terminalFontFamily: null,
+                autoConnectCommand: null,
+                autoConnectSnippetId: null,
+                autoConnectRequiresConfirmation: false,
+              ),
+            ]),
+          ),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.drag(find.byType(ListView), const Offset(0, 300));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
+
+    verify(syncVaultService.getStatus).called(1);
+    verify(syncVaultService.syncNow).called(1);
+    expect(find.text('Encrypted sync is already up to date'), findsOneWidget);
+  });
 }
 
 class HostsScreenHarness extends StatefulWidget {
