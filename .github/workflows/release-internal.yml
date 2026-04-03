@@ -2,11 +2,6 @@ name: Release Internal
 
 on:
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release internally (e.g., 1.2.0)'
-        required: true
-        type: string
 
 concurrency:
   group: release-internal
@@ -24,11 +19,20 @@ jobs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
       - name: Compute version
         id: version
         run: |
-          RAW_VERSION="${{ inputs.version }}"
-          BUILD_NAME="${RAW_VERSION#v}"
+          VERSION_LINE="$(grep '^version:' pubspec.yaml | head -n 1)"
+          if [ -z "$VERSION_LINE" ]; then
+            echo "Unable to determine version from pubspec.yaml."
+            exit 1
+          fi
+
+          BUILD_NAME="$(printf '%s' "$VERSION_LINE" | sed 's/^version:[[:space:]]*//' | cut -d'+' -f1 | xargs)"
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"

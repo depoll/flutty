@@ -473,16 +473,23 @@ jobs:
             const statusMarker = '<!-- preview-deploy-status -->';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
-            const readMeta = (body, key) => {
-              const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
-              return body.match(pattern)?.[1] ?? '';
-            };
+             const readMeta = (body, key) => {
+               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
+               return body.match(pattern)?.[1] ?? '';
+             };
 
-            const resolvePreviewCommentUrl = ({comments, deploySha, fallbackUrl}) => {
-              const latestPreviewComment = [...comments].reverse().find((comment) => {
-                if (!comment.body?.includes(previewMarker)) {
-                  return false;
-                }
+             const findStatusComment = (comments, targetRequestKey) =>
+               [...comments].reverse().find(
+                 (comment) =>
+                   comment.body?.includes(statusMarker) &&
+                   readMeta(comment.body, 'preview-deploy-request-key') === targetRequestKey,
+               );
+
+             const resolvePreviewCommentUrl = ({comments, deploySha, fallbackUrl}) => {
+               const latestPreviewComment = [...comments].reverse().find((comment) => {
+                 if (!comment.body?.includes(previewMarker)) {
+                   return false;
+                 }
 
                 if (!deploySha) {
                   return true;
@@ -494,30 +501,32 @@ jobs:
               return latestPreviewComment?.html_url ?? fallbackUrl;
             };
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number: issueNumber,
-              per_page: 100,
-            });
-            const existing = comments.find((comment) =>
-              comment.body?.includes(statusMarker),
-            );
-            const existingBody = existing?.body ?? '';
+             const comments = await github.paginate(github.rest.issues.listComments, {
+               owner,
+               repo,
+               issue_number: issueNumber,
+               per_page: 100,
+             });
+             const requestCommentIdInput = '${{ inputs.request-comment-id }}'.trim();
+             const requestKey = requestCommentIdInput
+               ? `comment-${requestCommentIdInput}`
+               : `workflow-${context.runId}`;
+             const existing = findStatusComment(comments, requestKey);
+             const existingBody = existing?.body ?? '';
 
-            const requestedBy =
-              '${{ inputs.request-comment-user }}' ||
-              readMeta(existingBody, 'preview-deploy-requested-by') ||
-              '${{ github.actor }}';
-            const requestedAt =
-              '${{ inputs.request-comment-at }}' ||
-              readMeta(existingBody, 'preview-deploy-requested-at');
-            const requestCommentId =
-              '${{ inputs.request-comment-id }}' ||
-              readMeta(existingBody, 'preview-deploy-last-command-comment-id');
-            const requestCommentUrl =
-              '${{ inputs.request-comment-url }}' ||
-              readMeta(existingBody, 'preview-deploy-request-comment-url');
+             const requestedBy =
+               '${{ inputs.request-comment-user }}' ||
+               readMeta(existingBody, 'preview-deploy-requested-by') ||
+               '${{ github.actor }}';
+             const requestedAt =
+               '${{ inputs.request-comment-at }}' ||
+               readMeta(existingBody, 'preview-deploy-requested-at');
+             const requestCommentId =
+               requestCommentIdInput ||
+               readMeta(existingBody, 'preview-deploy-last-command-comment-id');
+             const requestCommentUrl =
+               '${{ inputs.request-comment-url }}' ||
+               readMeta(existingBody, 'preview-deploy-request-comment-url');
             const requestedPreviewCommentUrl =
               '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
                 ? ''
@@ -569,18 +578,20 @@ jobs:
               '',
               rebuildNote,
               '> Duplicate requests stay locked out while this deploy is queued or running.',
-              statusMarker,
-              '<!-- preview-deploy-state:in_progress -->',
-              `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
-              `<!-- preview-deploy-requested-by:${requestedBy} -->`,
-              `<!-- preview-deploy-requested-at:${requestedAt} -->`,
-              `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
-              `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
-              `<!-- preview-deploy-source-sha:${deploySha} -->`,
-              `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
-              `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
-              `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
-              `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
+               statusMarker,
+               '<!-- preview-deploy-state:in_progress -->',
+               `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
+               `<!-- preview-deploy-request-key:${requestKey} -->`,
+               `<!-- preview-deploy-requested-by:${requestedBy} -->`,
+               `<!-- preview-deploy-requested-at:${requestedAt} -->`,
+               `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
+               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
+               `<!-- preview-deploy-workflow-url:${runUrl} -->`,
+               `<!-- preview-deploy-source-sha:${deploySha} -->`,
+               `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
+               `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
+               `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
+               `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
             ]
               .filter(Boolean)
               .join('\n');
@@ -701,16 +712,23 @@ jobs:
             const statusMarker = '<!-- preview-deploy-status -->';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
 
-            const readMeta = (body, key) => {
-              const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
-              return body.match(pattern)?.[1] ?? '';
-            };
+             const readMeta = (body, key) => {
+               const pattern = new RegExp(`<!-- ${key}:(.*?) -->`);
+               return body.match(pattern)?.[1] ?? '';
+             };
 
-            const resolvePreviewCommentUrl = ({comments, deploySha, fallbackUrl}) => {
-              const latestPreviewComment = [...comments].reverse().find((comment) => {
-                if (!comment.body?.includes(previewMarker)) {
-                  return false;
-                }
+             const findStatusComment = (comments, targetRequestKey) =>
+               [...comments].reverse().find(
+                 (comment) =>
+                   comment.body?.includes(statusMarker) &&
+                   readMeta(comment.body, 'preview-deploy-request-key') === targetRequestKey,
+               );
+
+             const resolvePreviewCommentUrl = ({comments, deploySha, fallbackUrl}) => {
+               const latestPreviewComment = [...comments].reverse().find((comment) => {
+                 if (!comment.body?.includes(previewMarker)) {
+                   return false;
+                 }
 
                 if (!deploySha) {
                   return true;
@@ -722,30 +740,32 @@ jobs:
               return latestPreviewComment?.html_url ?? fallbackUrl;
             };
 
-            const comments = await github.paginate(github.rest.issues.listComments, {
-              owner,
-              repo,
-              issue_number: issueNumber,
-              per_page: 100,
-            });
-            const existing = comments.find((comment) =>
-              comment.body?.includes(statusMarker),
-            );
-            const existingBody = existing?.body ?? '';
+             const comments = await github.paginate(github.rest.issues.listComments, {
+               owner,
+               repo,
+               issue_number: issueNumber,
+               per_page: 100,
+             });
+             const requestCommentIdInput = '${{ inputs.request-comment-id }}'.trim();
+             const requestKey = requestCommentIdInput
+               ? `comment-${requestCommentIdInput}`
+               : `workflow-${context.runId}`;
+             const existing = findStatusComment(comments, requestKey);
+             const existingBody = existing?.body ?? '';
 
-            const requestedBy =
-              '${{ inputs.request-comment-user }}' ||
-              readMeta(existingBody, 'preview-deploy-requested-by') ||
-              '${{ github.actor }}';
-            const requestedAt =
-              '${{ inputs.request-comment-at }}' ||
-              readMeta(existingBody, 'preview-deploy-requested-at');
-            const requestCommentId =
-              '${{ inputs.request-comment-id }}' ||
-              readMeta(existingBody, 'preview-deploy-last-command-comment-id');
-            const requestCommentUrl =
-              '${{ inputs.request-comment-url }}' ||
-              readMeta(existingBody, 'preview-deploy-request-comment-url');
+             const requestedBy =
+               '${{ inputs.request-comment-user }}' ||
+               readMeta(existingBody, 'preview-deploy-requested-by') ||
+               '${{ github.actor }}';
+             const requestedAt =
+               '${{ inputs.request-comment-at }}' ||
+               readMeta(existingBody, 'preview-deploy-requested-at');
+             const requestCommentId =
+               requestCommentIdInput ||
+               readMeta(existingBody, 'preview-deploy-last-command-comment-id');
+             const requestCommentUrl =
+               '${{ inputs.request-comment-url }}' ||
+               readMeta(existingBody, 'preview-deploy-request-comment-url');
             const requestedPreviewCommentUrl =
               '${{ inputs.request-preview-comment-url }}' === noPreviewCommentUrl
                 ? ''
@@ -909,18 +929,20 @@ jobs:
               '',
               rebuildNote,
               '> Add a new `/deploy` comment if you want to request another deploy.',
-              statusMarker,
-              `<!-- preview-deploy-state:${state} -->`,
-              `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
-              `<!-- preview-deploy-requested-by:${requestedBy} -->`,
-              `<!-- preview-deploy-requested-at:${requestedAt} -->`,
-              `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
-              `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
-              `<!-- preview-deploy-source-sha:${deploySha} -->`,
-              `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
-              `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
-              `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
-              `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
+               statusMarker,
+               `<!-- preview-deploy-state:${state} -->`,
+               `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
+               `<!-- preview-deploy-request-key:${requestKey} -->`,
+               `<!-- preview-deploy-requested-by:${requestedBy} -->`,
+               `<!-- preview-deploy-requested-at:${requestedAt} -->`,
+               `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
+               `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
+               `<!-- preview-deploy-workflow-url:${runUrl} -->`,
+               `<!-- preview-deploy-source-sha:${deploySha} -->`,
+               `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
+               `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
+               `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
+               `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
             ]
               .filter(Boolean)
               .join('\n');

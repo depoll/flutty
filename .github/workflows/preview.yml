@@ -3,14 +3,7 @@ name: PR Preview
 on:
   pull_request:
     branches: [main, develop]
-    paths:
-      - '**.dart'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'analysis_options.yaml'
-      - '.github/workflows/**'
-      - 'android/**'
-      - 'ios/**'
+    types: [opened, reopened, synchronize]
 
 concurrency:
   group: preview-${{ github.event.pull_request.number }}
@@ -54,7 +47,7 @@ jobs:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
-          header: preview-build
+          header: preview-build-${{ github.run_id }}
           recreate: true
           message: |
             ## 📱 Preview Build
@@ -185,7 +178,7 @@ jobs:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
-          header: preview-build
+          header: preview-build-${{ github.run_id }}
           recreate: true
           message: |
             ## 📱 Preview Build
@@ -280,7 +273,7 @@ jobs:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
-          header: preview-build
+          header: preview-build-${{ github.run_id }}
           recreate: true
           message: |
             ## 📱 Preview Build
