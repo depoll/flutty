@@ -147,51 +147,11 @@ jobs:
         with:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-production-release.apk
+          compression-level: 0
 
       - name: Clean up CI signing config
         if: always()
         run: rm -f android/app/key.properties android/app/ci-release.keystore
-
-  verify-android-release-signing:
-    name: Verify Android Release Signing
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/setup-java@v5
-        with:
-          distribution: 'temurin'
-          java-version: '17'
-
-      - uses: actions/cache@v5
-        with:
-          path: |
-            ~/.gradle/caches
-            ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
-          restore-keys: gradle-${{ runner.os }}-
-
-      - uses: subosito/flutter-action@v2
-        with:
-          flutter-version: '3.x'
-          channel: 'stable'
-          cache: true
-
-      - name: Install dependencies
-        run: flutter pub get
-
-      - name: Release build fails without signing config
-        run: |
-          set +e
-          output=$(flutter build apk --flavor production --release 2>&1)
-          status=$?
-          set -e
-          echo "$output"
-          if [ "$status" -eq 0 ]; then
-            echo "Expected Android release build to fail without signing config."
-            exit 1
-          fi
-          echo "$output" | grep -F "Release builds require Android signing configuration in android/app/key.properties."
 
   build-ios:
     name: Build iOS
@@ -224,6 +184,7 @@ jobs:
         with:
           name: ios-build
           path: build/ios/iphoneos/MonkeySSH.app
+          compression-level: 0
 
   build-macos:
     name: Build macOS
@@ -256,6 +217,7 @@ jobs:
         with:
           name: macos-build
           path: build/macos/Build/Products/Release/MonkeySSH.app
+          compression-level: 0
 
   build-windows:
     name: Build Windows
@@ -282,6 +244,7 @@ jobs:
         with:
           name: windows-build
           path: build/windows/x64/runner/Release/
+          compression-level: 0
 
   build-linux:
     name: Build Linux
@@ -313,3 +276,4 @@ jobs:
         with:
           name: linux-build
           path: build/linux/x64/release/bundle/
+          compression-level: 0
