@@ -7,23 +7,11 @@ import 'package:flutter/material.dart';
 
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
+import '../widgets/file_picker_helpers.dart';
 
 /// File extension used for encrypted MonkeySSH transfer packages.
 const monkeySshTransferFileExtension = 'monkeysshx';
 const _maxTransferPayloadBytes = 10 * 1024 * 1024;
-const _defaultTransferFileBaseName = 'monkeyssh-transfer';
-
-/// Normalizes a suggested transfer export filename into a filesystem-safe base.
-String sanitizeTransferFileBaseName(String input) {
-  final normalized = input
-      .trim()
-      .replaceAll(RegExp(r'[<>:"/\\|?*\x00-\x1F]'), '-')
-      .replaceAll(RegExp(r'\s+'), '-')
-      .replaceAll(RegExp('-+'), '-')
-      .replaceAll(RegExp(r'^\.+|\.+$'), '')
-      .replaceAll(RegExp(r'^-+|-+$'), '');
-  return normalized.isEmpty ? _defaultTransferFileBaseName : normalized;
-}
 
 /// Exports payload bytes to an encrypted transfer file.
 Future<void> saveTransferPayloadToFile({
@@ -80,8 +68,11 @@ Future<void> saveTransferPayloadToFile({
 Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
   final result = await FilePicker.platform.pickFiles(
     dialogTitle: 'Select encrypted MonkeySSH transfer file',
-    type: FileType.custom,
-    allowedExtensions: const [monkeySshTransferFileExtension],
+    type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
+    allowedExtensions: pickerAllowedExtensionsForCustomExtension(
+      defaultTargetPlatform,
+      const [monkeySshTransferFileExtension],
+    ),
     withData: kIsWeb,
   );
 
@@ -89,7 +80,20 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     return null;
   }
 
-  final bytes = result.files.single.bytes;
+  final selectedFile = result.files.single;
+  if (!platformFileMatchesExpectedExtension(
+    selectedFile,
+    monkeySshTransferFileExtension,
+  )) {
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Select a .monkeysshx transfer file')),
+      );
+    }
+    return null;
+  }
+
+  final bytes = selectedFile.bytes;
   if (bytes != null && bytes.isNotEmpty) {
     if (bytes.length > _maxTransferPayloadBytes) {
       if (context.mounted) {
@@ -111,7 +115,7 @@ Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
     }
   }
 
-  final path = result.files.single.path;
+  final path = selectedFile.path;
   if (path == null || path.isEmpty) {
     if (context.mounted) {
       ScaffoldMessenger.of(context).showSnackBar(

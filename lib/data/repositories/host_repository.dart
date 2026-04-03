@@ -14,47 +14,59 @@ class HostRepository {
 
   /// Get all hosts.
   Future<List<Host>> getAll() async {
-    final hosts = await _db.select(_db.hosts).get();
+    final hosts = await _orderedHostsQuery().get();
     return Future.wait(hosts.map(_decryptHost));
   }
 
   /// Watch all hosts.
   Stream<List<Host>> watchAll() =>
-      _db.select(_db.hosts).watch().asyncMap(_decryptHosts);
+      _orderedHostsQuery().watch().asyncMap(_decryptHosts);
 
   /// Get hosts by group.
   Future<List<Host>> getByGroup(int? groupId) {
     if (groupId == null) {
-      return (_db.select(
-        _db.hosts,
-      )..where((h) => h.groupId.isNull())).get().then(_decryptHosts);
+      return (_orderedHostsQuery()..where((h) => h.groupId.isNull()))
+          .get()
+          .then(_decryptHosts);
     }
-    return (_db.select(
-      _db.hosts,
-    )..where((h) => h.groupId.equals(groupId))).get().then(_decryptHosts);
+    return (_orderedHostsQuery()..where((h) => h.groupId.equals(groupId)))
+        .get()
+        .then(_decryptHosts);
   }
 
   /// Watch hosts by group.
   Stream<List<Host>> watchByGroup(int? groupId) {
     if (groupId == null) {
-      return (_db.select(
-        _db.hosts,
-      )..where((h) => h.groupId.isNull())).watch().asyncMap(_decryptHosts);
+      return (_orderedHostsQuery()..where((h) => h.groupId.isNull()))
+          .watch()
+          .asyncMap(_decryptHosts);
     }
-    return (_db.select(
-      _db.hosts,
-    )..where((h) => h.groupId.equals(groupId))).watch().asyncMap(_decryptHosts);
+    return (_orderedHostsQuery()..where((h) => h.groupId.equals(groupId)))
+        .watch()
+        .asyncMap(_decryptHosts);
   }
 
   /// Get favorite hosts.
-  Future<List<Host>> getFavorites() => (_db.select(
-    _db.hosts,
-  )..where((h) => h.isFavorite.equals(true))).get().then(_decryptHosts);
+  Future<List<Host>> getFavorites() =>
+      (_db.select(_db.hosts)
+            ..where((h) => h.isFavorite.equals(true))
+            ..orderBy([
+              (h) => OrderingTerm.asc(h.sortOrder),
+              (h) => OrderingTerm.asc(h.id),
+            ]))
+          .get()
+          .then(_decryptHosts);
 
   /// Watch favorite hosts.
-  Stream<List<Host>> watchFavorites() => (_db.select(
-    _db.hosts,
-  )..where((h) => h.isFavorite.equals(true))).watch().asyncMap(_decryptHosts);
+  Stream<List<Host>> watchFavorites() =>
+      (_db.select(_db.hosts)
+            ..where((h) => h.isFavorite.equals(true))
+            ..orderBy([
+              (h) => OrderingTerm.asc(h.sortOrder),
+              (h) => OrderingTerm.asc(h.id),
+            ]))
+          .watch()
+          .asyncMap(_decryptHosts);
 
   /// Get a host by ID.
   Future<Host?> getById(int id) async {
@@ -69,19 +81,45 @@ class HostRepository {
 
   /// Search hosts by label or hostname.
   Future<List<Host>> search(String query) =>
-      (_db.select(_db.hosts)..where(
-            (h) =>
-                h.label.like('%$query%') |
-                h.hostname.like('%$query%') |
-                h.tags.like('%$query%'),
-          ))
+      (_db.select(_db.hosts)
+            ..where(
+              (h) =>
+                  h.label.like('%$query%') |
+                  h.hostname.like('%$query%') |
+                  h.tags.like('%$query%'),
+            )
+            ..orderBy([
+              (h) => OrderingTerm.asc(h.sortOrder),
+              (h) => OrderingTerm.asc(h.id),
+            ]))
           .get()
           .then(_decryptHosts);
 
   /// Insert a new host.
   Future<int> insert(HostsCompanion host) async {
-    final encryptedHost = await _encryptHostCompanion(host);
+    final encryptedHost = await _encryptHostCompanion(
+      host.copyWith(
+        sortOrder: host.sortOrder.present
+            ? host.sortOrder
+            : Value(await _nextSortOrder()),
+      ),
+    );
     return _db.into(_db.hosts).insert(encryptedHost);
+  }
+
+  /// Reorders all hosts to match [orderedIds].
+  Future<void> reorderByIds(List<int> orderedIds) async {
+    if (orderedIds.isEmpty) {
+      return;
+    }
+
+    await _db.transaction(() async {
+      for (var index = 0; index < orderedIds.length; index += 1) {
+        await (_db.update(_db.hosts)
+              ..where((h) => h.id.equals(orderedIds[index])))
+            .write(HostsCompanion(sortOrder: Value(index)));
+      }
+    });
   }
 
   /// Duplicate an existing host and its port forwards.
@@ -186,6 +224,20 @@ class HostRepository {
       host.password.value,
     );
     return host.copyWith(password: Value(encryptedPassword));
+  }
+
+  SimpleSelectStatement<$HostsTable, Host> _orderedHostsQuery() =>
+      _db.select(_db.hosts)..orderBy([
+        (h) => OrderingTerm.asc(h.sortOrder),
+        (h) => OrderingTerm.asc(h.id),
+      ]);
+
+  Future<int> _nextSortOrder() async {
+    final expression = _db.hosts.sortOrder.max();
+    final row = await (_db.selectOnly(
+      _db.hosts,
+    )..addColumns([expression])).getSingleOrNull();
+    return (row?.read(expression) ?? -1) + 1;
   }
 }
 

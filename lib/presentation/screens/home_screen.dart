@@ -18,11 +18,14 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/sync_vault_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
+import '../widgets/file_picker_helpers.dart';
+import '../widgets/reorder_helpers.dart';
 import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -153,6 +156,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           ).showSnackBar(SnackBar(content: Text('Imported key: ${key.name}')));
           break;
         case TransferPayloadType.fullMigration:
+          final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
           final preview = transferService.previewMigrationPayload(payload);
           if (!mounted) {
             return;
@@ -170,6 +174,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             payload: payload,
             mode: mode,
           );
+          if (mode == MigrationImportMode.replace) {
+            await sessionsNotifier.disconnectAll();
+          }
           ref
             ..invalidate(themeModeNotifierProvider)
             ..invalidate(fontSizeNotifierProvider)
@@ -370,15 +377,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   Widget _buildContent() {
     switch (_selectedIndex) {
       case 0:
-        return const _HostsPanel();
+        return const HostsPanel();
       case 1:
         return const _ConnectionsPanel();
       case 2:
         return const _KeysPanel();
       case 3:
-        return const _SnippetsPanel();
+        return const SnippetsPanel();
       default:
-        return const _HostsPanel();
+        return const HostsPanel();
     }
   }
 }
@@ -442,8 +449,10 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-class _HostsPanel extends ConsumerWidget {
-  const _HostsPanel();
+/// Panel for displaying and managing hosts inline.
+class HostsPanel extends ConsumerWidget {
+  /// Creates a [HostsPanel].
+  const HostsPanel({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -481,26 +490,46 @@ class _HostsPanel extends ConsumerWidget {
           ),
         ),
 
-        // Hosts list
-        Expanded(
-          child: hostsAsync.when(
-            loading: () =>
-                const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (e, _) => Center(child: Text('Error: $e')),
-            data: (hosts) => hosts.isEmpty
-                ? _buildEmptyState(context)
-                : _buildHostsList(context, ref, hosts),
-          ),
-        ),
+        Expanded(child: _buildHostsBody(context, ref, hostsAsync)),
       ],
     );
   }
+
+  Widget _buildHostsBody(
+    BuildContext context,
+    WidgetRef ref,
+    AsyncValue<List<Host>> hostsAsync,
+  ) => RefreshIndicator(
+    onRefresh: () => _refreshHosts(context, ref),
+    child: hostsAsync.when(
+      loading: () => _buildCenteredHostsState(
+        child: const CircularProgressIndicator(strokeWidth: 2),
+      ),
+      error: (error, _) => _buildCenteredHostsState(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(
+              Icons.error_outline,
+              size: 40,
+              color: Theme.of(context).colorScheme.error,
+            ),
+            const SizedBox(height: 12),
+            Text('Error: $error'),
+          ],
+        ),
+      ),
+      data: (hosts) => hosts.isEmpty
+          ? _buildEmptyState(context)
+          : _buildHostsList(context, ref, hosts),
+    ),
+  );
 
   Widget _buildEmptyState(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Center(
+    return _buildCenteredHostsState(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -534,24 +563,116 @@ class _HostsPanel extends ConsumerWidget {
     );
   }
 
+  Widget _buildCenteredHostsState({required Widget child}) => CustomScrollView(
+    physics: const AlwaysScrollableScrollPhysics(),
+    slivers: [
+      SliverFillRemaining(
+        hasScrollBody: false,
+        child: Center(
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 24),
+            child: child,
+          ),
+        ),
+      ),
+    ],
+  );
+
   Widget _buildHostsList(
     BuildContext context,
     WidgetRef ref,
     List<Host> hosts,
-  ) => ListView.builder(
+  ) => ReorderableListView.builder(
+    physics: const AlwaysScrollableScrollPhysics(),
     padding: const EdgeInsets.symmetric(vertical: 4),
+    buildDefaultDragHandles: false,
     itemCount: hosts.length,
+    onReorder: (oldIndex, newIndex) => unawaited(
+      _reorderHosts(
+        ref: ref,
+        hosts: hosts,
+        oldIndex: oldIndex,
+        newIndex: newIndex,
+      ),
+    ),
     itemBuilder: (context, index) {
       final host = hosts[index];
-      return _HostRow(host: host);
+      return _HostRow(
+        key: ValueKey('home-host-${host.id}'),
+        host: host,
+        reorderHandle: ReorderGrip(index: index),
+      );
     },
   );
+
+  Future<void> _reorderHosts({
+    required WidgetRef ref,
+    required List<Host> hosts,
+    required int oldIndex,
+    required int newIndex,
+  }) async {
+    final reorderedIds = reorderVisibleIdsInFullOrder(
+      allIds: hosts.map((host) => host.id).toList(growable: false),
+      visibleIds: hosts.map((host) => host.id).toList(growable: false),
+      oldIndex: oldIndex,
+      newIndex: newIndex,
+    );
+    await ref.read(hostRepositoryProvider).reorderByIds(reorderedIds);
+  }
+
+  Future<void> _refreshHosts(BuildContext context, WidgetRef ref) async {
+    final syncService = ref.read(syncVaultServiceProvider);
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final syncStatus = await syncService.getStatus();
+    if (!context.mounted) {
+      return;
+    }
+
+    if (!syncStatus.enabled) {
+      ref.invalidate(allHostsProvider);
+      await ref.read(allHostsProvider.future);
+      return;
+    }
+
+    final result = await syncService.syncNow();
+    if (!context.mounted) {
+      return;
+    }
+
+    ref.invalidate(syncVaultStatusProvider);
+    if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
+      await sessionsNotifier.disconnectAll();
+      invalidateSyncedDataProviders(ref.invalidate);
+    }
+    ref.invalidate(allHostsProvider);
+    await ref.read(allHostsProvider.future);
+    if (!context.mounted) {
+      return;
+    }
+
+    final message = result.outcome == SyncVaultSyncOutcome.conflict
+        ? 'Sync conflict detected. Open Settings > Sync to resolve it.'
+        : result.message;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+}
+
+enum _HostContextAction {
+  connect,
+  newConnection,
+  edit,
+  duplicate,
+  export,
+  delete,
 }
 
 class _HostRow extends ConsumerWidget {
-  const _HostRow({required this.host});
+  const _HostRow({required this.host, required this.reorderHandle, super.key});
 
   final Host host;
+  final Widget reorderHandle;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -611,6 +732,9 @@ class _HostRow extends ConsumerWidget {
       color: Colors.transparent,
       child: InkWell(
         onTap: () => unawaited(_openHostConnection(context, ref)),
+        onLongPress: () => unawaited(_showContextMenuAtCenter(context, ref)),
+        onSecondaryTapDown: (details) =>
+            unawaited(_showContextMenu(context, ref, details.globalPosition)),
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
           decoration: BoxDecoration(
@@ -742,14 +866,7 @@ class _HostRow extends ConsumerWidget {
                         onTap: () =>
                             unawaited(_openNewConnection(context, ref)),
                       ),
-                      _SmallIconButton(
-                        icon: Icons.edit_outlined,
-                        onTap: () => context.push('/hosts/edit/${host.id}'),
-                      ),
-                      _SmallIconButton(
-                        icon: Icons.more_vert,
-                        onTap: () => _showMenu(context, ref),
-                      ),
+                      reorderHandle,
                     ],
                   ),
                 ],
@@ -865,6 +982,21 @@ class _HostRow extends ConsumerWidget {
     }
   }
 
+  Future<void> _showContextMenuAtCenter(
+    BuildContext context,
+    WidgetRef ref,
+  ) async {
+    final renderBox = context.findRenderObject() as RenderBox?;
+    if (renderBox == null) {
+      return;
+    }
+
+    final globalPosition = renderBox.localToGlobal(
+      renderBox.size.center(Offset.zero),
+    );
+    await _showContextMenu(context, ref, globalPosition);
+  }
+
   Future<void> _openNewConnection(BuildContext context, WidgetRef ref) async {
     final result = await connectToHostWithProgressDialog(context, ref, host);
 
@@ -881,44 +1013,101 @@ class _HostRow extends ConsumerWidget {
     );
   }
 
-  void _showMenu(BuildContext context, WidgetRef ref) {
-    final parentContext = context;
+  Future<void> _showContextMenu(
+    BuildContext context,
+    WidgetRef ref,
+    Offset globalPosition,
+  ) async {
     final colorScheme = Theme.of(context).colorScheme;
 
-    showModalBottomSheet<void>(
-      context: parentContext,
-      builder: (sheetContext) => SafeArea(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            ListTile(
-              leading: const Icon(Icons.copy),
-              title: const Text('Duplicate'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_duplicateHost(parentContext, ref));
-              },
-            ),
-            ListTile(
-              leading: const Icon(Icons.save_alt),
-              title: const Text('Export Encrypted File'),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                unawaited(_exportEncryptedFile(parentContext, ref));
-              },
-            ),
-            ListTile(
-              leading: Icon(Icons.delete_outline, color: colorScheme.error),
-              title: Text('Delete', style: TextStyle(color: colorScheme.error)),
-              onTap: () {
-                Navigator.pop(sheetContext);
-                _confirmDelete(parentContext, ref);
-              },
-            ),
-          ],
-        ),
+    final overlay = Overlay.maybeOf(context);
+    final overlayBox = overlay?.context.findRenderObject() as RenderBox?;
+    if (overlayBox == null) {
+      return;
+    }
+    final selection = await showMenu<_HostContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        Rect.fromLTWH(globalPosition.dx, globalPosition.dy, 0, 0),
+        Offset.zero & overlayBox.size,
       ),
+      items: [
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.connect,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.link),
+            title: Text('Connect'),
+          ),
+        ),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.newConnection,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.add),
+            title: Text('New connection'),
+          ),
+        ),
+        const PopupMenuDivider(),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.edit,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.edit_outlined),
+            title: Text('Edit'),
+          ),
+        ),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.duplicate,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.copy),
+            title: Text('Duplicate'),
+          ),
+        ),
+        const PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.export,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.save_alt),
+            title: Text('Export Encrypted File'),
+          ),
+        ),
+        PopupMenuItem<_HostContextAction>(
+          value: _HostContextAction.delete,
+          child: ListTile(
+            contentPadding: EdgeInsets.zero,
+            leading: Icon(Icons.delete_outline, color: colorScheme.error),
+            title: Text('Delete', style: TextStyle(color: colorScheme.error)),
+          ),
+        ),
+      ],
     );
+
+    if (!context.mounted || selection == null) {
+      return;
+    }
+
+    switch (selection) {
+      case _HostContextAction.connect:
+        await _openHostConnection(context, ref);
+        return;
+      case _HostContextAction.newConnection:
+        await _openNewConnection(context, ref);
+        return;
+      case _HostContextAction.edit:
+        unawaited(context.push('/hosts/edit/${host.id}'));
+        return;
+      case _HostContextAction.duplicate:
+        await _duplicateHost(context, ref);
+        return;
+      case _HostContextAction.export:
+        await _exportEncryptedFile(context, ref);
+        return;
+      case _HostContextAction.delete:
+        await _confirmDelete(context, ref);
+        return;
+    }
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
@@ -1671,8 +1860,9 @@ final _allSnippetsStreamProvider = StreamProvider<List<Snippet>>((ref) {
 });
 
 /// Panel for displaying and managing snippets inline.
-class _SnippetsPanel extends ConsumerWidget {
-  const _SnippetsPanel();
+class SnippetsPanel extends ConsumerWidget {
+  /// Creates a [SnippetsPanel].
+  const SnippetsPanel({super.key});
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -1767,14 +1957,42 @@ class _SnippetsPanel extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     List<Snippet> snippets,
-  ) => ListView.builder(
+  ) => ReorderableListView.builder(
     padding: const EdgeInsets.symmetric(vertical: 4),
+    buildDefaultDragHandles: false,
     itemCount: snippets.length,
+    onReorder: (oldIndex, newIndex) => unawaited(
+      _reorderSnippets(
+        ref: ref,
+        snippets: snippets,
+        oldIndex: oldIndex,
+        newIndex: newIndex,
+      ),
+    ),
     itemBuilder: (context, index) {
       final snippet = snippets[index];
-      return _SnippetRow(snippet: snippet);
+      return _SnippetRow(
+        key: ValueKey('home-snippet-${snippet.id}'),
+        snippet: snippet,
+        reorderHandle: ReorderGrip(index: index),
+      );
     },
   );
+
+  Future<void> _reorderSnippets({
+    required WidgetRef ref,
+    required List<Snippet> snippets,
+    required int oldIndex,
+    required int newIndex,
+  }) async {
+    final reorderedIds = reorderVisibleIdsInFullOrder(
+      allIds: snippets.map((snippet) => snippet.id).toList(growable: false),
+      visibleIds: snippets.map((snippet) => snippet.id).toList(growable: false),
+      oldIndex: oldIndex,
+      newIndex: newIndex,
+    );
+    await ref.read(snippetRepositoryProvider).reorderByIds(reorderedIds);
+  }
 
   static Future<void> _showAddEditSnippetDialog(
     BuildContext context,
@@ -1945,9 +2163,14 @@ class _SnippetsPanel extends ConsumerWidget {
 }
 
 class _SnippetRow extends ConsumerWidget {
-  const _SnippetRow({required this.snippet});
+  const _SnippetRow({
+    required this.snippet,
+    required this.reorderHandle,
+    super.key,
+  });
 
   final Snippet snippet;
+  final Widget reorderHandle;
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
@@ -2005,13 +2228,14 @@ class _SnippetRow extends ConsumerWidget {
               ),
 
               // Actions
+              reorderHandle,
               _SmallIconButton(
                 icon: Icons.copy,
                 onTap: () => _copySnippet(context, ref),
               ),
               _SmallIconButton(
                 icon: Icons.edit_outlined,
-                onTap: () => _SnippetsPanel._showAddEditSnippetDialog(
+                onTap: () => SnippetsPanel._showAddEditSnippetDialog(
                   context,
                   ref,
                   snippet,

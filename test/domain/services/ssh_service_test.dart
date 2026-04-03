@@ -686,6 +686,23 @@ void main() {
         'Connection closed',
       );
     });
+
+    test(
+      'disconnectAll clears active sessions and connection attempts',
+      () async {
+        final notifier = container.read(activeSessionsProvider.notifier);
+
+        final result = await notifier.connect(42, forceNew: true);
+        expect(result.success, isTrue);
+        expect(notifier.getConnectionAttempt(42), isNotNull);
+
+        await notifier.disconnectAll();
+
+        expect(notifier.getActiveConnections(), isEmpty);
+        expect(notifier.getConnectionAttempt(42), isNull);
+        expect(container.read(activeSessionsProvider), isEmpty);
+      },
+    );
   });
 
   group('SshService', () {

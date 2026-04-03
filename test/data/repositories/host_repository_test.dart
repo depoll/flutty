@@ -45,6 +45,58 @@ void main() {
       expect(hosts.first.label, 'Test Server');
       expect(hosts.first.hostname, '192.168.1.1');
       expect(hosts.first.username, 'admin');
+      expect(hosts.first.sortOrder, 0);
+    });
+
+    test('insert appends hosts by sort order', () async {
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'First',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      await repository.insert(
+        HostsCompanion.insert(
+          label: 'Second',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+
+      final hosts = await repository.getAll();
+      expect(hosts.map((host) => host.sortOrder), [0, 1]);
+      expect(hosts.map((host) => host.label), ['First', 'Second']);
+    });
+
+    test('reorderByIds persists host order', () async {
+      final firstId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'First',
+          hostname: 'first.example.com',
+          username: 'root',
+        ),
+      );
+      final secondId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Second',
+          hostname: 'second.example.com',
+          username: 'root',
+        ),
+      );
+      final thirdId = await repository.insert(
+        HostsCompanion.insert(
+          label: 'Third',
+          hostname: 'third.example.com',
+          username: 'root',
+        ),
+      );
+
+      await repository.reorderByIds([thirdId, firstId, secondId]);
+
+      final hosts = await repository.getAll();
+      expect(hosts.map((host) => host.label), ['Third', 'First', 'Second']);
+      expect(hosts.map((host) => host.sortOrder), [0, 1, 2]);
     });
 
     test('insert encrypts password at rest', () async {

@@ -1854,6 +1854,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     }
     await _sshService.disconnectAll();
     _connectionHostIds.clear();
+    _connectionAttempts.clear();
     state = {};
     await _queueBackgroundStatusSync();
   }

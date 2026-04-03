@@ -36,6 +36,16 @@ void main() {
       final groups = await repository.getAll();
       expect(groups, hasLength(1));
       expect(groups.first.name, 'Production');
+      expect(groups.first.sortOrder, 0);
+    });
+
+    test('insert appends groups by sort order', () async {
+      await repository.insert(GroupsCompanion.insert(name: 'First'));
+      await repository.insert(GroupsCompanion.insert(name: 'Second'));
+
+      final groups = await repository.getAll();
+      expect(groups.map((group) => group.sortOrder), [0, 1]);
+      expect(groups.map((group) => group.name), ['First', 'Second']);
     });
 
     test('getById returns group when exists', () async {

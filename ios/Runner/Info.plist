@@ -48,9 +48,11 @@
 	<key>UIFileSharingEnabled</key>
 	<false/>
 	<key>LSSupportsOpeningDocumentsInPlace</key>
-	<false/>
+	<true/>
 	<key>NSPhotoLibraryUsageDescription</key>
 	<string>MonkeySSH needs photo library access to select files for transfer.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>MonkeySSH needs camera access to scan sync recovery key QR codes.</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
@@ -63,6 +65,18 @@
 			<key>LSItemContentTypes</key>
 			<array>
 				<string>xyz.depollsoft.monkeyssh.transfer</string>
+			</array>
+		</dict>
+		<dict>
+			<key>CFBundleTypeName</key>
+			<string>MonkeySSH Sync Vault</string>
+			<key>CFBundleTypeRole</key>
+			<string>Editor</string>
+			<key>LSHandlerRank</key>
+			<string>Owner</string>
+			<key>LSItemContentTypes</key>
+			<array>
+				<string>xyz.depollsoft.monkeyssh.sync-vault</string>
 			</array>
 		</dict>
 	</array>
@@ -85,6 +99,25 @@
 				</array>
 				<key>public.mime-type</key>
 				<string>application/x-monkeyssh-transfer</string>
+			</dict>
+		</dict>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>xyz.depollsoft.monkeyssh.sync-vault</string>
+			<key>UTTypeDescription</key>
+			<string>MonkeySSH Sync Vault</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+			<key>UTTypeTagSpecification</key>
+			<dict>
+				<key>public.filename-extension</key>
+				<array>
+					<string>monkeysync</string>
+				</array>
+				<key>public.mime-type</key>
+				<string>application/x-monkeyssh-sync-vault</string>
 			</dict>
 		</dict>
 	</array>

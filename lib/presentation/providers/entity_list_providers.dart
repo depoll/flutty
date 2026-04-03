@@ -5,6 +5,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
+import '../../domain/services/settings_service.dart';
 
 /// Shared stream of all saved hosts for presentation screens.
 final allHostsProvider = StreamProvider<List<Host>>((ref) {
@@ -33,4 +34,15 @@ void invalidateImportedEntityProviders(ProviderInvalidator invalidate) {
   invalidate(allHostsProvider);
   invalidate(allKeysProvider);
   invalidate(allGroupsProvider);
+}
+
+/// Refreshes presentation providers that depend on synced settings and data.
+void invalidateSyncedDataProviders(ProviderInvalidator invalidate) {
+  invalidate(themeModeNotifierProvider);
+  invalidate(fontSizeNotifierProvider);
+  invalidate(fontFamilyNotifierProvider);
+  invalidate(cursorStyleNotifierProvider);
+  invalidate(bellSoundNotifierProvider);
+  invalidate(terminalThemeSettingsProvider);
+  invalidateImportedEntityProviders(invalidate);
 }

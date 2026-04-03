@@ -61,6 +61,27 @@ abstract final class SettingKeys {
   /// Auto-lock timeout in minutes.
   static const autoLockTimeout = 'auto_lock_timeout';
 
+  /// Whether the optional encrypted sync vault is enabled on this device.
+  static const syncVaultEnabled = 'sync_vault_enabled';
+
+  /// Linked encrypted sync vault file path.
+  static const syncVaultPath = 'sync_vault_path';
+
+  /// Security-scoped bookmark for reopening the linked iOS sync vault file.
+  static const syncVaultBookmark = 'sync_vault_bookmark';
+
+  /// Last successful encrypted sync timestamp.
+  static const syncVaultLastSyncedAt = 'sync_vault_last_synced_at';
+
+  /// Last synced snapshot hash shared with the encrypted sync vault.
+  static const syncVaultLastSnapshotHash = 'sync_vault_last_snapshot_hash';
+
+  /// Last sync-related error shown for the encrypted sync vault.
+  static const syncVaultLastError = 'sync_vault_last_error';
+
+  /// Stable identifier for this device in encrypted sync metadata.
+  static const syncVaultDeviceId = 'sync_vault_device_id';
+
   /// Enable shared clipboard between device and remote session.
   ///
   /// The terminal can sync through OSC 52 and remote clipboard utilities when
@@ -164,12 +185,13 @@ final themeModeProvider = FutureProvider<String>((ref) async {
 
 /// Notifier for theme mode with write capability.
 class ThemeModeNotifier extends Notifier<ThemeMode> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   ThemeMode build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return ThemeMode.system;
@@ -212,7 +234,7 @@ final fontSizeProvider = FutureProvider<double>((ref) async {
 
 /// Notifier for font size with write capability.
 class FontSizeNotifier extends Notifier<double> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
   Future<void> _writeChain = Future<void>.value();
   int _latestWriteToken = 0;
@@ -220,6 +242,7 @@ class FontSizeNotifier extends Notifier<double> {
   @override
   double build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return 14;
@@ -259,12 +282,13 @@ final fontFamilyProvider = FutureProvider<String>((ref) async {
 
 /// Notifier for font family with write capability.
 class FontFamilyNotifier extends Notifier<String> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   String build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return 'monospace';
@@ -296,12 +320,13 @@ final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
 
 /// Notifier for auto-lock timeout with write capability.
 class AutoLockTimeoutNotifier extends Notifier<int> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   int build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return 5;
@@ -332,12 +357,13 @@ final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
 
 /// Notifier for haptic feedback with write capability.
 class HapticFeedbackNotifier extends Notifier<bool> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   bool build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return true;
@@ -371,12 +397,13 @@ final cursorStyleProvider = FutureProvider<String>((ref) async {
 
 /// Notifier for cursor style with write capability.
 class CursorStyleNotifier extends Notifier<String> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   String build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return 'block';
@@ -407,12 +434,13 @@ final bellSoundProvider = FutureProvider<bool>((ref) async {
 
 /// Notifier for bell sound with write capability.
 class BellSoundNotifier extends Notifier<bool> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   bool build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return true;
@@ -441,12 +469,13 @@ final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
 
 /// Notifier for terminal file path links with write capability.
 class TerminalPathLinksNotifier extends Notifier<bool> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   bool build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return true;
@@ -476,12 +505,13 @@ final terminalPathLinksNotifierProvider =
 
 /// Notifier for terminal file path underlines with write capability.
 class TerminalPathLinkUnderlinesNotifier extends Notifier<bool> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   bool build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return true;
@@ -536,12 +566,13 @@ class TerminalThemeSettings {
 
 /// Notifier for terminal theme settings.
 class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
-  late final SettingsService _settings;
+  late SettingsService _settings;
   bool _disposed = false;
 
   @override
   TerminalThemeSettings build() {
     _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return const TerminalThemeSettings(

@@ -6,170 +6,238 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
-import 'package:monkeyssh/data/repositories/group_repository.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
 
+class _MockSyncVaultService extends Mock implements SyncVaultService {}
+
+class _MockHostRepository extends Mock implements HostRepository {}
+
+class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
+  @override
+  Map<int, SshConnectionState> build() => <int, SshConnectionState>{};
+
+  @override
+  ConnectionAttemptStatus? getConnectionAttempt(int hostId) => null;
+
+  @override
+  List<int> getConnectionsForHost(int hostId) => const [];
+
+  @override
+  ActiveConnection? getActiveConnection(int connectionId) => null;
+}
+
+Host _buildHost({
+  required int id,
+  required String label,
+  required int sortOrder,
+}) => Host(
+  id: id,
+  label: label,
+  hostname: '$label.example.com',
+  port: 22,
+  username: 'root',
+  password: null,
+  keyId: null,
+  groupId: null,
+  jumpHostId: null,
+  isFavorite: false,
+  color: null,
+  notes: null,
+  tags: null,
+  createdAt: DateTime(2026),
+  updatedAt: DateTime(2026),
+  lastConnectedAt: null,
+  terminalThemeLightId: null,
+  terminalThemeDarkId: null,
+  terminalFontFamily: null,
+  autoConnectCommand: null,
+  autoConnectSnippetId: null,
+  autoConnectRequiresConfirmation: false,
+  sortOrder: sortOrder,
+);
+
 void main() {
-  group('normalizeSelectedGroupId', () {
-    test('keeps the selected group when it still exists', () {
-      final groups = [
-        Group(
-          id: 1,
-          name: 'Production',
-          sortOrder: 0,
-          createdAt: DateTime(2026),
-        ),
-      ];
-
-      final selectedGroupId = normalizeSelectedGroupId(
-        selectedGroupId: 1,
-        groups: groups,
-      );
-
-      expect(selectedGroupId, 1);
-    });
-
-    test('clears the selected group when imported data replaced group ids', () {
-      final groups = [
-        Group(
-          id: 9,
-          name: 'Production',
-          sortOrder: 0,
-          createdAt: DateTime(2026),
-        ),
-      ];
-
-      final selectedGroupId = normalizeSelectedGroupId(
-        selectedGroupId: 1,
-        groups: groups,
-      );
-
-      expect(selectedGroupId, isNull);
-    });
+  setUpAll(() {
+    registerFallbackValue(<int>[]);
   });
 
-  testWidgets(
-    'clears stale selected groups after import-style provider invalidation',
-    (tester) async {
-      final fakeGroupRepository = FakeGroupRepository(
-        initialGroups: [
-          Group(
-            id: 1,
-            name: 'Production',
-            sortOrder: 0,
-            createdAt: DateTime(2026),
-          ),
-          Group(
-            id: 2,
-            name: 'Staging',
-            sortOrder: 1,
-            createdAt: DateTime(2026),
+  testWidgets('shows imported hosts after the provider updates', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+
+    final hostsController = StreamController<List<Host>>();
+    addTearDown(hostsController.close);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith((ref) => hostsController.stream),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+
+    hostsController.add(const <Host>[]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('No hosts yet'), findsOneWidget);
+
+    hostsController.add([
+      _buildHost(id: 1, label: 'Imported host', sortOrder: 0),
+    ]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('Imported host'), findsOneWidget);
+  });
+
+  testWidgets('pull to refresh runs encrypted sync when enabled', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+
+    final syncVaultService = _MockSyncVaultService();
+    when(syncVaultService.getStatus).thenAnswer(
+      (_) async => const SyncVaultStatus(enabled: true, hasRecoveryKey: true),
+    );
+    when(syncVaultService.syncNow).thenAnswer(
+      (_) async => const SyncVaultSyncResult(
+        outcome: SyncVaultSyncOutcome.noChanges,
+        message: 'Encrypted sync is already up to date',
+      ),
+    );
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          syncVaultServiceProvider.overrideWithValue(syncVaultService),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith(
+            (ref) => Stream.value([
+              _buildHost(id: 1, label: 'Production', sortOrder: 0),
+            ]),
           ),
         ],
-      );
-      addTearDown(fakeGroupRepository.dispose);
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      final harnessKey = GlobalKey<_HostsScreenHarnessState>();
+    await tester.drag(find.byType(Scrollable).first, const Offset(0, 300));
+    await tester.pump();
+    await tester.pump(const Duration(seconds: 1));
+    await tester.pumpAndSettle();
 
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            groupRepositoryProvider.overrideWithValue(fakeGroupRepository),
-            allHostsProvider.overrideWith((ref) => Stream.value(<Host>[])),
-          ],
-          child: HostsScreenHarness(key: harnessKey),
-        ),
-      );
-      await tester.pump();
+    verify(syncVaultService.getStatus).called(1);
+    verify(syncVaultService.syncNow).called(1);
+    expect(find.text('Encrypted sync is already up to date'), findsOneWidget);
+  });
 
-      await tester.tap(find.byTooltip('Groups'));
-      await tester.pumpAndSettle();
-      await tester.tap(find.text('Production').last);
-      await tester.pumpAndSettle();
+  testWidgets('loading state stays scrollable for pull to refresh', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
 
-      fakeGroupRepository.replaceAll([
-        Group(id: 2, name: 'Staging', sortOrder: 1, createdAt: DateTime(2026)),
-      ]);
+    final hostsController = StreamController<List<Host>>();
+    addTearDown(hostsController.close);
 
-      harnessKey.currentState!.invalidateGroups();
-      await tester.pump();
-      await tester.pump();
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith((ref) => hostsController.stream),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
 
-      expect(tester.takeException(), isNull);
+    expect(find.byType(CircularProgressIndicator), findsOneWidget);
+    expect(find.byType(CustomScrollView), findsOneWidget);
+  });
 
-      await tester.tap(find.byTooltip('Groups'));
-      await tester.pumpAndSettle();
+  testWidgets('reordering hosts persists the new order', (tester) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
 
-      final allHostsTile = tester.widget<ListTile>(
-        find.widgetWithText(ListTile, 'All hosts'),
-      );
-      expect(allHostsTile.selected, isTrue);
-      expect(find.text('Production'), findsNothing);
-      expect(find.text('Staging'), findsOneWidget);
-    },
-  );
-}
+    final hostRepository = _MockHostRepository();
+    when(() => hostRepository.reorderByIds(any())).thenAnswer((_) async {});
 
-class HostsScreenHarness extends StatefulWidget {
-  const HostsScreenHarness({super.key});
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith(
+            (ref) => Stream.value([
+              _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              _buildHost(id: 2, label: 'Beta', sortOrder: 1),
+            ]),
+          ),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
 
-  @override
-  State<HostsScreenHarness> createState() => _HostsScreenHarnessState();
-}
+    expect(find.byTooltip('Reorder'), findsNWidgets(2));
 
-class _HostsScreenHarnessState extends State<HostsScreenHarness> {
-  bool _invalidateGroups = false;
+    final list = tester.widget<ReorderableListView>(
+      find.byType(ReorderableListView),
+    );
+    list.onReorder(0, 2);
+    await tester.pumpAndSettle();
 
-  void invalidateGroups() {
-    setState(() => _invalidateGroups = true);
-  }
+    verify(() => hostRepository.reorderByIds([2, 1])).called(1);
+  });
 
-  @override
-  Widget build(BuildContext context) {
-    if (_invalidateGroups) {
-      _invalidateGroups = false;
-      ProviderScope.containerOf(context).invalidate(allGroupsProvider);
-    }
+  testWidgets('long press opens host context menu without overflow button', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
 
-    return const MaterialApp(home: HostsScreen());
-  }
-}
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith(
+            (ref) =>
+                Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
+          ),
+        ],
+        child: const MaterialApp(home: HostsScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
 
-class FakeGroupRepository extends GroupRepository {
-  factory FakeGroupRepository({required List<Group> initialGroups}) {
-    final database = AppDatabase.forTesting(NativeDatabase.memory());
-    return FakeGroupRepository._(database, initialGroups: initialGroups);
-  }
+    expect(find.byIcon(Icons.more_vert), findsNothing);
+    expect(find.byIcon(Icons.edit_outlined), findsNothing);
 
-  FakeGroupRepository._(this._database, {required List<Group> initialGroups})
-    : _groups = List<Group>.unmodifiable(initialGroups),
-      super(_database);
+    await tester.longPress(find.text('Alpha'));
+    await tester.pumpAndSettle();
 
-  final AppDatabase _database;
-  final StreamController<List<Group>> _changes =
-      StreamController<List<Group>>.broadcast();
-  List<Group> _groups;
-
-  void replaceAll(List<Group> groups) {
-    _groups = List<Group>.unmodifiable(groups);
-    _changes.add(_groups);
-  }
-
-  Future<void> dispose() async {
-    await _changes.close();
-    await _database.close();
-  }
-
-  @override
-  Future<List<Group>> getAll() async => _groups;
-
-  @override
-  Stream<List<Group>> watchAll() => Stream.multi((controller) {
-    controller.add(_groups);
-    final subscription = _changes.stream.listen(controller.add);
-    controller.onCancel = subscription.cancel;
+    expect(find.text('Connect'), findsOneWidget);
+    expect(find.text('New connection'), findsOneWidget);
+    expect(find.text('Edit'), findsOneWidget);
+    expect(find.text('Duplicate'), findsOneWidget);
+    expect(find.text('Export Encrypted File'), findsOneWidget);
+    expect(find.text('Delete'), findsOneWidget);
   });
 }

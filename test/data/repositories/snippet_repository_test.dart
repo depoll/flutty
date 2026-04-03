@@ -38,6 +38,42 @@ void main() {
       expect(snippets.first.name, 'List Files');
       expect(snippets.first.command, 'ls -la');
       expect(snippets.first.usageCount, 0);
+      expect(snippets.first.sortOrder, 0);
+    });
+
+    test('insert appends snippets by sort order', () async {
+      await repository.insert(
+        SnippetsCompanion.insert(name: 'First', command: 'echo first'),
+      );
+      await repository.insert(
+        SnippetsCompanion.insert(name: 'Second', command: 'echo second'),
+      );
+
+      final snippets = await repository.getAll();
+      expect(snippets.map((snippet) => snippet.sortOrder), [0, 1]);
+      expect(snippets.map((snippet) => snippet.name), ['First', 'Second']);
+    });
+
+    test('reorderByIds persists snippet order', () async {
+      final firstId = await repository.insert(
+        SnippetsCompanion.insert(name: 'First', command: 'echo first'),
+      );
+      final secondId = await repository.insert(
+        SnippetsCompanion.insert(name: 'Second', command: 'echo second'),
+      );
+      final thirdId = await repository.insert(
+        SnippetsCompanion.insert(name: 'Third', command: 'echo third'),
+      );
+
+      await repository.reorderByIds([thirdId, firstId, secondId]);
+
+      final snippets = await repository.getAll();
+      expect(snippets.map((snippet) => snippet.name), [
+        'Third',
+        'First',
+        'Second',
+      ]);
+      expect(snippets.map((snippet) => snippet.sortOrder), [0, 1, 2]);
     });
 
     test('getById returns snippet when exists', () async {
@@ -283,6 +319,23 @@ void main() {
       final folders = await repository.getAllFolders();
       expect(folders, hasLength(1));
       expect(folders.first.name, 'My Folder');
+      expect(folders.first.sortOrder, 0);
+    });
+
+    test('insertFolder appends folders by sort order', () async {
+      await repository.insertFolder(
+        SnippetFoldersCompanion.insert(name: 'First Folder'),
+      );
+      await repository.insertFolder(
+        SnippetFoldersCompanion.insert(name: 'Second Folder'),
+      );
+
+      final folders = await repository.getAllFolders();
+      expect(folders.map((folder) => folder.sortOrder), [0, 1]);
+      expect(folders.map((folder) => folder.name), [
+        'First Folder',
+        'Second Folder',
+      ]);
     });
 
     test('updateFolder modifies existing folder', () async {

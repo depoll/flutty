@@ -79,6 +79,9 @@ class Hosts extends Table {
   /// Whether auto-connect should require user review before it can run.
   BoolColumn get autoConnectRequiresConfirmation =>
       boolean().withDefault(const Constant(false))();
+
+  /// Display order within the hosts list.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 }
 
 /// SSH Keys table - stores SSH key pairs.
@@ -161,6 +164,9 @@ class Snippets extends Table {
 
   /// Usage count for sorting by frequency.
   IntColumn get usageCount => integer().withDefault(const Constant(0))();
+
+  /// Display order within the snippets list.
+  IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 }
 
 /// Snippet folders for organizing snippets.
@@ -294,7 +300,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 5;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -322,6 +328,25 @@ class AppDatabase extends _$AppDatabase {
           hosts.autoConnectRequiresConfirmation.$name,
         )) {
           await m.addColumn(hosts, hosts.autoConnectRequiresConfirmation);
+        }
+      }
+      if (from < 6) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.sortOrder.$name)) {
+          await m.addColumn(hosts, hosts.sortOrder);
+          await _backfillSortOrder(
+            tableName: 'hosts',
+            columnName: 'sort_order',
+          );
+        }
+
+        final snippetColumnNames = await _readColumnNames('snippets');
+        if (!snippetColumnNames.contains(snippets.sortOrder.$name)) {
+          await m.addColumn(snippets, snippets.sortOrder);
+          await _backfillSortOrder(
+            tableName: 'snippets',
+            columnName: 'sort_order',
+          );
         }
       }
     },
@@ -373,6 +398,21 @@ class AppDatabase extends _$AppDatabase {
   Future<Set<String>> _readColumnNames(String tableName) async {
     final columns = await customSelect('PRAGMA table_info($tableName)').get();
     return columns.map((row) => row.read<String>('name')).toSet();
+  }
+
+  Future<void> _backfillSortOrder({
+    required String tableName,
+    required String columnName,
+  }) async {
+    final rows = await customSelect(
+      'SELECT id FROM $tableName ORDER BY id',
+    ).get();
+    for (var index = 0; index < rows.length; index += 1) {
+      await customStatement(
+        'UPDATE $tableName SET $columnName = ? WHERE id = ?',
+        [index, rows[index].read<int>('id')],
+      );
+    }
   }
 
   String _detectKeyTypeFromPublicKey(String publicKey) {
