@@ -232,7 +232,6 @@ jobs:
         run: |
           $vsInstallerRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
           $vsWhere = Join-Path $vsInstallerRoot 'vswhere.exe'
-          $vsInstaller = Join-Path $vsInstallerRoot 'setup.exe'
           $existingAtlHeader = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\atlmfc\include\atlstr.h" -ErrorAction SilentlyContinue | Select-Object -First 1
 
           if ($existingAtlHeader) {
@@ -242,10 +241,6 @@ jobs:
 
           if (-not (Test-Path $vsWhere)) {
             throw "Unable to locate vswhere.exe at $vsWhere"
-          }
-
-          if (-not (Test-Path $vsInstaller)) {
-            throw "Unable to locate setup.exe at $vsInstaller"
           }
 
           $instance = (& $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json) | Select-Object -First 1
@@ -274,19 +269,19 @@ jobs:
           $bootstrapperPath = Join-Path $env:RUNNER_TEMP 'vs-bootstrapper.exe'
           Invoke-WebRequest -Uri $bootstrapperUrl -OutFile $bootstrapperPath
 
-          $installProcess = Start-Process -FilePath $bootstrapperPath -WorkingDirectory $env:RUNNER_TEMP -ArgumentList @(
-            'modify',
-            '--installPath', $installationPath,
-            '--add', 'Microsoft.VisualStudio.Component.VC.ATL',
-            '--add', 'Microsoft.VisualStudio.Component.VC.ATLMFC',
-            '--passive',
-            '--wait',
-            '--norestart'
-          ) -Wait -PassThru
+          & $bootstrapperPath `
+            modify `
+            --installPath "$installationPath" `
+            --add Microsoft.VisualStudio.Component.VC.ATL `
+            --add Microsoft.VisualStudio.Component.VC.ATLMFC `
+            --passive `
+            --wait `
+            --norestart
+          $installerExitCode = $LASTEXITCODE
           Remove-Item $bootstrapperPath -Force -ErrorAction SilentlyContinue
-          if ($installProcess.ExitCode -notin @(0, 3010)) {
+          if ($installerExitCode -notin @(0, 3010)) {
             Show-RecentInstallerLogs
-            throw "Visual Studio setup failed with exit code $($installProcess.ExitCode)"
+            throw "Visual Studio setup failed with exit code $installerExitCode"
           }
 
           $installedAtlHeader = Get-ChildItem -Path (Join-Path $installationPath 'VC\Tools\MSVC') -Recurse -Filter atlstr.h -ErrorAction SilentlyContinue | Select-Object -First 1
