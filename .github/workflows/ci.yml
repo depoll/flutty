@@ -93,7 +93,7 @@ jobs:
 
   build-android:
     name: Build Android
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -221,7 +221,9 @@ jobs:
 
   build-windows:
     name: Build Windows
-    runs-on: windows-latest
+    # Pin to the GitHub-hosted 2022 image because the Windows 2025 image
+    # currently lacks ATL headers required by flutter_secure_storage_windows.
+    runs-on: windows-2022
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
