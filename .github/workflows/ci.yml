@@ -221,85 +221,11 @@ jobs:
 
   build-windows:
     name: Build Windows
-    runs-on: blacksmith-4vcpu-windows-2025
+    runs-on: windows-2025
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
-
-      - name: Ensure ATL headers are available
-        shell: pwsh
-        run: |
-          $vsInstallerRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
-          $vsWhere = Join-Path $vsInstallerRoot 'vswhere.exe'
-          $existingAtlHeader = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\atlmfc\include\atlstr.h" -ErrorAction SilentlyContinue | Select-Object -First 1
-
-          if ($existingAtlHeader) {
-            Write-Host "ATL already installed at $($existingAtlHeader.FullName)"
-            exit 0
-          }
-
-          if (-not (Test-Path $vsWhere)) {
-            throw "Unable to locate vswhere.exe at $vsWhere"
-          }
-
-          $instance = (& $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json) | Select-Object -First 1
-          if (-not $instance) {
-            throw 'Unable to locate a Visual Studio C++ toolchain installation.'
-          }
-
-          function Show-RecentInstallerLogs {
-            foreach ($logRoot in @($env:TEMP, "$env:LOCALAPPDATA\Temp")) {
-              if (-not $logRoot -or -not (Test-Path $logRoot)) {
-                continue
-              }
-
-              Get-ChildItem -Path $logRoot -Filter 'dd_*' -File -ErrorAction SilentlyContinue |
-                Sort-Object LastWriteTime -Descending |
-                Select-Object -First 5 |
-                ForEach-Object {
-                  Write-Host "--- $($_.FullName) ---"
-                  Get-Content $_.FullName -Tail 200 -ErrorAction SilentlyContinue
-                }
-            }
-          }
-
-          $installationPath = $instance.installationPath
-          Write-Host "Using Visual Studio instance $($instance.productId) at $installationPath"
-          $bootstrapperUrl = switch ($instance.productId) {
-            'Microsoft.VisualStudio.Product.BuildTools' { 'https://aka.ms/vs/17/release/vs_buildtools.exe' }
-            'Microsoft.VisualStudio.Product.Enterprise' { 'https://aka.ms/vs/17/release/vs_enterprise.exe' }
-            'Microsoft.VisualStudio.Product.Professional' { 'https://aka.ms/vs/17/release/vs_professional.exe' }
-            'Microsoft.VisualStudio.Product.Community' { 'https://aka.ms/vs/17/release/vs_community.exe' }
-            default { throw "Unsupported Visual Studio product id: $($instance.productId)" }
-          }
-          $bootstrapperPath = Join-Path $env:RUNNER_TEMP 'vs-bootstrapper.exe'
-          Invoke-WebRequest -Uri $bootstrapperUrl -OutFile $bootstrapperPath
-
-          & $bootstrapperPath `
-            modify `
-            --installPath "$installationPath" `
-            --add Microsoft.VisualStudio.Workload.VCTools `
-            --add Microsoft.VisualStudio.Component.VC.ATL `
-            --add Microsoft.VisualStudio.Component.VC.ATLMFC `
-            --includeRecommended `
-            --passive `
-            --wait `
-            --norestart
-          $installerExitCode = $LASTEXITCODE
-          Remove-Item $bootstrapperPath -Force -ErrorAction SilentlyContinue
-          if ($installerExitCode -notin @(0, 3010)) {
-            Show-RecentInstallerLogs
-            throw "Visual Studio setup failed with exit code $installerExitCode"
-          }
-
-          $installedAtlHeader = Get-ChildItem -Path (Join-Path $installationPath 'VC\Tools\MSVC') -Recurse -Filter atlstr.h -ErrorAction SilentlyContinue | Select-Object -First 1
-          if (-not $installedAtlHeader) {
-            Show-RecentInstallerLogs
-            throw "ATL installation finished but atlstr.h was still not found under $installationPath."
-          }
-
-          Write-Host "Installed ATL at $($installedAtlHeader.FullName)"
 
       - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
         with:
