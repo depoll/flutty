@@ -232,7 +232,7 @@ jobs:
         run: |
           $vsInstallerRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
           $vsWhere = Join-Path $vsInstallerRoot 'vswhere.exe'
-          $vsInstaller = Join-Path $vsInstallerRoot 'vs_installer.exe'
+          $vsInstaller = Join-Path $vsInstallerRoot 'setup.exe'
           $existingAtlHeader = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\atlmfc\include\atlstr.h" -ErrorAction SilentlyContinue | Select-Object -First 1
 
           if ($existingAtlHeader) {
@@ -245,17 +245,34 @@ jobs:
           }
 
           if (-not (Test-Path $vsInstaller)) {
-            throw "Unable to locate vs_installer.exe at $vsInstaller"
+            throw "Unable to locate setup.exe at $vsInstaller"
           }
 
-          $installationPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
-          if (-not $installationPath) {
+          $instance = (& $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json | ConvertFrom-Json) | Select-Object -First 1
+          if (-not $instance) {
             throw 'Unable to locate a Visual Studio C++ toolchain installation.'
           }
 
-          & $vsInstaller modify --installPath $installationPath --add Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart --wait
-          if ($LASTEXITCODE -ne 0) {
-            throw "vs_installer failed with exit code $LASTEXITCODE"
+          $installationPath = $instance.installationPath
+          $productId = $instance.productId
+          $channelId = $instance.channelId
+
+          if (-not $productId -or -not $channelId) {
+            throw "Unable to determine Visual Studio product metadata for $installationPath."
+          }
+
+          $installProcess = Start-Process -FilePath $vsInstaller -WorkingDirectory $env:RUNNER_TEMP -ArgumentList @(
+            'modify',
+            '--installPath', $installationPath,
+            '--productId', $productId,
+            '--channelId', $channelId,
+            '--add', 'Microsoft.VisualStudio.Component.VC.ATL',
+            '--quiet',
+            '--wait',
+            '--norestart'
+          ) -Wait -PassThru
+          if ($installProcess.ExitCode -notin @(0, 3010)) {
+            throw "Visual Studio setup failed with exit code $($installProcess.ExitCode)"
           }
 
           $installedAtlHeader = Get-ChildItem -Path (Join-Path $installationPath 'VC\Tools\MSVC') -Recurse -Filter atlstr.h -ErrorAction SilentlyContinue | Select-Object -First 1
