@@ -253,22 +253,45 @@ jobs:
             throw 'Unable to locate a Visual Studio C++ toolchain installation.'
           }
 
-          $installationPath = $instance.installationPath
+          function Show-RecentInstallerLogs {
+            Get-ChildItem -Path $env:TEMP -Filter 'dd_*' -File -ErrorAction SilentlyContinue |
+              Sort-Object LastWriteTime -Descending |
+              Select-Object -First 5 |
+              ForEach-Object {
+                Write-Host "--- $($_.FullName) ---"
+                Get-Content $_.FullName -Tail 200 -ErrorAction SilentlyContinue
+              }
+          }
 
-          $installProcess = Start-Process -FilePath $vsInstaller -WorkingDirectory $env:RUNNER_TEMP -ArgumentList @(
+          $installationPath = $instance.installationPath
+          $bootstrapperUrl = switch ($instance.productId) {
+            'Microsoft.VisualStudio.Product.BuildTools' { 'https://aka.ms/vs/17/release/vs_buildtools.exe' }
+            'Microsoft.VisualStudio.Product.Enterprise' { 'https://aka.ms/vs/17/release/vs_enterprise.exe' }
+            'Microsoft.VisualStudio.Product.Professional' { 'https://aka.ms/vs/17/release/vs_professional.exe' }
+            'Microsoft.VisualStudio.Product.Community' { 'https://aka.ms/vs/17/release/vs_community.exe' }
+            default { throw "Unsupported Visual Studio product id: $($instance.productId)" }
+          }
+          $bootstrapperPath = Join-Path $env:RUNNER_TEMP 'vs-bootstrapper.exe'
+          Invoke-WebRequest -Uri $bootstrapperUrl -OutFile $bootstrapperPath
+
+          $installProcess = Start-Process -FilePath $bootstrapperPath -WorkingDirectory $env:RUNNER_TEMP -ArgumentList @(
             'modify',
             '--installPath', $installationPath,
             '--add', 'Microsoft.VisualStudio.Component.VC.ATL',
             '--add', 'Microsoft.VisualStudio.Component.VC.ATLMFC',
             '--passive',
+            '--wait',
             '--norestart'
           ) -Wait -PassThru
+          Remove-Item $bootstrapperPath -Force -ErrorAction SilentlyContinue
           if ($installProcess.ExitCode -notin @(0, 3010)) {
+            Show-RecentInstallerLogs
             throw "Visual Studio setup failed with exit code $($installProcess.ExitCode)"
           }
 
           $installedAtlHeader = Get-ChildItem -Path (Join-Path $installationPath 'VC\Tools\MSVC') -Recurse -Filter atlstr.h -ErrorAction SilentlyContinue | Select-Object -First 1
           if (-not $installedAtlHeader) {
+            Show-RecentInstallerLogs
             throw "ATL installation finished but atlstr.h was still not found under $installationPath."
           }
 
