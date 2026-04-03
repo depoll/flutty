@@ -221,13 +221,49 @@ jobs:
 
   build-windows:
     name: Build Windows
-    # Pin to the GitHub-hosted 2022 image because the Windows 2025 image
-    # currently lacks ATL headers required by flutter_secure_storage_windows.
-    runs-on: windows-2022
+    runs-on: blacksmith-4vcpu-windows-2025
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
           persist-credentials: false
+
+      - name: Ensure ATL headers are available
+        shell: pwsh
+        run: |
+          $vsInstallerRoot = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio\Installer'
+          $vsWhere = Join-Path $vsInstallerRoot 'vswhere.exe'
+          $vsInstaller = Join-Path $vsInstallerRoot 'vs_installer.exe'
+          $existingAtlHeader = Get-ChildItem -Path "${env:ProgramFiles(x86)}\Microsoft Visual Studio\2022\*\VC\Tools\MSVC\*\atlmfc\include\atlstr.h" -ErrorAction SilentlyContinue | Select-Object -First 1
+
+          if ($existingAtlHeader) {
+            Write-Host "ATL already installed at $($existingAtlHeader.FullName)"
+            exit 0
+          }
+
+          if (-not (Test-Path $vsWhere)) {
+            throw "Unable to locate vswhere.exe at $vsWhere"
+          }
+
+          if (-not (Test-Path $vsInstaller)) {
+            throw "Unable to locate vs_installer.exe at $vsInstaller"
+          }
+
+          $installationPath = & $vsWhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath | Select-Object -First 1
+          if (-not $installationPath) {
+            throw 'Unable to locate a Visual Studio C++ toolchain installation.'
+          }
+
+          & $vsInstaller modify --installPath $installationPath --add Microsoft.VisualStudio.Component.VC.ATL --quiet --norestart --wait
+          if ($LASTEXITCODE -ne 0) {
+            throw "vs_installer failed with exit code $LASTEXITCODE"
+          }
+
+          $installedAtlHeader = Get-ChildItem -Path (Join-Path $installationPath 'VC\Tools\MSVC') -Recurse -Filter atlstr.h -ErrorAction SilentlyContinue | Select-Object -First 1
+          if (-not $installedAtlHeader) {
+            throw "ATL installation finished but atlstr.h was still not found under $installationPath."
+          }
+
+          Write-Host "Installed ATL at $($installedAtlHeader.FullName)"
 
       - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
         with:
