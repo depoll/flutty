@@ -254,21 +254,13 @@ jobs:
           }
 
           $installationPath = $instance.installationPath
-          $productId = $instance.productId
-          $channelId = $instance.channelId
-
-          if (-not $productId -or -not $channelId) {
-            throw "Unable to determine Visual Studio product metadata for $installationPath."
-          }
 
           $installProcess = Start-Process -FilePath $vsInstaller -WorkingDirectory $env:RUNNER_TEMP -ArgumentList @(
             'modify',
             '--installPath', $installationPath,
-            '--productId', $productId,
-            '--channelId', $channelId,
             '--add', 'Microsoft.VisualStudio.Component.VC.ATL',
-            '--quiet',
-            '--wait',
+            '--add', 'Microsoft.VisualStudio.Component.VC.ATLMFC',
+            '--passive',
             '--norestart'
           ) -Wait -PassThru
           if ($installProcess.ExitCode -notin @(0, 3010)) {
