@@ -3,14 +3,7 @@ name: PR Preview
 on:
   pull_request:
     branches: [main, develop]
-    paths:
-      - '**.dart'
-      - 'pubspec.yaml'
-      - 'pubspec.lock'
-      - 'analysis_options.yaml'
-      - '.github/workflows/**'
-      - 'android/**'
-      - 'ios/**'
+    types: [opened, reopened, synchronize]
 
 concurrency:
   group: preview-${{ github.event.pull_request.number }}
