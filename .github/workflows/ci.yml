@@ -249,16 +249,23 @@ jobs:
           }
 
           function Show-RecentInstallerLogs {
-            Get-ChildItem -Path $env:TEMP -Filter 'dd_*' -File -ErrorAction SilentlyContinue |
-              Sort-Object LastWriteTime -Descending |
-              Select-Object -First 5 |
-              ForEach-Object {
-                Write-Host "--- $($_.FullName) ---"
-                Get-Content $_.FullName -Tail 200 -ErrorAction SilentlyContinue
+            foreach ($logRoot in @($env:TEMP, "$env:LOCALAPPDATA\Temp")) {
+              if (-not $logRoot -or -not (Test-Path $logRoot)) {
+                continue
               }
+
+              Get-ChildItem -Path $logRoot -Filter 'dd_*' -File -ErrorAction SilentlyContinue |
+                Sort-Object LastWriteTime -Descending |
+                Select-Object -First 5 |
+                ForEach-Object {
+                  Write-Host "--- $($_.FullName) ---"
+                  Get-Content $_.FullName -Tail 200 -ErrorAction SilentlyContinue
+                }
+            }
           }
 
           $installationPath = $instance.installationPath
+          Write-Host "Using Visual Studio instance $($instance.productId) at $installationPath"
           $bootstrapperUrl = switch ($instance.productId) {
             'Microsoft.VisualStudio.Product.BuildTools' { 'https://aka.ms/vs/17/release/vs_buildtools.exe' }
             'Microsoft.VisualStudio.Product.Enterprise' { 'https://aka.ms/vs/17/release/vs_enterprise.exe' }
@@ -272,8 +279,10 @@ jobs:
           & $bootstrapperPath `
             modify `
             --installPath "$installationPath" `
+            --add Microsoft.VisualStudio.Workload.VCTools `
             --add Microsoft.VisualStudio.Component.VC.ATL `
             --add Microsoft.VisualStudio.Component.VC.ATLMFC `
+            --includeRecommended `
             --passive `
             --wait `
             --norestart
