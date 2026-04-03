@@ -47,7 +47,7 @@ jobs:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
-          header: preview-build-${{ github.run_id }}
+          header: preview-build
           recreate: true
           message: |
             ## 📱 Preview Build
@@ -178,7 +178,7 @@ jobs:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
-          header: preview-build-${{ github.run_id }}
+          header: preview-build
           recreate: true
           message: |
             ## 📱 Preview Build
@@ -273,7 +273,7 @@ jobs:
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@70d2764d1a7d5d9560b100cbea0077fc8f633987 # v3
         with:
-          header: preview-build-${{ github.run_id }}
+          header: preview-build
           recreate: true
           message: |
             ## 📱 Preview Build
