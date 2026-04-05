@@ -173,7 +173,7 @@ jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
     if: inputs.build-android
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    runs-on: ubuntu-24.04
     env:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
