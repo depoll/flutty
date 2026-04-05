@@ -239,7 +239,7 @@ jobs:
           key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
           restore-keys: gradle-${{ runner.os }}-
 
-      - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.android-reuse-aab-artifact-name == ''
         with:
           flutter-version: '3.x'
@@ -509,7 +509,7 @@ jobs:
           key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
           restore-keys: pods-${{ runner.os }}-
 
-      - uses: subosito/flutter-action@0ca7a949e71ae44c8e688a51c5e7e93b2c87e295 # v2
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
           flutter-version: '3.x'
