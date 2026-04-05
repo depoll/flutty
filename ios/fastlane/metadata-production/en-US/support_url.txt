@@ -1,1 +1,1 @@
-https://github.com/depoll-personal/MonkeySSH/issues
+https://github.com/depollsoft/MonkeySSH/issues
