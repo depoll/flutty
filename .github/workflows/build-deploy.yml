@@ -767,9 +767,6 @@ jobs:
     needs: [build-android]
     if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-android && inputs.run-android-deploy && inputs.deploy-android-to != 'none'
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
     steps:
       - name: Update Android status row
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -832,9 +829,6 @@ jobs:
     needs: [build-ios]
     if: always() && inputs.update-pr-deploy-comment && inputs.pr-number != '' && inputs.build-ios && inputs.run-ios-deploy && inputs.deploy-ios-to != 'none'
     runs-on: ubuntu-latest
-    permissions:
-      issues: write
-      pull-requests: write
     steps:
       - name: Update iOS status row
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
