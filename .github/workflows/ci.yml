@@ -42,9 +42,65 @@ permissions:
   contents: read
 
 jobs:
-  analyze:
-    name: Analyze & Format
+  # ---------------------------------------------------------------------------
+  # Detect which platform directories changed so we can skip irrelevant builds.
+  # On non-PR events (push, merge_group) every platform is marked as changed so
+  # the conditional builds still respect the merge_group guard below.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+      ios: ${{ steps.filter.outputs.ios }}
+      macos: ${{ steps.filter.outputs.macos }}
+      windows: ${{ steps.filter.outputs.windows }}
+      linux: ${{ steps.filter.outputs.linux }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: github.event_name == 'pull_request'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect platform changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            for p in android ios macos windows linux; do
+              echo "$p=true" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+
+          changed=$(git diff --name-only "$PR_BASE_SHA" "$HEAD_SHA" 2>/dev/null || echo "")
+
+          matches() { echo "$changed" | grep -qE "$1" && echo "true" || echo "false"; }
+
+          global=$(matches '^(pubspec\.(yaml|lock)|\.github/workflows/|scripts/)')
+
+          for platform in android ios macos windows linux; do
+            platform_changed=$(matches "^${platform}/")
+            if [ "$global" = "true" ] || [ "$platform_changed" = "true" ]; then
+              echo "$platform=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$platform=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+  # ---------------------------------------------------------------------------
+  # Combined analyze + format + test — always runs. One Flutter SDK setup
+  # instead of two saves ~1.5 min of runner time per CI run.
+  # ---------------------------------------------------------------------------
+  check:
+    name: Analyze, Format & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -65,23 +121,6 @@ jobs:
       - name: Analyze code
         run: flutter analyze --fatal-warnings
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
-        with:
-          flutter-version: '3.x'
-          channel: 'stable'
-          cache: true
-
-      - name: Install dependencies
-        run: flutter pub get
-
       - name: Run tests with coverage
         run: flutter test --coverage
 
@@ -91,9 +130,23 @@ jobs:
           file: coverage/lcov.info
           fail_ci_if_error: false
 
+  # ---------------------------------------------------------------------------
+  # Platform builds — conditional on detected changes.
+  #
+  # * PRs: only build platforms whose native code or dependencies changed.
+  #   Dart-only PRs skip all builds (analyze + test is sufficient).
+  # * merge_group: skip all builds — the PR already verified them and the check
+  #   job catches integration regressions in Dart code.
+  # * push (main/develop): always build everything as a safety net.
+  # ---------------------------------------------------------------------------
   build-android:
     name: Build Android
+    needs: changes
+    if: >-
+      github.event_name != 'merge_group'
+      && needs.changes.outputs.android == 'true'
     runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -140,7 +193,7 @@ jobs:
           EOF
 
       - name: Build release APK
-        run: flutter build apk --flavor production --release
+        run: flutter build apk --flavor production --release --no-tree-shake-icons
 
       - name: Upload APK
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -155,7 +208,12 @@ jobs:
 
   build-ios:
     name: Build iOS
+    needs: changes
+    if: >-
+      github.event_name != 'merge_group'
+      && needs.changes.outputs.ios == 'true'
     runs-on: macos-26
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -177,7 +235,7 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS (no codesign)
-        run: flutter build ios --flavor production --release --no-codesign
+        run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons
 
       - name: Upload iOS build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -188,7 +246,12 @@ jobs:
 
   build-macos:
     name: Build macOS
+    needs: changes
+    if: >-
+      github.event_name != 'merge_group'
+      && needs.changes.outputs.macos == 'true'
     runs-on: macos-26
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -210,7 +273,7 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS
-        run: flutter build macos --release
+        run: flutter build macos --release --no-tree-shake-icons
 
       - name: Upload macOS build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -221,7 +284,12 @@ jobs:
 
   build-windows:
     name: Build Windows
+    needs: changes
+    if: >-
+      github.event_name != 'merge_group'
+      && needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -237,7 +305,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Windows
-        run: flutter build windows --release
+        run: flutter build windows --release --no-tree-shake-icons
 
       - name: Upload Windows build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -248,7 +316,12 @@ jobs:
 
   build-linux:
     name: Build Linux
+    needs: changes
+    if: >-
+      github.event_name != 'merge_group'
+      && needs.changes.outputs.linux == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -269,7 +342,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux
-        run: flutter build linux --release
+        run: flutter build linux --release --no-tree-shake-icons
 
       - name: Upload Linux build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -277,3 +350,50 @@ jobs:
           name: linux-build
           path: build/linux/x64/release/bundle/
           compression-level: 0
+
+  # ---------------------------------------------------------------------------
+  # Gate job — the single required status check for branch protection.
+  # Passes when check succeeds and all triggered builds pass; correctly ignores
+  # builds that were skipped because the platform was unchanged or because the
+  # event was merge_group.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI
+    if: always()
+    needs: [check, build-android, build-ios, build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Evaluate results
+        env:
+          CHECK_RESULT: ${{ needs.check.result }}
+          ANDROID_RESULT: ${{ needs.build-android.result }}
+          IOS_RESULT: ${{ needs.build-ios.result }}
+          MACOS_RESULT: ${{ needs.build-macos.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          LINUX_RESULT: ${{ needs.build-linux.result }}
+        run: |
+          ok=true
+          for name_result in \
+            "check:$CHECK_RESULT" \
+            "build-android:$ANDROID_RESULT" \
+            "build-ios:$IOS_RESULT" \
+            "build-macos:$MACOS_RESULT" \
+            "build-windows:$WINDOWS_RESULT" \
+            "build-linux:$LINUX_RESULT"; do
+            name="${name_result%%:*}"
+            result="${name_result#*:}"
+            case "$result" in
+              success|skipped)
+                echo "✅ $name: $result"
+                ;;
+              *)
+                echo "❌ $name: $result"
+                ok=false
+                ;;
+            esac
+          done
+          if [ "$ok" = false ]; then
+            echo "::error::One or more required CI jobs failed or were cancelled."
+            exit 1
+          fi
