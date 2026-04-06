@@ -111,7 +111,7 @@ jobs:
   # ---------------------------------------------------------------------------
   check:
     name: Analyze, Format & Test
-    runs-on: ubuntu-latest
+    runs-on: ubicloud-standard-4
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
