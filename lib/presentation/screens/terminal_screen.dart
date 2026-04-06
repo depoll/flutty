@@ -2518,18 +2518,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
             itemBuilder: (context) => [
-              const PopupMenuItem(value: 'snippets', child: Text('Snippets')),
+              const PopupMenuItem(
+                value: 'snippets',
+                child: Row(
+                  children: [
+                    Icon(Icons.code_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Snippets'),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'change_theme',
-                child: Text('Change Theme'),
+                child: Row(
+                  children: [
+                    Icon(Icons.palette_outlined, size: 20),
+                    SizedBox(width: 12),
+                    Text('Change Theme'),
+                  ],
+                ),
               ),
               if (statusChips.isNotEmpty)
                 PopupMenuItem(
                   value: 'toggle_terminal_info',
-                  child: Text(
-                    _showsTerminalMetadata
-                        ? 'Hide Terminal Info'
-                        : 'Show Terminal Info',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _showsTerminalMetadata
+                            ? Icons.info_outlined
+                            : Icons.info_outline_rounded,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _showsTerminalMetadata
+                            ? 'Hide Terminal Info'
+                            : 'Show Terminal Info',
+                      ),
+                    ],
                   ),
                 ),
               if (isMobile)
@@ -2542,32 +2568,94 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               if (!isMobile)
                 PopupMenuItem(
                   value: 'native_select',
-                  child: Text(
-                    _isNativeSelectionMode
-                        ? 'Exit Native Selection'
-                        : 'Native Selection',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _isNativeSelectionMode
+                            ? Icons.deselect_rounded
+                            : Icons.select_all_rounded,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(
+                        _isNativeSelectionMode
+                            ? 'Exit Native Selection'
+                            : 'Native Selection',
+                      ),
+                    ],
                   ),
                 ),
               if (_workingDirectoryPath != null)
                 const PopupMenuItem(
                   value: 'copy_working_directory',
-                  child: Text('Copy Current Directory'),
+                  child: Row(
+                    children: [
+                      Icon(Icons.folder_copy_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('Copy Current Directory'),
+                    ],
+                  ),
                 ),
-              const PopupMenuItem(value: 'copy', child: Text('Copy')),
-              const PopupMenuItem(value: 'paste', child: Text('Paste')),
+              const PopupMenuItem(
+                value: 'copy',
+                child: Row(
+                  children: [
+                    Icon(Icons.copy_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Copy'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'paste',
+                child: Row(
+                  children: [
+                    Icon(Icons.paste_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Paste'),
+                  ],
+                ),
+              ),
               const PopupMenuItem(
                 value: 'paste_image',
-                child: Text('Paste Images'),
+                child: Row(
+                  children: [
+                    Icon(Icons.image_outlined, size: 20),
+                    SizedBox(width: 12),
+                    Text('Paste Images'),
+                  ],
+                ),
               ),
               const PopupMenuItem(
                 value: 'paste_file',
-                child: Text('Paste Files'),
+                child: Row(
+                  children: [
+                    Icon(Icons.attach_file_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Paste Files'),
+                  ],
+                ),
               ),
-              const PopupMenuItem(value: 'clear', child: Text('Clear')),
+              const PopupMenuItem(
+                value: 'clear',
+                child: Row(
+                  children: [
+                    Icon(Icons.clear_all_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Clear'),
+                  ],
+                ),
+              ),
               const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'disconnect',
-                child: Text('Disconnect'),
+                child: Row(
+                  children: [
+                    Icon(Icons.link_off_rounded, size: 20),
+                    SizedBox(width: 12),
+                    Text('Disconnect'),
+                  ],
+                ),
               ),
             ],
           ),

@@ -29,21 +29,21 @@ void main() {
       );
 
       // Check modifier row keys
-      expect(find.text('Esc'), findsOneWidget);
-      expect(find.text('Tab'), findsOneWidget);
+      expect(find.byTooltip('Escape'), findsOneWidget);
+      expect(find.byTooltip('Tab'), findsOneWidget);
       expect(find.text('Ctrl'), findsOneWidget);
       expect(find.text('Alt'), findsOneWidget);
       expect(find.text('Shift'), findsOneWidget);
 
       // Check navigation row keys
-      expect(find.text('↑'), findsOneWidget);
-      expect(find.text('↓'), findsOneWidget);
-      expect(find.text('←'), findsOneWidget);
-      expect(find.text('→'), findsOneWidget);
-      expect(find.text('Home'), findsOneWidget);
-      expect(find.text('End'), findsOneWidget);
-      expect(find.text('PgUp'), findsOneWidget);
-      expect(find.text('PgDn'), findsOneWidget);
+      expect(find.byTooltip('Up'), findsOneWidget);
+      expect(find.byTooltip('Down'), findsOneWidget);
+      expect(find.byTooltip('Left'), findsOneWidget);
+      expect(find.byTooltip('Right'), findsOneWidget);
+      expect(find.byTooltip('Home'), findsOneWidget);
+      expect(find.byTooltip('End'), findsOneWidget);
+      expect(find.byTooltip('Page Up'), findsOneWidget);
+      expect(find.byTooltip('Page Down'), findsOneWidget);
     });
 
     testWidgets('modifier key toggles state on tap', (tester) async {
@@ -170,7 +170,7 @@ void main() {
       );
 
       await tester.sendKeyDownEvent(LogicalKeyboardKey.shiftLeft);
-      await tester.tap(find.text('Tab'));
+      await tester.tap(find.byTooltip('Tab'));
       await tester.pump();
       await tester.sendKeyUpEvent(LogicalKeyboardKey.shiftLeft);
 
@@ -190,7 +190,7 @@ void main() {
 
       await tester.tap(find.text('Shift'));
       await tester.pump();
-      await tester.tap(find.text('Tab'));
+      await tester.tap(find.byTooltip('Tab'));
       await tester.pump();
 
       expect(output, contains('\x1b[Z'));
@@ -221,7 +221,7 @@ void main() {
       );
 
       final gesture = await tester.startGesture(
-        tester.getCenter(find.text('↑')),
+        tester.getCenter(find.byTooltip('Up')),
       );
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump(const Duration(milliseconds: 160));
@@ -244,7 +244,7 @@ void main() {
       );
 
       final gesture = await tester.startGesture(
-        tester.getCenter(find.text('→')),
+        tester.getCenter(find.byTooltip('Right')),
       );
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump(const Duration(milliseconds: 120));
@@ -269,7 +269,7 @@ void main() {
       );
 
       final gesture = await tester.startGesture(
-        tester.getCenter(find.text('Home')),
+        tester.getCenter(find.byTooltip('Home')),
       );
       await tester.pump(kLongPressTimeout + const Duration(milliseconds: 1));
       await tester.pump(const Duration(milliseconds: 120));

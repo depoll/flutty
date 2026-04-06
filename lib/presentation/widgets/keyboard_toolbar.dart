@@ -263,33 +263,45 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   Widget _buildModifierRow() => _KeyRow(
     children: [
       _ToolbarButton(
+        icon: Icons.cancel_outlined,
         label: 'Esc',
         onTap: _sendEscape,
         onLongPressStart: _sendEscape,
+        tooltip: 'Escape',
       ),
-      _ToolbarButton(label: 'Tab', onTap: _sendTab, onLongPressStart: _sendTab),
+      _ToolbarButton(
+        icon: Icons.keyboard_tab_rounded,
+        mirrorIcon: _controller.isShiftActive,
+        label: 'Tab',
+        onTap: _sendTab,
+        onLongPressStart: _sendTab,
+        tooltip: 'Tab',
+      ),
       _ModifierButton(
+        icon: Icons.keyboard_control_key_rounded,
         label: 'Ctrl',
         state: _controller.ctrlState,
         onTap: _toggleCtrl,
         onDoubleTap: _lockCtrl,
       ),
       _ModifierButton(
+        icon: Icons.keyboard_option_key_rounded,
         label: 'Alt',
         state: _controller.altState,
         onTap: _toggleAlt,
         onDoubleTap: _lockAlt,
       ),
       _ModifierButton(
+        icon: Icons.north_rounded,
         label: 'Shift',
         state: _controller.shiftState,
         onTap: _toggleShift,
         onDoubleTap: _lockShift,
       ),
-      _ToolbarButton(label: '|', onTap: () => _sendText('|')),
-      _ToolbarButton(label: '/', onTap: () => _sendText('/')),
+      _ToolbarButton(label: '|', onTap: () => _sendText('|'), tooltip: 'Pipe'),
+      _ToolbarButton(label: '/', onTap: () => _sendText('/'), tooltip: 'Slash'),
       _ToolbarButton(
-        icon: Icons.keyboard_return,
+        icon: Icons.keyboard_return_rounded,
         label: '',
         onTap: _sendEnter,
         tooltip: 'Enter',
@@ -300,60 +312,76 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   Widget _buildNavigationRow() => _KeyRow(
     children: [
       _ToolbarButton(
-        label: '↑',
-        onTap: () => _sendArrow(_Arrow.up),
-        onLongPressStart: () => _sendArrow(_Arrow.up),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
-      ),
-      _ToolbarButton(
-        label: '↓',
-        onTap: () => _sendArrow(_Arrow.down),
-        onLongPressStart: () => _sendArrow(_Arrow.down),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
-      ),
-      _ToolbarButton(
-        label: '←',
-        onTap: () => _sendArrow(_Arrow.left),
-        onLongPressStart: () => _sendArrow(_Arrow.left),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
-      ),
-      _ToolbarButton(
-        label: '→',
-        onTap: () => _sendArrow(_Arrow.right),
-        onLongPressStart: () => _sendArrow(_Arrow.right),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
-      ),
-      _ToolbarButton(
-        label: 'Home',
-        onTap: () => _sendSequence('\x1b[H'),
-        onLongPressStart: () => _sendSequence('\x1b[H'),
-        onLongPressRepeat: () =>
-            _sendSequence('\x1b[H', withHaptic: false, consumeOneShot: false),
-      ),
-      _ToolbarButton(
-        label: 'End',
-        onTap: () => _sendSequence('\x1b[F'),
-        onLongPressStart: () => _sendSequence('\x1b[F'),
-        onLongPressRepeat: () =>
-            _sendSequence('\x1b[F', withHaptic: false, consumeOneShot: false),
-      ),
-      _ToolbarButton(
+        icon: Icons.expand_less_rounded,
         label: 'PgUp',
         onTap: () => _sendSequence('\x1b[5~'),
         onLongPressStart: () => _sendSequence('\x1b[5~'),
         onLongPressRepeat: () =>
             _sendSequence('\x1b[5~', withHaptic: false, consumeOneShot: false),
+        tooltip: 'Page Up',
       ),
       _ToolbarButton(
+        icon: Icons.expand_more_rounded,
         label: 'PgDn',
         onTap: () => _sendSequence('\x1b[6~'),
         onLongPressStart: () => _sendSequence('\x1b[6~'),
         onLongPressRepeat: () =>
             _sendSequence('\x1b[6~', withHaptic: false, consumeOneShot: false),
+        tooltip: 'Page Down',
+      ),
+      _ToolbarButton(
+        icon: Icons.first_page_rounded,
+        label: 'Home',
+        onTap: () => _sendSequence('\x1b[H'),
+        onLongPressStart: () => _sendSequence('\x1b[H'),
+        onLongPressRepeat: () =>
+            _sendSequence('\x1b[H', withHaptic: false, consumeOneShot: false),
+        tooltip: 'Home',
+      ),
+      _ToolbarButton(
+        icon: Icons.last_page_rounded,
+        label: 'End',
+        onTap: () => _sendSequence('\x1b[F'),
+        onLongPressStart: () => _sendSequence('\x1b[F'),
+        onLongPressRepeat: () =>
+            _sendSequence('\x1b[F', withHaptic: false, consumeOneShot: false),
+        tooltip: 'End',
+      ),
+      _ToolbarButton(
+        icon: Icons.arrow_back_rounded,
+        label: '',
+        onTap: () => _sendArrow(_Arrow.left),
+        onLongPressStart: () => _sendArrow(_Arrow.left),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
+        tooltip: 'Left',
+      ),
+      _ToolbarButton(
+        icon: Icons.arrow_forward_rounded,
+        label: '',
+        onTap: () => _sendArrow(_Arrow.right),
+        onLongPressStart: () => _sendArrow(_Arrow.right),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
+        tooltip: 'Right',
+      ),
+      _ToolbarButton(
+        icon: Icons.arrow_upward_rounded,
+        label: '',
+        onTap: () => _sendArrow(_Arrow.up),
+        onLongPressStart: () => _sendArrow(_Arrow.up),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
+        tooltip: 'Up',
+      ),
+      _ToolbarButton(
+        icon: Icons.arrow_downward_rounded,
+        label: '',
+        onTap: () => _sendArrow(_Arrow.down),
+        onLongPressStart: () => _sendArrow(_Arrow.down),
+        onLongPressRepeat: () =>
+            _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
+        tooltip: 'Down',
       ),
     ],
   );
@@ -531,6 +559,7 @@ class _ToolbarButton extends StatefulWidget {
     required this.label,
     required this.onTap,
     this.icon,
+    this.mirrorIcon = false,
     this.onLongPressStart,
     this.onLongPressRepeat,
     this.tooltip,
@@ -538,6 +567,7 @@ class _ToolbarButton extends StatefulWidget {
 
   final String label;
   final IconData? icon;
+  final bool mirrorIcon;
   final VoidCallback onTap;
   final VoidCallback? onLongPressStart;
   final VoidCallback? onLongPressRepeat;
@@ -588,6 +618,14 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
     super.dispose();
   }
 
+  Widget _buildIcon(double size, Color color) {
+    final icon = Icon(widget.icon, size: size, color: color);
+    if (!widget.mirrorIcon) {
+      return icon;
+    }
+    return Transform.flip(flipX: true, child: icon);
+  }
+
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
@@ -620,8 +658,24 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
           border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
         child: Center(
-          child: widget.icon != null
-              ? Icon(widget.icon, size: 18, color: colorScheme.onSurfaceVariant)
+          child: widget.icon != null && widget.label.isNotEmpty
+              ? Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    _buildIcon(14, colorScheme.onSurfaceVariant),
+                    const SizedBox(width: 3),
+                    Text(
+                      widget.label,
+                      style: TextStyle(
+                        fontSize: 10,
+                        fontWeight: FontWeight.w500,
+                        color: colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                )
+              : widget.icon != null
+              ? _buildIcon(18, colorScheme.onSurfaceVariant)
               : Text(
                   widget.label,
                   style: TextStyle(
@@ -648,9 +702,11 @@ class _ModifierButton extends StatefulWidget {
     required this.state,
     required this.onTap,
     required this.onDoubleTap,
+    this.icon,
   });
 
   final String label;
+  final IconData? icon;
   final bool? state; // null = off, false = one-shot, true = locked
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
@@ -712,6 +768,10 @@ class _ModifierButtonState extends State<_ModifierButton> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
+              if (widget.icon != null) ...[
+                Icon(widget.icon, size: 14, color: textColor),
+                const SizedBox(width: 3),
+              ],
               Text(
                 widget.label,
                 style: TextStyle(
