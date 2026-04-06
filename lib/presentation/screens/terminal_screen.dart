@@ -2636,16 +2636,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ],
                 ),
               ),
-              const PopupMenuItem(
-                value: 'clear',
-                child: Row(
-                  children: [
-                    Icon(Icons.clear_all_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Clear'),
-                  ],
-                ),
-              ),
               const PopupMenuDivider(),
               const PopupMenuItem(
                 value: 'disconnect',
@@ -3348,11 +3338,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'paste_file':
         await _pastePickedFiles();
-        break;
-      case 'clear':
-        _terminal.buffer.clear();
-        _terminalController.clearSelection();
-        _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         break;
       case 'disconnect':
         await _disconnect();
