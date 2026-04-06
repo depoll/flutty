@@ -538,11 +538,18 @@ jobs:
 
       - name: Build iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''
+        env:
+          DEPLOY_IOS_TO: ${{ inputs.deploy-ios-to }}
         run: |
+          EXTRA_FLAGS=()
+          if [ "$DEPLOY_IOS_TO" = "none" ]; then
+            EXTRA_FLAGS+=(--no-tree-shake-icons)
+          fi
           flutter build ios \
             --flavor ${{ inputs.flavor }} \
             --release \
             --no-codesign \
+            "${EXTRA_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \

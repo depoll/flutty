@@ -247,7 +247,7 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS (no codesign)
-        run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons
+        run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons --split-debug-info=.debug-info
 
       - name: Upload iOS build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
