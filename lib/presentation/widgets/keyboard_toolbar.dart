@@ -283,6 +283,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         state: _controller.ctrlState,
         onTap: _toggleCtrl,
         onDoubleTap: _lockCtrl,
+        tooltip: 'Ctrl',
       ),
       _ModifierButton(
         icon: Icons.keyboard_option_key_rounded,
@@ -290,6 +291,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         state: _controller.altState,
         onTap: _toggleAlt,
         onDoubleTap: _lockAlt,
+        tooltip: 'Alt',
       ),
       _ModifierButton(
         icon: Icons.north_rounded,
@@ -297,6 +299,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
         state: _controller.shiftState,
         onTap: _toggleShift,
         onDoubleTap: _lockShift,
+        tooltip: 'Shift',
       ),
       _ToolbarButton(label: '|', onTap: () => _sendText('|'), tooltip: 'Pipe'),
       _ToolbarButton(label: '/', onTap: () => _sendText('/'), tooltip: 'Slash'),
@@ -703,6 +706,7 @@ class _ModifierButton extends StatefulWidget {
     required this.onTap,
     required this.onDoubleTap,
     this.icon,
+    this.tooltip,
   });
 
   final String label;
@@ -710,6 +714,7 @@ class _ModifierButton extends StatefulWidget {
   final bool? state; // null = off, false = one-shot, true = locked
   final VoidCallback onTap;
   final VoidCallback onDoubleTap;
+  final String? tooltip;
 
   @override
   State<_ModifierButton> createState() => _ModifierButtonState();
@@ -740,23 +745,23 @@ class _ModifierButtonState extends State<_ModifierButton> {
 
     final Color bgColor;
     final Color textColor;
-    final IconData? icon;
+    final IconData? lockIcon;
 
     if (widget.state == null) {
       bgColor = colorScheme.surfaceContainerHighest;
       textColor = colorScheme.onSurfaceVariant;
-      icon = null;
+      lockIcon = null;
     } else if (widget.state == false) {
       bgColor = colorScheme.primaryContainer;
       textColor = colorScheme.onPrimaryContainer;
-      icon = null;
+      lockIcon = null;
     } else {
       bgColor = colorScheme.primary;
       textColor = colorScheme.onPrimary;
-      icon = Icons.lock;
+      lockIcon = Icons.lock;
     }
 
-    return GestureDetector(
+    Widget button = GestureDetector(
       onTap: _handleTap,
       child: Container(
         margin: const EdgeInsets.all(2),
@@ -780,14 +785,20 @@ class _ModifierButtonState extends State<_ModifierButton> {
                   color: textColor,
                 ),
               ),
-              if (icon != null) ...[
+              if (lockIcon != null) ...[
                 const SizedBox(width: 2),
-                Icon(icon, size: 10, color: textColor),
+                Icon(lockIcon, size: 10, color: textColor),
               ],
             ],
           ),
         ),
       ),
     );
+
+    if (widget.tooltip case final tooltip?) {
+      button = Tooltip(message: tooltip, child: button);
+    }
+
+    return button;
   }
 }

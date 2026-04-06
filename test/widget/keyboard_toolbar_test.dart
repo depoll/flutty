@@ -31,9 +31,9 @@ void main() {
       // Check modifier row keys
       expect(find.byTooltip('Escape'), findsOneWidget);
       expect(find.byTooltip('Tab'), findsOneWidget);
-      expect(find.text('Ctrl'), findsOneWidget);
-      expect(find.text('Alt'), findsOneWidget);
-      expect(find.text('Shift'), findsOneWidget);
+      expect(find.byTooltip('Ctrl'), findsOneWidget);
+      expect(find.byTooltip('Alt'), findsOneWidget);
+      expect(find.byTooltip('Shift'), findsOneWidget);
 
       // Check navigation row keys
       expect(find.byTooltip('Up'), findsOneWidget);
@@ -54,7 +54,7 @@ void main() {
       );
 
       // Find Ctrl button
-      final ctrlFinder = find.text('Ctrl');
+      final ctrlFinder = find.byTooltip('Ctrl');
       expect(ctrlFinder, findsOneWidget);
 
       // Tap to activate (one-shot mode)
@@ -80,7 +80,7 @@ void main() {
           ),
         );
 
-        await tester.tap(find.text('Ctrl'));
+        await tester.tap(find.byTooltip('Ctrl'));
         await tester.pump();
 
         expect(controller.isCtrlActive, isTrue);
@@ -188,7 +188,7 @@ void main() {
         ),
       );
 
-      await tester.tap(find.text('Shift'));
+      await tester.tap(find.byTooltip('Shift'));
       await tester.pump();
       await tester.tap(find.byTooltip('Tab'));
       await tester.pump();
