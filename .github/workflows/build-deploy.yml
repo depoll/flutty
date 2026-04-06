@@ -317,17 +317,7 @@ jobs:
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
-            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
-
-      - name: Build release APK
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
-        run: |
-          flutter build apk \
-            --flavor ${{ inputs.flavor }} \
-            --release \
+            --no-tree-shake-icons \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -339,6 +329,7 @@ jobs:
           flutter build apk \
             --flavor ${{ inputs.flavor }} \
             --debug \
+            --no-tree-shake-icons \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -404,11 +395,11 @@ jobs:
 
       - name: Upload APK artifact
         id: upload-apk
-        if: inputs.deploy-android-to == 'none' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == '')
+        if: inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: ${{ inputs.deploy-android-to != 'none' && format('build/app/outputs/flutter-apk/app-{0}-release.apk', inputs.flavor) || format('build/app/outputs/flutter-apk/app-{0}-debug.apk', inputs.flavor) }}
+          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk
 
       - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
