@@ -12,6 +12,26 @@ import 'package:monkeyssh/presentation/screens/keys_screen.dart';
 // Most KeysScreen tests are skipped because the screen uses StreamProviders
 // which don't settle in widget tests (continuous database watchers).
 // The underlying repository tests provide coverage.
+
+final _testKey = SshKey(
+  id: 1,
+  name: 'My Ed25519 Key',
+  keyType: 'ed25519',
+  publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5',
+  privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\n'
+      'test-private-key-material\n'
+      '-----END OPENSSH PRIVATE KEY-----',
+  fingerprint: 'SHA256:AB:CD:EF:01',
+  createdAt: DateTime(2026),
+);
+
+ProviderScope _buildKeyScreen() => ProviderScope(
+  overrides: [
+    allKeysProvider.overrideWith((ref) => Stream.value([_testKey])),
+  ],
+  child: const MaterialApp(home: KeysScreen()),
+);
+
 void main() {
   group('KeysScreen', () {
     testWidgets(
@@ -34,29 +54,10 @@ void main() {
   });
 
   group('private key clipboard gating', () {
-    final testKey = SshKey(
-      id: 1,
-      name: 'My Ed25519 Key',
-      keyType: 'ed25519',
-      publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5',
-      privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\ntest-private-key-material\n-----END OPENSSH PRIVATE KEY-----',
-      fingerprint: 'SHA256:AB:CD:EF:01',
-      createdAt: DateTime(2026),
-    );
-
-    Widget _buildScreen() => ProviderScope(
-      overrides: [
-        allKeysProvider.overrideWith(
-          (ref) => Stream.value([testKey]),
-        ),
-      ],
-      child: const MaterialApp(home: KeysScreen()),
-    );
-
     testWidgets(
       'private key is hidden by default when the details sheet opens',
       (tester) async {
-        await tester.pumpWidget(_buildScreen());
+        await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
@@ -64,7 +65,9 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(
-          find.text('Private key hidden. Tap "Reveal Private Key" to view.'),
+          find.text(
+            'Private key hidden. Tap "Reveal Private Key" to view.',
+          ),
           findsOneWidget,
         );
         expect(find.text('Copy Private Key'), findsNothing);
@@ -72,10 +75,10 @@ void main() {
     );
 
     testWidgets(
-      'Copy Private Key button only appears after the user explicitly reveals '
-      'the private key',
+      'Copy Private Key button only appears after the user explicitly '
+      'reveals the private key',
       (tester) async {
-        await tester.pumpWidget(_buildScreen());
+        await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
@@ -92,10 +95,10 @@ void main() {
     );
 
     testWidgets(
-      'canceling the confirmation dialog does not copy the private key to the '
-      'clipboard',
+      'canceling the confirmation dialog does not copy the private key '
+      'to the clipboard',
       (tester) async {
-        await tester.pumpWidget(_buildScreen());
+        await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 
@@ -121,7 +124,7 @@ void main() {
     testWidgets(
       'confirming the dialog copies the private key to the clipboard',
       (tester) async {
-        await tester.pumpWidget(_buildScreen());
+        await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
 

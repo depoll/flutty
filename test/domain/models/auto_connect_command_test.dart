@@ -237,15 +237,18 @@ void main() {
       );
     });
 
-    test('safe single-line commands without special tokens do not require review', () {
-      final safeReview = assessClipboardPasteCommand(
-        'ls -la /home/user',
-        bracketedPasteModeEnabled: false,
-      );
+    test(
+      'safe single-line commands without special tokens do not require review',
+      () {
+        final safeReview = assessClipboardPasteCommand(
+          'ls -la /home/user',
+          bracketedPasteModeEnabled: false,
+        );
 
-      expect(safeReview.requiresReview, isFalse);
-      expect(safeReview.reasons, isEmpty);
-    });
+        expect(safeReview.requiresReview, isFalse);
+        expect(safeReview.reasons, isEmpty);
+      },
+    );
 
     test('surfaces suspicious reasons for imported auto-connect execution', () {
       final review = assessAutoConnectCommandExecution(

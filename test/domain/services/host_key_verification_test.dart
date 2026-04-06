@@ -171,16 +171,21 @@ void main() {
   });
 
   group('formatSshHostKeyFingerprint', () {
-    test('produces the expected SHA-256 fingerprint for a known key blob', () {
+    test('produces the correct SHA-256 fingerprint for a known key blob', () {
       // A minimal ed25519 host key blob for a known byte sequence.
       final keyBlob = _ed25519HostKeyBlob([0x01, 0x02, 0x03, 0x04]);
       final fingerprint = formatSshHostKeyFingerprint(keyBlob);
 
-      expect(fingerprint, startsWith('SHA256:'));
-      // The fingerprint must be stable: same bytes → same output.
+      // Expected value pre-computed with SHA-256 for this exact blob:
+      expect(fingerprint, 'SHA256:huY78Jldb5S8vXxjT3nKH+i2oG/1vi/D8uOVazYreOQ');
+    });
+
+    test('fingerprint is deterministic for the same key bytes', () {
+      final keyBlob = _ed25519HostKeyBlob([0x01, 0x02, 0x03, 0x04]);
+
       expect(
         formatSshHostKeyFingerprint(keyBlob),
-        fingerprint,
+        formatSshHostKeyFingerprint(keyBlob),
         reason: 'fingerprint must be deterministic',
       );
     });
@@ -210,7 +215,10 @@ void main() {
       final md5Fingerprint = formatLegacySshHostKeyFingerprint(keyBlob);
 
       // Legacy format: 16 hex pairs joined by colons (47 chars total).
-      expect(md5Fingerprint, matches(RegExp(r'^[0-9a-f]{2}(:[0-9a-f]{2}){15}$')));
+      expect(
+        md5Fingerprint,
+        matches(RegExp(r'^[0-9a-f]{2}(:[0-9a-f]{2}){15}$')),
+      );
     });
 
     test('SHA-256 and MD5 fingerprints differ for the same key blob', () {
