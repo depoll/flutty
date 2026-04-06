@@ -145,8 +145,6 @@ jobs:
   #   job catches integration regressions in Dart code.
   # * PRs: only build platforms whose native code or dependencies changed.
   #   Dart-only PRs skip all builds (analyze + test is sufficient).
-  #   Android and iOS are also skipped on PRs because preview.yml already
-  #   builds both platforms — running them here would be redundant.
   # * merge_group: skip all builds — the PR already verified them and the check
   #   job catches integration regressions in Dart code.
   # * push (main/develop): always build everything as a safety net.
@@ -155,7 +153,7 @@ jobs:
     name: Build Android
     needs: changes
     if: >-
-      github.event_name == 'push'
+      github.event_name != 'merge_group'
       && needs.changes.outputs.android == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
@@ -224,7 +222,7 @@ jobs:
     name: Build iOS
     needs: changes
     if: >-
-      github.event_name == 'push'
+      github.event_name != 'merge_group'
       && needs.changes.outputs.ios == 'true'
     runs-on: macos-26
     timeout-minutes: 15
