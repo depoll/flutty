@@ -317,17 +317,7 @@ jobs:
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --release \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
-            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
-
-      - name: Build release APK
-        if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
-        run: |
-          flutter build apk \
-            --flavor ${{ inputs.flavor }} \
-            --release \
+            --no-tree-shake-icons \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -339,6 +329,7 @@ jobs:
           flutter build apk \
             --flavor ${{ inputs.flavor }} \
             --debug \
+            --no-tree-shake-icons \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
@@ -404,11 +395,11 @@ jobs:
 
       - name: Upload APK artifact
         id: upload-apk
-        if: inputs.deploy-android-to == 'none' || (inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == '')
+        if: inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: ${{ inputs.deploy-android-to != 'none' && format('build/app/outputs/flutter-apk/app-{0}-release.apk', inputs.flavor) || format('build/app/outputs/flutter-apk/app-{0}-debug.apk', inputs.flavor) }}
+          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk
 
       - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
@@ -505,9 +496,11 @@ jobs:
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
-          path: ios/Pods
-          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
-          restore-keys: pods-${{ runner.os }}-
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-ios-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-ios-${{ runner.os }}-
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         if: inputs.ios-reuse-ipa-artifact-name == ''
@@ -545,11 +538,18 @@ jobs:
 
       - name: Build iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''
+        env:
+          DEPLOY_IOS_TO: ${{ inputs.deploy-ios-to }}
         run: |
+          EXTRA_FLAGS=()
+          if [ "$DEPLOY_IOS_TO" = "none" ]; then
+            EXTRA_FLAGS+=(--no-tree-shake-icons)
+          fi
           flutter build ios \
             --flavor ${{ inputs.flavor }} \
             --release \
             --no-codesign \
+            "${EXTRA_FLAGS[@]}" \
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \

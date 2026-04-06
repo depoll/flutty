@@ -42,9 +42,77 @@ permissions:
   contents: read
 
 jobs:
-  analyze:
-    name: Analyze & Format
+  # ---------------------------------------------------------------------------
+  # Detect which platform directories changed so we can skip irrelevant builds.
+  # PRs diff against the base branch; merge_group diffs against its base SHA.
+  # Push events mark all platforms as changed so every build runs.
+  # ---------------------------------------------------------------------------
+  changes:
+    name: Detect Changes
     runs-on: ubuntu-latest
+    timeout-minutes: 2
+    outputs:
+      android: ${{ steps.filter.outputs.android }}
+      ios: ${{ steps.filter.outputs.ios }}
+      macos: ${{ steps.filter.outputs.macos }}
+      windows: ${{ steps.filter.outputs.windows }}
+      linux: ${{ steps.filter.outputs.linux }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
+      - name: Detect platform changes
+        id: filter
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          MG_BASE_SHA: ${{ github.event.merge_group.base_sha }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          if [ "$EVENT_NAME" = "pull_request" ]; then
+            BASE_SHA="$PR_BASE_SHA"
+          elif [ "$EVENT_NAME" = "merge_group" ]; then
+            BASE_SHA="$MG_BASE_SHA"
+          else
+            # push — always build everything
+            for p in android ios macos windows linux; do
+              echo "$p=true" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+
+          if ! changed=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" 2>/dev/null); then
+            echo "::warning::git diff failed — building all platforms as a safety net"
+            for p in android ios macos windows linux; do
+              echo "$p=true" >> "$GITHUB_OUTPUT"
+            done
+            exit 0
+          fi
+
+          matches() { echo "$changed" | grep -qE "$1" && echo "true" || echo "false"; }
+
+          global=$(matches '^(pubspec\.(yaml|lock)|\.github/workflows/|scripts/|assets/)')
+
+          for platform in android ios macos windows linux; do
+            platform_changed=$(matches "^${platform}/")
+            if [ "$global" = "true" ] || [ "$platform_changed" = "true" ]; then
+              echo "$platform=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "$platform=false" >> "$GITHUB_OUTPUT"
+            fi
+          done
+
+  # ---------------------------------------------------------------------------
+  # Combined analyze + format + test — always runs. One Flutter SDK setup
+  # instead of two saves ~1.5 min of runner time per CI run.
+  # ---------------------------------------------------------------------------
+  check:
+    name: Analyze, Format & Test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -65,23 +133,6 @@ jobs:
       - name: Analyze code
         run: flutter analyze --fatal-warnings
 
-  test:
-    name: Test
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        with:
-          persist-credentials: false
-
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
-        with:
-          flutter-version: '3.x'
-          channel: 'stable'
-          cache: true
-
-      - name: Install dependencies
-        run: flutter pub get
-
       - name: Run tests with coverage
         run: flutter test --coverage
 
@@ -91,9 +142,21 @@ jobs:
           file: coverage/lcov.info
           fail_ci_if_error: false
 
+  # ---------------------------------------------------------------------------
+  # Platform builds — conditional on detected changes.
+  #
+  # * PRs and merge_group: only build platforms whose native code or
+  #   dependencies changed. Dart-only changes skip all builds (analyze + test
+  #   is sufficient). The merge_group still runs affected platform builds so
+  #   that concurrent PRs touching the same native code are validated.
+  # * push (main/develop): always build everything as a safety net.
+  # ---------------------------------------------------------------------------
   build-android:
     name: Build Android
+    needs: [changes, check]
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubicloud-standard-4
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -109,7 +172,8 @@ jobs:
           path: |
             ~/.gradle/caches
             ~/.gradle/wrapper
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties') }}
+            ~/.gradle/configuration-cache
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/build.gradle*', 'android/app/build.gradle*', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
           restore-keys: gradle-${{ runner.os }}-
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
@@ -140,7 +204,7 @@ jobs:
           EOF
 
       - name: Build release APK
-        run: flutter build apk --flavor production --release
+        run: flutter build apk --flavor production --release --no-tree-shake-icons --target-platform android-arm64
 
       - name: Upload APK
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -148,6 +212,7 @@ jobs:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-production-release.apk
           compression-level: 0
+          retention-days: 5
 
       - name: Clean up CI signing config
         if: always()
@@ -155,7 +220,10 @@ jobs:
 
   build-ios:
     name: Build iOS
+    needs: [changes, check]
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-26
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -163,9 +231,11 @@ jobs:
 
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
-          path: ios/Pods
-          key: pods-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
-          restore-keys: pods-${{ runner.os }}-
+          path: |
+            ios/Pods
+            ~/Library/Caches/CocoaPods
+          key: pods-ios-${{ runner.os }}-${{ hashFiles('ios/Podfile.lock') }}
+          restore-keys: pods-ios-${{ runner.os }}-
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2
         with:
@@ -177,7 +247,7 @@ jobs:
         run: flutter pub get
 
       - name: Build iOS (no codesign)
-        run: flutter build ios --flavor production --release --no-codesign
+        run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons --split-debug-info=.debug-info
 
       - name: Upload iOS build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -185,10 +255,14 @@ jobs:
           name: ios-build
           path: build/ios/iphoneos/MonkeySSH.app
           compression-level: 0
+          retention-days: 5
 
   build-macos:
     name: Build macOS
+    needs: [changes, check]
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-26
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -196,7 +270,9 @@ jobs:
 
       - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
         with:
-          path: macos/Pods
+          path: |
+            macos/Pods
+            ~/Library/Caches/CocoaPods
           key: pods-macos-${{ runner.os }}-${{ hashFiles('macos/Podfile.lock') }}
           restore-keys: pods-macos-${{ runner.os }}-
 
@@ -210,7 +286,7 @@ jobs:
         run: flutter pub get
 
       - name: Build macOS
-        run: flutter build macos --release
+        run: flutter build macos --release --no-tree-shake-icons
 
       - name: Upload macOS build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -218,10 +294,14 @@ jobs:
           name: macos-build
           path: build/macos/Build/Products/Release/MonkeySSH.app
           compression-level: 0
+          retention-days: 5
 
   build-windows:
     name: Build Windows
+    needs: [changes, check]
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -237,7 +317,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Windows
-        run: flutter build windows --release
+        run: flutter build windows --release --no-tree-shake-icons
 
       - name: Upload Windows build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -245,10 +325,14 @@ jobs:
           name: windows-build
           path: build/windows/x64/runner/Release/
           compression-level: 0
+          retention-days: 5
 
   build-linux:
     name: Build Linux
+    needs: [changes, check]
+    if: needs.changes.outputs.linux == 'true'
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -269,7 +353,7 @@ jobs:
         run: flutter pub get
 
       - name: Build Linux
-        run: flutter build linux --release
+        run: flutter build linux --release --no-tree-shake-icons
 
       - name: Upload Linux build
         uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
@@ -277,3 +361,52 @@ jobs:
           name: linux-build
           path: build/linux/x64/release/bundle/
           compression-level: 0
+          retention-days: 5
+
+  # ---------------------------------------------------------------------------
+  # Gate job — the single required status check for branch protection.
+  # Passes when check succeeds and all triggered builds pass; correctly ignores
+  # builds that were skipped because the platform was unchanged.
+  # ---------------------------------------------------------------------------
+  ci:
+    name: CI
+    if: ${{ always() && !cancelled() }}
+    needs: [changes, check, build-android, build-ios, build-macos, build-windows, build-linux]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Evaluate results
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          ANDROID_RESULT: ${{ needs.build-android.result }}
+          IOS_RESULT: ${{ needs.build-ios.result }}
+          MACOS_RESULT: ${{ needs.build-macos.result }}
+          WINDOWS_RESULT: ${{ needs.build-windows.result }}
+          LINUX_RESULT: ${{ needs.build-linux.result }}
+        run: |
+          ok=true
+          for name_result in \
+            "changes:$CHANGES_RESULT" \
+            "check:$CHECK_RESULT" \
+            "build-android:$ANDROID_RESULT" \
+            "build-ios:$IOS_RESULT" \
+            "build-macos:$MACOS_RESULT" \
+            "build-windows:$WINDOWS_RESULT" \
+            "build-linux:$LINUX_RESULT"; do
+            name="${name_result%%:*}"
+            result="${name_result#*:}"
+            case "$result" in
+              success|skipped)
+                echo "✅ $name: $result"
+                ;;
+              *)
+                echo "❌ $name: $result"
+                ok=false
+                ;;
+            esac
+          done
+          if [ "$ok" = false ]; then
+            echo "::error::One or more required CI jobs failed or were cancelled."
+            exit 1
+          fi
