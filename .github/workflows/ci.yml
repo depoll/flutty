@@ -44,8 +44,8 @@ permissions:
 jobs:
   # ---------------------------------------------------------------------------
   # Detect which platform directories changed so we can skip irrelevant builds.
-  # On non-PR events (push, merge_group) every platform is marked as changed so
-  # the conditional builds still respect the merge_group guard below.
+  # On non-PR events (push, merge_group) every platform is marked as changed
+  # so all builds run unconditionally.
   # ---------------------------------------------------------------------------
   changes:
     name: Detect Changes
@@ -139,22 +139,16 @@ jobs:
   # ---------------------------------------------------------------------------
   # Platform builds — conditional on detected changes.
   #
-  # * PRs: only build platforms whose native code or dependencies changed.
-  #   Dart-only PRs skip all builds (analyze + test is sufficient).
-  # * merge_group: skip all builds — the PR already verified them and the check
-  #   job catches integration regressions in Dart code.
-  # * PRs: only build platforms whose native code or dependencies changed.
-  #   Dart-only PRs skip all builds (analyze + test is sufficient).
-  # * merge_group: skip all builds — the PR already verified them and the check
-  #   job catches integration regressions in Dart code.
+  # * PRs and merge_group: only build platforms whose native code or
+  #   dependencies changed. Dart-only changes skip all builds (analyze + test
+  #   is sufficient). The merge_group still runs affected platform builds so
+  #   that concurrent PRs touching the same native code are validated.
   # * push (main/develop): always build everything as a safety net.
   # ---------------------------------------------------------------------------
   build-android:
     name: Build Android
     needs: changes
-    if: >-
-      github.event_name != 'merge_group'
-      && needs.changes.outputs.android == 'true'
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     steps:
@@ -221,9 +215,7 @@ jobs:
   build-ios:
     name: Build iOS
     needs: changes
-    if: >-
-      github.event_name != 'merge_group'
-      && needs.changes.outputs.ios == 'true'
+    if: needs.changes.outputs.ios == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     steps:
@@ -262,9 +254,7 @@ jobs:
   build-macos:
     name: Build macOS
     needs: changes
-    if: >-
-      github.event_name != 'merge_group'
-      && needs.changes.outputs.macos == 'true'
+    if: needs.changes.outputs.macos == 'true'
     runs-on: macos-26
     timeout-minutes: 15
     steps:
@@ -303,9 +293,7 @@ jobs:
   build-windows:
     name: Build Windows
     needs: changes
-    if: >-
-      github.event_name != 'merge_group'
-      && needs.changes.outputs.windows == 'true'
+    if: needs.changes.outputs.windows == 'true'
     runs-on: windows-2025
     timeout-minutes: 15
     steps:
@@ -336,9 +324,7 @@ jobs:
   build-linux:
     name: Build Linux
     needs: changes
-    if: >-
-      github.event_name != 'merge_group'
-      && needs.changes.outputs.linux == 'true'
+    if: needs.changes.outputs.linux == 'true'
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -374,8 +360,7 @@ jobs:
   # ---------------------------------------------------------------------------
   # Gate job — the single required status check for branch protection.
   # Passes when check succeeds and all triggered builds pass; correctly ignores
-  # builds that were skipped because the platform was unchanged or because the
-  # event was merge_group.
+  # builds that were skipped because the platform was unchanged.
   # ---------------------------------------------------------------------------
   ci:
     name: CI
