@@ -173,7 +173,7 @@ jobs:
   build-android:
     name: Build & Deploy Android (${{ inputs.flavor }})
     if: inputs.build-android
-    runs-on: ubuntu-24.04
+    runs-on: ubicloud-standard-4
     env:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}

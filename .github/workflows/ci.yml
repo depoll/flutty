@@ -155,7 +155,7 @@ jobs:
     name: Build Android
     needs: [changes, check]
     if: needs.changes.outputs.android == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubicloud-standard-4
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
