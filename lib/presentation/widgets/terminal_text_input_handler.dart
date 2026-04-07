@@ -1250,6 +1250,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _notifyUserInput();
       }
       final previousText = _lastSentText;
+
+      // Capture modifier state BEFORE sending the delta. The send path
+      // synchronously fires terminal.onOutput which may consume one-shot
+      // toolbar modifiers (e.g. Ctrl). Checking after would always be false.
+      final hadActiveToolbarModifier =
+          widget.hasActiveToolbarModifier?.call() ?? false;
+
       final newlineCount = _sendInputDelta(currentText, delta);
       if (newlineCount > 0) {
         _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
@@ -1272,7 +1279,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       final wasModifiedSingleChar =
           delta.deletedCount == 0 &&
           delta.appendedText.characters.length == 1 &&
-          (widget.hasActiveToolbarModifier?.call() ?? false);
+          hadActiveToolbarModifier;
 
       // Also detect the second character of a two-part chord like tmux's
       // Ctrl+b, c. After the first modifier character resets, the follow-up
