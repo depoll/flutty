@@ -1,5 +1,6 @@
 // ignore_for_file: public_member_api_docs
 
+import 'package:drift/drift.dart' hide isNull, isNotNull;
 import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -196,6 +197,89 @@ void main() {
           privateKeyPem: 'not a valid key',
         );
         expect(result, isNull);
+      });
+    });
+
+    group('fingerprint generation via importPublicKey', () {
+      test(
+        'generates the correct deterministic fingerprint for a known public key',
+        () async {
+          // importPublicKey calls _computeFingerprint(publicKey) internally.
+          // The expected value is pre-computed using the same DJB2-like hash.
+          final key = await keyService.importPublicKey(
+            name: 'Key A',
+            publicKey: 'ssh-ed25519 AAAA1',
+          );
+
+          expect(key, isNotNull);
+          expect(key!.fingerprint, 'SHA256:1E:BF:D7:47');
+        },
+      );
+
+      test('different public keys produce different fingerprints', () async {
+        final keyA = await keyService.importPublicKey(
+          name: 'Key A',
+          publicKey: 'ssh-ed25519 AAAA1',
+        );
+        final keyB = await keyService.importPublicKey(
+          name: 'Key B',
+          publicKey: 'ssh-ed25519 AAAA2',
+        );
+
+        expect(keyA!.fingerprint, 'SHA256:1E:BF:D7:47');
+        expect(keyB!.fingerprint, 'SHA256:1E:BF:D7:48');
+        expect(keyA.fingerprint, isNot(keyB.fingerprint));
+      });
+
+      test('fingerprint always begins with SHA256: prefix', () async {
+        final key = await keyService.importPublicKey(
+          name: 'Key',
+          publicKey: 'ssh-ed25519 AAAA',
+        );
+
+        expect(key!.fingerprint, startsWith('SHA256:'));
+      });
+    });
+
+    group('key lookup by unique fields', () {
+      test('can look up a key by its public+private key pair', () async {
+        final id = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Original Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAAdedup',
+            privateKey: 'test-key-material-dedup',
+          ),
+        );
+
+        final keys = await keyService.getAllKeys();
+        final match = keys.where(
+          (k) =>
+              k.publicKey == 'ssh-ed25519 AAAAdedup' &&
+              k.privateKey == 'test-key-material-dedup',
+        );
+
+        expect(match, hasLength(1));
+        expect(match.first.id, id);
+      });
+
+      test('can look up a key by its fingerprint', () async {
+        const fingerprint = 'SHA256:DE:AD:BE:EF';
+        final id = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Fingerprintable Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAAfp',
+            privateKey: 'test-key-material-fp',
+            fingerprint: const Value(fingerprint),
+          ),
+        );
+
+        final keys = await keyService.getAllKeys();
+        final match = keys.where((k) => k.fingerprint == fingerprint);
+
+        expect(match, hasLength(1));
+        expect(match.first.id, id);
       });
     });
   });

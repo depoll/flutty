@@ -51,5 +51,59 @@ void main() {
 
       expect(redirect, '/');
     });
+
+    test('fails closed to lock when locked and visiting non-lock route', () {
+      final redirect = redirectForAuthState(
+        authState: AuthState.locked,
+        matchedLocation: '/',
+      );
+
+      expect(redirect, '/lock');
+    });
+
+    test('allows lock screen when already on the lock screen', () {
+      final redirect = redirectForAuthState(
+        authState: AuthState.locked,
+        matchedLocation: '/lock',
+      );
+
+      expect(redirect, isNull);
+    });
+
+    test('blocks terminal access when locked', () {
+      final redirect = redirectForAuthState(
+        authState: AuthState.locked,
+        matchedLocation: '/terminal/1',
+      );
+
+      expect(redirect, '/lock');
+    });
+
+    test('blocks auth-setup when unlocked (auth already configured)', () {
+      final redirect = redirectForAuthState(
+        authState: AuthState.unlocked,
+        matchedLocation: '/auth-setup',
+      );
+
+      expect(redirect, '/');
+    });
+
+    test('allows normal navigation when unlocked', () {
+      final redirect = redirectForAuthState(
+        authState: AuthState.unlocked,
+        matchedLocation: '/',
+      );
+
+      expect(redirect, isNull);
+    });
+
+    test('allows normal navigation when auth is not configured', () {
+      final redirect = redirectForAuthState(
+        authState: AuthState.notConfigured,
+        matchedLocation: '/',
+      );
+
+      expect(redirect, isNull);
+    });
   });
 }
