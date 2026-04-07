@@ -675,7 +675,7 @@ void main() {
     });
 
     testWidgets(
-      'trims a leading swipe space after typed input is fully backspaced away',
+      'preserves a separator after typed input is fully backspaced away',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -716,7 +716,7 @@ void main() {
             initialText: 'echo ready',
             initialCursorOffset: 'echo ready'.length,
           ),
-          (text: 'echo readyhello', cursorOffset: 'echo readyhello'.length),
+          (text: 'echo ready hello', cursorOffset: 'echo ready hello'.length),
         );
 
         focusNode.dispose();
@@ -1547,310 +1547,6 @@ void main() {
             initialCursorOffset: 'echo teh world'.length,
           ),
           (text: 'echo th world', cursorOffset: 'echo th'.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves replacement text after backspacing to a shorter prefix in the same buffer',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('I still have', selectionOffset: 'I still have'.length),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('I sti', selectionOffset: 'I sti'.length),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text:
-                '$_deleteDetectionMarker'
-                'I stink',
-            selection: TextSelection(baseOffset: 4, extentOffset: 9),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('I stink', selectionOffset: 'I stink'.length),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'I still have',
-            initialCursorOffset: 'I still have'.length,
-          ),
-          (text: 'I stink', cursorOffset: 'I stink'.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves spaces and letters when replacing a word after backspacing from its separator',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('teh ', selectionOffset: 'teh '.length),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('te', selectionOffset: 'te'.length),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text:
-                '$_deleteDetectionMarker'
-                'the ',
-            selection: TextSelection(baseOffset: 2, extentOffset: 5),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('the ', selectionOffset: 'the '.length),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'trims a leading suggestion space when replacing a word after backspacing from its separator',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('teh ', selectionOffset: 'teh '.length),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('te', selectionOffset: 'te'.length),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text:
-                '$_deleteDetectionMarker'
-                ' the ',
-            selection: TextSelection.collapsed(offset: 7),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves a manual separator when replacing a swiped word after backspacing into it',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        await _commitSwipeText(tester, '$_deleteDetectionMarker teh');
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}teh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}te',
-            selection: TextSelection.collapsed(offset: 4),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}the ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'preserves an IME separator when replacing a swiped word after backspacing into it',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        await _commitSwipeText(tester, '${_deleteDetectionMarker}teh ');
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}te',
-            selection: TextSelection.collapsed(offset: 4),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '${_deleteDetectionMarker}the ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh ',
-            initialCursorOffset: 'teh '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
         );
 
         focusNode.dispose();
@@ -3299,435 +2995,6 @@ void main() {
     );
 
     testWidgets(
-      'preserves replacement text after deleting a later swiped word',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'teh world ');
-
-        tester.testTextInput.log.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection(baseOffset: 2, extentOffset: 5),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'the ');
-        expect(
-          (tester.state(find.byType(TerminalTextInputHandler))
-                  as TextInputClient)
-              .currentTextEditingValue,
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        // The pure deletion in step 2 reconnects the IME to clear
-        // suggestions, which produces a setEditingState re-sync echo.
-        expect(
-          tester.testTextInput.log
-              .where((call) => call.method == 'TextInput.setEditingState')
-              .length,
-          1,
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'trims a stray leading space when replacing a word after deleting a later word',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        await _commitSwipeText(tester, '$_deleteDetectionMarker the ');
-
-        expect(_terminalTextFromEvents(terminalOutput), 'the ');
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'keeps the cursor aligned when replacing an earlier word after deleting a later swiped word',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.log.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection(baseOffset: 2, extentOffset: 5),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh world ',
-            initialCursorOffset: 'teh world '.length,
-          ),
-          (text: 'the ', cursorOffset: 'the '.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'keeps the cursor aligned when replacing an earlier word after partially deleting a later word',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh wo',
-            selection: TextSelection.collapsed(offset: 8),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.log.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh wo',
-            selection: TextSelection(baseOffset: 2, extentOffset: 5),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe wo',
-            selection: TextSelection.collapsed(offset: 8),
-          ),
-        );
-        await tester.pump();
-
-        expect(
-          _terminalStateFromEvents(
-            terminalOutput,
-            initialText: 'teh world ',
-            initialCursorOffset: 'teh world '.length,
-          ),
-          (text: 'the wo', cursorOffset: 'the wo'.length),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'resyncs the IME state when an earlier-word replacement is followed by a caret move',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection(baseOffset: 2, extentOffset: 5),
-          ),
-        );
-        await tester.pump();
-
-        terminalOutput.clear();
-        tester.testTextInput.log.clear();
-
-        tester.testTextInput.updateEditingValue(
-          _editingValue('the ', selectionOffset: 1),
-        );
-        await tester.pump();
-
-        expect(
-          terminalOutput.join(),
-          List.filled(2, _terminalKeyOutput(TerminalKey.arrowLeft)).join(),
-        );
-        expect(
-          tester.testTextInput.log.where(
-            (call) => call.method == 'TextInput.setEditingState',
-          ),
-          hasLength(1),
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'does not force-resync the IME while trimming a replacement-space artifact',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.log.clear();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200B the ',
-            selection: TextSelection.collapsed(offset: 7),
-            composing: TextRange(start: 2, end: 7),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200B the ',
-            selection: TextSelection(baseOffset: 3, extentOffset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'the ');
-        expect(
-          tester.testTextInput.log.where(
-            (call) => call.method == 'TextInput.setEditingState',
-          ),
-          isEmpty,
-        );
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'the ');
-        expect(
-          tester.testTextInput.log.where(
-            (call) => call.method == 'TextInput.setEditingState',
-          ),
-          isEmpty,
-        );
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
       'preserves replacement text after a later word delete drops part of the marker',
       (tester) async {
         final terminalOutput = <String>[];
@@ -3785,76 +3052,6 @@ void main() {
         await tester.pump();
 
         expect(_terminalTextFromEvents(terminalOutput), 'the ');
-
-        focusNode.dispose();
-      },
-    );
-
-    testWidgets(
-      'does not force-resync the IME when replacement text is already normalized',
-      (tester) async {
-        final terminalOutput = <String>[];
-        final terminal = Terminal(onOutput: terminalOutput.add);
-        final focusNode = FocusNode();
-
-        await tester.pumpWidget(
-          MaterialApp(
-            home: Scaffold(
-              body: TerminalTextInputHandler(
-                terminal: terminal,
-                focusNode: focusNode,
-                deleteDetection: true,
-                child: const SizedBox.expand(),
-              ),
-            ),
-          ),
-        );
-
-        focusNode.requestFocus();
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh world ',
-            selection: TextSelection.collapsed(offset: 12),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bteh ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        tester.testTextInput.log.clear();
-
-        (tester.state(find.byType(TerminalTextInputHandler)) as TextInputClient)
-            .updateEditingValue(
-              const TextEditingValue(
-                text: '\u200B\u200Bthe ',
-                selection: TextSelection(baseOffset: -1, extentOffset: 0),
-              ),
-            );
-        await tester.pump();
-
-        tester.testTextInput.updateEditingValue(
-          const TextEditingValue(
-            text: '\u200B\u200Bthe ',
-            selection: TextSelection.collapsed(offset: 6),
-          ),
-        );
-        await tester.pump();
-
-        expect(_terminalTextFromEvents(terminalOutput), 'the ');
-        expect(
-          tester.testTextInput.log.where(
-            (call) => call.method == 'TextInput.setEditingState',
-          ),
-          isEmpty,
-        );
 
         focusNode.dispose();
       },
@@ -5686,25 +4883,6 @@ void main() {
             terminalEchoes: 1,
           ),
           (
-            name: 'matches deletion at a moved caret',
-            sequence: const [
-              TextEditingValue(
-                text: 'foo Xbar',
-                selection: TextSelection.collapsed(offset: 8),
-              ),
-              TextEditingValue(
-                text: 'foo Xbar',
-                selection: TextSelection.collapsed(offset: 5),
-              ),
-              TextEditingValue(
-                text: 'foo bar',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 2,
-          ),
-          (
             name: 'matches identical-character insertion at a moved caret',
             sequence: const [
               TextEditingValue(
@@ -5736,154 +4914,6 @@ void main() {
               ),
               TextEditingValue(
                 text: 'hello; world',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
-          ),
-          (
-            name: 'matches insertion and backspace at a space boundary',
-            sequence: const [
-              TextEditingValue(
-                text: 'foo bar',
-                selection: TextSelection.collapsed(offset: 7),
-              ),
-              TextEditingValue(
-                text: 'foo bar',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-              TextEditingValue(
-                text: 'foo Xbar',
-                selection: TextSelection.collapsed(offset: 5),
-              ),
-              TextEditingValue(
-                text: 'foo bar',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 2,
-          ),
-          (
-            name: 'matches insertion and backspace between repeated spaces',
-            sequence: const [
-              TextEditingValue(
-                text: 'foo  bar',
-                selection: TextSelection.collapsed(offset: 8),
-              ),
-              TextEditingValue(
-                text: 'foo  bar',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-              TextEditingValue(
-                text: 'foo X bar',
-                selection: TextSelection.collapsed(offset: 5),
-              ),
-              TextEditingValue(
-                text: 'foo  bar',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 2,
-          ),
-          (
-            name: 'matches repeated-word replacement then backspace',
-            sequence: const [
-              TextEditingValue(
-                text: 'go go go',
-                selection: TextSelection.collapsed(offset: 8),
-              ),
-              TextEditingValue(
-                text: 'go go go',
-                selection: TextSelection(baseOffset: 3, extentOffset: 5),
-              ),
-              TextEditingValue(
-                text: 'go gone go',
-                selection: TextSelection.collapsed(offset: 7),
-              ),
-              TextEditingValue(
-                text: 'go gon go',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
-          ),
-          (
-            name:
-                'matches repeated non-collapsed replacements before backspace',
-            sequence: const [
-              TextEditingValue(
-                text: 'echo teh world',
-                selection: TextSelection.collapsed(offset: 14),
-              ),
-              TextEditingValue(
-                text: 'echo teh world',
-                selection: TextSelection(baseOffset: 5, extentOffset: 8),
-              ),
-              TextEditingValue(
-                text: 'echo the world',
-                selection: TextSelection(baseOffset: 5, extentOffset: 8),
-              ),
-              TextEditingValue(
-                text: 'echo then world',
-                selection: TextSelection(baseOffset: 5, extentOffset: 9),
-              ),
-              TextEditingValue(
-                text: 'echo the world',
-                selection: TextSelection(baseOffset: 5, extentOffset: 8),
-              ),
-              TextEditingValue(
-                text: 'echo th world',
-                selection: TextSelection.collapsed(offset: 7),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 2,
-          ),
-          (
-            name: 'matches whitespace-cluster replacement before backspace',
-            sequence: const [
-              TextEditingValue(
-                text: 'foo  bar',
-                selection: TextSelection.collapsed(offset: 8),
-              ),
-              TextEditingValue(
-                text: 'foo  bar',
-                selection: TextSelection(baseOffset: 4, extentOffset: 8),
-              ),
-              TextEditingValue(
-                text: 'foo baz',
-                selection: TextSelection.collapsed(offset: 7),
-              ),
-              TextEditingValue(
-                text: 'foo ba',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
-          ),
-          (
-            name:
-                'matches punctuation and double-space replacement before backspace',
-            sequence: const [
-              TextEditingValue(
-                text: 'hello,  world',
-                selection: TextSelection.collapsed(offset: 13),
-              ),
-              TextEditingValue(
-                text: 'hello,  world',
-                selection: TextSelection(baseOffset: 5, extentOffset: 8),
-              ),
-              TextEditingValue(
-                text: 'hello; world',
-                selection: TextSelection.collapsed(offset: 7),
-              ),
-              TextEditingValue(
-                text: 'hello;world',
                 selection: TextSelection.collapsed(offset: 6),
               ),
             ],
@@ -5969,7 +4999,7 @@ void main() {
       });
     }
 
-    testWidgets('reconnects IME to clear suggestion context after backspace', (
+    testWidgets('clears the IME buffer after trailing backspace', (
       tester,
     ) async {
       final terminalOutput = <String>[];
@@ -6010,29 +5040,29 @@ void main() {
       // The terminal should show "hell".
       expect(_terminalTextFromEvents(terminalOutput), 'hell');
 
-      // A new input connection should have been created (setClient call).
+      // The IME buffer should be cleared after the backspace.
       expect(
         tester.testTextInput.log
-            .where((call) => call.method == 'TextInput.setClient')
+            .where((call) => call.method == 'TextInput.setEditingState')
             .length,
         1,
       );
 
-      // The editing state should still have the shortened text, re-synced
-      // through the fresh connection.
+      // The editing state is reset to the marker only so suggestions start
+      // fresh from the next typed character.
       final client = _terminalTextInputClient(tester);
       expect(
         client.currentTextEditingValue,
         const TextEditingValue(
-          text: '${_deleteDetectionMarker}hell',
-          selection: TextSelection.collapsed(offset: 6),
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
         ),
       );
 
       focusNode.dispose();
     });
 
-    testWidgets('typing after backspace reconnect sends correct delta', (
+    testWidgets('typing after trailing backspace inserts from a fresh buffer', (
       tester,
     ) async {
       final terminalOutput = <String>[];
@@ -6067,10 +5097,9 @@ void main() {
       );
       await tester.pump();
 
-      // Type "o" - the IME has "hell" after reconnect, so the new value
-      // is "hello" (appended to the re-synced buffer).
+      // Type "o" from the freshly cleared IME buffer.
       tester.testTextInput.updateEditingValue(
-        _editingValue('hello', selectionOffset: 5),
+        _editingValue('o', selectionOffset: 1),
       );
       await tester.pump();
 
@@ -6081,7 +5110,7 @@ void main() {
     });
 
     testWidgets(
-      'trims leading swipe space after backspace-triggered IME reconnect',
+      'trims a leading swipe space after backspace-triggered IME buffer clear',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -6115,19 +5144,14 @@ void main() {
         );
         await tester.pump();
 
-        // Swipe-type " world" — the fresh IME buffer has "hell" and the
-        // swipe appends " world". The space is a legitimate separator between
-        // the existing text and the swiped word, so it is preserved.
-        await _commitSwipeText(
-          tester,
-          '$_deleteDetectionMarker'
-          'hell world',
-        );
+        // Swipe-type " world" from the cleared IME buffer.
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
         await tester.pump();
 
-        // The space between "hell" and "world" is preserved since the IME
-        // context was reconnected with "hell" still in the buffer.
-        expect(_terminalStateFromEvents(terminalOutput).text, 'hell world');
+        // The cleared IME buffer should not keep suggesting continuations from
+        // the deleted word. Because the terminal text before the cursor does
+        // not end in whitespace, the leading swipe space is trimmed.
+        expect(_terminalStateFromEvents(terminalOutput).text, 'hellworld');
 
         focusNode.dispose();
       },
@@ -6187,6 +5211,52 @@ void main() {
 
       focusNode.dispose();
     });
+
+    testWidgets(
+      'controller clears the IME buffer after external terminal actions',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 5),
+        );
+        await tester.pump();
+
+        controller.clearImeBuffer();
+        await tester.pump();
+
+        final client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
 
     testWidgets(
       'resets IME after second character of a two-part chord (tmux Ctrl+b, c)',

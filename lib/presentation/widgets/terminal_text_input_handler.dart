@@ -94,6 +94,15 @@ class TerminalTextInputHandlerController {
   void requestKeyboard() {
     _state?.requestKeyboard();
   }
+
+  /// Clears the transient IME buffer after external terminal actions.
+  ///
+  /// This is used for toolbar-driven keys like arrows, Home/End, Enter, Tab,
+  /// and escape sequences that bypass the regular text-input pipeline but
+  /// should still reset keyboard suggestions.
+  void clearImeBuffer() {
+    _state?._clearImeBufferForFreshInput();
+  }
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -428,6 +437,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _skipNextTouchKeyboardRequest = true;
   }
 
+  void _clearImeBufferForFreshInput({bool armModifierChordWindow = false}) {
+    _resetCommittedInputState();
+    _trimLeadingSuggestionSpaceAfterDelete = true;
+    _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _modifierChordResetTime = armModifierChordWindow
+        ? modifierChordClock()
+        : null;
+  }
+
   // -- Focus handling --
 
   void _onFocusChange() {
@@ -451,59 +469,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _invalidatePendingEditingUpdates() {
     _latestEditingValueRevision++;
     _queuedEditingValue = null;
-  }
-
-  /// Reconnects the IME text-input connection to clear the suggestion /
-  /// prediction context while keeping the current buffer tracking intact.
-  ///
-  /// Creating a fresh [TextInputConnection] forces Android and iOS to
-  /// discard their accumulated typing history, which clears the prediction
-  /// bar. The keyboard stays visible because we re-attach and call `show()`
-  /// without resigning first-responder status.
-  void _reconnectInputToResetSuggestions() {
-    if (!hasInputConnection) return;
-
-    // Detach the current connection.
-    _connection!.close();
-    _connection = null;
-
-    // Discard any queued editing values that were generated before the
-    // reconnect — they reference the old connection's state.
-    _invalidatePendingEditingUpdates();
-
-    // Recreate the connection with the same configuration.
-    final config = TextInputConfiguration(
-      // ignore: avoid_redundant_argument_values
-      autocorrect: false,
-      inputAction: TextInputAction.newline,
-      keyboardAppearance: widget.keyboardAppearance,
-      // ignore: avoid_redundant_argument_values
-      enableSuggestions: true,
-      smartDashesType: SmartDashesType.disabled,
-      smartQuotesType: SmartQuotesType.disabled,
-      enableIMEPersonalizedLearning: false,
-    );
-    _connection = TextInput.attach(this, config);
-    _connection!.show();
-
-    // Convert the grapheme-based cursor offset to a code-unit offset so
-    // the selection is placed correctly in the re-synced editing state.
-    final cursorCodeUnitOffset = _lastSentText.characters
-        .take(_lastSentCursorOffset)
-        .join()
-        .length;
-    final resyncValue = _editingStateForUserText(
-      userText: _lastSentText,
-      userSelection: TextSelection.collapsed(offset: cursorCodeUnitOffset),
-    );
-
-    // Re-sync the IME with the current terminal buffer so delta
-    // computation continues to work correctly.
-    _sawImeComposition = false;
-    _currentEditingState = resyncValue;
-    if (_connection!.attached) {
-      _connection!.setEditingState(resyncValue);
-    }
   }
 
   void _openInputConnection({bool show = true}) {
@@ -1276,6 +1241,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           previousText.isNotEmpty &&
           delta.deletedCount > 0 &&
           delta.appendedText.isEmpty;
+      final wasTrailingPureDeletion =
+          wasPureDeletion &&
+          delta.deleteCursorOffset == previousText.characters.length;
       final wasModifiedSingleChar =
           delta.deletedCount == 0 &&
           delta.appendedText.characters.length == 1 &&
@@ -1301,13 +1269,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         // modifier (or is the follow-up of a two-part chord), so it does
         // not represent visible terminal text. Do a full reset — the
         // shell's response to a control code is unpredictable.
-        _resetCommittedInputState();
-        _trimLeadingSwipeSpaceAfterBufferClear = true;
-        // Record the reset time so a rapid follow-up character is also
-        // treated as part of the chord.
-        _modifierChordResetTime = wasModifiedSingleChar
-            ? modifierChordClock()
-            : null;
+        _clearImeBufferForFreshInput(
+          armModifierChordWindow: wasModifiedSingleChar,
+        );
         _sawImeComposition = false;
         return;
       }
@@ -1315,13 +1279,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       // Any non-chord input clears the chord follow-up window.
       _modifierChordResetTime = null;
 
-      if (wasPureDeletion) {
-        // Reconnect the IME to clear suggestion/prediction history while
-        // keeping _lastSentText intact so delta computation stays correct.
-        _reconnectInputToResetSuggestions();
-        _trimLeadingSuggestionSpaceAfterDelete = currentText.isNotEmpty;
-        _trimLeadingSwipeSpaceAfterBufferClear =
-            previousText.isNotEmpty && currentText.isEmpty;
+      if (wasTrailingPureDeletion) {
+        _clearImeBufferForFreshInput();
         _sawImeComposition = false;
         return;
       }

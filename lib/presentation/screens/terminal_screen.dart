@@ -2660,7 +2660,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             KeyboardToolbar(
               controller: _toolbarController,
               terminal: _terminal,
-              onKeyPressed: _followLiveOutput,
+              onKeyPressed: _handleKeyboardToolbarKeyPressed,
               terminalFocusNode: _terminalFocusNode,
             ),
         ],
@@ -2708,6 +2708,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       }
     });
+  }
+
+  void _handleKeyboardToolbarKeyPressed() {
+    _followLiveOutput();
+    _terminalTextInputController.clearImeBuffer();
   }
 
   void _handleTerminalScaleStart(double currentFontSize) {
