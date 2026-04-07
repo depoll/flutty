@@ -18,7 +18,8 @@ final _testKey = SshKey(
   name: 'My Ed25519 Key',
   keyType: 'ed25519',
   publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5',
-  privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----\n'
+  privateKey:
+      '-----BEGIN OPENSSH PRIVATE KEY-----\n'
       'test-private-key-material\n'
       '-----END OPENSSH PRIVATE KEY-----',
   fingerprint: 'SHA256:AB:CD:EF:01',
@@ -65,9 +66,7 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(
-          find.text(
-            'Private key hidden. Tap "Reveal Private Key" to view.',
-          ),
+          find.text('Private key hidden. Tap "Reveal Private Key" to view.'),
           findsOneWidget,
         );
         expect(find.text('Copy Private Key'), findsNothing);

@@ -119,8 +119,9 @@ void main() {
         macBytes[0] ^= 0xFF;
         envelope['m'] = base64Url.encode(macBytes);
 
-        final tamperedCompact =
-            base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final tamperedCompact = base64Url.encode(
+          utf8.encode(jsonEncode(envelope)),
+        );
         final tampered = 'ENCv1:$tamperedCompact';
 
         await expectLater(
@@ -146,8 +147,9 @@ void main() {
         cipherBytes[0] ^= 0xFF;
         envelope['c'] = base64Url.encode(cipherBytes);
 
-        final tamperedCompact =
-            base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final tamperedCompact = base64Url.encode(
+          utf8.encode(jsonEncode(envelope)),
+        );
         final tampered = 'ENCv1:$tamperedCompact';
 
         await expectLater(
@@ -182,8 +184,7 @@ void main() {
           jsonDecode(envelopeJson) as Map,
         )..remove('n');
 
-        final badCompact =
-            base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final badCompact = base64Url.encode(utf8.encode(jsonEncode(envelope)));
         final badValue = 'ENCv1:$badCompact';
 
         await expectLater(
@@ -204,8 +205,7 @@ void main() {
           jsonDecode(envelopeJson) as Map,
         )..remove('c');
 
-        final badCompact =
-            base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final badCompact = base64Url.encode(utf8.encode(jsonEncode(envelope)));
         final badValue = 'ENCv1:$badCompact';
 
         await expectLater(
@@ -226,8 +226,7 @@ void main() {
           jsonDecode(envelopeJson) as Map,
         )..remove('m');
 
-        final badCompact =
-            base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final badCompact = base64Url.encode(utf8.encode(jsonEncode(envelope)));
         final badValue = 'ENCv1:$badCompact';
 
         await expectLater(

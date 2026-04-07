@@ -272,28 +272,25 @@ void main() {
         },
       );
 
-      test(
-        'keys with the same fingerprint are treated as identical by the '
-        'deduplication check',
-        () async {
-          final fingerprint = 'SHA256:DE:AD:BE:EF';
-          final id = await keyRepository.insert(
-            SshKeysCompanion.insert(
-              name: 'Fingerprintable Key',
-              keyType: 'ed25519',
-              publicKey: 'ssh-ed25519 AAAAfp',
-              privateKey: 'test-key-material-fp',
-              fingerprint: Value(fingerprint),
-            ),
-          );
+      test('keys with the same fingerprint are treated as identical by the '
+          'deduplication check', () async {
+        final fingerprint = 'SHA256:DE:AD:BE:EF';
+        final id = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Fingerprintable Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAAfp',
+            privateKey: 'test-key-material-fp',
+            fingerprint: Value(fingerprint),
+          ),
+        );
 
-          final keys = await keyService.getAllKeys();
-          final match = keys.where((k) => k.fingerprint == fingerprint);
+        final keys = await keyService.getAllKeys();
+        final match = keys.where((k) => k.fingerprint == fingerprint);
 
-          expect(match, hasLength(1));
-          expect(match.first.id, id);
-        },
-      );
+        expect(match, hasLength(1));
+        expect(match.first.id, id);
+      });
     });
   });
 }

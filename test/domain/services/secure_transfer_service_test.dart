@@ -985,82 +985,76 @@ void main() {
       },
     );
 
-    test(
-      'importKeyPayload deduplicates by public+private key pair when no '
-      'fingerprint is present',
-      () async {
-        const publicKey = 'ssh-ed25519 AAAAsharedpubkey';
-        const privateKey = 'test-open-ssh-key-sharedprivkey';
+    test('importKeyPayload deduplicates by public+private key pair when no '
+        'fingerprint is present', () async {
+      const publicKey = 'ssh-ed25519 AAAAsharedpubkey';
+      const privateKey = 'test-open-ssh-key-sharedprivkey';
 
-        final existingId = await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Existing Key',
-            keyType: 'ed25519',
-            publicKey: publicKey,
-            privateKey: privateKey,
-          ),
-        );
+      final existingId = await keyRepository.insert(
+        SshKeysCompanion.insert(
+          name: 'Existing Key',
+          keyType: 'ed25519',
+          publicKey: publicKey,
+          privateKey: privateKey,
+        ),
+      );
 
-        final payload = TransferPayload(
-          type: TransferPayloadType.key,
-          schemaVersion: 1,
-          createdAt: DateTime.now().toUtc(),
-          data: {
-            'key': {
-              'name': 'Duplicate Key',
-              'keyType': 'ed25519',
-              'publicKey': publicKey,
-              'privateKey': privateKey,
-            },
+      final payload = TransferPayload(
+        type: TransferPayloadType.key,
+        schemaVersion: 1,
+        createdAt: DateTime.now().toUtc(),
+        data: {
+          'key': {
+            'name': 'Duplicate Key',
+            'keyType': 'ed25519',
+            'publicKey': publicKey,
+            'privateKey': privateKey,
           },
-        );
+        },
+      );
 
-        final imported = await transferService.importKeyPayload(payload);
+      final imported = await transferService.importKeyPayload(payload);
 
-        expect(imported.id, existingId);
+      expect(imported.id, existingId);
 
-        final allKeys = await db.select(db.sshKeys).get();
-        expect(allKeys, hasLength(1));
-      },
-    );
+      final allKeys = await db.select(db.sshKeys).get();
+      expect(allKeys, hasLength(1));
+    });
 
-    test(
-      'importKeyPayload inserts a new key when neither fingerprint nor '
-      'key material matches an existing entry',
-      () async {
-        await keyRepository.insert(
-          SshKeysCompanion.insert(
-            name: 'Unrelated Key',
-            keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAAunrelated',
-            privateKey: 'test-open-ssh-key-unrelated',
-            fingerprint: const Value('SHA256:un:re:la:te:d0'),
-          ),
-        );
+    test('importKeyPayload inserts a new key when neither fingerprint nor '
+        'key material matches an existing entry', () async {
+      await keyRepository.insert(
+        SshKeysCompanion.insert(
+          name: 'Unrelated Key',
+          keyType: 'ed25519',
+          publicKey: 'ssh-ed25519 AAAAunrelated',
+          privateKey: 'test-open-ssh-key-unrelated',
+          fingerprint: const Value('SHA256:un:re:la:te:d0'),
+        ),
+      );
 
-        final payload = TransferPayload(
-          type: TransferPayloadType.key,
-          schemaVersion: 1,
-          createdAt: DateTime.now().toUtc(),
-          data: {
-            'key': {
-              'name': 'Brand New Key',
-              'keyType': 'ed25519',
-              'publicKey': 'ssh-ed25519 AAAAnewkey',
-              'privateKey': 'test-open-ssh-key-newkey',
-              'fingerprint': 'SHA256:ne:wk:ey:00:01',
-            },
+      final payload = TransferPayload(
+        type: TransferPayloadType.key,
+        schemaVersion: 1,
+        createdAt: DateTime.now().toUtc(),
+        data: {
+          'key': {
+            'name': 'Brand New Key',
+            'keyType': 'ed25519',
+            'publicKey': 'ssh-ed25519 AAAAnewkey',
+            'privateKey': 'test-open-ssh-key-newkey',
+            'fingerprint': 'SHA256:ne:wk:ey:00:01',
           },
-        );
+        },
+      );
 
-        final imported = await transferService.importKeyPayload(payload);
+      final imported = await transferService.importKeyPayload(payload);
 
-        expect(imported.name, 'Brand New Key');
+      expect(imported.name, 'Brand New Key');
 
-        final allKeys = await db.select(db.sshKeys).get();
-        expect(allKeys, hasLength(2));
-      },
-    );
+      final allKeys = await db.select(db.sshKeys).get();
+      expect(allKeys, hasLength(2));
+    });
 
     test(
       'rejects invalid auto-connect snippet reference in migration',
