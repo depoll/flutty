@@ -3195,6 +3195,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
+      hasActiveToolbarModifier: () =>
+          _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard: tapToShowKeyboard,
       child: TerminalPinchZoomGestureHandler(

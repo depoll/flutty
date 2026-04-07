@@ -3367,11 +3367,13 @@ void main() {
             selection: TextSelection.collapsed(offset: 6),
           ),
         );
+        // The pure deletion in step 2 reconnects the IME to clear
+        // suggestions, which produces a setEditingState re-sync echo.
         expect(
-          tester.testTextInput.log.where(
-            (call) => call.method == 'TextInput.setEditingState',
-          ),
-          isEmpty,
+          tester.testTextInput.log
+              .where((call) => call.method == 'TextInput.setEditingState')
+              .length,
+          1,
         );
 
         focusNode.dispose();
@@ -5603,7 +5605,9 @@ void main() {
 
         expect(terminalResult.finalState, textFieldResult.finalState);
         expect(textFieldResult.echoedStates, isEmpty);
-        expect(terminalResult.echoedStates, [textFieldResult.finalState]);
+        // The reconnect after the pure deletion in step 2 adds one extra
+        // setEditingState echo beyond the resync that was already present.
+        expect(terminalResult.echoedStates.last, textFieldResult.finalState);
       },
     );
 
@@ -5698,7 +5702,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 1,
+            terminalEchoes: 2,
           ),
           (
             name: 'matches identical-character insertion at a moved caret',
@@ -5759,7 +5763,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 1,
+            terminalEchoes: 2,
           ),
           (
             name: 'matches insertion and backspace between repeated spaces',
@@ -5782,7 +5786,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 1,
+            terminalEchoes: 2,
           ),
           (
             name: 'matches repeated-word replacement then backspace',
@@ -5805,7 +5809,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 0,
+            terminalEchoes: 1,
           ),
           (
             name:
@@ -5837,7 +5841,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 0,
+            terminalEchoes: 2,
           ),
           (
             name: 'matches whitespace-cluster replacement before backspace',
@@ -5860,7 +5864,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 0,
+            terminalEchoes: 1,
           ),
           (
             name:
@@ -5884,7 +5888,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 0,
+            terminalEchoes: 1,
           ),
           (
             name: 'matches emoji insertion after a caret move',
@@ -5926,7 +5930,7 @@ void main() {
               ),
             ],
             textFieldEchoes: 0,
-            terminalEchoes: 0,
+            terminalEchoes: 1,
           ),
           (
             name:
@@ -5964,5 +5968,272 @@ void main() {
         );
       });
     }
+
+    testWidgets('reconnects IME to clear suggestion context after backspace', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+      tester.testTextInput.log.clear();
+
+      // Type "hello".
+      tester.testTextInput.updateEditingValue(
+        _editingValue('hello', selectionOffset: 5),
+      );
+      await tester.pump();
+
+      tester.testTextInput.log.clear();
+
+      // Backspace to "hell".
+      tester.testTextInput.updateEditingValue(
+        _editingValue('hell', selectionOffset: 4),
+      );
+      await tester.pump();
+
+      // The terminal should show "hell".
+      expect(_terminalTextFromEvents(terminalOutput), 'hell');
+
+      // A new input connection should have been created (setClient call).
+      expect(
+        tester.testTextInput.log
+            .where((call) => call.method == 'TextInput.setClient')
+            .length,
+        1,
+      );
+
+      // The editing state should still have the shortened text, re-synced
+      // through the fresh connection.
+      final client = _terminalTextInputClient(tester);
+      expect(
+        client.currentTextEditingValue,
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}hell',
+          selection: TextSelection.collapsed(offset: 6),
+        ),
+      );
+
+      focusNode.dispose();
+    });
+
+    testWidgets('typing after backspace reconnect sends correct delta', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      // Type "hello".
+      tester.testTextInput.updateEditingValue(
+        _editingValue('hello', selectionOffset: 5),
+      );
+      await tester.pump();
+
+      // Backspace to "hell".
+      tester.testTextInput.updateEditingValue(
+        _editingValue('hell', selectionOffset: 4),
+      );
+      await tester.pump();
+
+      // Type "o" - the IME has "hell" after reconnect, so the new value
+      // is "hello" (appended to the re-synced buffer).
+      tester.testTextInput.updateEditingValue(
+        _editingValue('hello', selectionOffset: 5),
+      );
+      await tester.pump();
+
+      // The terminal should show "hello".
+      expect(_terminalTextFromEvents(terminalOutput), 'hello');
+
+      focusNode.dispose();
+    });
+
+    testWidgets(
+      'trims leading swipe space after backspace-triggered IME reconnect',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Type "hello".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 5),
+        );
+        await tester.pump();
+
+        // Backspace to "hell".
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hell', selectionOffset: 4),
+        );
+        await tester.pump();
+
+        // Swipe-type " world" — the fresh IME buffer has "hell" and the
+        // swipe appends " world". The space is a legitimate separator between
+        // the existing text and the swiped word, so it is preserved.
+        await _commitSwipeText(
+          tester,
+          '$_deleteDetectionMarker'
+          'hell world',
+        );
+        await tester.pump();
+
+        // The space between "hell" and "world" is preserved since the IME
+        // context was reconnected with "hell" still in the buffer.
+        expect(_terminalStateFromEvents(terminalOutput).text, 'hell world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('resets IME editing state after modifier chord character', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      var modifierActive = false;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              hasActiveToolbarModifier: () => modifierActive,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      // Type "ls" normally.
+      tester.testTextInput.updateEditingValue(
+        _editingValue('ls', selectionOffset: 2),
+      );
+      await tester.pump();
+      expect(_terminalTextFromEvents(terminalOutput), 'ls');
+
+      // Activate Ctrl modifier (simulating toolbar toggle).
+      modifierActive = true;
+
+      // Type 'c' with modifier active (would produce Ctrl+C in practice).
+      tester.testTextInput.updateEditingValue(
+        _editingValue('lsc', selectionOffset: 3),
+      );
+      await tester.pump();
+
+      // The IME editing state should be fully reset after the modified
+      // character (control codes make the terminal state unpredictable).
+      final client = _terminalTextInputClient(tester);
+      expect(
+        client.currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+
+      focusNode.dispose();
+    });
+
+    testWidgets('regular typing accumulates in IME buffer without reset', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              hasActiveToolbarModifier: () => false,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      // Type "hello" one character at a time.
+      for (var i = 1; i <= 5; i++) {
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello'.substring(0, i), selectionOffset: i),
+        );
+        await tester.pump();
+      }
+
+      // The terminal should have "hello".
+      expect(_terminalTextFromEvents(terminalOutput), 'hello');
+
+      // The IME editing state should still have the full accumulated text.
+      final client = _terminalTextInputClient(tester);
+      expect(
+        client.currentTextEditingValue,
+        const TextEditingValue(
+          text: '${_deleteDetectionMarker}hello',
+          selection: TextSelection.collapsed(offset: 7),
+        ),
+      );
+
+      focusNode.dispose();
+    });
   });
 }

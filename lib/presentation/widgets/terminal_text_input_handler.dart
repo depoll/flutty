@@ -108,6 +108,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.onReviewInsertedText,
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
+    this.hasActiveToolbarModifier,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     super.key,
@@ -140,11 +141,18 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// Builds the command text that should be reviewed for suspicious IME input.
   final TerminalTextInputReviewTextBuilder? buildReviewTextForInsertedText;
 
-  /// Resolves the current terminal text before the cursor.
+  /// Resolves the current terminal text that appears before the cursor.
   ///
   /// This lets the IME handler distinguish a stray leading swipe space from the
   /// only separator needed between existing terminal text and the next word.
   final TerminalTextBeforeCursorResolver? resolveTextBeforeCursor;
+
+  /// Whether a toolbar modifier (Ctrl or Alt) is currently active.
+  ///
+  /// When a modifier is active, a typed character becomes a control code rather
+  /// than visible text. In that case the IME buffer is cleared after sending
+  /// the input so that stale suggestions don't accumulate from non-text input.
+  final ValueGetter<bool>? hasActiveToolbarModifier;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -431,6 +439,59 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _invalidatePendingEditingUpdates() {
     _latestEditingValueRevision++;
     _queuedEditingValue = null;
+  }
+
+  /// Reconnects the IME text-input connection to clear the suggestion /
+  /// prediction context while keeping the current buffer tracking intact.
+  ///
+  /// Creating a fresh [TextInputConnection] forces Android and iOS to
+  /// discard their accumulated typing history, which clears the prediction
+  /// bar. The keyboard stays visible because we re-attach and call `show()`
+  /// without resigning first-responder status.
+  void _reconnectInputToResetSuggestions() {
+    if (!hasInputConnection) return;
+
+    // Detach the current connection.
+    _connection!.close();
+    _connection = null;
+
+    // Discard any queued editing values that were generated before the
+    // reconnect — they reference the old connection's state.
+    _invalidatePendingEditingUpdates();
+
+    // Recreate the connection with the same configuration.
+    final config = TextInputConfiguration(
+      // ignore: avoid_redundant_argument_values
+      autocorrect: false,
+      inputAction: TextInputAction.newline,
+      keyboardAppearance: widget.keyboardAppearance,
+      // ignore: avoid_redundant_argument_values
+      enableSuggestions: true,
+      smartDashesType: SmartDashesType.disabled,
+      smartQuotesType: SmartQuotesType.disabled,
+      enableIMEPersonalizedLearning: false,
+    );
+    _connection = TextInput.attach(this, config);
+    _connection!.show();
+
+    // Convert the grapheme-based cursor offset to a code-unit offset so
+    // the selection is placed correctly in the re-synced editing state.
+    final cursorCodeUnitOffset = _lastSentText.characters
+        .take(_lastSentCursorOffset)
+        .join()
+        .length;
+    final resyncValue = _editingStateForUserText(
+      userText: _lastSentText,
+      userSelection: TextSelection.collapsed(offset: cursorCodeUnitOffset),
+    );
+
+    // Re-sync the IME with the current terminal buffer so delta
+    // computation continues to work correctly.
+    _sawImeComposition = false;
+    _currentEditingState = resyncValue;
+    if (_connection!.attached) {
+      _connection!.setEditingState(resyncValue);
+    }
   }
 
   void _openInputConnection({bool show = true}) {
@@ -1180,6 +1241,48 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _sawImeComposition = false;
         return;
       }
+
+      // Detect non-additive operations that should clear the IME suggestion
+      // context: pure deletions (backspace with no replacement text) and
+      // modifier chords (Ctrl/Alt + character) where the typed character
+      // becomes a control code instead of visible text.
+      //
+      // IME replacements (e.g. autocorrect changing "teh" to "the") may
+      // also shorten text but include appended replacement text, so they
+      // are NOT treated as pure deletions.
+      final wasPureDeletion =
+          previousText.isNotEmpty &&
+          delta.deletedCount > 0 &&
+          delta.appendedText.isEmpty;
+      final wasModifiedSingleChar =
+          delta.deletedCount == 0 &&
+          delta.appendedText.characters.length == 1 &&
+          (widget.hasActiveToolbarModifier?.call() ?? false);
+
+      if (wasModifiedSingleChar) {
+        // The character was transformed into a control code by the toolbar
+        // modifier, so it does not represent visible terminal text. Do a full
+        // reset — the shell's response to a control code is unpredictable.
+        _resetCommittedInputState();
+        _trimLeadingSwipeSpaceAfterBufferClear = true;
+        _sawImeComposition = false;
+        return;
+      }
+
+      if (wasPureDeletion) {
+        // Reconnect the IME to clear suggestion/prediction history while
+        // keeping _lastSentText intact so delta computation stays correct.
+        _reconnectInputToResetSuggestions();
+        _trimLeadingSuggestionSpaceAfterDelete = currentText.isNotEmpty;
+        _trimLeadingSwipeSpaceAfterBufferClear =
+            previousText.isNotEmpty && currentText.isEmpty;
+        _sawImeComposition = false;
+        return;
+      }
+
+      // For IME replacements that shorten text (e.g. autocorrect), keep the
+      // suggestion-space-trim flag since the IME may prepend a space to the
+      // next swiped word.
       _trimLeadingSuggestionSpaceAfterDelete =
           previousText.isNotEmpty &&
           currentText.characters.length < previousText.characters.length;
