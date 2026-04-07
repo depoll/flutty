@@ -1259,8 +1259,12 @@ class _MigrationSection extends ConsumerWidget {
     children: [
       const _SectionHeader(title: 'Migration'),
       ListTile(
-        leading: const Icon(Icons.save_alt),
-        title: const Text('Export full migration package'),
+        leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
+        title: Text(
+          useShareSheet
+              ? 'Share full migration package'
+              : 'Export full migration package',
+        ),
         subtitle: const Text('Encrypted transfer file (.monkeysshx)'),
         onTap: () => _exportMigration(context, ref),
       ),
@@ -1311,6 +1315,7 @@ class _MigrationSection extends ConsumerWidget {
         context: context,
         payload: payload,
         defaultFileName: 'monkeyssh-migration',
+        sharePositionOrigin: shareOriginFromContext(context),
       );
     } on Exception catch (error) {
       if (!context.mounted) {

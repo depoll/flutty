@@ -169,6 +169,66 @@ void main() {
       expect(storedHost.keyType, 'ssh-rsa');
     });
   });
+
+  group('formatSshHostKeyFingerprint', () {
+    test('produces the correct SHA-256 fingerprint for a known key blob', () {
+      // A minimal ed25519 host key blob for a known byte sequence.
+      final keyBlob = _ed25519HostKeyBlob([0x01, 0x02, 0x03, 0x04]);
+      final fingerprint = formatSshHostKeyFingerprint(keyBlob);
+
+      // Expected value pre-computed with SHA-256 for this exact blob:
+      expect(fingerprint, 'SHA256:huY78Jldb5S8vXxjT3nKH+i2oG/1vi/D8uOVazYreOQ');
+    });
+
+    test('fingerprint is deterministic for the same key bytes', () {
+      final keyBlob = _ed25519HostKeyBlob([0x01, 0x02, 0x03, 0x04]);
+
+      expect(
+        formatSshHostKeyFingerprint(keyBlob),
+        formatSshHostKeyFingerprint(keyBlob),
+        reason: 'fingerprint must be deterministic',
+      );
+    });
+
+    test('different key bytes produce different fingerprints', () {
+      final blobA = _ed25519HostKeyBlob([0xAA, 0xBB]);
+      final blobB = _ed25519HostKeyBlob([0xCC, 0xDD]);
+
+      expect(
+        formatSshHostKeyFingerprint(blobA),
+        isNot(formatSshHostKeyFingerprint(blobB)),
+      );
+    });
+
+    test('fingerprint matches the SSH wire format SHA-256 convention', () {
+      // OpenSSH displays fingerprints as "SHA256:<base64-without-padding>".
+      // Verify the prefix and that no padding characters are present.
+      final keyBlob = _ed25519HostKeyBlob([1, 2, 3]);
+      final fingerprint = formatSshHostKeyFingerprint(keyBlob);
+
+      expect(fingerprint, startsWith('SHA256:'));
+      expect(fingerprint, isNot(contains('=')));
+    });
+
+    test('formatLegacySshHostKeyFingerprint produces colon-separated MD5', () {
+      final keyBlob = _ed25519HostKeyBlob([0x01, 0x02, 0x03]);
+      final md5Fingerprint = formatLegacySshHostKeyFingerprint(keyBlob);
+
+      // Legacy format: 16 hex pairs joined by colons (47 chars total).
+      expect(
+        md5Fingerprint,
+        matches(RegExp(r'^[0-9a-f]{2}(:[0-9a-f]{2}){15}$')),
+      );
+    });
+
+    test('SHA-256 and MD5 fingerprints differ for the same key blob', () {
+      final keyBlob = _ed25519HostKeyBlob([0xDE, 0xAD, 0xBE, 0xEF]);
+      final sha256fp = formatSshHostKeyFingerprint(keyBlob);
+      final md5fp = formatLegacySshHostKeyFingerprint(keyBlob);
+
+      expect(sha256fp, isNot(md5fp));
+    });
+  });
 }
 
 VerifiedHostKey _verifiedHostKey(

@@ -193,6 +193,63 @@ void main() {
       );
     });
 
+    test('flags shell redirection as requiring confirmation', () {
+      final redirectOutReview = assessClipboardPasteCommand(
+        'cat /etc/passwd > /tmp/out.txt',
+        bracketedPasteModeEnabled: false,
+      );
+      final redirectInReview = assessClipboardPasteCommand(
+        'sqlite3 db.sqlite < dump.sql',
+        bracketedPasteModeEnabled: false,
+      );
+
+      expect(redirectOutReview.requiresReview, isTrue);
+      expect(
+        redirectOutReview.reasons,
+        contains(TerminalCommandReviewReason.redirection),
+      );
+      expect(redirectInReview.requiresReview, isTrue);
+      expect(
+        redirectInReview.reasons,
+        contains(TerminalCommandReviewReason.redirection),
+      );
+    });
+
+    test('flags backtick and dollar-paren command substitution', () {
+      final backtickReview = assessClipboardPasteCommand(
+        'echo `id`',
+        bracketedPasteModeEnabled: false,
+      );
+      final dollarParenReview = assessClipboardPasteCommand(
+        r'echo $(id)',
+        bracketedPasteModeEnabled: false,
+      );
+
+      expect(backtickReview.requiresReview, isTrue);
+      expect(
+        backtickReview.reasons,
+        contains(TerminalCommandReviewReason.commandSubstitution),
+      );
+      expect(dollarParenReview.requiresReview, isTrue);
+      expect(
+        dollarParenReview.reasons,
+        contains(TerminalCommandReviewReason.commandSubstitution),
+      );
+    });
+
+    test(
+      'safe single-line commands without special tokens do not require review',
+      () {
+        final safeReview = assessClipboardPasteCommand(
+          'ls -la /home/user',
+          bracketedPasteModeEnabled: false,
+        );
+
+        expect(safeReview.requiresReview, isFalse);
+        expect(safeReview.reasons, isEmpty);
+      },
+    );
+
     test('surfaces suspicious reasons for imported auto-connect execution', () {
       final review = assessAutoConnectCommandExecution(
         'printf "ok"\x00',

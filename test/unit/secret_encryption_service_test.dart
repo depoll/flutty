@@ -99,5 +99,157 @@ void main() {
         ),
       ).called(1);
     });
+
+    group('tamper and corruption resistance', () {
+      test('rejects a value with a tampered MAC', () async {
+        const plaintext = 'sensitive-data';
+        final encrypted = await service.encryptNullable(plaintext);
+
+        // Decode the envelope, flip one byte in the MAC, re-encode.
+        final compact = encrypted!.substring('ENCv1:'.length);
+        final envelopeJson = utf8.decode(
+          base64Url.decode(base64Url.normalize(compact)),
+        );
+        final envelope = Map<String, dynamic>.from(
+          jsonDecode(envelopeJson) as Map,
+        );
+        final macBytes = base64Url.decode(
+          base64Url.normalize(envelope['m'] as String),
+        );
+        macBytes[0] ^= 0xFF;
+        envelope['m'] = base64Url.encode(macBytes);
+
+        final tamperedCompact = base64Url.encode(
+          utf8.encode(jsonEncode(envelope)),
+        );
+        final tampered = 'ENCv1:$tamperedCompact';
+
+        await expectLater(
+          service.decryptNullable(tampered),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects a value with corrupted ciphertext', () async {
+        const plaintext = 'sensitive-data';
+        final encrypted = await service.encryptNullable(plaintext);
+
+        final compact = encrypted!.substring('ENCv1:'.length);
+        final envelopeJson = utf8.decode(
+          base64Url.decode(base64Url.normalize(compact)),
+        );
+        final envelope = Map<String, dynamic>.from(
+          jsonDecode(envelopeJson) as Map,
+        );
+        final cipherBytes = base64Url.decode(
+          base64Url.normalize(envelope['c'] as String),
+        );
+        cipherBytes[0] ^= 0xFF;
+        envelope['c'] = base64Url.encode(cipherBytes);
+
+        final tamperedCompact = base64Url.encode(
+          utf8.encode(jsonEncode(envelope)),
+        );
+        final tampered = 'ENCv1:$tamperedCompact';
+
+        await expectLater(
+          service.decryptNullable(tampered),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects a value encrypted with a different master key', () async {
+        const plaintext = 'sensitive-data';
+        final otherKey = List<int>.generate(32, (i) => 255 - i);
+        final otherService = SecretEncryptionService.forTesting(
+          masterKey: otherKey,
+        );
+        final encryptedByOther = await otherService.encryptNullable(plaintext);
+
+        await expectLater(
+          service.decryptNullable(encryptedByOther),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects an envelope with a missing nonce field', () async {
+        const plaintext = 'sensitive-data';
+        final encrypted = await service.encryptNullable(plaintext);
+
+        final compact = encrypted!.substring('ENCv1:'.length);
+        final envelopeJson = utf8.decode(
+          base64Url.decode(base64Url.normalize(compact)),
+        );
+        final envelope = Map<String, dynamic>.from(
+          jsonDecode(envelopeJson) as Map,
+        )..remove('n');
+
+        final badCompact = base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final badValue = 'ENCv1:$badCompact';
+
+        await expectLater(
+          service.decryptNullable(badValue),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects an envelope with a missing ciphertext field', () async {
+        const plaintext = 'sensitive-data';
+        final encrypted = await service.encryptNullable(plaintext);
+
+        final compact = encrypted!.substring('ENCv1:'.length);
+        final envelopeJson = utf8.decode(
+          base64Url.decode(base64Url.normalize(compact)),
+        );
+        final envelope = Map<String, dynamic>.from(
+          jsonDecode(envelopeJson) as Map,
+        )..remove('c');
+
+        final badCompact = base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final badValue = 'ENCv1:$badCompact';
+
+        await expectLater(
+          service.decryptNullable(badValue),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects an envelope with a missing MAC field', () async {
+        const plaintext = 'sensitive-data';
+        final encrypted = await service.encryptNullable(plaintext);
+
+        final compact = encrypted!.substring('ENCv1:'.length);
+        final envelopeJson = utf8.decode(
+          base64Url.decode(base64Url.normalize(compact)),
+        );
+        final envelope = Map<String, dynamic>.from(
+          jsonDecode(envelopeJson) as Map,
+        )..remove('m');
+
+        final badCompact = base64Url.encode(utf8.encode(jsonEncode(envelope)));
+        final badValue = 'ENCv1:$badCompact';
+
+        await expectLater(
+          service.decryptNullable(badValue),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects a completely invalid encrypted payload', () async {
+        const garbage = 'ENCv1:not-even-base64!!!';
+        await expectLater(
+          service.decryptNullable(garbage),
+          throwsFormatException,
+        );
+      });
+
+      test('rejects an unexpected plaintext value (no ENCv1 prefix)', () async {
+        const rawPlaintext = 'no-prefix-secret';
+        await expectLater(
+          service.decryptNullable(rawPlaintext),
+          throwsFormatException,
+        );
+      });
+    });
   });
 }
