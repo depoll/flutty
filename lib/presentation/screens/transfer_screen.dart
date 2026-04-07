@@ -4,6 +4,9 @@ import 'dart:io';
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:path/path.dart' as p;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
 
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -11,19 +14,143 @@ import '../widgets/file_picker_helpers.dart';
 
 /// File extension used for encrypted MonkeySSH transfer packages.
 const monkeySshTransferFileExtension = 'monkeysshx';
+
+/// MIME type for encrypted transfer packages.
+const monkeySshTransferMimeType = 'application/x-monkeyssh-transfer';
 const _maxTransferPayloadBytes = 10 * 1024 * 1024;
 
-/// Exports payload bytes to an encrypted transfer file.
+/// Whether the current platform uses the system share sheet for exports.
+///
+/// On iOS and Android the share sheet provides AirDrop, Quick Share, Messages,
+/// email, Save to Files, and other targets. Desktop platforms keep the
+/// file-save dialog.
+bool get useShareSheet => !kIsWeb && (Platform.isIOS || Platform.isAndroid);
+
+/// Computes the share sheet anchor rect from a widget's [BuildContext].
+///
+/// Required on iPad where the share popover must attach to a source rect.
+Rect? shareOriginFromContext(BuildContext context) {
+  final box = context.findRenderObject() as RenderBox?;
+  if (box == null || !box.hasSize) {
+    return null;
+  }
+  return box.localToGlobal(Offset.zero) & box.size;
+}
+
+/// Exports an encrypted transfer payload.
+///
+/// On mobile (iOS/Android) this opens the system share sheet so the user can
+/// AirDrop, Quick Share, save to Files, or send via any installed app.
+/// On desktop and web it falls back to a file-save dialog.
 Future<void> saveTransferPayloadToFile({
   required BuildContext context,
   required String payload,
   required String defaultFileName,
+  Rect? sharePositionOrigin,
 }) async {
   final bytes = Uint8List.fromList(utf8.encode(payload));
   final sanitizedBaseName = sanitizeTransferFileBaseName(defaultFileName);
+  final fileName = '$sanitizedBaseName.$monkeySshTransferFileExtension';
+
+  if (useShareSheet) {
+    await _sharePayloadViaNativeSheet(
+      context: context,
+      bytes: bytes,
+      fileName: fileName,
+      sharePositionOrigin: sharePositionOrigin,
+    );
+    return;
+  }
+
+  await _savePayloadToFileDialog(
+    context: context,
+    bytes: bytes,
+    fileName: fileName,
+  );
+}
+
+/// Opens the system share sheet with the transfer file attached.
+Future<void> _sharePayloadViaNativeSheet({
+  required BuildContext context,
+  required Uint8List bytes,
+  required String fileName,
+  Rect? sharePositionOrigin,
+}) async {
+  final tempDir = await getTemporaryDirectory();
+  final tempFile = File(p.join(tempDir.path, fileName));
+  try {
+    await tempFile.writeAsBytes(bytes, flush: true);
+  } on FileSystemException {
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Failed to prepare transfer file')),
+    );
+    return;
+  }
+
+  try {
+    if (!context.mounted) {
+      return;
+    }
+
+    final result = await SharePlus.instance.share(
+      ShareParams(
+        files: [
+          XFile(
+            tempFile.path,
+            mimeType: monkeySshTransferMimeType,
+            name: fileName,
+          ),
+        ],
+        sharePositionOrigin: sharePositionOrigin,
+      ),
+    );
+
+    if (!context.mounted) {
+      return;
+    }
+
+    if (result.status == ShareResultStatus.dismissed) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Share cancelled')));
+    }
+  } on Object catch (error, stackTrace) {
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'transfer',
+        context: ErrorDescription('while sharing transfer file'),
+      ),
+    );
+    if (context.mounted) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Failed to open share sheet')),
+      );
+    }
+  } finally {
+    try {
+      if (tempFile.existsSync()) {
+        await tempFile.delete();
+      }
+    } on FileSystemException {
+      // Best-effort cleanup; the OS will reclaim temp storage.
+    }
+  }
+}
+
+/// Saves the transfer payload via a native file-save dialog (desktop / web).
+Future<void> _savePayloadToFileDialog({
+  required BuildContext context,
+  required Uint8List bytes,
+  required String fileName,
+}) async {
   final targetPath = await FilePicker.platform.saveFile(
     dialogTitle: 'Export encrypted MonkeySSH transfer file',
-    fileName: '$sanitizedBaseName.$monkeySshTransferFileExtension',
+    fileName: fileName,
     type: FileType.custom,
     allowedExtensions: const [monkeySshTransferFileExtension],
     bytes: bytes,

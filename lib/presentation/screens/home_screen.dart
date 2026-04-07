@@ -1065,12 +1065,14 @@ class _HostRow extends ConsumerWidget {
             title: Text('Duplicate'),
           ),
         ),
-        const PopupMenuItem<_HostContextAction>(
+        PopupMenuItem<_HostContextAction>(
           value: _HostContextAction.export,
           child: ListTile(
             contentPadding: EdgeInsets.zero,
-            leading: Icon(Icons.save_alt),
-            title: Text('Export Encrypted File'),
+            leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
+            title: Text(
+              useShareSheet ? 'Share Encrypted' : 'Export Encrypted File',
+            ),
           ),
         ),
         PopupMenuItem<_HostContextAction>(
@@ -1159,6 +1161,7 @@ class _HostRow extends ConsumerWidget {
       context: context,
       payload: payload,
       defaultFileName: defaultFileName,
+      sharePositionOrigin: shareOriginFromContext(context),
     );
   }
 
@@ -1681,7 +1684,7 @@ class _KeyRow extends ConsumerWidget {
 
               // Transfer and key actions
               _SmallIconButton(
-                icon: Icons.save_alt,
+                icon: useShareSheet ? Icons.share : Icons.save_alt,
                 onTap: () => unawaited(_exportEncryptedFile(context, ref)),
               ),
               _SmallIconButton(
@@ -1756,6 +1759,7 @@ class _KeyRow extends ConsumerWidget {
       context: context,
       payload: payload,
       defaultFileName: defaultFileName,
+      sharePositionOrigin: shareOriginFromContext(context),
     );
   }
 
