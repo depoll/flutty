@@ -217,7 +217,7 @@ void main() {
 
     test('flags backtick and dollar-paren command substitution', () {
       final backtickReview = assessClipboardPasteCommand(
-        r'echo `id`',
+        'echo `id`',
         bracketedPasteModeEnabled: false,
       );
       final dollarParenReview = assessClipboardPasteCommand(

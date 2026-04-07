@@ -18,10 +18,7 @@ final _testKey = SshKey(
   name: 'My Ed25519 Key',
   keyType: 'ed25519',
   publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5',
-  privateKey:
-      '-----BEGIN OPENSSH PRIVATE KEY-----\n'
-      'test-private-key-material\n'
-      '-----END OPENSSH PRIVATE KEY-----',
+  privateKey: 'test-private-key-material',
   fingerprint: 'SHA256:AB:CD:EF:01',
   createdAt: DateTime(2026),
 );
@@ -77,6 +74,14 @@ void main() {
       'Copy Private Key button only appears after the user explicitly '
       'reveals the private key',
       (tester) async {
+        // Use a taller viewport so the bottom sheet content is fully visible.
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        tester.view.physicalSize = const Size(800, 1200);
+        tester.view.devicePixelRatio = 1.0;
+
         await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
@@ -97,6 +102,13 @@ void main() {
       'canceling the confirmation dialog does not copy the private key '
       'to the clipboard',
       (tester) async {
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        tester.view.physicalSize = const Size(800, 1200);
+        tester.view.devicePixelRatio = 1.0;
+
         await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));
@@ -123,6 +135,13 @@ void main() {
     testWidgets(
       'confirming the dialog copies the private key to the clipboard',
       (tester) async {
+        addTearDown(() {
+          tester.view.resetPhysicalSize();
+          tester.view.resetDevicePixelRatio();
+        });
+        tester.view.physicalSize = const Size(800, 1200);
+        tester.view.devicePixelRatio = 1.0;
+
         await tester.pumpWidget(_buildKeyScreen());
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 100));

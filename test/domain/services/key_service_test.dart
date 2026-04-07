@@ -241,47 +241,37 @@ void main() {
       });
     });
 
-    group('key import deduplication', () {
-      test(
-        'duplicate key lookup by public+private key pair returns the existing key',
-        () async {
-          // Simulate the deduplication logic used by SecureTransferService:
-          // two inserts with the same public+private material should be
-          // detected as equal at the service layer before insertion.
-          final id = await keyRepository.insert(
-            SshKeysCompanion.insert(
-              name: 'Original Key',
-              keyType: 'ed25519',
-              publicKey: 'ssh-ed25519 AAAAdedup',
-              privateKey: 'test-key-material-dedup',
-            ),
-          );
+    group('key lookup by unique fields', () {
+      test('can look up a key by its public+private key pair', () async {
+        final id = await keyRepository.insert(
+          SshKeysCompanion.insert(
+            name: 'Original Key',
+            keyType: 'ed25519',
+            publicKey: 'ssh-ed25519 AAAAdedup',
+            privateKey: 'test-key-material-dedup',
+          ),
+        );
 
-          // A second insert of the same material should produce a different
-          // id, confirming the repository does not auto-deduplicate; but the
-          // service layer (SecureTransferService._importKeyMap) does.
-          final keys = await keyService.getAllKeys();
-          final match = keys.where(
-            (k) =>
-                k.publicKey == 'ssh-ed25519 AAAAdedup' &&
-                k.privateKey == 'test-key-material-dedup',
-          );
+        final keys = await keyService.getAllKeys();
+        final match = keys.where(
+          (k) =>
+              k.publicKey == 'ssh-ed25519 AAAAdedup' &&
+              k.privateKey == 'test-key-material-dedup',
+        );
 
-          expect(match, hasLength(1));
-          expect(match.first.id, id);
-        },
-      );
+        expect(match, hasLength(1));
+        expect(match.first.id, id);
+      });
 
-      test('keys with the same fingerprint are treated as identical by the '
-          'deduplication check', () async {
-        final fingerprint = 'SHA256:DE:AD:BE:EF';
+      test('can look up a key by its fingerprint', () async {
+        const fingerprint = 'SHA256:DE:AD:BE:EF';
         final id = await keyRepository.insert(
           SshKeysCompanion.insert(
             name: 'Fingerprintable Key',
             keyType: 'ed25519',
             publicKey: 'ssh-ed25519 AAAAfp',
             privateKey: 'test-key-material-fp',
-            fingerprint: Value(fingerprint),
+            fingerprint: const Value(fingerprint),
           ),
         );
 
