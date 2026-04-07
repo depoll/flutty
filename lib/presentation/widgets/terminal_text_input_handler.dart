@@ -16,6 +16,17 @@ const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
 const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 
+/// Maximum delay between a modifier chord and its follow-up character for the
+/// follow-up to be treated as part of the chord (e.g. tmux's Ctrl+b, c).
+@visibleForTesting
+const modifierChordFollowUpWindow = Duration(milliseconds: 500);
+
+/// Clock function used to timestamp modifier chord resets.
+///
+/// Override in tests to control the chord follow-up time window.
+@visibleForTesting
+DateTime Function() modifierChordClock = DateTime.now;
+
 /// Confirms suspicious text inserted through the system keyboard or IME.
 typedef TerminalTextInputReviewCallback =
     Future<bool> Function(TerminalCommandReview review);
@@ -182,7 +193,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
-  bool _resetNextInputAfterModifierChord = false;
+  DateTime? _modifierChordResetTime;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -523,7 +534,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
-      _resetNextInputAfterModifierChord = false;
+      _modifierChordResetTime = null;
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _pendingPerformedEnterText = null;
@@ -544,7 +555,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
-    _resetNextInputAfterModifierChord = false;
+    _modifierChordResetTime = null;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;
@@ -694,7 +705,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
-    _resetNextInputAfterModifierChord = false;
+    _modifierChordResetTime = null;
     _syncEditingStateWithUserText('');
   }
 
@@ -1267,8 +1278,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       // Ctrl+b, c. After the first modifier character resets, the follow-up
       // character is sent without a modifier but is still part of the chord
       // and should not accumulate in the IME suggestion context.
+      //
+      // A short time window (500 ms) distinguishes rapid chord follow-ups
+      // from normal typing after a standalone modifier like Ctrl+C.
+      final chordResetTime = _modifierChordResetTime;
       final wasChordFollowUp =
-          _resetNextInputAfterModifierChord &&
+          chordResetTime != null &&
+          modifierChordClock().difference(chordResetTime) <
+              modifierChordFollowUpWindow &&
           delta.deletedCount == 0 &&
           delta.appendedText.characters.length == 1;
 
@@ -1279,15 +1296,17 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         // shell's response to a control code is unpredictable.
         _resetCommittedInputState();
         _trimLeadingSwipeSpaceAfterBufferClear = true;
-        // Set the flag so the next single character is also reset (supports
-        // multi-part chords like tmux's Ctrl+b, c).
-        _resetNextInputAfterModifierChord = wasModifiedSingleChar;
+        // Record the reset time so a rapid follow-up character is also
+        // treated as part of the chord.
+        _modifierChordResetTime = wasModifiedSingleChar
+            ? modifierChordClock()
+            : null;
         _sawImeComposition = false;
         return;
       }
 
-      // Any non-chord input clears the chord follow-up flag.
-      _resetNextInputAfterModifierChord = false;
+      // Any non-chord input clears the chord follow-up window.
+      _modifierChordResetTime = null;
 
       if (wasPureDeletion) {
         // Reconnect the IME to clear suggestion/prediction history while
@@ -1360,7 +1379,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
-    _resetNextInputAfterModifierChord = false;
+    _modifierChordResetTime = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }

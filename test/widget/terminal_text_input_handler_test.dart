@@ -6195,6 +6195,9 @@ void main() {
         final terminal = Terminal(onOutput: terminalOutput.add);
         final focusNode = FocusNode();
         var modifierActive = false;
+        var fakeNow = DateTime(2026);
+        modifierChordClock = () => fakeNow;
+        addTearDown(() => modifierChordClock = DateTime.now);
 
         await tester.pumpWidget(
           MaterialApp(
@@ -6233,7 +6236,8 @@ void main() {
           ),
         );
 
-        // Step 2: 'c' — the second part of the tmux chord, no modifier.
+        // Step 2: 'c' within the chord window (< 500 ms).
+        fakeNow = fakeNow.add(const Duration(milliseconds: 100));
         tester.testTextInput.updateEditingValue(
           _editingValue('c', selectionOffset: 1),
         );
@@ -6256,6 +6260,75 @@ void main() {
         await tester.pump();
 
         // Normal typing accumulates in the buffer.
+        client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}l',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'does not reset after modifier chord when follow-up arrives after timeout',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        var modifierActive = false;
+        var fakeNow = DateTime(2026);
+        modifierChordClock = () => fakeNow;
+        addTearDown(() => modifierChordClock = DateTime.now);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                hasActiveToolbarModifier: () => modifierActive,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Ctrl+C (standalone modifier chord).
+        modifierActive = true;
+        tester.testTextInput.updateEditingValue(
+          _editingValue('c', selectionOffset: 1),
+        );
+        await tester.pump();
+        modifierActive = false;
+
+        // Buffer is reset after Ctrl+C.
+        var client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        // Advance past the chord window (> 500 ms).
+        fakeNow = fakeNow.add(const Duration(milliseconds: 600));
+
+        // Type 'l' — this should accumulate normally because the chord
+        // window has expired.
+        tester.testTextInput.updateEditingValue(
+          _editingValue('l', selectionOffset: 1),
+        );
+        await tester.pump();
+
         client = _terminalTextInputClient(tester);
         expect(
           client.currentTextEditingValue,
