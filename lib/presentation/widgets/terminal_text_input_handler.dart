@@ -202,6 +202,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
+  bool _clearImeAfterNextTouchCursorMove = false;
   DateTime? _modifierChordResetTime;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
@@ -298,6 +299,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       ),
       readOnly: widget.readOnly,
     );
+    if (event.kind == PointerDeviceKind.touch && shouldRequestKeyboard) {
+      _clearImeAfterNextTouchCursorMove = true;
+    }
     final shouldSkipKeyboardRequest =
         event.kind == PointerDeviceKind.touch && _skipNextTouchKeyboardRequest;
     final shouldSkipTapToShow =
@@ -670,6 +674,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _clearImeAfterNextTouchCursorMove = false;
     _modifierChordResetTime = null;
     _syncEditingStateWithUserText('');
   }
@@ -1180,10 +1185,22 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
                 collapsedMoveAwayFromReplacement) &&
             targetCursorOffset != null &&
             targetCursorOffset != _lastSentCursorOffset;
+        final shouldClearAfterCollapsedCursorMove =
+            _clearImeAfterNextTouchCursorMove &&
+            _lastProcessedUserSelectionWasValid &&
+            _lastProcessedSelectionWasCollapsed &&
+            targetCursorOffset != null &&
+            targetCursorOffset != _lastSentCursorOffset;
         if (targetCursorOffset != null &&
             targetCursorOffset != _lastSentCursorOffset) {
           _notifyUserInput();
           _moveTerminalCursorTo(targetCursorOffset);
+        }
+        _clearImeAfterNextTouchCursorMove = false;
+        if (shouldClearAfterCollapsedCursorMove) {
+          _clearImeBufferForFreshInput();
+          _sawImeComposition = false;
+          return;
         }
         _syncEditingStateWithUserText(
           currentText,
@@ -1194,6 +1211,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
+      _clearImeAfterNextTouchCursorMove = false;
       final delta = _computeTextDelta(
         currentText,
         cursorOffsetHint: targetCursorOffset,
