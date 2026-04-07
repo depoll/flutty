@@ -46,6 +46,33 @@ void main() {
       expect(find.byTooltip('Page Down'), findsOneWidget);
     });
 
+    testWidgets('keeps series keys to the left of arrow keys', (tester) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      const expectedOrder = [
+        'Page Up',
+        'Page Down',
+        'Home',
+        'End',
+        'Left',
+        'Right',
+        'Up',
+        'Down',
+      ];
+      final positions = <String, double>{
+        for (final label in expectedOrder)
+          label: tester.getCenter(find.byTooltip(label)).dx,
+      };
+      final actualOrder = expectedOrder.toList()
+        ..sort((a, b) => positions[a]!.compareTo(positions[b]!));
+
+      expect(actualOrder, expectedOrder);
+    });
+
     testWidgets('modifier key toggles state on tap', (tester) async {
       await tester.pumpWidget(
         MaterialApp(

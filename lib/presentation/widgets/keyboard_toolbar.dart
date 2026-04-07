@@ -313,81 +313,86 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   );
 
   Widget _buildNavigationRow() => _KeyRow(
-    children: [
-      _ToolbarButton(
-        icon: Icons.expand_less_rounded,
-        label: 'PgUp',
-        onTap: () => _sendSequence('\x1b[5~'),
-        onLongPressStart: () => _sendSequence('\x1b[5~'),
-        onLongPressRepeat: () =>
-            _sendSequence('\x1b[5~', withHaptic: false, consumeOneShot: false),
-        tooltip: 'Page Up',
-      ),
-      _ToolbarButton(
-        icon: Icons.expand_more_rounded,
-        label: 'PgDn',
-        onTap: () => _sendSequence('\x1b[6~'),
-        onLongPressStart: () => _sendSequence('\x1b[6~'),
-        onLongPressRepeat: () =>
-            _sendSequence('\x1b[6~', withHaptic: false, consumeOneShot: false),
-        tooltip: 'Page Down',
-      ),
-      _ToolbarButton(
-        icon: Icons.first_page_rounded,
-        label: 'Home',
-        onTap: () => _sendSequence('\x1b[H'),
-        onLongPressStart: () => _sendSequence('\x1b[H'),
-        onLongPressRepeat: () =>
-            _sendSequence('\x1b[H', withHaptic: false, consumeOneShot: false),
-        tooltip: 'Home',
-      ),
-      _ToolbarButton(
-        icon: Icons.last_page_rounded,
-        label: 'End',
-        onTap: () => _sendSequence('\x1b[F'),
-        onLongPressStart: () => _sendSequence('\x1b[F'),
-        onLongPressRepeat: () =>
-            _sendSequence('\x1b[F', withHaptic: false, consumeOneShot: false),
-        tooltip: 'End',
-      ),
-      _ToolbarButton(
-        icon: Icons.arrow_back_rounded,
-        label: '',
-        onTap: () => _sendArrow(_Arrow.left),
-        onLongPressStart: () => _sendArrow(_Arrow.left),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
-        tooltip: 'Left',
-      ),
-      _ToolbarButton(
-        icon: Icons.arrow_forward_rounded,
-        label: '',
-        onTap: () => _sendArrow(_Arrow.right),
-        onLongPressStart: () => _sendArrow(_Arrow.right),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
-        tooltip: 'Right',
-      ),
-      _ToolbarButton(
-        icon: Icons.arrow_upward_rounded,
-        label: '',
-        onTap: () => _sendArrow(_Arrow.up),
-        onLongPressStart: () => _sendArrow(_Arrow.up),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
-        tooltip: 'Up',
-      ),
-      _ToolbarButton(
-        icon: Icons.arrow_downward_rounded,
-        label: '',
-        onTap: () => _sendArrow(_Arrow.down),
-        onLongPressStart: () => _sendArrow(_Arrow.down),
-        onLongPressRepeat: () =>
-            _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
-        tooltip: 'Down',
-      ),
-    ],
+    children: [..._buildSeriesNavigationButtons(), ..._buildArrowButtons()],
   );
+
+  List<Widget> _buildSeriesNavigationButtons() => [
+    _ToolbarButton(
+      icon: Icons.expand_less_rounded,
+      label: 'PgUp',
+      onTap: () => _sendSequence('\x1b[5~'),
+      onLongPressStart: () => _sendSequence('\x1b[5~'),
+      onLongPressRepeat: () =>
+          _sendSequence('\x1b[5~', withHaptic: false, consumeOneShot: false),
+      tooltip: 'Page Up',
+    ),
+    _ToolbarButton(
+      icon: Icons.expand_more_rounded,
+      label: 'PgDn',
+      onTap: () => _sendSequence('\x1b[6~'),
+      onLongPressStart: () => _sendSequence('\x1b[6~'),
+      onLongPressRepeat: () =>
+          _sendSequence('\x1b[6~', withHaptic: false, consumeOneShot: false),
+      tooltip: 'Page Down',
+    ),
+    _ToolbarButton(
+      icon: Icons.first_page_rounded,
+      label: 'Home',
+      onTap: () => _sendSequence('\x1b[H'),
+      onLongPressStart: () => _sendSequence('\x1b[H'),
+      onLongPressRepeat: () =>
+          _sendSequence('\x1b[H', withHaptic: false, consumeOneShot: false),
+      tooltip: 'Home',
+    ),
+    _ToolbarButton(
+      icon: Icons.last_page_rounded,
+      label: 'End',
+      onTap: () => _sendSequence('\x1b[F'),
+      onLongPressStart: () => _sendSequence('\x1b[F'),
+      onLongPressRepeat: () =>
+          _sendSequence('\x1b[F', withHaptic: false, consumeOneShot: false),
+      tooltip: 'End',
+    ),
+  ];
+
+  List<Widget> _buildArrowButtons() => [
+    _ToolbarButton(
+      icon: Icons.arrow_back_rounded,
+      label: '',
+      onTap: () => _sendArrow(_Arrow.left),
+      onLongPressStart: () => _sendArrow(_Arrow.left),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.left, withHaptic: false, consumeOneShot: false),
+      tooltip: 'Left',
+    ),
+    _ToolbarButton(
+      icon: Icons.arrow_forward_rounded,
+      label: '',
+      onTap: () => _sendArrow(_Arrow.right),
+      onLongPressStart: () => _sendArrow(_Arrow.right),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.right, withHaptic: false, consumeOneShot: false),
+      tooltip: 'Right',
+    ),
+    _ToolbarButton(
+      icon: Icons.arrow_upward_rounded,
+      label: '',
+      onTap: () => _sendArrow(_Arrow.up),
+      onLongPressStart: () => _sendArrow(_Arrow.up),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.up, withHaptic: false, consumeOneShot: false),
+      tooltip: 'Up',
+    ),
+    _ToolbarButton(
+      icon: Icons.arrow_downward_rounded,
+      label: '',
+      onTap: () => _sendArrow(_Arrow.down),
+      onLongPressStart: () => _sendArrow(_Arrow.down),
+      onLongPressRepeat: () =>
+          _sendArrow(_Arrow.down, withHaptic: false, consumeOneShot: false),
+      tooltip: 'Down',
+    ),
+  ];
 
   void _toggleCtrl() {
     HapticFeedback.selectionClick();
