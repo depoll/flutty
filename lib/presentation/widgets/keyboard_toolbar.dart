@@ -313,7 +313,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
   );
 
   Widget _buildNavigationRow() => _KeyRow(
-    children: [..._buildSeriesNavigationButtons(), ..._buildArrowButtons()],
+    children: [..._buildArrowButtons(), ..._buildSeriesNavigationButtons()],
   );
 
   List<Widget> _buildSeriesNavigationButtons() => [

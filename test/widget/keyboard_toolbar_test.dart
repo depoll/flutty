@@ -46,7 +46,9 @@ void main() {
       expect(find.byTooltip('Page Down'), findsOneWidget);
     });
 
-    testWidgets('keeps series keys to the left of arrow keys', (tester) async {
+    testWidgets('keeps arrow keys to the left of PgUp/PgDn/Home/End', (
+      tester,
+    ) async {
       await tester.pumpWidget(
         MaterialApp(
           home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
@@ -54,14 +56,14 @@ void main() {
       );
 
       const expectedOrder = [
-        'Page Up',
-        'Page Down',
-        'Home',
-        'End',
         'Left',
         'Right',
         'Up',
         'Down',
+        'Page Up',
+        'Page Down',
+        'Home',
+        'End',
       ];
       final positions = <String, double>{
         for (final label in expectedOrder)
