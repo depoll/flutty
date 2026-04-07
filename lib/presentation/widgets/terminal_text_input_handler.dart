@@ -182,6 +182,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
+  bool _resetNextInputAfterModifierChord = false;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -522,6 +523,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
+      _resetNextInputAfterModifierChord = false;
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _pendingPerformedEnterText = null;
@@ -542,6 +544,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _resetNextInputAfterModifierChord = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;
@@ -691,6 +694,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _resetNextInputAfterModifierChord = false;
     _syncEditingStateWithUserText('');
   }
 
@@ -1259,15 +1263,31 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           delta.appendedText.characters.length == 1 &&
           (widget.hasActiveToolbarModifier?.call() ?? false);
 
-      if (wasModifiedSingleChar) {
+      // Also detect the second character of a two-part chord like tmux's
+      // Ctrl+b, c. After the first modifier character resets, the follow-up
+      // character is sent without a modifier but is still part of the chord
+      // and should not accumulate in the IME suggestion context.
+      final wasChordFollowUp =
+          _resetNextInputAfterModifierChord &&
+          delta.deletedCount == 0 &&
+          delta.appendedText.characters.length == 1;
+
+      if (wasModifiedSingleChar || wasChordFollowUp) {
         // The character was transformed into a control code by the toolbar
-        // modifier, so it does not represent visible terminal text. Do a full
-        // reset — the shell's response to a control code is unpredictable.
+        // modifier (or is the follow-up of a two-part chord), so it does
+        // not represent visible terminal text. Do a full reset — the
+        // shell's response to a control code is unpredictable.
         _resetCommittedInputState();
         _trimLeadingSwipeSpaceAfterBufferClear = true;
+        // Set the flag so the next single character is also reset (supports
+        // multi-part chords like tmux's Ctrl+b, c).
+        _resetNextInputAfterModifierChord = wasModifiedSingleChar;
         _sawImeComposition = false;
         return;
       }
+
+      // Any non-chord input clears the chord follow-up flag.
+      _resetNextInputAfterModifierChord = false;
 
       if (wasPureDeletion) {
         // Reconnect the IME to clear suggestion/prediction history while
@@ -1340,6 +1360,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _resetNextInputAfterModifierChord = false;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }

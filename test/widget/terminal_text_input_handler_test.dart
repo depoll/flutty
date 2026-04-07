@@ -6188,6 +6188,87 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'resets IME after second character of a two-part chord (tmux Ctrl+b, c)',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        var modifierActive = false;
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                hasActiveToolbarModifier: () => modifierActive,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        // Step 1: Ctrl+b (modifier active, type 'b').
+        modifierActive = true;
+        tester.testTextInput.updateEditingValue(
+          _editingValue('b', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        // Modifier consumed (one-shot).
+        modifierActive = false;
+
+        // After Ctrl+b the buffer should be fully reset.
+        var client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        // Step 2: 'c' — the second part of the tmux chord, no modifier.
+        tester.testTextInput.updateEditingValue(
+          _editingValue('c', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        // The follow-up character should also trigger a full reset.
+        client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        // Step 3: Type normally — 'l' should accumulate (no more chord).
+        tester.testTextInput.updateEditingValue(
+          _editingValue('l', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        // Normal typing accumulates in the buffer.
+        client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}l',
+            selection: TextSelection.collapsed(offset: 3),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
     testWidgets('regular typing accumulates in IME buffer without reset', (
       tester,
     ) async {
