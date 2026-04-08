@@ -206,6 +206,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   DateTime? _modifierChordResetTime;
   String? _pendingDeleteResetBaselineText;
   int? _pendingDeleteResetBaselineCursorOffset;
+  String? _pendingDeleteResetDeletedSuffixText;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -447,12 +448,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     bool armModifierChordWindow = false,
     String? deleteResetBaselineText,
     int? deleteResetBaselineCursorOffset,
+    String? deleteResetDeletedSuffixText,
   }) {
     _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
     if (deleteResetBaselineText != null &&
         deleteResetBaselineCursorOffset != null) {
       _pendingDeleteResetBaselineText = deleteResetBaselineText;
       _pendingDeleteResetBaselineCursorOffset = deleteResetBaselineCursorOffset;
+      _pendingDeleteResetDeletedSuffixText = deleteResetDeletedSuffixText;
     } else {
       _clearPendingDeleteResetBaseline();
     }
@@ -701,6 +704,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _clearPendingDeleteResetBaseline() {
     _pendingDeleteResetBaselineText = null;
     _pendingDeleteResetBaselineCursorOffset = null;
+    _pendingDeleteResetDeletedSuffixText = null;
   }
 
   bool _isWhitespaceGrapheme(String grapheme) =>
@@ -718,6 +722,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   _resolveDeleteResetContinuation(String currentText, {int? cursorOffsetHint}) {
     final baselineText = _pendingDeleteResetBaselineText;
     final baselineCursorOffset = _pendingDeleteResetBaselineCursorOffset;
+    final deletedSuffixText = _pendingDeleteResetDeletedSuffixText;
     if (baselineText == null ||
         baselineCursorOffset == null ||
         !_trimLeadingSuggestionSpaceAfterDelete ||
@@ -726,8 +731,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final currentGraphemes = currentText.characters.toList(growable: false);
+    final hasLeadingReplacementSeparator =
+        currentGraphemes.length > 1 &&
+        _isWhitespaceGrapheme(currentGraphemes.first) &&
+        !_isWhitespaceGrapheme(currentGraphemes[1]);
+    final hasTrailingReplacementSeparator =
+        currentGraphemes.isNotEmpty &&
+        _isWhitespaceGrapheme(currentGraphemes.last);
     if (currentGraphemes.isEmpty ||
-        !_isWhitespaceGrapheme(currentGraphemes.last)) {
+        (!hasLeadingReplacementSeparator && !hasTrailingReplacementSeparator)) {
       return null;
     }
 
@@ -747,15 +759,44 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       tokenStart--;
     }
 
-    final mergedText =
-        baselineGraphemes.sublist(0, tokenStart).join() + currentText;
+    final baselineToken = baselineGraphemes
+        .sublist(tokenStart, trimmedBaselineLength)
+        .join();
+    var mergedCurrentText = currentText;
+    var mergedCursorOffsetHint = cursorOffsetHint;
+    if (hasLeadingReplacementSeparator) {
+      // After a delete-reset, the IME can prepend a separator to the
+      // replacement token even though we're already replacing the current word.
+      // Trim that separator before merging with the preserved baseline.
+      mergedCurrentText = currentGraphemes.sublist(1).join();
+      if (mergedCursorOffsetHint != null && mergedCursorOffsetHint > 0) {
+        mergedCursorOffsetHint--;
+      }
+    }
+
+    final shouldReplaceCurrentToken =
+        hasTrailingReplacementSeparator ||
+        mergedCurrentText.startsWith(baselineToken);
+    final shouldAppendToBaseline =
+        hasLeadingReplacementSeparator &&
+        !hasTrailingReplacementSeparator &&
+        deletedSuffixText != null &&
+        deletedSuffixText.isNotEmpty &&
+        mergedCurrentText.startsWith(deletedSuffixText);
+    if (!shouldReplaceCurrentToken && !shouldAppendToBaseline) {
+      return null;
+    }
+    final mergedText = shouldReplaceCurrentToken
+        ? baselineGraphemes.sublist(0, tokenStart).join() + mergedCurrentText
+        : baselineText + mergedCurrentText;
     return (
       previousText: baselineText,
       previousCursorOffset: baselineCursorOffset,
       currentText: mergedText,
-      cursorOffset: cursorOffsetHint == null
+      cursorOffset: mergedCursorOffsetHint == null
           ? null
-          : tokenStart + cursorOffsetHint,
+          : (shouldReplaceCurrentToken ? tokenStart : baselineCursorOffset) +
+                mergedCursorOffsetHint,
     );
   }
 
@@ -1417,9 +1458,18 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _modifierChordResetTime = null;
 
       if (wasTrailingPureDeletion) {
+        final previousGraphemes = previousText.characters.toList(
+          growable: false,
+        );
+        final currentGraphemes = effectiveCurrentText.characters.toList(
+          growable: false,
+        );
         _clearImeBufferForFreshInput(
           deleteResetBaselineText: effectiveCurrentText,
           deleteResetBaselineCursorOffset: _lastSentCursorOffset,
+          deleteResetDeletedSuffixText: previousGraphemes
+              .sublist(currentGraphemes.length)
+              .join(),
         );
         _sawImeComposition = false;
         return;

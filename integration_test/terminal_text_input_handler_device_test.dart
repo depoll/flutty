@@ -372,6 +372,123 @@ void main() {
     );
 
     testWidgets(
+      'preserves the shortened prefix when a delete-reset continuation resumes the same word with the live terminal prefix',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'didn',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}didnt',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}didn',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker test',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'didntest');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'te',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bte',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B the ',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh ',
+            initialCursorOffset: 'teh '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'preserves a manual separator when replacing a swiped word after backspacing into it',
       (tester) async {
         final terminalOutput = <String>[];

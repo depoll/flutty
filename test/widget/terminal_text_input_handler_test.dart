@@ -280,6 +280,334 @@ List<_MatrixScenario> _buildGptComparisonScenarios() {
   ];
 }
 
+List<_MatrixScenario> _buildFlutterReplacedParityScenarios() {
+  const testText = 'From a false proposition, anything follows.';
+  final cases =
+      <
+        ({
+          String name,
+          TextEditingValue initialValue,
+          TextRange replacementRange,
+          String replacementText,
+        })
+      >[
+        (
+          name: 'selection deletion',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 5, extentOffset: 13),
+          ),
+          replacementRange: const TextSelection(
+            baseOffset: 5,
+            extentOffset: 13,
+          ),
+          replacementText: '',
+        ),
+        (
+          name: 'reversed selection deletion',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextSelection(
+            baseOffset: 13,
+            extentOffset: 5,
+          ),
+          replacementText: '',
+        ),
+        (
+          name: 'insert',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection.collapsed(offset: 5),
+          ),
+          replacementRange: const TextSelection.collapsed(offset: 5),
+          replacementText: 'AA',
+        ),
+        (
+          name: 'replace before selection',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 4, end: 5),
+          replacementText: 'AA',
+        ),
+        (
+          name: 'replace after selection',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 13, end: 14),
+          replacementText: 'AA',
+        ),
+        (
+          name: 'replace inside selection - start boundary',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 5, end: 6),
+          replacementText: 'AA',
+        ),
+        (
+          name: 'replace inside selection - end boundary',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 12, end: 13),
+          replacementText: 'AA',
+        ),
+        (
+          name: 'delete after selection',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 13, end: 14),
+          replacementText: '',
+        ),
+        (
+          name: 'delete inside selection - start boundary',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 5, end: 6),
+          replacementText: '',
+        ),
+        (
+          name: 'delete inside selection - end boundary',
+          initialValue: const TextEditingValue(
+            text: testText,
+            selection: TextSelection(baseOffset: 13, extentOffset: 5),
+          ),
+          replacementRange: const TextRange(start: 12, end: 13),
+          replacementText: '',
+        ),
+      ];
+
+  return [
+    for (final scenario in cases)
+      (
+        name: 'flutter TextEditingValue.replaced ${scenario.name}',
+        sequence: [
+          scenario.initialValue,
+          scenario.initialValue.replaced(
+            scenario.replacementRange,
+            scenario.replacementText,
+          ),
+        ],
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+  ];
+}
+
+List<_MatrixScenario> _buildFlutterDeltaParityScenarios() {
+  final cases =
+      <({String name, TextEditingValue initialValue, TextEditingDelta delta})>[
+        (
+          name: 'insertion at a collapsed selection',
+          initialValue: TextEditingValue.empty,
+          delta: const TextEditingDeltaInsertion(
+            oldText: '',
+            textInserted: 'let there be text',
+            insertionOffset: 0,
+            selection: TextSelection.collapsed(offset: 17),
+            composing: TextRange.empty,
+          ),
+        ),
+        (
+          name: 'insertion at end of composing region',
+          initialValue: const TextEditingValue(
+            text: 'hello worl',
+            selection: TextSelection.collapsed(offset: 10),
+          ),
+          delta: const TextEditingDeltaInsertion(
+            oldText: 'hello worl',
+            textInserted: 'd',
+            insertionOffset: 10,
+            selection: TextSelection.collapsed(offset: 11),
+            composing: TextRange(start: 6, end: 11),
+          ),
+        ),
+        (
+          name: 'deletion at end of composing region',
+          initialValue: const TextEditingValue(
+            text: 'hello world',
+            selection: TextSelection.collapsed(offset: 11),
+          ),
+          delta: const TextEditingDeltaDeletion(
+            oldText: 'hello world',
+            deletedRange: TextRange(start: 10, end: 11),
+            selection: TextSelection.collapsed(offset: 10),
+            composing: TextRange(start: 6, end: 10),
+          ),
+        ),
+        (
+          name: 'replacement with longer text',
+          initialValue: const TextEditingValue(
+            text: 'hello worfi',
+            selection: TextSelection.collapsed(offset: 11),
+          ),
+          delta: const TextEditingDeltaReplacement(
+            oldText: 'hello worfi',
+            replacementText: 'working',
+            replacedRange: TextRange(start: 6, end: 11),
+            selection: TextSelection.collapsed(offset: 13),
+            composing: TextRange(start: 6, end: 13),
+          ),
+        ),
+        (
+          name: 'replacement with shorter text',
+          initialValue: const TextEditingValue(
+            text: 'hello world',
+            selection: TextSelection.collapsed(offset: 11),
+          ),
+          delta: const TextEditingDeltaReplacement(
+            oldText: 'hello world',
+            replacementText: 'h',
+            replacedRange: TextRange(start: 6, end: 11),
+            selection: TextSelection.collapsed(offset: 7),
+            composing: TextRange(start: 6, end: 7),
+          ),
+        ),
+        (
+          name: 'replacement with same-length text',
+          initialValue: const TextEditingValue(
+            text: 'hello world',
+            selection: TextSelection.collapsed(offset: 11),
+          ),
+          delta: const TextEditingDeltaReplacement(
+            oldText: 'hello world',
+            replacementText: 'words',
+            replacedRange: TextRange(start: 6, end: 11),
+            selection: TextSelection.collapsed(offset: 11),
+            composing: TextRange(start: 6, end: 11),
+          ),
+        ),
+        (
+          name: 'non-text selection/composing update',
+          initialValue: const TextEditingValue(
+            text: 'hello world',
+            selection: TextSelection.collapsed(offset: 11),
+          ),
+          delta: const TextEditingDeltaNonTextUpdate(
+            oldText: 'hello world',
+            selection: TextSelection.collapsed(offset: 10),
+            composing: TextRange(start: 6, end: 11),
+          ),
+        ),
+      ];
+
+  return [
+    for (final scenario in cases)
+      (
+        name: 'flutter TextEditingDelta ${scenario.name}',
+        sequence: [
+          scenario.initialValue,
+          scenario.delta.apply(scenario.initialValue),
+        ],
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+  ];
+}
+
+List<_MatrixScenario> _buildFlutterComposingParityScenarios() {
+  const baseValue = TextEditingValue(
+    text: 'foo composing bar',
+    selection: TextSelection.collapsed(offset: 4),
+    composing: TextRange(start: 4, end: 12),
+  );
+
+  return [
+    (
+      name:
+          'flutter EditableText preserves composing range when a collapsed caret moves within it',
+      sequence: const [
+        baseValue,
+        TextEditingValue(
+          text: 'foo composing bar',
+          selection: TextSelection.collapsed(offset: 5),
+          composing: TextRange(start: 4, end: 12),
+        ),
+      ],
+      textFieldEchoes: null,
+      terminalEchoes: null,
+    ),
+    (
+      name:
+          'flutter EditableText clears composing range when a collapsed caret moves before it',
+      sequence: const [
+        baseValue,
+        TextEditingValue(
+          text: 'foo composing bar',
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      ],
+      textFieldEchoes: null,
+      terminalEchoes: null,
+    ),
+    (
+      name:
+          'flutter EditableText clears composing range when a collapsed caret moves after it',
+      sequence: const [
+        baseValue,
+        TextEditingValue(
+          text: 'foo composing bar',
+          selection: TextSelection.collapsed(offset: 14),
+        ),
+      ],
+      textFieldEchoes: null,
+      terminalEchoes: null,
+    ),
+    (
+      name:
+          'flutter EditableText clears composing range when a selection moves before it',
+      sequence: const [
+        baseValue,
+        TextEditingValue(
+          text: 'foo composing bar',
+          selection: TextSelection(baseOffset: 1, extentOffset: 2),
+        ),
+      ],
+      textFieldEchoes: null,
+      terminalEchoes: null,
+    ),
+    (
+      name:
+          'flutter EditableText preserves composing range when a selection stays within it',
+      sequence: const [
+        baseValue,
+        TextEditingValue(
+          text: 'foo composing bar',
+          selection: TextSelection(baseOffset: 5, extentOffset: 7),
+          composing: TextRange(start: 4, end: 12),
+        ),
+      ],
+      textFieldEchoes: null,
+      terminalEchoes: null,
+    ),
+    (
+      name:
+          'flutter EditableText clears composing range when a selection moves after it',
+      sequence: const [
+        baseValue,
+        TextEditingValue(
+          text: 'foo composing bar',
+          selection: TextSelection(baseOffset: 13, extentOffset: 15),
+        ),
+      ],
+      textFieldEchoes: null,
+      terminalEchoes: null,
+    ),
+  ];
+}
+
 List<_ResetScenario> _buildOpusResetScenarios() {
   const seeds = <_ResetSeed>[
     (
@@ -5551,6 +5879,9 @@ void main() {
         textFieldEchoes: null,
         terminalEchoes: null,
       ),
+      ..._buildFlutterReplacedParityScenarios(),
+      ..._buildFlutterDeltaParityScenarios(),
+      ..._buildFlutterComposingParityScenarios(),
       ..._buildGeneratedComparisonScenarios(),
       ..._buildGptComparisonScenarios(),
     ];
@@ -5830,6 +6161,54 @@ void main() {
     );
 
     testWidgets(
+      'preserves the shortened prefix when a delete-reset continuation resumes the same word with the live terminal prefix',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'didn',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('didnt', selectionOffset: 'didnt'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('didn', selectionOffset: 'didn'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker test',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'didntest');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'replaces a shortened first word after backspace without duplicating the prefix',
       (tester) async {
         final terminalOutput = <String>[];
@@ -5843,6 +6222,69 @@ void main() {
                 terminal: terminal,
                 focusNode: focusNode,
                 deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bteh ',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Bte',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200B the ',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'teh ',
+            initialCursorOffset: 'teh '.length,
+          ),
+          (text: 'the ', cursorOffset: 'the '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'te',
                 child: const SizedBox.expand(),
               ),
             ),
