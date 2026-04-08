@@ -40,6 +40,34 @@ typedef _SegmentSeed = ({
   String after,
 });
 
+typedef _TerminalHarness = ({
+  List<String> terminalOutput,
+  Terminal terminal,
+  FocusNode focusNode,
+  TerminalTextInputHandlerController controller,
+});
+
+typedef _ResetSeed = ({
+  String name,
+  String resolveTextBeforeCursor,
+  bool trimsAfterSuggestionReset,
+});
+
+typedef _ResetScenario = ({
+  String name,
+  _ResetTrigger trigger,
+  String resolveTextBeforeCursor,
+  bool shouldTrim,
+});
+
+enum _ResetTrigger {
+  trailingBackspace,
+  newlineAction,
+  newlineText,
+  controllerClear,
+  markerLoss,
+}
+
 int _graphemeLength(String text) => text.characters.length;
 
 TextEditingValue _userValue(
@@ -190,6 +218,321 @@ List<_MatrixScenario> _buildGeneratedComparisonScenarios() {
       _deleteMiddleSelectionScenario(seed),
     ],
   ];
+}
+
+List<_MatrixScenario> _buildGptComparisonScenarios() {
+  const seeds = <_SegmentSeed>[
+    (name: 'leading-indent', before: '  ', middle: 'he', after: 'llo world'),
+    (name: 'double-space', before: 'foo  ', middle: 'ba', after: 'r baz'),
+    (name: 'cjk-plain', before: '你', middle: '好', after: '世界'),
+    (name: 'accented-latin', before: 'na', middle: 'ï', after: 've test'),
+    (name: 'quoted-arg', before: 'echo "', middle: 'hi', after: '" now'),
+    (name: 'brace-expansion', before: '{a,', middle: 'b', after: ',c}'),
+    (name: 'windows-path', before: r'C:\', middle: 'Us', after: r'ers\me'),
+    (name: 'env-braces', before: r'${', middle: 'HO', after: 'ME}'),
+    (name: 'and-chain', before: 'cmd && ', middle: 'ec', after: 'ho'),
+    (name: 'comment-fragment', before: '# ', middle: 'to', after: 'do item'),
+    (name: 'ssh-config', before: 'Host ', middle: 'my', after: '-box'),
+    (name: 'url-like', before: 'https://', middle: 'ex', after: '.am/path'),
+    (name: 'csv-fragment', before: 'a,', middle: 'b', after: ',c,d'),
+    (name: 'leading-tab', before: '\t', middle: 'cm', after: 'd --help'),
+    (name: 'mid-spaces', before: 'cmd', middle: '  ', after: 'arg'),
+    (name: 'spanish-tilde', before: 'mañ', middle: 'an', after: 'a mode'),
+    (name: 'pipe-reader', before: 'cat ', middle: 'fi', after: 'le | less'),
+    (name: 'env-equals', before: 'KEY=', middle: 'va', after: 'lue'),
+    (name: 'paren-spaced', before: '( ', middle: 'ab', after: ' ) tail'),
+    (name: 'digits-dots', before: '1.', middle: '2', after: '.3.4'),
+  ];
+
+  return [
+    for (final seed in seeds) ...[
+      (
+        name: 'gpt-derived ${_insertBeforeMiddleScenario(seed).name}',
+        sequence: _insertBeforeMiddleScenario(seed).sequence,
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+      (
+        name: 'gpt-derived ${_insertAfterMiddleScenario(seed).name}',
+        sequence: _insertAfterMiddleScenario(seed).sequence,
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+      (
+        name: 'gpt-derived ${_replaceMiddleScenario(seed).name}',
+        sequence: _replaceMiddleScenario(seed).sequence,
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+      (
+        name: 'gpt-derived ${_backspaceWithinMiddleScenario(seed).name}',
+        sequence: _backspaceWithinMiddleScenario(seed).sequence,
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+      (
+        name: 'gpt-derived ${_deleteMiddleSelectionScenario(seed).name}',
+        sequence: _deleteMiddleSelectionScenario(seed).sequence,
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+    ],
+  ];
+}
+
+List<_ResetScenario> _buildOpusResetScenarios() {
+  const seeds = <_ResetSeed>[
+    (
+      name: 'empty-context',
+      resolveTextBeforeCursor: '',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'single-space-context',
+      resolveTextBeforeCursor: ' ',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'tab-context',
+      resolveTextBeforeCursor: '\t',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'newline-context',
+      resolveTextBeforeCursor: '\n',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'carriage-context',
+      resolveTextBeforeCursor: '\r',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'prompt-space-context',
+      resolveTextBeforeCursor: r'$ ',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'command-space-context',
+      resolveTextBeforeCursor: 'echo ready ',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'command-tab-context',
+      resolveTextBeforeCursor: 'echo ready\t',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'command-newline-context',
+      resolveTextBeforeCursor: 'echo ready\n',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'double-space-context',
+      resolveTextBeforeCursor: 'echo ready  ',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
+      name: 'plain-command-context',
+      resolveTextBeforeCursor: 'echo',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'paren-context',
+      resolveTextBeforeCursor: 'echo(',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'emoji-context',
+      resolveTextBeforeCursor: 'say 😀',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'quoted-context',
+      resolveTextBeforeCursor: '"quoted',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'path-context',
+      resolveTextBeforeCursor: '/usr/local',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'assignment-context',
+      resolveTextBeforeCursor: 'KEY=value',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'semicolon-context',
+      resolveTextBeforeCursor: 'echo;',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'bracket-context',
+      resolveTextBeforeCursor: 'list]',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'hyphen-context',
+      resolveTextBeforeCursor: 'git-status',
+      trimsAfterSuggestionReset: false,
+    ),
+    (
+      name: 'ipv6-context',
+      resolveTextBeforeCursor: 'fe80::1',
+      trimsAfterSuggestionReset: false,
+    ),
+  ];
+
+  return [
+    for (final seed in seeds)
+      for (final trigger in _ResetTrigger.values)
+        (
+          name:
+              'opus-derived ${trigger.name} ${trigger == _ResetTrigger.markerLoss || seed.trimsAfterSuggestionReset ? 'trims' : 'preserves'} leading suggestion spacing for ${seed.name}',
+          trigger: trigger,
+          resolveTextBeforeCursor: seed.resolveTextBeforeCursor,
+          shouldTrim:
+              trigger == _ResetTrigger.markerLoss ||
+              seed.trimsAfterSuggestionReset,
+        ),
+  ];
+}
+
+Future<_TerminalHarness> _pumpTerminalHarness(
+  WidgetTester tester, {
+  bool readOnly = false,
+  bool deleteDetection = true,
+  bool tapToShowKeyboard = true,
+  String Function()? resolveTextBeforeCursor,
+  ValueGetter<bool>? hasActiveToolbarModifier,
+  TerminalTextInputHandlerController? controller,
+}) async {
+  final terminalOutput = <String>[];
+  final terminal = Terminal(onOutput: terminalOutput.add);
+  final focusNode = FocusNode();
+  final effectiveController =
+      controller ?? TerminalTextInputHandlerController();
+
+  await tester.pumpWidget(
+    MaterialApp(
+      home: Scaffold(
+        body: TerminalTextInputHandler(
+          terminal: terminal,
+          focusNode: focusNode,
+          controller: effectiveController,
+          deleteDetection: deleteDetection,
+          readOnly: readOnly,
+          tapToShowKeyboard: tapToShowKeyboard,
+          resolveTextBeforeCursor: resolveTextBeforeCursor,
+          hasActiveToolbarModifier: hasActiveToolbarModifier,
+          child: const SizedBox.expand(),
+        ),
+      ),
+    ),
+  );
+
+  focusNode.requestFocus();
+  await tester.pump();
+
+  return (
+    terminalOutput: terminalOutput,
+    terminal: terminal,
+    focusNode: focusNode,
+    controller: effectiveController,
+  );
+}
+
+Future<void> _disposeTerminalHarness(
+  WidgetTester tester,
+  _TerminalHarness harness,
+) async {
+  await tester.pumpWidget(const MaterialApp(home: SizedBox.shrink()));
+  await tester.pump();
+  harness.focusNode.dispose();
+}
+
+Future<void> _applyResetTrigger(
+  WidgetTester tester,
+  _TerminalHarness harness,
+  _ResetTrigger trigger, {
+  required String initialText,
+}) async {
+  switch (trigger) {
+    case _ResetTrigger.trailingBackspace:
+      final shortenedText = _dropLastGrapheme(initialText);
+      tester.testTextInput.updateEditingValue(
+        _editingValue(shortenedText, selectionOffset: shortenedText.length),
+      );
+      await tester.pump();
+      break;
+    case _ResetTrigger.newlineAction:
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+      break;
+    case _ResetTrigger.newlineText:
+      final textWithNewline = '$initialText\n';
+      tester.testTextInput.updateEditingValue(
+        _editingValue(textWithNewline, selectionOffset: textWithNewline.length),
+      );
+      await tester.pump();
+      break;
+    case _ResetTrigger.controllerClear:
+      harness.controller.clearImeBuffer();
+      await tester.pump();
+      break;
+    case _ResetTrigger.markerLoss:
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B',
+          selection: TextSelection.collapsed(offset: 1),
+        ),
+      );
+      await tester.pump();
+      break;
+  }
+}
+
+Future<void> _expectResetContinuationScenario(
+  WidgetTester tester,
+  _ResetScenario scenario,
+) async {
+  const initialText = 'alpha';
+  const followUpText = ' beta';
+  final harness = await _pumpTerminalHarness(
+    tester,
+    resolveTextBeforeCursor: () => scenario.resolveTextBeforeCursor,
+  );
+
+  tester.testTextInput.updateEditingValue(
+    _editingValue(initialText, selectionOffset: initialText.length),
+  );
+  await tester.pump();
+
+  harness.terminalOutput.clear();
+  tester.testTextInput.log.clear();
+
+  await _applyResetTrigger(
+    tester,
+    harness,
+    scenario.trigger,
+    initialText: initialText,
+  );
+
+  harness.terminalOutput.clear();
+  tester.testTextInput.log.clear();
+
+  tester.testTextInput.updateEditingValue(
+    _editingValue(followUpText, selectionOffset: followUpText.length),
+  );
+  await tester.pump();
+
+  expect(
+    _terminalTextFromEvents(harness.terminalOutput),
+    scenario.shouldTrim ? 'beta' : ' beta',
+  );
+
+  await _disposeTerminalHarness(tester, harness);
 }
 
 Future<void> _commitSwipeText(WidgetTester tester, String text) async {
@@ -5209,6 +5552,7 @@ void main() {
         terminalEchoes: null,
       ),
       ..._buildGeneratedComparisonScenarios(),
+      ..._buildGptComparisonScenarios(),
     ];
 
     for (final scenario in matrixScenarios) {
@@ -5219,6 +5563,14 @@ void main() {
           expectedTextFieldEchoCount: scenario.textFieldEchoes,
           expectedTerminalEchoCount: scenario.terminalEchoes,
         );
+      });
+    }
+
+    final opusResetScenarios = _buildOpusResetScenarios();
+
+    for (final scenario in opusResetScenarios) {
+      testWidgets(scenario.name, (tester) async {
+        await _expectResetContinuationScenario(tester, scenario);
       });
     }
 
