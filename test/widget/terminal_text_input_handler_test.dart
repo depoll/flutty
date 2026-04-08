@@ -26,6 +26,172 @@ typedef _ComparisonResult = ({
   List<_LoggedEditingState> echoedStates,
 });
 
+typedef _MatrixScenario = ({
+  String name,
+  List<TextEditingValue> sequence,
+  int? textFieldEchoes,
+  int? terminalEchoes,
+});
+
+typedef _SegmentSeed = ({
+  String name,
+  String before,
+  String middle,
+  String after,
+});
+
+int _graphemeLength(String text) => text.characters.length;
+
+TextEditingValue _userValue(
+  String text, {
+  required int selectionBase,
+  int? selectionExtent,
+  TextRange composing = TextRange.empty,
+}) => TextEditingValue(
+  text: text,
+  selection: selectionExtent == null
+      ? TextSelection.collapsed(offset: selectionBase)
+      : TextSelection(baseOffset: selectionBase, extentOffset: selectionExtent),
+  composing: composing,
+);
+
+String _dropLastGrapheme(String text) {
+  final graphemes = text.characters.toList(growable: false);
+  if (graphemes.isEmpty) {
+    return text;
+  }
+  return graphemes.sublist(0, graphemes.length - 1).join();
+}
+
+_MatrixScenario _insertBeforeMiddleScenario(_SegmentSeed seed) {
+  final initial = '${seed.before}${seed.middle}${seed.after}';
+  final insertionOffset = _graphemeLength(seed.before);
+  final updated = '${seed.before}X${seed.middle}${seed.after}';
+  return (
+    name: '${seed.name}: inserts before the edited segment',
+    sequence: [
+      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: insertionOffset),
+      _userValue(updated, selectionBase: insertionOffset + 1),
+    ],
+    textFieldEchoes: null,
+    terminalEchoes: null,
+  );
+}
+
+_MatrixScenario _insertAfterMiddleScenario(_SegmentSeed seed) {
+  final initial = '${seed.before}${seed.middle}${seed.after}';
+  final insertionOffset = _graphemeLength('${seed.before}${seed.middle}');
+  final updated = '${seed.before}${seed.middle};${seed.after}';
+  return (
+    name: '${seed.name}: inserts after the edited segment',
+    sequence: [
+      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: insertionOffset),
+      _userValue(updated, selectionBase: insertionOffset + 1),
+    ],
+    textFieldEchoes: null,
+    terminalEchoes: null,
+  );
+}
+
+_MatrixScenario _replaceMiddleScenario(_SegmentSeed seed) {
+  final initial = '${seed.before}${seed.middle}${seed.after}';
+  final selectionBase = _graphemeLength(seed.before);
+  final selectionExtent = selectionBase + _graphemeLength(seed.middle);
+  final updated = '${seed.before}ZX${seed.after}';
+  return (
+    name: '${seed.name}: replaces the edited segment',
+    sequence: [
+      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(
+        initial,
+        selectionBase: selectionBase,
+        selectionExtent: selectionExtent,
+      ),
+      _userValue(updated, selectionBase: selectionBase + 2),
+    ],
+    textFieldEchoes: null,
+    terminalEchoes: null,
+  );
+}
+
+_MatrixScenario _backspaceWithinMiddleScenario(_SegmentSeed seed) {
+  final initial = '${seed.before}${seed.middle}${seed.after}';
+  final shortenedMiddle = _dropLastGrapheme(seed.middle);
+  final caretOffset = _graphemeLength('${seed.before}${seed.middle}');
+  final updated = '${seed.before}$shortenedMiddle${seed.after}';
+  return (
+    name: '${seed.name}: backspaces within the edited segment',
+    sequence: [
+      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(initial, selectionBase: caretOffset),
+      _userValue(
+        updated,
+        selectionBase: _graphemeLength('${seed.before}$shortenedMiddle'),
+      ),
+    ],
+    textFieldEchoes: null,
+    terminalEchoes: null,
+  );
+}
+
+_MatrixScenario _deleteMiddleSelectionScenario(_SegmentSeed seed) {
+  final initial = '${seed.before}${seed.middle}${seed.after}';
+  final selectionBase = _graphemeLength(seed.before);
+  final selectionExtent = selectionBase + _graphemeLength(seed.middle);
+  final updated = '${seed.before}${seed.after}';
+  return (
+    name: '${seed.name}: deletes the edited segment selection',
+    sequence: [
+      _userValue(initial, selectionBase: _graphemeLength(initial)),
+      _userValue(
+        initial,
+        selectionBase: selectionBase,
+        selectionExtent: selectionExtent,
+      ),
+      _userValue(updated, selectionBase: selectionBase),
+    ],
+    textFieldEchoes: null,
+    terminalEchoes: null,
+  );
+}
+
+List<_MatrixScenario> _buildGeneratedComparisonScenarios() {
+  const seeds = <_SegmentSeed>[
+    (name: 'plain-word', before: 'he', middle: 'll', after: 'o there'),
+    (name: 'space-separated', before: 'foo ', middle: 'ba', after: 'r baz'),
+    (name: 'punctuation', before: 'hello, ', middle: 'wo', after: 'rld!'),
+    (name: 'repeated-token', before: 'aa', middle: 'aa', after: ' aa'),
+    (name: 'emoji-boundary', before: 'go ', middle: '👩🏽‍💻', after: ' now'),
+    (name: 'path-fragment', before: '/usr/', middle: 'lo', after: 'cal/bin'),
+    (name: 'number-fragment', before: '12', middle: '34', after: '56-78'),
+    (name: 'hyphenated', before: 'shell-', middle: 'hi', after: 'story.txt'),
+    (name: 'apostrophe', before: 'did', middle: 'n\'t', after: ' panic'),
+    (name: 'command-subst', before: 'echo ', middle: r'$(pwd)', after: ' done'),
+    (name: 'tab-separated', before: 'foo\t', middle: 'bar', after: '\tbaz'),
+    (name: 'snake-case', before: 'snake_', middle: 'ca', after: 'se_value'),
+    (name: 'bracketed', before: '[', middle: 'item', after: '] list'),
+    (name: 'quoted', before: '"', middle: 'hello', after: '" world'),
+    (name: 'pipe-chain', before: 'ls | ', middle: 'gr', after: 'ep ssh'),
+    (name: 'git-ref', before: 'feature/', middle: 'ime', after: '-fix'),
+    (name: 'ipv6-ish', before: 'fe80::', middle: '1', after: 'ff:fe23'),
+    (name: 'env-var', before: r'$HO', middle: 'ME', after: '/bin'),
+    (name: 'semicolon', before: 'echo ', middle: 'hi', after: '; pwd'),
+    (name: 'mixed-symbols', before: 'x=', middle: '42', after: '; y=7'),
+  ];
+
+  return [
+    for (final seed in seeds) ...[
+      _insertBeforeMiddleScenario(seed),
+      _insertAfterMiddleScenario(seed),
+      _replaceMiddleScenario(seed),
+      _backspaceWithinMiddleScenario(seed),
+      _deleteMiddleSelectionScenario(seed),
+    ],
+  ];
+}
+
 Future<void> _commitSwipeText(WidgetTester tester, String text) async {
   final selection = TextSelection.collapsed(offset: text.length);
   tester.testTextInput.updateEditingValue(
@@ -4899,158 +5065,151 @@ void main() {
       },
     );
 
-    final matrixScenarios =
-        <
-          ({
-            String name,
-            List<TextEditingValue> sequence,
-            int? textFieldEchoes,
-            int? terminalEchoes,
-          })
-        >[
-          (
-            name: 'matches insertion at a moved caret',
-            sequence: const [
-              TextEditingValue(
-                text: 'foo bar',
-                selection: TextSelection.collapsed(offset: 7),
-              ),
-              TextEditingValue(
-                text: 'foo bar',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-              TextEditingValue(
-                text: 'foo Xbar',
-                selection: TextSelection.collapsed(offset: 5),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
+    final matrixScenarios = <_MatrixScenario>[
+      (
+        name: 'matches insertion at a moved caret',
+        sequence: const [
+          TextEditingValue(
+            text: 'foo bar',
+            selection: TextSelection.collapsed(offset: 7),
           ),
-          (
-            name: 'matches beginning-of-line insertion',
-            sequence: const [
-              TextEditingValue(
-                text: 'hello',
-                selection: TextSelection.collapsed(offset: 5),
-              ),
-              TextEditingValue(
-                text: 'hello',
-                selection: TextSelection.collapsed(offset: 0),
-              ),
-              TextEditingValue(
-                text: 'Xhello',
-                selection: TextSelection.collapsed(offset: 1),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
+          TextEditingValue(
+            text: 'foo bar',
+            selection: TextSelection.collapsed(offset: 4),
           ),
-          (
-            name: 'matches identical-character insertion at a moved caret',
-            sequence: const [
-              TextEditingValue(
-                text: 'aaaa',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-              TextEditingValue(
-                text: 'aaaa',
-                selection: TextSelection.collapsed(offset: 1),
-              ),
-              TextEditingValue(
-                text: 'aaaaa',
-                selection: TextSelection.collapsed(offset: 2),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
+          TextEditingValue(
+            text: 'foo Xbar',
+            selection: TextSelection.collapsed(offset: 5),
           ),
-          (
-            name: 'matches punctuation replacement at a moved caret',
-            sequence: const [
-              TextEditingValue(
-                text: 'hello, world',
-                selection: TextSelection.collapsed(offset: 12),
-              ),
-              TextEditingValue(
-                text: 'hello, world',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-              TextEditingValue(
-                text: 'hello; world',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
+        ],
+        textFieldEchoes: 0,
+        terminalEchoes: 1,
+      ),
+      (
+        name: 'matches beginning-of-line insertion',
+        sequence: const [
+          TextEditingValue(
+            text: 'hello',
+            selection: TextSelection.collapsed(offset: 5),
           ),
-          (
-            name: 'matches emoji insertion after a caret move',
-            sequence: const [
-              TextEditingValue(
-                text: 'a🎉b',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-              TextEditingValue(
-                text: 'a🎉b',
-                selection: TextSelection.collapsed(offset: 1),
-              ),
-              TextEditingValue(
-                text: 'aX🎉b',
-                selection: TextSelection.collapsed(offset: 2),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
+          TextEditingValue(
+            text: 'hello',
+            selection: TextSelection.collapsed(offset: 0),
           ),
-          (
-            name: 'matches earlier-word replacement after deleting newer text',
-            sequence: const [
-              TextEditingValue(
-                text: 'teh world ',
-                selection: TextSelection.collapsed(offset: 10),
-              ),
-              TextEditingValue(
-                text: 'teh ',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-              TextEditingValue(
-                text: 'the ',
-                selection: TextSelection(baseOffset: 0, extentOffset: 3),
-              ),
-              TextEditingValue(
-                text: 'the ',
-                selection: TextSelection.collapsed(offset: 4),
-              ),
-            ],
-            textFieldEchoes: 0,
-            terminalEchoes: 1,
+          TextEditingValue(
+            text: 'Xhello',
+            selection: TextSelection.collapsed(offset: 1),
           ),
-          (
-            name:
-                'matches earlier-word replacement after partially deleting newer text',
-            sequence: const [
-              TextEditingValue(
-                text: 'teh world ',
-                selection: TextSelection.collapsed(offset: 10),
-              ),
-              TextEditingValue(
-                text: 'teh wo',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-              TextEditingValue(
-                text: 'the wo',
-                selection: TextSelection(baseOffset: 0, extentOffset: 3),
-              ),
-              TextEditingValue(
-                text: 'the wo',
-                selection: TextSelection.collapsed(offset: 6),
-              ),
-            ],
-            textFieldEchoes: null,
-            terminalEchoes: null,
+        ],
+        textFieldEchoes: 0,
+        terminalEchoes: 1,
+      ),
+      (
+        name: 'matches identical-character insertion at a moved caret',
+        sequence: const [
+          TextEditingValue(
+            text: 'aaaa',
+            selection: TextSelection.collapsed(offset: 4),
           ),
-        ];
+          TextEditingValue(
+            text: 'aaaa',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+          TextEditingValue(
+            text: 'aaaaa',
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        ],
+        textFieldEchoes: 0,
+        terminalEchoes: 1,
+      ),
+      (
+        name: 'matches punctuation replacement at a moved caret',
+        sequence: const [
+          TextEditingValue(
+            text: 'hello, world',
+            selection: TextSelection.collapsed(offset: 12),
+          ),
+          TextEditingValue(
+            text: 'hello, world',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+          TextEditingValue(
+            text: 'hello; world',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        ],
+        textFieldEchoes: 0,
+        terminalEchoes: 1,
+      ),
+      (
+        name: 'matches emoji insertion after a caret move',
+        sequence: const [
+          TextEditingValue(
+            text: 'a🎉b',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+          TextEditingValue(
+            text: 'a🎉b',
+            selection: TextSelection.collapsed(offset: 1),
+          ),
+          TextEditingValue(
+            text: 'aX🎉b',
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        ],
+        textFieldEchoes: 0,
+        terminalEchoes: 1,
+      ),
+      (
+        name: 'matches earlier-word replacement after deleting newer text',
+        sequence: const [
+          TextEditingValue(
+            text: 'teh world ',
+            selection: TextSelection.collapsed(offset: 10),
+          ),
+          TextEditingValue(
+            text: 'teh ',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+          TextEditingValue(
+            text: 'the ',
+            selection: TextSelection(baseOffset: 0, extentOffset: 3),
+          ),
+          TextEditingValue(
+            text: 'the ',
+            selection: TextSelection.collapsed(offset: 4),
+          ),
+        ],
+        textFieldEchoes: 0,
+        terminalEchoes: 1,
+      ),
+      (
+        name:
+            'matches earlier-word replacement after partially deleting newer text',
+        sequence: const [
+          TextEditingValue(
+            text: 'teh world ',
+            selection: TextSelection.collapsed(offset: 10),
+          ),
+          TextEditingValue(
+            text: 'teh wo',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+          TextEditingValue(
+            text: 'the wo',
+            selection: TextSelection(baseOffset: 0, extentOffset: 3),
+          ),
+          TextEditingValue(
+            text: 'the wo',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        ],
+        textFieldEchoes: null,
+        terminalEchoes: null,
+      ),
+      ..._buildGeneratedComparisonScenarios(),
+    ];
 
     for (final scenario in matrixScenarios) {
       testWidgets(scenario.name, (tester) async {
@@ -5174,6 +5333,56 @@ void main() {
     });
 
     testWidgets(
+      'clears the IME buffer after deleting a corrected contraction tail',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue("didn't", selectionOffset: "didn't".length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('didn', selectionOffset: 'didn'.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'didn');
+
+        final client = _terminalTextInputClient(tester);
+        expect(
+          client.currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'trims a leading swipe space after backspace-triggered IME buffer clear',
       (tester) async {
         final terminalOutput = <String>[];
@@ -5220,6 +5429,97 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets(
+      'trims a leading suggestion space after backspace-triggered IME buffer clear',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('didnt', selectionOffset: 'didnt'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('didn', selectionOffset: 'didn'.length),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker test',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'didntest');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets('trims a leading suggestion space after a committed newline', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '\u200B\u200Becho hi\n',
+          selection: TextSelection.collapsed(offset: 10),
+        ),
+      );
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        const TextEditingValue(
+          text: '$_deleteDetectionMarker next',
+          selection: TextSelection.collapsed(offset: 7),
+        ),
+      );
+      await tester.pump();
+
+      expect(_terminalTextFromEvents(terminalOutput), 'echo hi\nnext');
+
+      focusNode.dispose();
+    });
 
     testWidgets('resets IME editing state after modifier chord character', (
       tester,

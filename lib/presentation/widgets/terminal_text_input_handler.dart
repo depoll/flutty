@@ -1243,6 +1243,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       final newlineCount = _sendInputDelta(currentText, delta);
       if (newlineCount > 0) {
         _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
+        _trimLeadingSuggestionSpaceAfterDelete = true;
         _sawImeComposition = false;
         return;
       }
@@ -1341,6 +1342,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       widget.terminal.keyInput(TerminalKey.enter);
       _pendingPerformedEnterText = _lastSentText;
       _resetCommittedInputState(clearPendingPerformedEnterText: false);
+      _trimLeadingSuggestionSpaceAfterDelete = true;
       _sawImeComposition = false;
     }
   }
