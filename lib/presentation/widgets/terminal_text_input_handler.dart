@@ -451,6 +451,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     String? deleteResetDeletedSuffixText,
   }) {
     _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
+    _sawImeComposition = false;
     if (deleteResetBaselineText != null &&
         deleteResetBaselineCursorOffset != null) {
       _pendingDeleteResetBaselineText = deleteResetBaselineText;
@@ -595,6 +596,32 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       index++;
     }
     return index;
+  }
+
+  int _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes,
+  ) {
+    if (previousGraphemes.isEmpty || currentGraphemes.isEmpty) {
+      return 0;
+    }
+
+    var previousRow = List<int>.filled(currentGraphemes.length + 1, 0);
+    for (final previousGrapheme in previousGraphemes) {
+      final currentRow = List<int>.filled(currentGraphemes.length + 1, 0);
+      for (var index = 0; index < currentGraphemes.length; index++) {
+        if (previousGrapheme.toLowerCase() ==
+            currentGraphemes[index].toLowerCase()) {
+          currentRow[index + 1] = previousRow[index] + 1;
+        } else {
+          currentRow[index + 1] = previousRow[index + 1] > currentRow[index]
+              ? previousRow[index + 1]
+              : currentRow[index];
+        }
+      }
+      previousRow = currentRow;
+    }
+    return previousRow.last;
   }
 
   int _commonGraphemeSuffixLength(
@@ -774,8 +801,32 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
 
+    final mergedCurrentTokenGraphemes = mergedCurrentText
+        .trimRight()
+        .characters
+        .toList(growable: false);
+    if (mergedCurrentTokenGraphemes.isEmpty) {
+      return null;
+    }
+    final relatedReplacementTokenGraphemes = deletedSuffixText == null
+        ? baselineToken.characters.toList(growable: false)
+        : (baselineToken + deletedSuffixText).characters.toList(
+            growable: false,
+          );
+    final replacementRelationThreshold =
+        relatedReplacementTokenGraphemes.length <
+            mergedCurrentTokenGraphemes.length
+        ? relatedReplacementTokenGraphemes.length
+        : mergedCurrentTokenGraphemes.length;
+    final replacementLooksRelated =
+        _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
+          relatedReplacementTokenGraphemes,
+          mergedCurrentTokenGraphemes,
+        ) >=
+        (replacementRelationThreshold < 2 ? replacementRelationThreshold : 2);
+
     final shouldReplaceCurrentToken =
-        hasTrailingReplacementSeparator ||
+        (hasTrailingReplacementSeparator && replacementLooksRelated) ||
         mergedCurrentText.startsWith(baselineToken);
     final shouldAppendToBaseline =
         hasLeadingReplacementSeparator &&

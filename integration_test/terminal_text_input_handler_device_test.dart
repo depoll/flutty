@@ -489,6 +489,69 @@ void main() {
     );
 
     testWidgets(
+      'preserves a new separator when a trailing-backspace reset is followed by a same-initial unrelated committed word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'shel',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}shell',
+            selection: TextSelection.collapsed(offset: 7),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}shel',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker story ',
+            selection: TextSelection.collapsed(offset: 9),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'shel',
+            initialCursorOffset: 'shel'.length,
+          ),
+          (text: 'shel story ', cursorOffset: 'shel story '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'preserves a manual separator when replacing a swiped word after backspacing into it',
       (tester) async {
         final terminalOutput = <String>[];

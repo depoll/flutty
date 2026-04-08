@@ -6271,6 +6271,60 @@ void main() {
     );
 
     testWidgets(
+      'preserves a new separator when a trailing-backspace reset is followed by a same-initial unrelated committed word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'shel',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('shell', selectionOffset: 5),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('shel', selectionOffset: 4),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(' story ', selectionOffset: 7),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'shel',
+            initialCursorOffset: 'shel'.length,
+          ),
+          (text: 'shel story ', cursorOffset: 'shel story '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
       (tester) async {
         final terminalOutput = <String>[];
