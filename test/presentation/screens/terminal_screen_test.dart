@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
@@ -89,6 +90,7 @@ void main() {
     late SshSession session;
     late Host host;
     late Completer<void> shellDoneCompleter;
+    late StreamController<Uint8List> shellStdoutController;
 
     setUp(() {
       db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -97,6 +99,7 @@ void main() {
       shellChannel = _MockShellChannel();
       host = _buildHost(id: 1);
       shellDoneCompleter = Completer<void>();
+      shellStdoutController = StreamController<Uint8List>.broadcast();
 
       when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
       when(
@@ -104,7 +107,7 @@ void main() {
       ).thenAnswer((_) async => shellChannel);
       when(
         () => shellChannel.stdout,
-      ).thenAnswer((_) => const Stream<Uint8List>.empty());
+      ).thenAnswer((_) => shellStdoutController.stream);
       when(
         () => shellChannel.stderr,
       ).thenAnswer((_) => const Stream<Uint8List>.empty());
@@ -125,7 +128,10 @@ void main() {
       )..getOrCreateTerminal();
     });
 
-    tearDown(() async => db.close());
+    tearDown(() async {
+      await shellStdoutController.close();
+      await db.close();
+    });
 
     Future<void> pumpScreen(WidgetTester tester) async {
       await tester.pumpWidget(
@@ -211,6 +217,26 @@ void main() {
             selection: TextSelection.collapsed(offset: 2),
           ),
         );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'prompt-like shell output clears stale IME context before the next swipe',
+      (tester) async {
+        await pumpScreen(tester);
+
+        tester.testTextInput.log.clear();
+        shellStdoutController.add(Uint8List.fromList(utf8.encode('> ')));
+        await tester.pump();
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setClient',
+          ),
+          hasLength(1),
+        );
+        await tester.pump(const Duration(milliseconds: 200));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

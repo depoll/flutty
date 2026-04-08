@@ -1257,6 +1257,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
+  StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboard = true;
@@ -1859,6 +1860,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clean up any previous connection state before reconnecting.
     await _doneSubscription?.cancel();
     _doneSubscription = null;
+    await _shellStdoutSubscription?.cancel();
+    _shellStdoutSubscription = null;
     _shell = null;
 
     setState(() {
@@ -2002,6 +2005,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (mounted) {
         _handleShellClosed();
       }
+    });
+    _shellStdoutSubscription = session.shellStdoutStream.listen((_) {
+      if (!_isMobilePlatform) {
+        return;
+      }
+      _terminalTextInputController.handleExternalTerminalOutput();
     });
 
     _terminal.onOutput = (data) {
@@ -2297,6 +2306,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..dispose();
     _nativeSelectionController.dispose();
     _doneSubscription?.cancel();
+    _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
     _toolbarController.dispose();
     super.dispose();

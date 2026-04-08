@@ -103,6 +103,11 @@ class TerminalTextInputHandlerController {
   void clearImeBuffer() {
     _state?._clearImeBufferForFreshInput();
   }
+
+  /// Resets stale IME context after remote terminal output returns to a prompt.
+  void handleExternalTerminalOutput() {
+    _state?._handleExternalTerminalOutput();
+  }
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -449,7 +454,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     String? deleteResetBaselineText,
     int? deleteResetBaselineCursorOffset,
     String? deleteResetDeletedSuffixText,
+    bool flushPlatformContext = false,
   }) {
+    if (flushPlatformContext && hasInputConnection) {
+      _closeInputConnectionIfNeeded();
+      if (widget.focusNode.hasFocus) {
+        _openInputConnection();
+      }
+    }
     _invalidatePendingEditingUpdates();
     _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
     _sawImeComposition = false;
@@ -466,6 +478,24 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _modifierChordResetTime = armModifierChordWindow
         ? modifierChordClock()
         : null;
+  }
+
+  void _handleExternalTerminalOutput() {
+    if (widget.readOnly || !widget.focusNode.hasFocus || !hasInputConnection) {
+      return;
+    }
+    if (_sawImeComposition || _lastSentText.isNotEmpty) {
+      return;
+    }
+    if (_extractInputText(_currentEditingState.text).isNotEmpty) {
+      return;
+    }
+    final textBeforeCursor = widget.resolveTextBeforeCursor?.call();
+    if (textBeforeCursor == null ||
+        !_currentLineLooksLikePromptPrefix(textBeforeCursor)) {
+      return;
+    }
+    _clearImeBufferForFreshInput(flushPlatformContext: true);
   }
 
   // -- Focus handling --
