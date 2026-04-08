@@ -450,6 +450,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     int? deleteResetBaselineCursorOffset,
     String? deleteResetDeletedSuffixText,
   }) {
+    _invalidatePendingEditingUpdates();
     _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
     _sawImeComposition = false;
     if (deleteResetBaselineText != null &&
@@ -600,26 +601,39 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
     List<String> previousGraphemes,
-    List<String> currentGraphemes,
-  ) {
+    List<String> currentGraphemes, {
+    int? maxLength,
+  }) {
     if (previousGraphemes.isEmpty || currentGraphemes.isEmpty) {
       return 0;
     }
 
+    final cappedMaxLength = maxLength == null || maxLength < 1
+        ? null
+        : maxLength;
+    final normalizedCurrentGraphemes = currentGraphemes
+        .map((grapheme) => grapheme.toLowerCase())
+        .toList(growable: false);
     var previousRow = List<int>.filled(currentGraphemes.length + 1, 0);
     for (final previousGrapheme in previousGraphemes) {
       final currentRow = List<int>.filled(currentGraphemes.length + 1, 0);
+      final normalizedPreviousGrapheme = previousGrapheme.toLowerCase();
       for (var index = 0; index < currentGraphemes.length; index++) {
-        if (previousGrapheme.toLowerCase() ==
-            currentGraphemes[index].toLowerCase()) {
-          currentRow[index + 1] = previousRow[index] + 1;
-        } else {
-          currentRow[index + 1] = previousRow[index + 1] > currentRow[index]
-              ? previousRow[index + 1]
-              : currentRow[index];
-        }
+        final nextLength =
+            normalizedPreviousGrapheme == normalizedCurrentGraphemes[index]
+            ? previousRow[index] + 1
+            : (previousRow[index + 1] > currentRow[index]
+                  ? previousRow[index + 1]
+                  : currentRow[index]);
+        currentRow[index +
+            1] = cappedMaxLength != null && nextLength > cappedMaxLength
+            ? cappedMaxLength
+            : nextLength;
       }
       previousRow = currentRow;
+      if (cappedMaxLength != null && previousRow.last >= cappedMaxLength) {
+        return cappedMaxLength;
+      }
     }
     return previousRow.last;
   }
@@ -818,12 +832,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             mergedCurrentTokenGraphemes.length
         ? relatedReplacementTokenGraphemes.length
         : mergedCurrentTokenGraphemes.length;
+    final requiredReplacementRelationLength = replacementRelationThreshold < 2
+        ? replacementRelationThreshold
+        : 2;
     final replacementLooksRelated =
         _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
           relatedReplacementTokenGraphemes,
           mergedCurrentTokenGraphemes,
+          maxLength: requiredReplacementRelationLength,
         ) >=
-        (replacementRelationThreshold < 2 ? replacementRelationThreshold : 2);
+        requiredReplacementRelationLength;
 
     final shouldReplaceCurrentToken =
         (hasTrailingReplacementSeparator && replacementLooksRelated) ||

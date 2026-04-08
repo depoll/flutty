@@ -5385,6 +5385,65 @@ void main() {
     );
 
     testWidgets(
+      'ignores stale review approvals after an external IME buffer clear',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+        final decision = Completer<bool>();
+        final reviews = <TerminalCommandReview>[];
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                onReviewInsertedText: (review) {
+                  reviews.add(review);
+                  return decision.future;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '\u200B\u200Becho ready; rm -rf /',
+            selection: TextSelection.collapsed(offset: 21),
+          ),
+        );
+        await tester.pump();
+
+        expect(reviews, hasLength(1));
+        expect(terminalOutput, isEmpty);
+
+        controller.clearImeBuffer();
+        await tester.pump();
+
+        final client = _terminalTextInputClient(tester);
+        expect(client.currentTextEditingValue?.text, _deleteDetectionMarker);
+
+        decision.complete(true);
+        await tester.pump();
+        await tester.pump();
+
+        expect(terminalOutput, isEmpty);
+        expect(client.currentTextEditingValue?.text, _deleteDetectionMarker);
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'trims a swipe-leading space even when a composing update is overwritten in the review queue',
       (tester) async {
         final terminalOutput = <String>[];
