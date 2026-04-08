@@ -204,6 +204,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   bool _clearImeAfterNextTouchCursorMove = false;
   DateTime? _modifierChordResetTime;
+  String? _pendingDeleteResetBaselineText;
+  int? _pendingDeleteResetBaselineCursorOffset;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -441,8 +443,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _skipNextTouchKeyboardRequest = true;
   }
 
-  void _clearImeBufferForFreshInput({bool armModifierChordWindow = false}) {
-    _resetCommittedInputState();
+  void _clearImeBufferForFreshInput({
+    bool armModifierChordWindow = false,
+    String? deleteResetBaselineText,
+    int? deleteResetBaselineCursorOffset,
+  }) {
+    _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
+    if (deleteResetBaselineText != null &&
+        deleteResetBaselineCursorOffset != null) {
+      _pendingDeleteResetBaselineText = deleteResetBaselineText;
+      _pendingDeleteResetBaselineCursorOffset = deleteResetBaselineCursorOffset;
+    } else {
+      _clearPendingDeleteResetBaseline();
+    }
     _trimLeadingSuggestionSpaceAfterDelete = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _modifierChordResetTime = armModifierChordWindow
@@ -504,6 +517,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
       _modifierChordResetTime = null;
+      _clearPendingDeleteResetBaseline();
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _pendingPerformedEnterText = null;
@@ -525,6 +539,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _modifierChordResetTime = null;
+    _clearPendingDeleteResetBaseline();
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;
@@ -665,6 +680,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _resetCommittedInputState({
     int pendingEnterSuppressions = 0,
     bool clearPendingPerformedEnterText = true,
+    bool clearPendingDeleteResetBaseline = true,
   }) {
     _lastSentText = '';
     _lastSentCursorOffset = 0;
@@ -676,7 +692,71 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _clearImeAfterNextTouchCursorMove = false;
     _modifierChordResetTime = null;
+    if (clearPendingDeleteResetBaseline) {
+      _clearPendingDeleteResetBaseline();
+    }
     _syncEditingStateWithUserText('');
+  }
+
+  void _clearPendingDeleteResetBaseline() {
+    _pendingDeleteResetBaselineText = null;
+    _pendingDeleteResetBaselineCursorOffset = null;
+  }
+
+  bool _isWhitespaceGrapheme(String grapheme) =>
+      grapheme == ' ' ||
+      grapheme == '\t' ||
+      grapheme == '\n' ||
+      grapheme == '\r';
+
+  ({
+    String previousText,
+    int previousCursorOffset,
+    String currentText,
+    int? cursorOffset,
+  })?
+  _resolveDeleteResetContinuation(String currentText, {int? cursorOffsetHint}) {
+    final baselineText = _pendingDeleteResetBaselineText;
+    final baselineCursorOffset = _pendingDeleteResetBaselineCursorOffset;
+    if (baselineText == null ||
+        baselineCursorOffset == null ||
+        !_trimLeadingSuggestionSpaceAfterDelete ||
+        currentText.isEmpty) {
+      return null;
+    }
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    if (currentGraphemes.isEmpty ||
+        !_isWhitespaceGrapheme(currentGraphemes.last)) {
+      return null;
+    }
+
+    final baselineGraphemes = baselineText.characters.toList(growable: false);
+    var trimmedBaselineLength = baselineGraphemes.length;
+    while (trimmedBaselineLength > 0 &&
+        _isWhitespaceGrapheme(baselineGraphemes[trimmedBaselineLength - 1])) {
+      trimmedBaselineLength--;
+    }
+    if (trimmedBaselineLength == 0) {
+      return null;
+    }
+
+    var tokenStart = trimmedBaselineLength;
+    while (tokenStart > 0 &&
+        !_isWhitespaceGrapheme(baselineGraphemes[tokenStart - 1])) {
+      tokenStart--;
+    }
+
+    final mergedText =
+        baselineGraphemes.sublist(0, tokenStart).join() + currentText;
+    return (
+      previousText: baselineText,
+      previousCursorOffset: baselineCursorOffset,
+      currentText: mergedText,
+      cursorOffset: cursorOffsetHint == null
+          ? null
+          : tokenStart + cursorOffsetHint,
+    );
   }
 
   ({String? currentText, bool strippedPendingEnter, bool ignored})
@@ -780,8 +860,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   ({int deletedCount, String appendedText, int deleteCursorOffset})
-  _computeTextDelta(String currentText, {int? cursorOffsetHint}) {
-    final previousGraphemes = _lastSentText.characters.toList(growable: false);
+  _computeTextDelta(
+    String currentText, {
+    int? cursorOffsetHint,
+    String? previousTextOverride,
+    int? lastCursorOffsetOverride,
+  }) {
+    final previousText = previousTextOverride ?? _lastSentText;
+    final lastCursorOffset = lastCursorOffsetOverride ?? _lastSentCursorOffset;
+    final previousGraphemes = previousText.characters.toList(growable: false);
     final currentGraphemes = currentText.characters.toList(growable: false);
     final defaultDelta = _computeTextDeltaCandidate(
       previousGraphemes,
@@ -791,8 +878,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return defaultDelta;
     }
 
-    final anchoredPrefixLimit = _lastSentCursorOffset < cursorOffsetHint
-        ? _lastSentCursorOffset
+    final anchoredPrefixLimit = lastCursorOffset < cursorOffsetHint
+        ? lastCursorOffset
         : cursorOffsetHint;
     final anchoredDelta = _computeTextDeltaCandidate(
       previousGraphemes,
@@ -803,6 +890,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       defaultDelta: defaultDelta,
       anchoredDelta: anchoredDelta,
       cursorOffsetHint: cursorOffsetHint,
+      lastCursorOffset: lastCursorOffset,
     );
   }
 
@@ -846,7 +934,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _deltaMovementScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
-  ) => (delta.deleteCursorOffset - _lastSentCursorOffset).abs();
+    int lastCursorOffset,
+  ) => (delta.deleteCursorOffset - lastCursorOffset).abs();
 
   int _deltaRewriteScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
@@ -859,6 +948,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     required ({int deletedCount, String appendedText, int deleteCursorOffset})
     anchoredDelta,
     required int cursorOffsetHint,
+    required int lastCursorOffset,
   }) {
     final defaultCursorScore = _deltaCursorScore(
       defaultDelta,
@@ -874,8 +964,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           : defaultDelta;
     }
 
-    final defaultMovementScore = _deltaMovementScore(defaultDelta);
-    final anchoredMovementScore = _deltaMovementScore(anchoredDelta);
+    final defaultMovementScore = _deltaMovementScore(
+      defaultDelta,
+      lastCursorOffset,
+    );
+    final anchoredMovementScore = _deltaMovementScore(
+      anchoredDelta,
+      lastCursorOffset,
+    );
     if (anchoredMovementScore != defaultMovementScore) {
       return anchoredMovementScore < defaultMovementScore
           ? anchoredDelta
@@ -1212,11 +1308,26 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
 
       _clearImeAfterNextTouchCursorMove = false;
-      final delta = _computeTextDelta(
+      final deleteResetContinuation = _resolveDeleteResetContinuation(
         currentText,
         cursorOffsetHint: targetCursorOffset,
       );
-      final review = _reviewForInsertedText(currentText, delta);
+      final effectiveCurrentText =
+          deleteResetContinuation?.currentText ?? currentText;
+      final effectiveTargetCursorOffset =
+          deleteResetContinuation?.cursorOffset ?? targetCursorOffset;
+      final deltaPreviousText =
+          deleteResetContinuation?.previousText ?? _lastSentText;
+      final deltaPreviousCursorOffset =
+          deleteResetContinuation?.previousCursorOffset ??
+          _lastSentCursorOffset;
+      final delta = _computeTextDelta(
+        effectiveCurrentText,
+        cursorOffsetHint: effectiveTargetCursorOffset,
+        previousTextOverride: deleteResetContinuation?.previousText,
+        lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
+      );
+      final review = _reviewForInsertedText(effectiveCurrentText, delta);
       if (review != null) {
         final shouldInsert = await widget.onReviewInsertedText!(review);
         if (!mounted || revision != _latestEditingValueRevision) {
@@ -1229,10 +1340,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         }
       }
 
-      if (currentText != _lastSentText) {
+      if (effectiveCurrentText != _lastSentText) {
         _notifyUserInput();
       }
-      final previousText = _lastSentText;
+      final previousText = deltaPreviousText;
 
       // Capture modifier state BEFORE sending the delta. The send path
       // synchronously fires terminal.onOutput which may consume one-shot
@@ -1240,7 +1351,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       final hadActiveToolbarModifier =
           widget.hasActiveToolbarModifier?.call() ?? false;
 
-      final newlineCount = _sendInputDelta(currentText, delta);
+      if (deleteResetContinuation != null) {
+        _lastSentText = deltaPreviousText;
+        _lastSentCursorOffset = deltaPreviousCursorOffset;
+      }
+      final newlineCount = _sendInputDelta(effectiveCurrentText, delta);
       if (newlineCount > 0) {
         _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
         _trimLeadingSuggestionSpaceAfterDelete = true;
@@ -1302,25 +1417,35 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _modifierChordResetTime = null;
 
       if (wasTrailingPureDeletion) {
-        _clearImeBufferForFreshInput();
+        _clearImeBufferForFreshInput(
+          deleteResetBaselineText: effectiveCurrentText,
+          deleteResetBaselineCursorOffset: _lastSentCursorOffset,
+        );
         _sawImeComposition = false;
         return;
       }
+
+      _clearPendingDeleteResetBaseline();
 
       // For IME replacements that shorten text (e.g. autocorrect), keep the
       // suggestion-space-trim flag since the IME may prepend a space to the
       // next swiped word.
       _trimLeadingSuggestionSpaceAfterDelete =
           previousText.isNotEmpty &&
-          currentText.characters.length < previousText.characters.length;
+          effectiveCurrentText.characters.length <
+              previousText.characters.length;
       _trimLeadingSwipeSpaceAfterBufferClear =
-          previousText.isNotEmpty && currentText.isEmpty;
-      if (targetCursorOffset != null) {
-        _moveTerminalCursorTo(targetCursorOffset);
+          previousText.isNotEmpty && effectiveCurrentText.isEmpty;
+      if (effectiveTargetCursorOffset != null) {
+        _moveTerminalCursorTo(effectiveTargetCursorOffset);
       }
       _syncEditingStateWithUserText(
-        currentText,
-        sourceValue: normalizedPendingEnter.strippedPendingEnter ? null : value,
+        effectiveCurrentText,
+        sourceValue:
+            normalizedPendingEnter.strippedPendingEnter ||
+                effectiveCurrentText != currentText
+            ? null
+            : value,
       );
       _sawImeComposition = false;
     } finally {
