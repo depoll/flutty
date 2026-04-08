@@ -4856,9 +4856,19 @@ void main() {
 
         expect(terminalResult.finalState, textFieldResult.finalState);
         expect(textFieldResult.echoedStates, isEmpty);
-        // The reconnect after the pure deletion in step 2 adds one extra
-        // setEditingState echo beyond the resync that was already present.
-        expect(terminalResult.echoedStates.last, textFieldResult.finalState);
+        // The deletion-triggered buffer reset in step 2 first echoes the
+        // cleared IME state, then the later collapsed-caret move resyncs the
+        // current user state.
+        expect(terminalResult.echoedStates, [
+          (
+            text: '',
+            selectionBase: 0,
+            selectionExtent: 0,
+            composingBase: -1,
+            composingExtent: -1,
+          ),
+          textFieldResult.finalState,
+        ]);
       },
     );
 

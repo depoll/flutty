@@ -1275,10 +1275,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       // A short time window (500 ms) distinguishes rapid chord follow-ups
       // from normal typing after a standalone modifier like Ctrl+C.
       final chordResetTime = _modifierChordResetTime;
+      final chordElapsed = chordResetTime == null
+          ? null
+          : modifierChordClock().difference(chordResetTime);
       final wasChordFollowUp =
-          chordResetTime != null &&
-          modifierChordClock().difference(chordResetTime) <
-              modifierChordFollowUpWindow &&
+          chordElapsed != null &&
+          !chordElapsed.isNegative &&
+          chordElapsed < modifierChordFollowUpWindow &&
           delta.deletedCount == 0 &&
           delta.appendedText.characters.length == 1;
 
