@@ -690,10 +690,46 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final trailingCodeUnit = textBeforeCursor.codeUnitAt(
       textBeforeCursor.length - 1,
     );
-    return trailingCodeUnit == 0x20 ||
+    if (trailingCodeUnit == 0x20 ||
         trailingCodeUnit == 0x09 ||
         trailingCodeUnit == 0x0A ||
-        trailingCodeUnit == 0x0D;
+        trailingCodeUnit == 0x0D) {
+      return true;
+    }
+
+    return _currentLineLooksLikePromptPrefix(textBeforeCursor);
+  }
+
+  bool _currentLineLooksLikePromptPrefix(String textBeforeCursor) {
+    final lastLineBreakIndex = textBeforeCursor.lastIndexOf(RegExp(r'[\r\n]'));
+    final currentLine = lastLineBreakIndex >= 0
+        ? textBeforeCursor.substring(lastLineBreakIndex + 1)
+        : textBeforeCursor;
+    final trimmedLine = currentLine.trim();
+    if (trimmedLine.isEmpty) {
+      return true;
+    }
+
+    final lineGraphemes = trimmedLine.characters.toList(growable: false);
+    if (lineGraphemes.length > 4) {
+      return false;
+    }
+
+    for (final grapheme in lineGraphemes) {
+      if (grapheme.trim().isEmpty) {
+        continue;
+      }
+      final codeUnit = grapheme.codeUnitAt(0);
+      final isAsciiLetterOrDigit =
+          (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+          (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+          (codeUnit >= 0x61 && codeUnit <= 0x7A);
+      if (isAsciiLetterOrDigit) {
+        return false;
+      }
+    }
+
+    return true;
   }
 
   int _sendInputDelta(
@@ -1393,8 +1429,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             targetCursorOffset != _lastSentCursorOffset;
         final shouldClearAfterCollapsedCursorMove =
             _clearImeAfterNextTouchCursorMove &&
-            _lastProcessedUserSelectionWasValid &&
-            _lastProcessedSelectionWasCollapsed &&
             targetCursorOffset != null &&
             targetCursorOffset != _lastSentCursorOffset;
         if (targetCursorOffset != null &&

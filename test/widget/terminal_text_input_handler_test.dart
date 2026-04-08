@@ -641,6 +641,11 @@ List<_ResetScenario> _buildOpusResetScenarios() {
       trimsAfterSuggestionReset: true,
     ),
     (
+      name: 'prompt-marker-context',
+      resolveTextBeforeCursor: '>',
+      trimsAfterSuggestionReset: true,
+    ),
+    (
       name: 'command-space-context',
       resolveTextBeforeCursor: 'echo ready ',
       trimsAfterSuggestionReset: true,
@@ -1370,6 +1375,43 @@ void main() {
         await _commitSwipeText(tester, '$_deleteDetectionMarker world');
 
         expect(_terminalTextFromEvents(terminalOutput), ' world');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'trims a swipe separator after an input reset when the current line is only a prompt marker',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => '>',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        controller.clearImeBuffer();
+        await tester.pump();
+
+        await _commitSwipeText(tester, '$_deleteDetectionMarker world');
+
+        expect(_terminalTextFromEvents(terminalOutput), 'world');
 
         focusNode.dispose();
       },
@@ -2221,6 +2263,75 @@ void main() {
             (call) => call.method == 'TextInput.setEditingState',
           ),
           hasLength(1),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'touch-driven caret moves clear the IME buffer after a replacement selection collapses elsewhere',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue(
+            'echo teh world',
+            selectionOffset: 'echo teh world'.length,
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}echo the world',
+            selection: TextSelection(baseOffset: 7, extentOffset: 10),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        await tester.tap(find.byType(TerminalTextInputHandler));
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('echo the world', selectionOffset: 'echo '.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'echo the world',
+            initialCursorOffset: 'echo the'.length,
+          ),
+          (text: 'echo the world', cursorOffset: 'echo '.length),
+        );
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          const TextEditingValue(
+            text: _deleteDetectionMarker,
+            selection: TextSelection.collapsed(offset: 2),
+          ),
         );
 
         focusNode.dispose();
