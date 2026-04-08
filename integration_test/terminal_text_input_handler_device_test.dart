@@ -539,6 +539,69 @@ void main() {
     );
 
     testWidgets(
+      'preserves the deleted suffix when a trailing-backspace reset resumes the same word and continues into the next word',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'thin',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}things',
+            selection: TextSelection.collapsed(offset: 8),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}thin',
+            selection: TextSelection.collapsed(offset: 6),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker gs are ',
+            selection: TextSelection.collapsed(offset: 10),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'thin',
+            initialCursorOffset: 'thin'.length,
+          ),
+          (text: 'things are ', cursorOffset: 'things are '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
       (tester) async {
         final terminalOutput = <String>[];

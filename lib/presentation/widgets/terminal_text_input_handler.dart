@@ -909,15 +909,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         ) >=
         requiredReplacementRelationLength;
 
-    final shouldReplaceCurrentToken =
-        (hasTrailingReplacementSeparator && replacementLooksRelated) ||
-        mergedCurrentText.startsWith(baselineToken);
     final shouldAppendToBaseline =
         hasLeadingReplacementSeparator &&
-        !hasTrailingReplacementSeparator &&
         deletedSuffixText != null &&
         deletedSuffixText.isNotEmpty &&
         mergedCurrentText.startsWith(deletedSuffixText);
+    final shouldReplaceCurrentToken =
+        !shouldAppendToBaseline &&
+        ((hasTrailingReplacementSeparator && replacementLooksRelated) ||
+            mergedCurrentText.startsWith(baselineToken));
     if (!shouldReplaceCurrentToken && !shouldAppendToBaseline) {
       return null;
     }
