@@ -228,7 +228,7 @@ void main() {
 
         tester.testTextInput.log.clear();
         shellStdoutController.add(Uint8List.fromList(utf8.encode('> ')));
-        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
 
         expect(
           tester.testTextInput.log.where(
@@ -237,6 +237,40 @@ void main() {
           hasLength(1),
         );
         await tester.pump(const Duration(milliseconds: 200));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'non-prompt shell output does not reconnect the IME input client',
+      (tester) async {
+        await pumpScreen(tester);
+
+        tester.testTextInput.log.clear();
+        shellStdoutController.add(
+          Uint8List.fromList(utf8.encode('running task...\ncompleted 1/3')),
+        );
+        await tester.pump(const Duration(milliseconds: 200));
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setClient',
+          ),
+          isEmpty,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'shell stdout errors are handled without breaking the screen',
+      (tester) async {
+        await pumpScreen(tester);
+
+        shellStdoutController.addError(StateError('stdout failed'));
+        await tester.pump(const Duration(milliseconds: 50));
+
+        expect(find.byType(TerminalTextInputHandler), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

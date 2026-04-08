@@ -21,11 +21,16 @@ const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 @visibleForTesting
 const modifierChordFollowUpWindow = Duration(milliseconds: 500);
 
-/// Clock function used to timestamp modifier chord resets.
-///
-/// Override in tests to control the chord follow-up time window.
+DateTime Function()? _modifierChordClockOverride;
+
+DateTime _readModifierChordClock() =>
+    (_modifierChordClockOverride ?? DateTime.now).call();
+
+/// Overrides the modifier chord clock in tests.
 @visibleForTesting
-DateTime Function() modifierChordClock = DateTime.now;
+void debugSetModifierChordClock(DateTime Function()? clock) {
+  _modifierChordClockOverride = clock;
+}
 
 /// Confirms suspicious text inserted through the system keyboard or IME.
 typedef TerminalTextInputReviewCallback =
@@ -476,7 +481,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _trimLeadingSuggestionSpaceAfterDelete = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _modifierChordResetTime = armModifierChordWindow
-        ? modifierChordClock()
+        ? _readModifierChordClock()
         : null;
   }
 
@@ -1567,7 +1572,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       final chordResetTime = _modifierChordResetTime;
       final chordElapsed = chordResetTime == null
           ? null
-          : modifierChordClock().difference(chordResetTime);
+          : _readModifierChordClock().difference(chordResetTime);
       final wasChordFollowUp =
           chordElapsed != null &&
           !chordElapsed.isNegative &&

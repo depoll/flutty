@@ -6991,8 +6991,8 @@ void main() {
         final focusNode = FocusNode();
         var modifierActive = false;
         var fakeNow = DateTime(2026);
-        modifierChordClock = () => fakeNow;
-        addTearDown(() => modifierChordClock = DateTime.now);
+        debugSetModifierChordClock(() => fakeNow);
+        addTearDown(() => debugSetModifierChordClock(null));
 
         await tester.pumpWidget(
           MaterialApp(
@@ -7076,8 +7076,8 @@ void main() {
         final focusNode = FocusNode();
         var modifierActive = false;
         var fakeNow = DateTime(2026);
-        modifierChordClock = () => fakeNow;
-        addTearDown(() => modifierChordClock = DateTime.now);
+        debugSetModifierChordClock(() => fakeNow);
+        addTearDown(() => debugSetModifierChordClock(null));
 
         await tester.pumpWidget(
           MaterialApp(
