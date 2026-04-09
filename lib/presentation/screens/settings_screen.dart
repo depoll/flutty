@@ -1198,6 +1198,7 @@ class _AboutSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final appMetadata = ref.watch(appMetadataProvider);
+    final appName = ref.watch(appDisplayNameProvider);
     final previewBuildLabel = appMetadata.asData?.value.pullRequestLabel;
 
     return Column(
@@ -1227,7 +1228,7 @@ class _AboutSection extends ConsumerWidget {
           subtitle: const Text('Open source licenses'),
           onTap: () => showLicensePage(
             context: context,
-            applicationName: 'MonkeySSH',
+            applicationName: appName,
             applicationVersion: _versionLabel(appMetadata),
           ),
         ),

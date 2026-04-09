@@ -309,6 +309,7 @@ void main() {
           overrides: [
             appMetadataProvider.overrideWith(
               (ref) async => const AppMetadata(
+                appName: 'MonkeySSH',
                 version: '0.1.1',
                 buildNumber: '123',
                 pullRequestNumber: '175',

@@ -7,6 +7,7 @@ import '../domain/services/background_ssh_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
 import 'app_lifecycle_coordinator.dart';
+import 'app_metadata.dart';
 import 'auth_lifecycle_controller.dart';
 import 'router.dart';
 import 'theme.dart';
@@ -20,10 +21,11 @@ class FluttyApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeNotifierProvider);
+    final appName = ref.watch(appDisplayNameProvider);
 
     return _BackgroundLifecycleBridge(
       child: MaterialApp.router(
-        title: 'MonkeySSH',
+        title: appName,
         debugShowCheckedModeBanner: false,
         theme: FluttyTheme.light,
         darkTheme: FluttyTheme.dark,
