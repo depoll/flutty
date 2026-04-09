@@ -330,8 +330,6 @@ void main() {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);
 
-    final semantics = tester.ensureSemantics();
-
     await tester.pumpWidget(
       buildMobileHomeScreen(
         db: db,
@@ -356,7 +354,5 @@ void main() {
       ),
       findsOneWidget,
     );
-
-    semantics.dispose();
   });
 }

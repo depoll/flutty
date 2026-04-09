@@ -739,6 +739,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   bool tapToShowKeyboard = true,
   String Function()? resolveTextBeforeCursor,
   TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
+  VoidCallback? consumeTerminalKeyModifiers,
   ValueGetter<bool>? hasActiveToolbarModifier,
   TerminalTextInputHandlerController? controller,
 }) async {
@@ -760,6 +761,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
           tapToShowKeyboard: tapToShowKeyboard,
           resolveTextBeforeCursor: resolveTextBeforeCursor,
           resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
+          consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
           hasActiveToolbarModifier: hasActiveToolbarModifier,
           child: const SizedBox.expand(),
         ),
@@ -4550,19 +4552,26 @@ void main() {
       },
     );
 
-    testWidgets('applies toolbar Shift to newline actions', (tester) async {
+    testWidgets('newline actions consume one-shot toolbar modifiers', (
+      tester,
+    ) async {
+      var shiftActive = true;
       final harness = await _pumpTerminalHarness(
         tester,
         resolveTerminalKeyModifiers: () =>
-            (ctrl: false, alt: false, shift: true),
+            (ctrl: false, alt: false, shift: shiftActive),
+        consumeTerminalKeyModifiers: () => shiftActive = false,
       );
 
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
       _terminalTextInputClient(tester).performAction(TextInputAction.newline);
       await tester.pump();
 
       expect(
         harness.terminalOutput.join(),
-        _terminalKeyOutput(TerminalKey.enter, shift: true),
+        _terminalKeyOutput(TerminalKey.enter, shift: true) +
+            _terminalKeyOutput(TerminalKey.enter),
       );
 
       await _disposeTerminalHarness(tester, harness);

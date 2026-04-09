@@ -155,6 +155,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
     this.resolveTerminalKeyModifiers,
+    this.consumeTerminalKeyModifiers,
     this.hasActiveToolbarModifier,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
@@ -196,6 +197,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Resolves active toolbar modifiers for terminal key actions like Enter.
   final TerminalKeyModifierResolver? resolveTerminalKeyModifiers;
+
+  /// Consumes one-shot toolbar modifiers after a terminal key action.
+  final VoidCallback? consumeTerminalKeyModifiers;
 
   /// Whether a toolbar modifier (Ctrl or Alt) is currently active.
   ///
@@ -1891,6 +1895,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         altActive: modifiers?.alt ?? false,
         ctrlActive: modifiers?.ctrl ?? false,
       );
+      widget.consumeTerminalKeyModifiers?.call();
       _pendingPerformedEnterText = _lastSentText;
       _resetCommittedInputState(clearPendingPerformedEnterText: false);
       _trimLeadingSuggestionSpaceAfterDelete = true;

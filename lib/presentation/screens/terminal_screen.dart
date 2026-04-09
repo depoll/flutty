@@ -3293,6 +3293,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         alt: _toolbarController.isAltActive,
         shift: _toolbarController.isShiftActive,
       ),
+      consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
