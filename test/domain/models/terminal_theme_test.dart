@@ -273,7 +273,7 @@ void main() {
       expect(TerminalThemes.getById('ocean-dark'), isNotNull);
     });
 
-    test('all built-in themes keep tmux status colors legible', () {
+    test('all built-in themes keep tmux prompt colors legible', () {
       for (final theme in TerminalThemes.all) {
         expect(
           _contrastRatio(theme.green, theme.black),
@@ -281,6 +281,13 @@ void main() {
           reason:
               'Theme ${theme.name} should keep tmux black-on-green status '
               'lines readable.',
+        );
+        expect(
+          _contrastRatio(theme.yellow, theme.black),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep tmux black-on-yellow command '
+              'prompts readable.',
         );
       }
     });

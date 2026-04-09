@@ -302,5 +302,25 @@ void main() {
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
+
+    testWidgets(
+      'extended keyboard toggle uses distinct copy',
+      (tester) async {
+        await pumpScreen(tester);
+
+        expect(find.byTooltip('Hide extended keyboard'), findsOneWidget);
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(find.byIcon(Icons.shortcut_rounded), findsOneWidget);
+        expect(find.byIcon(Icons.keyboard_alt_outlined), findsOneWidget);
+        expect(find.byIcon(Icons.keyboard_outlined), findsNothing);
+
+        await tester.tap(find.byTooltip('Hide extended keyboard'));
+        await tester.pump();
+
+        expect(find.byTooltip('Show extended keyboard'), findsOneWidget);
+        expect(find.byIcon(Icons.shortcut_rounded), findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
   });
 }

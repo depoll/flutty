@@ -19,6 +19,19 @@ bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
 String resolveTerminalTabInput({required bool shiftActive}) =>
     shiftActive ? '\x1b[Z' : '\t';
 
+/// Sends Enter with the active terminal modifiers applied.
+bool sendTerminalEnterInput(
+  Terminal terminal, {
+  required bool shiftActive,
+  required bool altActive,
+  required bool ctrlActive,
+}) => terminal.keyInput(
+  TerminalKey.enter,
+  shift: shiftActive,
+  alt: altActive,
+  ctrl: ctrlActive,
+);
+
 int? _ctrlCodeForCharacter(String text) {
   if (text.length != 1) {
     return null;
@@ -459,7 +472,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEnter() {
     HapticFeedback.lightImpact();
-    widget.terminal.keyInput(TerminalKey.enter);
+    sendTerminalEnterInput(
+      widget.terminal,
+      shiftActive: _controller.isShiftActive,
+      altActive: _controller.isAltActive,
+      ctrlActive: _controller.isCtrlActive,
+    );
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }

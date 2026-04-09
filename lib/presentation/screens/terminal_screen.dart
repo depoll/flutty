@@ -1272,7 +1272,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
-  bool _showKeyboard = true;
+  bool _showKeyboardToolbar = true;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
@@ -2592,11 +2592,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show system keyboard',
             ),
           IconButton(
-            icon: Icon(
-              _showKeyboard ? Icons.space_bar : Icons.keyboard_outlined,
-            ),
-            onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
-            tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
+            icon: const Icon(Icons.shortcut_rounded),
+            onPressed: () =>
+                setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
+            tooltip: _showKeyboardToolbar
+                ? 'Hide extended keyboard'
+                : 'Show extended keyboard',
           ),
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
@@ -2737,7 +2738,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard &&
+          if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
@@ -3283,6 +3284,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
+      resolveTerminalKeyModifiers: () => (
+        ctrl: _toolbarController.isCtrlActive,
+        alt: _toolbarController.isAltActive,
+        shift: _toolbarController.isShiftActive,
+      ),
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,

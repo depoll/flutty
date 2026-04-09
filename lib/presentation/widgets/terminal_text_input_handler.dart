@@ -11,6 +11,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../domain/models/auto_connect_command.dart';
+import 'keyboard_toolbar.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
@@ -56,6 +57,10 @@ typedef TerminalTextInputReviewTextBuilder =
 
 /// Resolves the current terminal text that appears before the cursor.
 typedef TerminalTextBeforeCursorResolver = String? Function();
+
+/// Resolves active toolbar modifiers for non-text terminal key actions.
+typedef TerminalKeyModifierResolver =
+    ({bool ctrl, bool alt, bool shift}) Function();
 
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
@@ -149,6 +154,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.onReviewInsertedText,
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
+    this.resolveTerminalKeyModifiers,
     this.hasActiveToolbarModifier,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
@@ -187,6 +193,9 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// This lets the IME handler distinguish a stray leading swipe space from the
   /// only separator needed between existing terminal text and the next word.
   final TerminalTextBeforeCursorResolver? resolveTextBeforeCursor;
+
+  /// Resolves active toolbar modifiers for terminal key actions like Enter.
+  final TerminalKeyModifierResolver? resolveTerminalKeyModifiers;
 
   /// Whether a toolbar modifier (Ctrl or Alt) is currently active.
   ///
@@ -1873,9 +1882,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _pendingEnterActionSuppressions--;
         return;
       }
+      final modifiers = widget.resolveTerminalKeyModifiers?.call();
       _hasPendingPromptOutputImeReset = true;
       _notifyUserInput();
-      widget.terminal.keyInput(TerminalKey.enter);
+      sendTerminalEnterInput(
+        widget.terminal,
+        shiftActive: modifiers?.shift ?? false,
+        altActive: modifiers?.alt ?? false,
+        ctrlActive: modifiers?.ctrl ?? false,
+      );
       _pendingPerformedEnterText = _lastSentText;
       _resetCommittedInputState(clearPendingPerformedEnterText: false);
       _trimLeadingSuggestionSpaceAfterDelete = true;
