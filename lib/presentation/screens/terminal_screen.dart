@@ -4951,7 +4951,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required String failureContext,
   }) async {
     try {
-      final result = await FilePicker.platform.pickFiles(
+      final result = await FilePicker.pickFiles(
         dialogTitle: dialogTitle,
         type: pickerType,
         allowMultiple: allowMultiple,

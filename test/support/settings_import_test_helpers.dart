@@ -1,9 +1,10 @@
 // ignore_for_file: public_member_api_docs, use_super_parameters
 
-import 'dart:io';
+import 'dart:io' show Directory, File;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/data/database/database.dart';
@@ -14,30 +15,62 @@ import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 
+const _filePickerChannel = MethodChannel(
+  'miguelruivo.flutter.plugins.filepicker',
+);
+
 void setFakeFilePickerResult({required FilePickerResult? result}) {
-  final originalPlatform = _currentFilePickerPlatform();
-  FilePicker.platform = FakeFilePicker(result: result);
-  addTearDown(() => FilePicker.platform = originalPlatform);
+  Future<List<String>?>? nativeFilePaths;
+  TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+      .setMockMethodCallHandler(_filePickerChannel, (call) async {
+        if (call.method case 'pickFiles') {
+          return nativeFilePaths ??= _materializeNativeFilePaths(result);
+        }
+        if (call.method
+            case 'any' ||
+                'custom' ||
+                'image' ||
+                'video' ||
+                'media' ||
+                'audio') {
+          return result?.files.map(_serializePlatformFile).toList();
+        }
+        return null;
+      });
+  addTearDown(
+    () => TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(_filePickerChannel, null),
+  );
 }
 
-FilePicker _currentFilePickerPlatform() {
-  try {
-    return FilePicker.platform;
-  } catch (error) {
-    if (!error.toString().startsWith('LateInitializationError:')) {
-      rethrow;
-    }
-    final platform = Platform.isMacOS
-        ? FilePickerMacOS()
-        : Platform.isLinux
-        ? FilePickerLinux()
-        : Platform.isWindows
-        ? FilePickerWindows()
-        : FilePickerIO();
-    FilePicker.platform = platform;
-    return platform;
+Future<List<String>?> _materializeNativeFilePaths(
+  FilePickerResult? result,
+) async {
+  if (result == null) {
+    return null;
   }
+
+  final tempDirectory = await Directory.systemTemp.createTemp(
+    'flutty-file-picker-',
+  );
+  addTearDown(() => tempDirectory.delete(recursive: true));
+
+  final filePaths = <String>[];
+  for (final file in result.files) {
+    final tempFile = File('${tempDirectory.path}/${file.name}');
+    await tempFile.writeAsBytes(file.bytes ?? const <int>[]);
+    filePaths.add(tempFile.path);
+  }
+  return filePaths;
 }
+
+Map<String, Object?> _serializePlatformFile(PlatformFile file) => {
+  'path': file.path,
+  'name': file.name,
+  'bytes': file.bytes,
+  'size': file.size,
+  'identifier': file.identifier,
+};
 
 class EntityProviderProbe extends ConsumerWidget {
   const EntityProviderProbe({super.key});
@@ -66,28 +99,6 @@ class FakeAuthService extends AuthService {
 
   @override
   Future<bool> isBiometricAvailable() async => false;
-}
-
-class FakeFilePicker extends FilePicker {
-  FakeFilePicker({required this.result});
-
-  final FilePickerResult? result;
-
-  @override
-  Future<FilePickerResult?> pickFiles({
-    String? dialogTitle,
-    String? initialDirectory,
-    FileType type = FileType.any,
-    List<String>? allowedExtensions,
-    Function(FilePickerStatus)? onFileLoading,
-    bool allowCompression = false,
-    int compressionQuality = 0,
-    bool allowMultiple = false,
-    bool withData = false,
-    bool withReadStream = false,
-    bool lockParentWindow = false,
-    bool readSequential = false,
-  }) async => result;
 }
 
 class FakeSecureTransferService extends SecureTransferService {
