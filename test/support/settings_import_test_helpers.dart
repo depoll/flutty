@@ -1,8 +1,9 @@
 // ignore_for_file: public_member_api_docs, use_super_parameters
 
-import 'dart:io';
+import 'dart:io' show FileSystemException;
 
 import 'package:file_picker/file_picker.dart';
+import 'package:file_picker/src/platform/file_picker_platform_interface.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -16,28 +17,9 @@ import 'package:monkeyssh/domain/services/sync_vault_document_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 
 void setFakeFilePickerResult({required FilePickerResult? result}) {
-  final originalPlatform = _currentFilePickerPlatform();
-  FilePicker.platform = FakeFilePicker(result: result);
-  addTearDown(() => FilePicker.platform = originalPlatform);
-}
-
-FilePicker _currentFilePickerPlatform() {
-  try {
-    return FilePicker.platform;
-  } catch (error) {
-    if (!error.toString().startsWith('LateInitializationError:')) {
-      rethrow;
-    }
-    final platform = Platform.isMacOS
-        ? FilePickerMacOS()
-        : Platform.isLinux
-        ? FilePickerLinux()
-        : Platform.isWindows
-        ? FilePickerWindows()
-        : FilePickerIO();
-    FilePicker.platform = platform;
-    return platform;
-  }
+  final originalPlatform = FilePickerPlatform.instance;
+  FilePickerPlatform.instance = FakeFilePicker(result: result);
+  addTearDown(() => FilePickerPlatform.instance = originalPlatform);
 }
 
 class EntityProviderProbe extends ConsumerWidget {
@@ -69,7 +51,7 @@ class FakeAuthService extends AuthService {
   Future<bool> isBiometricAvailable() async => false;
 }
 
-class FakeFilePicker extends FilePicker {
+class FakeFilePicker extends FilePickerPlatform {
   FakeFilePicker({required this.result});
 
   final FilePickerResult? result;
@@ -81,13 +63,13 @@ class FakeFilePicker extends FilePicker {
     FileType type = FileType.any,
     List<String>? allowedExtensions,
     Function(FilePickerStatus)? onFileLoading,
-    bool allowCompression = false,
     int compressionQuality = 0,
     bool allowMultiple = false,
     bool withData = false,
     bool withReadStream = false,
     bool lockParentWindow = false,
     bool readSequential = false,
+    bool cancelUploadOnWindowBlur = true,
   }) async => result;
 }
 
