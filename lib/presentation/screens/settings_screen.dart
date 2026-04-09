@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:intl/intl.dart';
 
 import '../../app/app_metadata.dart';
 import '../../domain/models/terminal_themes.dart';
@@ -11,15 +10,12 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
-import '../../domain/services/sync_vault_document_service.dart';
-import '../../domain/services/sync_vault_service.dart';
 import '../providers/entity_list_providers.dart';
-import '../widgets/recovery_key_qr_dialogs.dart';
 import '../widgets/terminal_theme_picker.dart';
-import 'sync_vault_file_helpers.dart';
 import 'transfer_screen.dart';
 
-/// Settings screen with appearance, security, terminal, and about sections.
+/// Settings screen with appearance, security, terminal, import/export,
+/// and about sections.
 class SettingsScreen extends ConsumerWidget {
   /// Creates a new [SettingsScreen].
   const SettingsScreen({super.key});
@@ -32,9 +28,8 @@ class SettingsScreen extends ConsumerWidget {
       children: const [
         _AppearanceSection(),
         _SecuritySection(),
-        _SyncSection(),
         _TerminalSection(),
-        _MigrationSection(),
+        _ImportExportSection(),
         _AboutSection(),
       ],
     ),
@@ -741,457 +736,6 @@ class _TerminalSection extends ConsumerWidget {
   }
 }
 
-class _SyncSection extends ConsumerWidget {
-  const _SyncSection();
-
-  @override
-  Widget build(BuildContext context, WidgetRef ref) {
-    final statusAsync = ref.watch(syncVaultStatusProvider);
-
-    return statusAsync.when(
-      loading: () => const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SectionHeader(title: 'Sync'),
-          ListTile(
-            leading: Icon(Icons.cloud_outlined),
-            title: Text('Encrypted sync'),
-            subtitle: Text('Loading sync status...'),
-          ),
-        ],
-      ),
-      error: (error, stackTrace) => const Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SectionHeader(title: 'Sync'),
-          ListTile(
-            leading: Icon(Icons.warning_amber_outlined),
-            title: Text('Encrypted sync'),
-            subtitle: Text(
-              'Could not load sync status. Try reopening Settings.',
-            ),
-          ),
-        ],
-      ),
-      data: (status) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const _SectionHeader(title: 'Sync'),
-          ListTile(
-            leading: Icon(
-              status.enabled ? Icons.cloud_done_outlined : Icons.cloud_outlined,
-            ),
-            title: Text(
-              status.enabled
-                  ? 'Encrypted sync is enabled'
-                  : 'Encrypted sync is optional',
-            ),
-            subtitle: Text(_statusSubtitle(status)),
-          ),
-          if (status.lastError != null && status.lastError!.isNotEmpty)
-            ListTile(
-              leading: const Icon(Icons.warning_amber_outlined),
-              title: const Text('Sync needs attention'),
-              subtitle: Text(status.lastError!),
-            ),
-          if (!status.enabled) ...[
-            ListTile(
-              leading: const Icon(Icons.add_to_drive_outlined),
-              title: const Text('Create encrypted sync vault'),
-              subtitle: const Text(
-                'Create a .monkeysync file in iCloud Drive, Dropbox, Syncthing, or another cloud folder',
-              ),
-              onTap: () => _createVault(context, ref),
-            ),
-            ListTile(
-              leading: const Icon(Icons.link_outlined),
-              title: const Text('Connect to existing vault'),
-              subtitle: const Text(
-                'Use a recovery key to enroll this device into an existing vault',
-              ),
-              onTap: () => _connectToExistingVault(context, ref),
-            ),
-          ] else ...[
-            ListTile(
-              leading: const Icon(Icons.sync),
-              title: const Text('Sync now'),
-              subtitle: const Text(
-                'Upload or download changes with explicit conflict protection',
-              ),
-              onTap: () => _syncNow(context, ref),
-            ),
-            ListTile(
-              leading: const Icon(Icons.key_outlined),
-              title: const Text('Show recovery key'),
-              subtitle: const Text(
-                'Needed to enroll another device or recover sync access',
-              ),
-              enabled: status.hasRecoveryKey,
-              onTap: status.hasRecoveryKey
-                  ? () => _showRecoveryKey(context, ref)
-                  : null,
-            ),
-            ListTile(
-              leading: const Icon(Icons.folder_open_outlined),
-              title: const Text('Relink vault file'),
-              subtitle: const Text(
-                'Select the cloud-synced .monkeysync file again on this device',
-              ),
-              onTap: () => _relinkVault(context, ref),
-            ),
-            ListTile(
-              leading: const Icon(Icons.cloud_off_outlined),
-              title: const Text('Disable encrypted sync'),
-              subtitle: const Text(
-                'Stop syncing on this device without deleting local data',
-              ),
-              onTap: () => _disableSync(context, ref),
-            ),
-          ],
-        ],
-      ),
-    );
-  }
-
-  String _statusSubtitle(SyncVaultStatus status) {
-    if (!status.enabled) {
-      return 'Keep devices in sync with an end-to-end encrypted vault file';
-    }
-
-    final buffer = StringBuffer();
-    final fileName = status.fileName;
-    if (fileName != null) {
-      buffer.write('Linked to $fileName');
-    } else {
-      buffer.write('Vault file needs to be linked');
-    }
-    final lastSyncedAt = status.lastSyncedAt;
-    if (lastSyncedAt != null) {
-      buffer.write(
-        ' • Last synced ${DateFormat.yMd().add_jm().format(lastSyncedAt.toLocal())}',
-      );
-    }
-    return buffer.toString();
-  }
-
-  Future<void> _createVault(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await authorizeSensitiveTransferExport(
-      context: context,
-      authService: ref.read(authServiceProvider),
-      readAuthState: () => ref.read(authStateProvider),
-      reason: 'Authenticate to enable encrypted sync',
-    );
-    if (!context.mounted || !isAuthorized) {
-      return;
-    }
-
-    final syncService = ref.read(syncVaultServiceProvider);
-    final documentService = ref.read(syncVaultDocumentServiceProvider);
-    final provisioning = await syncService.prepareNewVault();
-    if (!context.mounted) {
-      return;
-    }
-
-    final savedVault = await saveSyncVaultToFile(
-      context: context,
-      documentService: documentService,
-      encryptedVault: provisioning.encryptedVault,
-      defaultFileName: 'monkeyssh-sync-vault',
-    );
-    if (!context.mounted || savedVault == null) {
-      return;
-    }
-
-    await syncService.enablePreparedVault(
-      vaultPath: savedVault.path,
-      vaultBookmark: savedVault.bookmark,
-      provisioning: provisioning,
-    );
-    ref.invalidate(syncVaultStatusProvider);
-    if (!context.mounted) {
-      return;
-    }
-
-    await showRecoveryKeyQrDialog(context, provisioning.recoveryKey);
-    if (!context.mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Encrypted sync enabled')));
-  }
-
-  Future<void> _connectToExistingVault(
-    BuildContext context,
-    WidgetRef ref,
-  ) async {
-    final isAuthorized = await authorizeSensitiveTransferExport(
-      context: context,
-      authService: ref.read(authServiceProvider),
-      readAuthState: () => ref.read(authStateProvider),
-      reason: 'Authenticate to connect encrypted sync on this device',
-    );
-    if (!context.mounted || !isAuthorized) {
-      return;
-    }
-
-    final selectedFile = await pickSyncVaultFromFile(
-      context,
-      ref.read(syncVaultDocumentServiceProvider),
-    );
-    if (!context.mounted || selectedFile == null) {
-      return;
-    }
-
-    final recoveryKey = await showRecoveryKeyEntryDialog(context);
-    if (!context.mounted || recoveryKey == null) {
-      return;
-    }
-
-    try {
-      await ref
-          .read(syncVaultServiceProvider)
-          .linkExistingVault(
-            vaultPath: selectedFile.path,
-            vaultBookmark: selectedFile.bookmark,
-            encryptedVault: selectedFile.contents,
-            recoveryKey: recoveryKey,
-          );
-      ref.invalidate(syncVaultStatusProvider);
-      if (!context.mounted) {
-        return;
-      }
-      await _syncNow(
-        context,
-        ref,
-        initialMessage: 'Vault linked. Checking for sync changes...',
-      );
-    } on FormatException catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not link vault: ${error.message}')),
-      );
-    }
-  }
-
-  Future<void> _showRecoveryKey(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await authorizeSensitiveTransferExport(
-      context: context,
-      authService: ref.read(authServiceProvider),
-      readAuthState: () => ref.read(authStateProvider),
-      reason: 'Authenticate to reveal your sync recovery key',
-    );
-    if (!context.mounted || !isAuthorized) {
-      return;
-    }
-
-    try {
-      final recoveryKey = await ref
-          .read(syncVaultServiceProvider)
-          .getRecoveryKey();
-      if (!context.mounted) {
-        return;
-      }
-      await showRecoveryKeyQrDialog(context, recoveryKey);
-    } on FormatException catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(error.message)));
-    }
-  }
-
-  Future<void> _relinkVault(BuildContext context, WidgetRef ref) async {
-    final selectedFile = await pickSyncVaultFromFile(
-      context,
-      ref.read(syncVaultDocumentServiceProvider),
-    );
-    if (!context.mounted || selectedFile == null) {
-      return;
-    }
-
-    try {
-      await ref
-          .read(syncVaultServiceProvider)
-          .relinkVault(
-            vaultPath: selectedFile.path,
-            vaultBookmark: selectedFile.bookmark,
-            encryptedVault: selectedFile.contents,
-          );
-      ref.invalidate(syncVaultStatusProvider);
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Encrypted sync vault relinked')),
-      );
-    } on FormatException catch (error) {
-      if (!context.mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Could not relink vault: ${error.message}')),
-      );
-    }
-  }
-
-  Future<void> _disableSync(BuildContext context, WidgetRef ref) async {
-    final isAuthorized = await authorizeSensitiveTransferExport(
-      context: context,
-      authService: ref.read(authServiceProvider),
-      readAuthState: () => ref.read(authStateProvider),
-      reason: 'Authenticate to disable encrypted sync',
-    );
-    if (!context.mounted || !isAuthorized) {
-      return;
-    }
-
-    final shouldDisable = await showDialog<bool>(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('Disable encrypted sync'),
-        content: const Text(
-          'This stops syncing on this device and removes the cached recovery key here. Your local app data and the vault file stay untouched.',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext, false),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(dialogContext, true),
-            child: const Text('Disable'),
-          ),
-        ],
-      ),
-    );
-    if (shouldDisable != true) {
-      return;
-    }
-
-    await ref.read(syncVaultServiceProvider).disableSync();
-    ref.invalidate(syncVaultStatusProvider);
-    if (!context.mounted) {
-      return;
-    }
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(content: Text('Encrypted sync disabled on this device')),
-    );
-  }
-
-  Future<void> _syncNow(
-    BuildContext context,
-    WidgetRef ref, {
-    String? initialMessage,
-  }) async {
-    if (initialMessage != null && context.mounted) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text(initialMessage)));
-    }
-
-    final syncService = ref.read(syncVaultServiceProvider);
-    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-    var result = await syncService.syncNow();
-    if (!context.mounted) {
-      return;
-    }
-
-    if (result.outcome == SyncVaultSyncOutcome.conflict) {
-      final resolution = await _showConflictResolutionDialog(context, result);
-      if (resolution == null || !context.mounted) {
-        return;
-      }
-      result = await syncService.syncNow(resolution: resolution);
-      if (!context.mounted) {
-        return;
-      }
-    }
-
-    ref.invalidate(syncVaultStatusProvider);
-    if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
-      await sessionsNotifier.disconnectAll();
-      if (!context.mounted) {
-        return;
-      }
-      invalidateSyncedDataProviders(ref.invalidate);
-    }
-
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(result.message)));
-  }
-
-  Future<SyncVaultConflictResolution?> _showConflictResolutionDialog(
-    BuildContext context,
-    SyncVaultSyncResult result,
-  ) async => showDialog<SyncVaultConflictResolution>(
-    context: context,
-    builder: (dialogContext) => AlertDialog(
-      title: const Text('Resolve sync conflict'),
-      content: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Text(
-            'This device and the encrypted sync vault both changed since the last shared baseline.',
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'Local snapshot: ${_previewSummary(result.localPreview)}${_formatConflictTime(result.localUpdatedAt)}',
-          ),
-          const SizedBox(height: 8),
-          Text(
-            'Vault snapshot: ${_previewSummary(result.remotePreview)}${_formatConflictTime(result.remoteUpdatedAt)}',
-          ),
-          const SizedBox(height: 12),
-          const Text(
-            'Choose which side should win. The other side will be replaced for the synced data scope.',
-          ),
-        ],
-      ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(dialogContext),
-          child: const Text('Cancel'),
-        ),
-        OutlinedButton(
-          onPressed: () => Navigator.pop(
-            dialogContext,
-            SyncVaultConflictResolution.downloadRemote,
-          ),
-          child: const Text('Use vault'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(
-            dialogContext,
-            SyncVaultConflictResolution.uploadLocal,
-          ),
-          child: const Text('Use this device'),
-        ),
-      ],
-    ),
-  );
-
-  String _previewSummary(MigrationPreview? preview) {
-    if (preview == null) {
-      return 'No preview available';
-    }
-    return '${preview.hostCount} hosts, ${preview.keyCount} keys, ${preview.groupCount} groups, ${preview.snippetCount} snippets, ${preview.portForwardCount} port forwards, ${preview.settingsCount} settings';
-  }
-
-  String _formatConflictTime(DateTime? timestamp) {
-    if (timestamp == null) {
-      return '';
-    }
-    return ' • ${DateFormat.yMd().add_jm().format(timestamp.toLocal())}';
-  }
-}
-
 class _AboutSection extends ConsumerWidget {
   const _AboutSection();
 
@@ -1251,28 +795,24 @@ class _AboutSection extends ConsumerWidget {
   }
 }
 
-class _MigrationSection extends ConsumerWidget {
-  const _MigrationSection();
+class _ImportExportSection extends ConsumerWidget {
+  const _ImportExportSection();
 
   @override
   Widget build(BuildContext context, WidgetRef ref) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      const _SectionHeader(title: 'Migration'),
+      const _SectionHeader(title: 'Import & Export'),
       ListTile(
         leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
-        title: Text(
-          useShareSheet
-              ? 'Share full migration package'
-              : 'Export full migration package',
-        ),
-        subtitle: const Text('Encrypted transfer file (.monkeysshx)'),
+        title: const Text('Export app data'),
+        subtitle: const Text('Create encrypted .monkeysshx export file'),
         onTap: () => _exportMigration(context, ref),
       ),
       ListTile(
         leading: const Icon(Icons.download_for_offline_outlined),
-        title: const Text('Import migration package'),
-        subtitle: const Text('Preview and choose merge or replace'),
+        title: const Text('Import app data'),
+        subtitle: const Text('Open encrypted .monkeysshx export file'),
         onTap: () => _importMigration(context, ref),
       ),
     ],
@@ -1283,23 +823,21 @@ class _MigrationSection extends ConsumerWidget {
       context: context,
       authService: ref.read(authServiceProvider),
       readAuthState: () => ref.read(authStateProvider),
-      reason: 'Authenticate to export migration package',
+      reason: 'Authenticate to export app data',
     );
     if (!context.mounted) {
       return;
     }
     if (!isAuthorized) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Authentication required for migration export'),
-        ),
+        const SnackBar(content: Text('Authentication required for export')),
       );
       return;
     }
 
     final transferPassphrase = await showTransferPassphraseDialog(
       context: context,
-      title: 'Migration export passphrase',
+      title: 'Export passphrase',
     );
     if (!context.mounted || transferPassphrase == null) {
       return;
@@ -1333,16 +871,14 @@ class _MigrationSection extends ConsumerWidget {
       context: context,
       authService: ref.read(authServiceProvider),
       readAuthState: () => ref.read(authStateProvider),
-      reason: 'Authenticate to import migration package',
+      reason: 'Authenticate to import app data',
     );
     if (!context.mounted) {
       return;
     }
     if (!isAuthorized) {
       ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('Authentication required for migration import'),
-        ),
+        const SnackBar(content: Text('Authentication required for import')),
       );
       return;
     }
@@ -1354,7 +890,7 @@ class _MigrationSection extends ConsumerWidget {
 
     final transferPassphrase = await showTransferPassphraseDialog(
       context: context,
-      title: 'Migration import passphrase',
+      title: 'Import passphrase',
     );
     if (!context.mounted || transferPassphrase == null) {
       return;
@@ -1369,7 +905,7 @@ class _MigrationSection extends ConsumerWidget {
       );
       if (payload.type != TransferPayloadType.fullMigration) {
         throw const FormatException(
-          'This transfer payload does not contain full migration data',
+          'This transfer payload does not contain app data',
         );
       }
 
@@ -1380,7 +916,7 @@ class _MigrationSection extends ConsumerWidget {
       final mode = await showMigrationImportModeDialog(
         context: context,
         preview: preview,
-        title: 'Import migration package',
+        title: 'Import app data',
       );
       if (mode == null || !context.mounted) {
         return;
@@ -1407,9 +943,9 @@ class _MigrationSection extends ConsumerWidget {
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(content: Text('Migration import completed')),
-      );
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Import completed')));
     } on FormatException catch (error) {
       if (!context.mounted) {
         return;
