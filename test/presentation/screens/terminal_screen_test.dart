@@ -304,21 +304,23 @@ void main() {
     );
 
     testWidgets(
-      'extended keyboard toggle uses distinct copy',
+      'extra keys toggle uses distinct copy',
       (tester) async {
         await pumpScreen(tester);
 
-        expect(find.byTooltip('Hide extended keyboard'), findsOneWidget);
+        expect(find.byTooltip('Hide extra keys'), findsOneWidget);
         expect(find.byTooltip('Show system keyboard'), findsOneWidget);
-        expect(find.byIcon(Icons.shortcut_rounded), findsOneWidget);
+        expect(find.byIcon(Icons.dialpad_rounded), findsOneWidget);
+        expect(find.byIcon(Icons.dialpad_outlined), findsNothing);
         expect(find.byIcon(Icons.keyboard_alt_outlined), findsOneWidget);
         expect(find.byIcon(Icons.keyboard_outlined), findsNothing);
 
-        await tester.tap(find.byTooltip('Hide extended keyboard'));
+        await tester.tap(find.byTooltip('Hide extra keys'));
         await tester.pump();
 
-        expect(find.byTooltip('Show extended keyboard'), findsOneWidget);
-        expect(find.byIcon(Icons.shortcut_rounded), findsOneWidget);
+        expect(find.byTooltip('Show extra keys'), findsOneWidget);
+        expect(find.byIcon(Icons.dialpad_outlined), findsOneWidget);
+        expect(find.byIcon(Icons.dialpad_rounded), findsNothing);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

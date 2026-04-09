@@ -291,5 +291,12 @@ void main() {
         );
       }
     });
+
+    test('Clean White keeps tmux command prompts comfortably readable', () {
+      expect(
+        _contrastRatio(TerminalThemes.cleanWhite.yellow, Colors.black),
+        greaterThanOrEqualTo(8),
+      );
+    });
   });
 }

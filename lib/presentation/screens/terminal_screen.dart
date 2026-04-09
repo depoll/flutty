@@ -2592,12 +2592,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show system keyboard',
             ),
           IconButton(
-            icon: const Icon(Icons.shortcut_rounded),
+            icon: Icon(
+              _showKeyboardToolbar
+                  ? Icons.dialpad_rounded
+                  : Icons.dialpad_outlined,
+            ),
             onPressed: () =>
                 setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
             tooltip: _showKeyboardToolbar
-                ? 'Hide extended keyboard'
-                : 'Show extended keyboard',
+                ? 'Hide extra keys'
+                : 'Show extra keys',
           ),
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
