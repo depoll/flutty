@@ -602,6 +602,72 @@ void main() {
     );
 
     testWidgets(
+      'keeps the shortened prefix when later delete-reset words only share letters with the deleted suggestion',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => 'what do we t',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}what do we thinking',
+            selection: TextSelection.collapsed(offset: 21),
+          ),
+        );
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '${_deleteDetectionMarker}what do we t',
+            selection: TextSelection.collapsed(offset: 14),
+          ),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker whatever considering ',
+            selection: TextSelection.collapsed(offset: 24),
+          ),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'what do we t',
+            initialCursorOffset: 'what do we t'.length,
+          ),
+          (
+            text: 'what do we t whatever considering ',
+            cursorOffset: 'what do we t whatever considering '.length,
+          ),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'trims a leading IME separator during delete-reset replacement when the live terminal prefix is visible',
       (tester) async {
         final terminalOutput = <String>[];

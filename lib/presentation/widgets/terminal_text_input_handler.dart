@@ -819,39 +819,19 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingDeleteResetDeletedSuffixText = null;
   }
 
-  bool _isWhitespaceGrapheme(String grapheme) =>
-      grapheme == ' ' ||
-      grapheme == '\t' ||
-      grapheme == '\n' ||
-      grapheme == '\r';
-
   ({
-    String previousText,
-    int previousCursorOffset,
-    String currentText,
-    int? cursorOffset,
+    String baselineText,
+    int baselineCursorOffset,
+    String? deletedSuffixText,
+    List<String> baselineGraphemes,
+    int tokenStart,
+    String baselineToken,
   })?
-  _resolveDeleteResetContinuation(String currentText, {int? cursorOffsetHint}) {
+  _deleteResetBaselineState() {
     final baselineText = _pendingDeleteResetBaselineText;
     final baselineCursorOffset = _pendingDeleteResetBaselineCursorOffset;
     final deletedSuffixText = _pendingDeleteResetDeletedSuffixText;
-    if (baselineText == null ||
-        baselineCursorOffset == null ||
-        !_trimLeadingSuggestionSpaceAfterDelete ||
-        currentText.isEmpty) {
-      return null;
-    }
-
-    final currentGraphemes = currentText.characters.toList(growable: false);
-    final hasLeadingReplacementSeparator =
-        currentGraphemes.length > 1 &&
-        _isWhitespaceGrapheme(currentGraphemes.first) &&
-        !_isWhitespaceGrapheme(currentGraphemes[1]);
-    final hasTrailingReplacementSeparator =
-        currentGraphemes.isNotEmpty &&
-        _isWhitespaceGrapheme(currentGraphemes.last);
-    if (currentGraphemes.isEmpty ||
-        (!hasLeadingReplacementSeparator && !hasTrailingReplacementSeparator)) {
+    if (baselineText == null || baselineCursorOffset == null) {
       return null;
     }
 
@@ -871,9 +851,169 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       tokenStart--;
     }
 
-    final baselineToken = baselineGraphemes
-        .sublist(tokenStart, trimmedBaselineLength)
-        .join();
+    return (
+      baselineText: baselineText,
+      baselineCursorOffset: baselineCursorOffset,
+      deletedSuffixText: deletedSuffixText,
+      baselineGraphemes: baselineGraphemes,
+      tokenStart: tokenStart,
+      baselineToken: baselineGraphemes
+          .sublist(tokenStart, trimmedBaselineLength)
+          .join(),
+    );
+  }
+
+  bool _isWhitespaceGrapheme(String grapheme) =>
+      grapheme == ' ' ||
+      grapheme == '\t' ||
+      grapheme == '\n' ||
+      grapheme == '\r';
+
+  ({
+    int firstTokenStart,
+    int firstTokenEnd,
+    List<String> firstTokenGraphemes,
+    List<String> trailingGraphemes,
+  })?
+  _leadingTokenInfo(List<String> graphemes) {
+    var firstTokenStart = 0;
+    while (firstTokenStart < graphemes.length &&
+        _isWhitespaceGrapheme(graphemes[firstTokenStart])) {
+      firstTokenStart++;
+    }
+
+    var firstTokenEnd = firstTokenStart;
+    while (firstTokenEnd < graphemes.length &&
+        !_isWhitespaceGrapheme(graphemes[firstTokenEnd])) {
+      firstTokenEnd++;
+    }
+
+    if (firstTokenEnd == firstTokenStart) {
+      return null;
+    }
+
+    return (
+      firstTokenStart: firstTokenStart,
+      firstTokenEnd: firstTokenEnd,
+      firstTokenGraphemes: graphemes.sublist(firstTokenStart, firstTokenEnd),
+      trailingGraphemes: graphemes.sublist(firstTokenEnd),
+    );
+  }
+
+  bool _tokenLooksRelatedToDeleteResetReplacement({
+    required String currentToken,
+    required String baselineToken,
+    String? deletedSuffixText,
+  }) {
+    final currentTokenGraphemes = currentToken.characters.toList(
+      growable: false,
+    );
+    if (currentTokenGraphemes.isEmpty) {
+      return false;
+    }
+
+    final relatedReplacementTokenGraphemes = deletedSuffixText == null
+        ? baselineToken.characters.toList(growable: false)
+        : (baselineToken + deletedSuffixText).characters.toList(
+            growable: false,
+          );
+    final replacementRelationThreshold =
+        relatedReplacementTokenGraphemes.length < currentTokenGraphemes.length
+        ? relatedReplacementTokenGraphemes.length
+        : currentTokenGraphemes.length;
+    final requiredReplacementRelationLength = replacementRelationThreshold < 2
+        ? replacementRelationThreshold
+        : 2;
+    return _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
+          relatedReplacementTokenGraphemes,
+          currentTokenGraphemes,
+          maxLength: requiredReplacementRelationLength,
+        ) >=
+        requiredReplacementRelationLength;
+  }
+
+  ({String currentText, int? cursorOffset})?
+  _normalizeDeleteResetLeadingFragment(
+    String currentText, {
+    int? cursorOffsetHint,
+  }) {
+    if (!_trimLeadingSuggestionSpaceAfterDelete || currentText.isEmpty) {
+      return null;
+    }
+
+    final baselineState = _deleteResetBaselineState();
+    if (baselineState == null) {
+      return null;
+    }
+
+    final deletedSuffixText = baselineState.deletedSuffixText;
+    if (deletedSuffixText == null || deletedSuffixText.characters.length < 2) {
+      return null;
+    }
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final tokenInfo = _leadingTokenInfo(currentGraphemes);
+    if (tokenInfo == null ||
+        tokenInfo.firstTokenGraphemes.length != 1 ||
+        tokenInfo.trailingGraphemes.isEmpty ||
+        !tokenInfo.trailingGraphemes.any(
+          (grapheme) => !_isWhitespaceGrapheme(grapheme),
+        )) {
+      return null;
+    }
+
+    final firstToken = tokenInfo.firstTokenGraphemes.join();
+    if (_tokenLooksRelatedToDeleteResetReplacement(
+      currentToken: firstToken,
+      baselineToken: baselineState.baselineToken,
+      deletedSuffixText: deletedSuffixText,
+    )) {
+      return null;
+    }
+
+    final removedGraphemeCount = tokenInfo.firstTokenEnd;
+    return (
+      currentText: tokenInfo.trailingGraphemes.join(),
+      cursorOffset: cursorOffsetHint == null
+          ? null
+          : cursorOffsetHint <= removedGraphemeCount
+          ? 0
+          : cursorOffsetHint - removedGraphemeCount,
+    );
+  }
+
+  ({
+    String previousText,
+    int previousCursorOffset,
+    String currentText,
+    int? cursorOffset,
+  })?
+  _resolveDeleteResetContinuation(String currentText, {int? cursorOffsetHint}) {
+    final baselineState = _deleteResetBaselineState();
+    if (baselineState == null ||
+        !_trimLeadingSuggestionSpaceAfterDelete ||
+        currentText.isEmpty) {
+      return null;
+    }
+    final baselineText = baselineState.baselineText;
+    final baselineCursorOffset = baselineState.baselineCursorOffset;
+    final deletedSuffixText = baselineState.deletedSuffixText;
+    final baselineGraphemes = baselineState.baselineGraphemes;
+    final tokenStart = baselineState.tokenStart;
+    final baselineToken = baselineState.baselineToken;
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final hasLeadingReplacementSeparator =
+        currentGraphemes.length > 1 &&
+        _isWhitespaceGrapheme(currentGraphemes.first) &&
+        !_isWhitespaceGrapheme(currentGraphemes[1]);
+    final hasTrailingReplacementSeparator =
+        currentGraphemes.isNotEmpty &&
+        _isWhitespaceGrapheme(currentGraphemes.last);
+    if (currentGraphemes.isEmpty ||
+        (!hasLeadingReplacementSeparator && !hasTrailingReplacementSeparator)) {
+      return null;
+    }
     var mergedCurrentText = currentText;
     var mergedCursorOffsetHint = cursorOffsetHint;
     if (hasLeadingReplacementSeparator) {
@@ -886,43 +1026,29 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
 
-    final mergedCurrentTokenGraphemes = mergedCurrentText
-        .trimRight()
-        .characters
-        .toList(growable: false);
-    if (mergedCurrentTokenGraphemes.isEmpty) {
+    final mergedCurrentTokenGraphemes = mergedCurrentText.characters.toList(
+      growable: false,
+    );
+    final mergedTokenInfo = _leadingTokenInfo(mergedCurrentTokenGraphemes);
+    if (mergedTokenInfo == null) {
       return null;
     }
-    final relatedReplacementTokenGraphemes = deletedSuffixText == null
-        ? baselineToken.characters.toList(growable: false)
-        : (baselineToken + deletedSuffixText).characters.toList(
-            growable: false,
-          );
-    final replacementRelationThreshold =
-        relatedReplacementTokenGraphemes.length <
-            mergedCurrentTokenGraphemes.length
-        ? relatedReplacementTokenGraphemes.length
-        : mergedCurrentTokenGraphemes.length;
-    final requiredReplacementRelationLength = replacementRelationThreshold < 2
-        ? replacementRelationThreshold
-        : 2;
-    final replacementLooksRelated =
-        _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
-          relatedReplacementTokenGraphemes,
-          mergedCurrentTokenGraphemes,
-          maxLength: requiredReplacementRelationLength,
-        ) >=
-        requiredReplacementRelationLength;
+    final mergedCurrentToken = mergedTokenInfo.firstTokenGraphemes.join();
+    final replacementLooksRelated = _tokenLooksRelatedToDeleteResetReplacement(
+      currentToken: mergedCurrentToken,
+      baselineToken: baselineToken,
+      deletedSuffixText: deletedSuffixText,
+    );
 
     final shouldAppendToBaseline =
         hasLeadingReplacementSeparator &&
         deletedSuffixText != null &&
         deletedSuffixText.isNotEmpty &&
-        mergedCurrentText.startsWith(deletedSuffixText);
+        mergedCurrentToken.startsWith(deletedSuffixText);
     final shouldReplaceCurrentToken =
         !shouldAppendToBaseline &&
         ((hasTrailingReplacementSeparator && replacementLooksRelated) ||
-            mergedCurrentText.startsWith(baselineToken));
+            mergedCurrentToken.startsWith(baselineToken));
     if (!shouldReplaceCurrentToken && !shouldAppendToBaseline) {
       return null;
     }
@@ -1450,26 +1576,36 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         currentText,
         value,
       );
-      if (currentText == _lastSentText) {
+      final normalizedDeleteResetLeadingFragment =
+          _normalizeDeleteResetLeadingFragment(
+            currentText,
+            cursorOffsetHint: targetCursorOffset,
+          );
+      final normalizedCurrentText =
+          normalizedDeleteResetLeadingFragment?.currentText ?? currentText;
+      final normalizedTargetCursorOffset =
+          normalizedDeleteResetLeadingFragment?.cursorOffset ??
+          targetCursorOffset;
+      if (normalizedCurrentText == _lastSentText) {
         final collapsedMoveAwayFromReplacement =
             !_lastProcessedSelectionWasCollapsed &&
-            targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset &&
-            targetCursorOffset != _lastSentCursorOffset + 1;
+            normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset + 1;
         final movedCollapsedCursor =
             _lastProcessedUserSelectionWasValid &&
             (_lastProcessedSelectionWasCollapsed ||
                 collapsedMoveAwayFromReplacement) &&
-            targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset;
+            normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset;
         final shouldClearAfterCollapsedCursorMove =
             _clearImeAfterNextTouchCursorMove &&
-            targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset;
-        if (targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset) {
+            normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset;
+        if (normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset) {
           _notifyUserInput();
-          _moveTerminalCursorTo(targetCursorOffset);
+          _moveTerminalCursorTo(normalizedTargetCursorOffset);
         }
         _clearImeAfterNextTouchCursorMove = false;
         if (shouldClearAfterCollapsedCursorMove) {
@@ -1478,7 +1614,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           return;
         }
         _syncEditingStateWithUserText(
-          currentText,
+          normalizedCurrentText,
           sourceValue: value,
           forceResyncState: movedCollapsedCursor,
         );
@@ -1488,13 +1624,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
       _clearImeAfterNextTouchCursorMove = false;
       final deleteResetContinuation = _resolveDeleteResetContinuation(
-        currentText,
-        cursorOffsetHint: targetCursorOffset,
+        normalizedCurrentText,
+        cursorOffsetHint: normalizedTargetCursorOffset,
       );
       final effectiveCurrentText =
-          deleteResetContinuation?.currentText ?? currentText;
+          deleteResetContinuation?.currentText ?? normalizedCurrentText;
       final effectiveTargetCursorOffset =
-          deleteResetContinuation?.cursorOffset ?? targetCursorOffset;
+          deleteResetContinuation?.cursorOffset ?? normalizedTargetCursorOffset;
       final deltaPreviousText =
           deleteResetContinuation?.previousText ?? _lastSentText;
       final deltaPreviousCursorOffset =
@@ -1631,7 +1767,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         effectiveCurrentText,
         sourceValue:
             normalizedPendingEnter.strippedPendingEnter ||
-                effectiveCurrentText != currentText
+                normalizedDeleteResetLeadingFragment != null ||
+                effectiveCurrentText != normalizedCurrentText
             ? null
             : value,
       );
