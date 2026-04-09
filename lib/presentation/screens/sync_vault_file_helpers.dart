@@ -92,7 +92,7 @@ Future<SavedSyncVaultFile?> saveSyncVaultToFile({
   final bytes = Uint8List.fromList(utf8.encode(encryptedVault));
   final sanitizedBaseName = sanitizeTransferFileBaseName(defaultFileName);
   final appName = await loadAppName();
-  final targetPath = await FilePicker.platform.saveFile(
+  final targetPath = await FilePicker.saveFile(
     dialogTitle: 'Save encrypted $appName sync vault',
     fileName: '$sanitizedBaseName.$monkeySshSyncVaultFileExtension',
     type: FileType.custom,
@@ -166,7 +166,7 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
   }
 
   final appName = await loadAppName();
-  final result = await FilePicker.platform.pickFiles(
+  final result = await FilePicker.pickFiles(
     dialogTitle: 'Select encrypted $appName sync vault',
     type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
     allowedExtensions: pickerAllowedExtensionsForCustomExtension(

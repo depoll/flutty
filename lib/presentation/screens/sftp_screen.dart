@@ -1114,7 +1114,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    final savePath = await FilePicker.platform.saveFile(
+    final savePath = await FilePicker.saveFile(
       dialogTitle: 'Save ${file.filename}',
       fileName: file.filename,
     );
@@ -1152,7 +1152,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     final pickerRequest = resolveSftpUploadPickerRequest();
-    final result = await FilePicker.platform.pickFiles(
+    final result = await FilePicker.pickFiles(
       allowMultiple: pickerRequest.allowMultiple,
       withReadStream: pickerRequest.withReadStream,
     );
