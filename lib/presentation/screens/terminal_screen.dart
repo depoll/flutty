@@ -39,6 +39,17 @@ import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 
+bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
+bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
+    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+    (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7A);
+
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
@@ -2057,24 +2068,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (data.isEmpty) {
       return false;
     }
-    final lastLineBreakIndex = data.lastIndexOf(RegExp(r'[\r\n]'));
-    final trailingLine = lastLineBreakIndex >= 0
-        ? data.substring(lastLineBreakIndex + 1)
-        : data;
-    final trimmedLine = trailingLine.trim();
-    if (trimmedLine.isEmpty || trimmedLine.length > 4) {
-      return false;
-    }
-    for (final codeUnit in trimmedLine.codeUnits) {
-      final isAsciiLetterOrDigit =
-          (codeUnit >= 0x30 && codeUnit <= 0x39) ||
-          (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
-          (codeUnit >= 0x61 && codeUnit <= 0x7A);
-      if (isAsciiLetterOrDigit) {
+
+    var index = data.length - 1;
+    while (index >= 0) {
+      final codeUnit = data.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
         return false;
       }
+      if (!_isPromptReturnWhitespaceCodeUnit(codeUnit)) {
+        break;
+      }
+      index--;
     }
-    return true;
+
+    if (index < 0) {
+      return false;
+    }
+
+    var visibleCodeUnitCount = 0;
+    while (index >= 0) {
+      final codeUnit = data.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        break;
+      }
+      if (!_isPromptReturnWhitespaceCodeUnit(codeUnit)) {
+        visibleCodeUnitCount++;
+        if (visibleCodeUnitCount > 4) {
+          return false;
+        }
+        if (_isPromptReturnAsciiLetterOrDigit(codeUnit)) {
+          return false;
+        }
+      }
+      index--;
+    }
+
+    return visibleCodeUnitCount > 0;
   }
 
   /// Starts auto-start port forwards for this host.

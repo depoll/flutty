@@ -16,6 +16,17 @@ const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
 const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 
+bool _isAsciiLetterOrDigitCodeUnit(int codeUnit) =>
+    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+    (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7A);
+
+bool _isPromptWhitespaceCodeUnit(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
 /// Maximum delay between a modifier chord and its follow-up character for the
 /// follow-up to be treated as part of the chord (e.g. tmux's Ctrl+b, c).
 @visibleForTesting
@@ -646,6 +657,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final cappedMaxLength = maxLength == null || maxLength < 1
         ? null
         : maxLength;
+    if (cappedMaxLength != null && cappedMaxLength <= 2) {
+      return _longestCommonCaseInsensitiveGraphemeSubsequenceLengthUpToTwo(
+        previousGraphemes,
+        currentGraphemes,
+        maxLength: cappedMaxLength,
+      );
+    }
     final normalizedCurrentGraphemes = currentGraphemes
         .map((grapheme) => grapheme.toLowerCase())
         .toList(growable: false);
@@ -671,6 +689,51 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
     return previousRow.last;
+  }
+
+  int _longestCommonCaseInsensitiveGraphemeSubsequenceLengthUpToTwo(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes, {
+    required int maxLength,
+  }) {
+    final currentPositionsByGrapheme = <String, List<int>>{};
+    for (var index = 0; index < currentGraphemes.length; index++) {
+      final normalizedCurrentGrapheme = currentGraphemes[index].toLowerCase();
+      currentPositionsByGrapheme
+          .putIfAbsent(normalizedCurrentGrapheme, () => <int>[])
+          .add(index);
+    }
+
+    var hasLengthOneMatch = false;
+    int? shortestLengthOneEndIndex;
+    for (final previousGrapheme in previousGraphemes) {
+      final positions =
+          currentPositionsByGrapheme[previousGrapheme.toLowerCase()];
+      if (positions == null || positions.isEmpty) {
+        continue;
+      }
+
+      if (maxLength == 1) {
+        return 1;
+      }
+
+      hasLengthOneMatch = true;
+      if (shortestLengthOneEndIndex != null) {
+        for (final position in positions) {
+          if (position > shortestLengthOneEndIndex) {
+            return 2;
+          }
+        }
+      }
+
+      final firstPosition = positions.first;
+      if (shortestLengthOneEndIndex == null ||
+          firstPosition < shortestLengthOneEndIndex) {
+        shortestLengthOneEndIndex = firstPosition;
+      }
+    }
+
+    return hasLengthOneMatch ? 1 : 0;
   }
 
   int _commonGraphemeSuffixLength(
@@ -736,32 +799,38 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   bool _currentLineLooksLikePromptPrefix(String textBeforeCursor) {
-    final lastLineBreakIndex = textBeforeCursor.lastIndexOf(RegExp(r'[\r\n]'));
-    final currentLine = lastLineBreakIndex >= 0
-        ? textBeforeCursor.substring(lastLineBreakIndex + 1)
-        : textBeforeCursor;
-    final trimmedLine = currentLine.trim();
-    if (trimmedLine.isEmpty) {
+    var index = textBeforeCursor.length - 1;
+    while (index >= 0) {
+      final codeUnit = textBeforeCursor.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        return true;
+      }
+      if (!_isPromptWhitespaceCodeUnit(codeUnit)) {
+        break;
+      }
+      index--;
+    }
+
+    if (index < 0) {
       return true;
     }
 
-    final lineGraphemes = trimmedLine.characters.toList(growable: false);
-    if (lineGraphemes.length > 4) {
-      return false;
-    }
-
-    for (final grapheme in lineGraphemes) {
-      if (grapheme.trim().isEmpty) {
-        continue;
+    var visibleCodeUnitCount = 0;
+    while (index >= 0) {
+      final codeUnit = textBeforeCursor.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        break;
       }
-      final codeUnit = grapheme.codeUnitAt(0);
-      final isAsciiLetterOrDigit =
-          (codeUnit >= 0x30 && codeUnit <= 0x39) ||
-          (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
-          (codeUnit >= 0x61 && codeUnit <= 0x7A);
-      if (isAsciiLetterOrDigit) {
-        return false;
+      if (!_isPromptWhitespaceCodeUnit(codeUnit)) {
+        visibleCodeUnitCount++;
+        if (visibleCodeUnitCount > 4) {
+          return false;
+        }
+        if (_isAsciiLetterOrDigitCodeUnit(codeUnit)) {
+          return false;
+        }
       }
+      index--;
     }
 
     return true;
