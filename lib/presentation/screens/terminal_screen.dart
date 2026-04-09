@@ -39,6 +39,17 @@ import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 
+bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
+bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
+    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+    (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7A);
+
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
@@ -1245,6 +1256,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
+  static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
 
   late Terminal _terminal;
@@ -1257,6 +1269,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final _toolbarController = KeyboardToolbarController();
   SSHSession? _shell;
   StreamSubscription<void>? _doneSubscription;
+  StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
   bool _showKeyboard = true;
@@ -1299,6 +1312,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
   Timer? _terminalInputIndicatorTimer;
+  Timer? _promptOutputImeResetTimer;
   bool _isPollingRemoteClipboard = false;
   bool _isPushingLocalClipboard = false;
   bool _remoteClipboardUnsupported = false;
@@ -1859,6 +1873,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clean up any previous connection state before reconnecting.
     await _doneSubscription?.cancel();
     _doneSubscription = null;
+    await _shellStdoutSubscription?.cancel();
+    _shellStdoutSubscription = null;
+    _promptOutputImeResetTimer?.cancel();
+    _promptOutputImeResetTimer = null;
     _shell = null;
 
     setState(() {
@@ -2003,6 +2021,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _handleShellClosed();
       }
     });
+    _shellStdoutSubscription = session.shellStdoutStream.listen(
+      _schedulePromptOutputImeResetCheck,
+      onError: (Object error, StackTrace stackTrace) {
+        debugPrint('Terminal stdout stream error: $error');
+        debugPrint('$stackTrace');
+      },
+    );
 
     _terminal.onOutput = (data) {
       // On iOS/Android soft keyboards, Return sends a lone '\n' via
@@ -2023,6 +2048,62 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
       _shell?.resizeTerminal(width, height);
     };
+  }
+
+  void _schedulePromptOutputImeResetCheck(String data) {
+    if (!_isMobilePlatform || !_shellOutputLooksLikePromptReturn(data)) {
+      return;
+    }
+    _promptOutputImeResetTimer?.cancel();
+    _promptOutputImeResetTimer = Timer(_promptOutputImeResetDebounce, () {
+      _promptOutputImeResetTimer = null;
+      if (!mounted) {
+        return;
+      }
+      _terminalTextInputController.handleExternalTerminalOutput();
+    });
+  }
+
+  bool _shellOutputLooksLikePromptReturn(String data) {
+    if (data.isEmpty) {
+      return false;
+    }
+
+    var index = data.length - 1;
+    while (index >= 0) {
+      final codeUnit = data.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        return false;
+      }
+      if (!_isPromptReturnWhitespaceCodeUnit(codeUnit)) {
+        break;
+      }
+      index--;
+    }
+
+    if (index < 0) {
+      return false;
+    }
+
+    var visibleCodeUnitCount = 0;
+    while (index >= 0) {
+      final codeUnit = data.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        break;
+      }
+      if (!_isPromptReturnWhitespaceCodeUnit(codeUnit)) {
+        visibleCodeUnitCount++;
+        if (visibleCodeUnitCount > 4) {
+          return false;
+        }
+        if (_isPromptReturnAsciiLetterOrDigit(codeUnit)) {
+          return false;
+        }
+      }
+      index--;
+    }
+
+    return visibleCodeUnitCount > 0;
   }
 
   /// Starts auto-start port forwards for this host.
@@ -2283,6 +2364,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardSubscription.close();
     _stopSharedClipboardSync();
     _terminalInputIndicatorTimer?.cancel();
+    _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
@@ -2297,6 +2379,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..dispose();
     _nativeSelectionController.dispose();
     _doneSubscription?.cancel();
+    _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
     _toolbarController.dispose();
     super.dispose();
@@ -2660,7 +2743,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             KeyboardToolbar(
               controller: _toolbarController,
               terminal: _terminal,
-              onKeyPressed: _followLiveOutput,
+              onKeyPressed: _handleKeyboardToolbarKeyPressed,
               terminalFocusNode: _terminalFocusNode,
             ),
         ],
@@ -2708,6 +2791,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       }
     });
+  }
+
+  void _handleKeyboardToolbarKeyPressed() {
+    _followLiveOutput();
+    _terminalTextInputController.clearImeBuffer();
   }
 
   void _handleTerminalScaleStart(double currentFontSize) {
@@ -3195,6 +3283,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
+      hasActiveToolbarModifier: () =>
+          _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard: tapToShowKeyboard,
       child: TerminalPinchZoomGestureHandler(

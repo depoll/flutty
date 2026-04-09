@@ -16,6 +16,33 @@ const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
 const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 
+bool _isAsciiLetterOrDigitCodeUnit(int codeUnit) =>
+    (codeUnit >= 0x30 && codeUnit <= 0x39) ||
+    (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
+    (codeUnit >= 0x61 && codeUnit <= 0x7A);
+
+bool _isPromptWhitespaceCodeUnit(int codeUnit) =>
+    codeUnit == 0x20 ||
+    codeUnit == 0x09 ||
+    codeUnit == 0x0A ||
+    codeUnit == 0x0D;
+
+/// Maximum delay between a modifier chord and its follow-up character for the
+/// follow-up to be treated as part of the chord (e.g. tmux's Ctrl+b, c).
+@visibleForTesting
+const modifierChordFollowUpWindow = Duration(milliseconds: 500);
+
+DateTime Function()? _modifierChordClockOverride;
+
+DateTime _readModifierChordClock() =>
+    (_modifierChordClockOverride ?? DateTime.now).call();
+
+/// Overrides the modifier chord clock in tests.
+@visibleForTesting
+void debugSetModifierChordClock(DateTime Function()? clock) {
+  _modifierChordClockOverride = clock;
+}
+
 /// Confirms suspicious text inserted through the system keyboard or IME.
 typedef TerminalTextInputReviewCallback =
     Future<bool> Function(TerminalCommandReview review);
@@ -83,6 +110,20 @@ class TerminalTextInputHandlerController {
   void requestKeyboard() {
     _state?.requestKeyboard();
   }
+
+  /// Clears the transient IME buffer after external terminal actions.
+  ///
+  /// This is used for toolbar-driven keys like arrows, Home/End, Enter, Tab,
+  /// and escape sequences that bypass the regular text-input pipeline but
+  /// should still reset keyboard suggestions.
+  void clearImeBuffer() {
+    _state?._clearImeBufferForFreshInput();
+  }
+
+  /// Resets stale IME context after remote terminal output returns to a prompt.
+  void handleExternalTerminalOutput() {
+    _state?._handleExternalTerminalOutput();
+  }
 }
 
 /// Wraps a [TerminalView] to provide soft keyboard input on mobile with
@@ -108,6 +149,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.onReviewInsertedText,
     this.buildReviewTextForInsertedText,
     this.resolveTextBeforeCursor,
+    this.hasActiveToolbarModifier,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     super.key,
@@ -140,11 +182,18 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// Builds the command text that should be reviewed for suspicious IME input.
   final TerminalTextInputReviewTextBuilder? buildReviewTextForInsertedText;
 
-  /// Resolves the current terminal text before the cursor.
+  /// Resolves the current terminal text that appears before the cursor.
   ///
   /// This lets the IME handler distinguish a stray leading swipe space from the
   /// only separator needed between existing terminal text and the next word.
   final TerminalTextBeforeCursorResolver? resolveTextBeforeCursor;
+
+  /// Whether a toolbar modifier (Ctrl or Alt) is currently active.
+  ///
+  /// When a modifier is active, a typed character becomes a control code rather
+  /// than visible text. In that case the IME buffer is cleared after sending
+  /// the input so that stale suggestions don't accumulate from non-text input.
+  final ValueGetter<bool>? hasActiveToolbarModifier;
 
   /// Whether input should be suppressed.
   final bool readOnly;
@@ -174,6 +223,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
+  bool _clearImeAfterNextTouchCursorMove = false;
+  DateTime? _modifierChordResetTime;
+  String? _pendingDeleteResetBaselineText;
+  int? _pendingDeleteResetBaselineCursorOffset;
+  String? _pendingDeleteResetDeletedSuffixText;
   String _lastSentText = '';
   int _lastSentCursorOffset = 0;
   String? _pendingPerformedEnterText;
@@ -269,6 +323,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       ),
       readOnly: widget.readOnly,
     );
+    if (event.kind == PointerDeviceKind.touch && shouldRequestKeyboard) {
+      _clearImeAfterNextTouchCursorMove = true;
+    }
     final shouldSkipKeyboardRequest =
         event.kind == PointerDeviceKind.touch && _skipNextTouchKeyboardRequest;
     final shouldSkipTapToShow =
@@ -408,6 +465,55 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _skipNextTouchKeyboardRequest = true;
   }
 
+  void _clearImeBufferForFreshInput({
+    bool armModifierChordWindow = false,
+    String? deleteResetBaselineText,
+    int? deleteResetBaselineCursorOffset,
+    String? deleteResetDeletedSuffixText,
+    bool flushPlatformContext = false,
+  }) {
+    if (flushPlatformContext && hasInputConnection) {
+      _closeInputConnectionIfNeeded();
+      if (widget.focusNode.hasFocus) {
+        _openInputConnection();
+      }
+    }
+    _invalidatePendingEditingUpdates();
+    _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
+    _sawImeComposition = false;
+    if (deleteResetBaselineText != null &&
+        deleteResetBaselineCursorOffset != null) {
+      _pendingDeleteResetBaselineText = deleteResetBaselineText;
+      _pendingDeleteResetBaselineCursorOffset = deleteResetBaselineCursorOffset;
+      _pendingDeleteResetDeletedSuffixText = deleteResetDeletedSuffixText;
+    } else {
+      _clearPendingDeleteResetBaseline();
+    }
+    _trimLeadingSuggestionSpaceAfterDelete = true;
+    _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _modifierChordResetTime = armModifierChordWindow
+        ? _readModifierChordClock()
+        : null;
+  }
+
+  void _handleExternalTerminalOutput() {
+    if (widget.readOnly || !widget.focusNode.hasFocus || !hasInputConnection) {
+      return;
+    }
+    if (_sawImeComposition || _lastSentText.isNotEmpty) {
+      return;
+    }
+    if (_extractInputText(_currentEditingState.text).isNotEmpty) {
+      return;
+    }
+    final textBeforeCursor = widget.resolveTextBeforeCursor?.call();
+    if (textBeforeCursor == null ||
+        !_currentLineLooksLikePromptPrefix(textBeforeCursor)) {
+      return;
+    }
+    _clearImeBufferForFreshInput(flushPlatformContext: true);
+  }
+
   // -- Focus handling --
 
   void _onFocusChange() {
@@ -461,6 +567,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
+      _modifierChordResetTime = null;
+      _clearPendingDeleteResetBaseline();
       _lastSentText = '';
       _lastSentCursorOffset = 0;
       _pendingPerformedEnterText = null;
@@ -481,6 +589,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _modifierChordResetTime = null;
+    _clearPendingDeleteResetBaseline();
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;
@@ -535,6 +645,97 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     return index;
   }
 
+  int _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes, {
+    int? maxLength,
+  }) {
+    if (previousGraphemes.isEmpty || currentGraphemes.isEmpty) {
+      return 0;
+    }
+
+    final cappedMaxLength = maxLength == null || maxLength < 1
+        ? null
+        : maxLength;
+    if (cappedMaxLength != null && cappedMaxLength <= 2) {
+      return _longestCommonCaseInsensitiveGraphemeSubsequenceLengthUpToTwo(
+        previousGraphemes,
+        currentGraphemes,
+        maxLength: cappedMaxLength,
+      );
+    }
+    final normalizedCurrentGraphemes = currentGraphemes
+        .map((grapheme) => grapheme.toLowerCase())
+        .toList(growable: false);
+    var previousRow = List<int>.filled(currentGraphemes.length + 1, 0);
+    for (final previousGrapheme in previousGraphemes) {
+      final currentRow = List<int>.filled(currentGraphemes.length + 1, 0);
+      final normalizedPreviousGrapheme = previousGrapheme.toLowerCase();
+      for (var index = 0; index < currentGraphemes.length; index++) {
+        final nextLength =
+            normalizedPreviousGrapheme == normalizedCurrentGraphemes[index]
+            ? previousRow[index] + 1
+            : (previousRow[index + 1] > currentRow[index]
+                  ? previousRow[index + 1]
+                  : currentRow[index]);
+        currentRow[index +
+            1] = cappedMaxLength != null && nextLength > cappedMaxLength
+            ? cappedMaxLength
+            : nextLength;
+      }
+      previousRow = currentRow;
+      if (cappedMaxLength != null && previousRow.last >= cappedMaxLength) {
+        return cappedMaxLength;
+      }
+    }
+    return previousRow.last;
+  }
+
+  int _longestCommonCaseInsensitiveGraphemeSubsequenceLengthUpToTwo(
+    List<String> previousGraphemes,
+    List<String> currentGraphemes, {
+    required int maxLength,
+  }) {
+    final currentPositionsByGrapheme = <String, List<int>>{};
+    for (var index = 0; index < currentGraphemes.length; index++) {
+      final normalizedCurrentGrapheme = currentGraphemes[index].toLowerCase();
+      currentPositionsByGrapheme
+          .putIfAbsent(normalizedCurrentGrapheme, () => <int>[])
+          .add(index);
+    }
+
+    var hasLengthOneMatch = false;
+    int? shortestLengthOneEndIndex;
+    for (final previousGrapheme in previousGraphemes) {
+      final positions =
+          currentPositionsByGrapheme[previousGrapheme.toLowerCase()];
+      if (positions == null || positions.isEmpty) {
+        continue;
+      }
+
+      if (maxLength == 1) {
+        return 1;
+      }
+
+      hasLengthOneMatch = true;
+      if (shortestLengthOneEndIndex != null) {
+        for (final position in positions) {
+          if (position > shortestLengthOneEndIndex) {
+            return 2;
+          }
+        }
+      }
+
+      final firstPosition = positions.first;
+      if (shortestLengthOneEndIndex == null ||
+          firstPosition < shortestLengthOneEndIndex) {
+        shortestLengthOneEndIndex = firstPosition;
+      }
+    }
+
+    return hasLengthOneMatch ? 1 : 0;
+  }
+
   int _commonGraphemeSuffixLength(
     List<String> previousGraphemes,
     List<String> currentGraphemes, {
@@ -587,10 +788,52 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     final trailingCodeUnit = textBeforeCursor.codeUnitAt(
       textBeforeCursor.length - 1,
     );
-    return trailingCodeUnit == 0x20 ||
+    if (trailingCodeUnit == 0x20 ||
         trailingCodeUnit == 0x09 ||
         trailingCodeUnit == 0x0A ||
-        trailingCodeUnit == 0x0D;
+        trailingCodeUnit == 0x0D) {
+      return true;
+    }
+
+    return _currentLineLooksLikePromptPrefix(textBeforeCursor);
+  }
+
+  bool _currentLineLooksLikePromptPrefix(String textBeforeCursor) {
+    var index = textBeforeCursor.length - 1;
+    while (index >= 0) {
+      final codeUnit = textBeforeCursor.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        return true;
+      }
+      if (!_isPromptWhitespaceCodeUnit(codeUnit)) {
+        break;
+      }
+      index--;
+    }
+
+    if (index < 0) {
+      return true;
+    }
+
+    var visibleCodeUnitCount = 0;
+    while (index >= 0) {
+      final codeUnit = textBeforeCursor.codeUnitAt(index);
+      if (codeUnit == 0x0A || codeUnit == 0x0D) {
+        break;
+      }
+      if (!_isPromptWhitespaceCodeUnit(codeUnit)) {
+        visibleCodeUnitCount++;
+        if (visibleCodeUnitCount > 4) {
+          return false;
+        }
+        if (_isAsciiLetterOrDigitCodeUnit(codeUnit)) {
+          return false;
+        }
+      }
+      index--;
+    }
+
+    return true;
   }
 
   int _sendInputDelta(
@@ -621,6 +864,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void _resetCommittedInputState({
     int pendingEnterSuppressions = 0,
     bool clearPendingPerformedEnterText = true,
+    bool clearPendingDeleteResetBaseline = true,
   }) {
     _lastSentText = '';
     _lastSentCursorOffset = 0;
@@ -630,7 +874,265 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _pendingEnterActionSuppressions = pendingEnterSuppressions;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _clearImeAfterNextTouchCursorMove = false;
+    _modifierChordResetTime = null;
+    if (clearPendingDeleteResetBaseline) {
+      _clearPendingDeleteResetBaseline();
+    }
     _syncEditingStateWithUserText('');
+  }
+
+  void _clearPendingDeleteResetBaseline() {
+    _pendingDeleteResetBaselineText = null;
+    _pendingDeleteResetBaselineCursorOffset = null;
+    _pendingDeleteResetDeletedSuffixText = null;
+  }
+
+  ({
+    String baselineText,
+    int baselineCursorOffset,
+    String? deletedSuffixText,
+    List<String> baselineGraphemes,
+    int tokenStart,
+    String baselineToken,
+  })?
+  _deleteResetBaselineState() {
+    final baselineText = _pendingDeleteResetBaselineText;
+    final baselineCursorOffset = _pendingDeleteResetBaselineCursorOffset;
+    final deletedSuffixText = _pendingDeleteResetDeletedSuffixText;
+    if (baselineText == null || baselineCursorOffset == null) {
+      return null;
+    }
+
+    final baselineGraphemes = baselineText.characters.toList(growable: false);
+    var trimmedBaselineLength = baselineGraphemes.length;
+    while (trimmedBaselineLength > 0 &&
+        _isWhitespaceGrapheme(baselineGraphemes[trimmedBaselineLength - 1])) {
+      trimmedBaselineLength--;
+    }
+    if (trimmedBaselineLength == 0) {
+      return null;
+    }
+
+    var tokenStart = trimmedBaselineLength;
+    while (tokenStart > 0 &&
+        !_isWhitespaceGrapheme(baselineGraphemes[tokenStart - 1])) {
+      tokenStart--;
+    }
+
+    return (
+      baselineText: baselineText,
+      baselineCursorOffset: baselineCursorOffset,
+      deletedSuffixText: deletedSuffixText,
+      baselineGraphemes: baselineGraphemes,
+      tokenStart: tokenStart,
+      baselineToken: baselineGraphemes
+          .sublist(tokenStart, trimmedBaselineLength)
+          .join(),
+    );
+  }
+
+  bool _isWhitespaceGrapheme(String grapheme) =>
+      grapheme == ' ' ||
+      grapheme == '\t' ||
+      grapheme == '\n' ||
+      grapheme == '\r';
+
+  ({
+    int firstTokenStart,
+    int firstTokenEnd,
+    List<String> firstTokenGraphemes,
+    List<String> trailingGraphemes,
+  })?
+  _leadingTokenInfo(List<String> graphemes) {
+    var firstTokenStart = 0;
+    while (firstTokenStart < graphemes.length &&
+        _isWhitespaceGrapheme(graphemes[firstTokenStart])) {
+      firstTokenStart++;
+    }
+
+    var firstTokenEnd = firstTokenStart;
+    while (firstTokenEnd < graphemes.length &&
+        !_isWhitespaceGrapheme(graphemes[firstTokenEnd])) {
+      firstTokenEnd++;
+    }
+
+    if (firstTokenEnd == firstTokenStart) {
+      return null;
+    }
+
+    return (
+      firstTokenStart: firstTokenStart,
+      firstTokenEnd: firstTokenEnd,
+      firstTokenGraphemes: graphemes.sublist(firstTokenStart, firstTokenEnd),
+      trailingGraphemes: graphemes.sublist(firstTokenEnd),
+    );
+  }
+
+  bool _tokenLooksRelatedToDeleteResetReplacement({
+    required String currentToken,
+    required String baselineToken,
+    String? deletedSuffixText,
+  }) {
+    final currentTokenGraphemes = currentToken.characters.toList(
+      growable: false,
+    );
+    if (currentTokenGraphemes.isEmpty) {
+      return false;
+    }
+
+    final relatedReplacementTokenGraphemes = deletedSuffixText == null
+        ? baselineToken.characters.toList(growable: false)
+        : (baselineToken + deletedSuffixText).characters.toList(
+            growable: false,
+          );
+    final replacementRelationThreshold =
+        relatedReplacementTokenGraphemes.length < currentTokenGraphemes.length
+        ? relatedReplacementTokenGraphemes.length
+        : currentTokenGraphemes.length;
+    final requiredReplacementRelationLength = replacementRelationThreshold < 2
+        ? replacementRelationThreshold
+        : 2;
+    return _longestCommonCaseInsensitiveGraphemeSubsequenceLength(
+          relatedReplacementTokenGraphemes,
+          currentTokenGraphemes,
+          maxLength: requiredReplacementRelationLength,
+        ) >=
+        requiredReplacementRelationLength;
+  }
+
+  ({String currentText, int? cursorOffset})?
+  _normalizeDeleteResetLeadingFragment(
+    String currentText, {
+    int? cursorOffsetHint,
+  }) {
+    if (!_trimLeadingSuggestionSpaceAfterDelete || currentText.isEmpty) {
+      return null;
+    }
+
+    final baselineState = _deleteResetBaselineState();
+    if (baselineState == null) {
+      return null;
+    }
+
+    final deletedSuffixText = baselineState.deletedSuffixText;
+    if (deletedSuffixText == null || deletedSuffixText.characters.length < 2) {
+      return null;
+    }
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final tokenInfo = _leadingTokenInfo(currentGraphemes);
+    if (tokenInfo == null ||
+        tokenInfo.firstTokenGraphemes.length != 1 ||
+        tokenInfo.trailingGraphemes.isEmpty ||
+        !tokenInfo.trailingGraphemes.any(
+          (grapheme) => !_isWhitespaceGrapheme(grapheme),
+        )) {
+      return null;
+    }
+
+    final firstToken = tokenInfo.firstTokenGraphemes.join();
+    if (_tokenLooksRelatedToDeleteResetReplacement(
+      currentToken: firstToken,
+      baselineToken: baselineState.baselineToken,
+      deletedSuffixText: deletedSuffixText,
+    )) {
+      return null;
+    }
+
+    final removedGraphemeCount = tokenInfo.firstTokenEnd;
+    return (
+      currentText: tokenInfo.trailingGraphemes.join(),
+      cursorOffset: cursorOffsetHint == null
+          ? null
+          : cursorOffsetHint <= removedGraphemeCount
+          ? 0
+          : cursorOffsetHint - removedGraphemeCount,
+    );
+  }
+
+  ({
+    String previousText,
+    int previousCursorOffset,
+    String currentText,
+    int? cursorOffset,
+  })?
+  _resolveDeleteResetContinuation(String currentText, {int? cursorOffsetHint}) {
+    final baselineState = _deleteResetBaselineState();
+    if (baselineState == null ||
+        !_trimLeadingSuggestionSpaceAfterDelete ||
+        currentText.isEmpty) {
+      return null;
+    }
+    final baselineText = baselineState.baselineText;
+    final baselineCursorOffset = baselineState.baselineCursorOffset;
+    final deletedSuffixText = baselineState.deletedSuffixText;
+    final baselineGraphemes = baselineState.baselineGraphemes;
+    final tokenStart = baselineState.tokenStart;
+    final baselineToken = baselineState.baselineToken;
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final hasLeadingReplacementSeparator =
+        currentGraphemes.length > 1 &&
+        _isWhitespaceGrapheme(currentGraphemes.first) &&
+        !_isWhitespaceGrapheme(currentGraphemes[1]);
+    final hasTrailingReplacementSeparator =
+        currentGraphemes.isNotEmpty &&
+        _isWhitespaceGrapheme(currentGraphemes.last);
+    if (currentGraphemes.isEmpty ||
+        (!hasLeadingReplacementSeparator && !hasTrailingReplacementSeparator)) {
+      return null;
+    }
+    var mergedCurrentText = currentText;
+    var mergedCursorOffsetHint = cursorOffsetHint;
+    if (hasLeadingReplacementSeparator) {
+      // After a delete-reset, the IME can prepend a separator to the
+      // replacement token even though we're already replacing the current word.
+      // Trim that separator before merging with the preserved baseline.
+      mergedCurrentText = currentGraphemes.sublist(1).join();
+      if (mergedCursorOffsetHint != null && mergedCursorOffsetHint > 0) {
+        mergedCursorOffsetHint--;
+      }
+    }
+
+    final mergedCurrentTokenGraphemes = mergedCurrentText.characters.toList(
+      growable: false,
+    );
+    final mergedTokenInfo = _leadingTokenInfo(mergedCurrentTokenGraphemes);
+    if (mergedTokenInfo == null) {
+      return null;
+    }
+    final mergedCurrentToken = mergedTokenInfo.firstTokenGraphemes.join();
+    final replacementLooksRelated = _tokenLooksRelatedToDeleteResetReplacement(
+      currentToken: mergedCurrentToken,
+      baselineToken: baselineToken,
+      deletedSuffixText: deletedSuffixText,
+    );
+
+    final shouldAppendToBaseline =
+        hasLeadingReplacementSeparator &&
+        deletedSuffixText != null &&
+        deletedSuffixText.isNotEmpty &&
+        mergedCurrentToken.startsWith(deletedSuffixText);
+    final shouldReplaceCurrentToken =
+        !shouldAppendToBaseline &&
+        ((hasTrailingReplacementSeparator && replacementLooksRelated) ||
+            mergedCurrentToken.startsWith(baselineToken));
+    if (!shouldReplaceCurrentToken && !shouldAppendToBaseline) {
+      return null;
+    }
+    final mergedText = shouldReplaceCurrentToken
+        ? baselineGraphemes.sublist(0, tokenStart).join() + mergedCurrentText
+        : baselineText + mergedCurrentText;
+    return (
+      previousText: baselineText,
+      previousCursorOffset: baselineCursorOffset,
+      currentText: mergedText,
+      cursorOffset: mergedCursorOffsetHint == null
+          ? null
+          : (shouldReplaceCurrentToken ? tokenStart : baselineCursorOffset) +
+                mergedCursorOffsetHint,
+    );
   }
 
   ({String? currentText, bool strippedPendingEnter, bool ignored})
@@ -734,8 +1236,15 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   ({int deletedCount, String appendedText, int deleteCursorOffset})
-  _computeTextDelta(String currentText, {int? cursorOffsetHint}) {
-    final previousGraphemes = _lastSentText.characters.toList(growable: false);
+  _computeTextDelta(
+    String currentText, {
+    int? cursorOffsetHint,
+    String? previousTextOverride,
+    int? lastCursorOffsetOverride,
+  }) {
+    final previousText = previousTextOverride ?? _lastSentText;
+    final lastCursorOffset = lastCursorOffsetOverride ?? _lastSentCursorOffset;
+    final previousGraphemes = previousText.characters.toList(growable: false);
     final currentGraphemes = currentText.characters.toList(growable: false);
     final defaultDelta = _computeTextDeltaCandidate(
       previousGraphemes,
@@ -745,8 +1254,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return defaultDelta;
     }
 
-    final anchoredPrefixLimit = _lastSentCursorOffset < cursorOffsetHint
-        ? _lastSentCursorOffset
+    final anchoredPrefixLimit = lastCursorOffset < cursorOffsetHint
+        ? lastCursorOffset
         : cursorOffsetHint;
     final anchoredDelta = _computeTextDeltaCandidate(
       previousGraphemes,
@@ -757,6 +1266,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       defaultDelta: defaultDelta,
       anchoredDelta: anchoredDelta,
       cursorOffsetHint: cursorOffsetHint,
+      lastCursorOffset: lastCursorOffset,
     );
   }
 
@@ -800,7 +1310,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   int _deltaMovementScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
-  ) => (delta.deleteCursorOffset - _lastSentCursorOffset).abs();
+    int lastCursorOffset,
+  ) => (delta.deleteCursorOffset - lastCursorOffset).abs();
 
   int _deltaRewriteScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,
@@ -813,6 +1324,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     required ({int deletedCount, String appendedText, int deleteCursorOffset})
     anchoredDelta,
     required int cursorOffsetHint,
+    required int lastCursorOffset,
   }) {
     final defaultCursorScore = _deltaCursorScore(
       defaultDelta,
@@ -828,8 +1340,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           : defaultDelta;
     }
 
-    final defaultMovementScore = _deltaMovementScore(defaultDelta);
-    final anchoredMovementScore = _deltaMovementScore(anchoredDelta);
+    final defaultMovementScore = _deltaMovementScore(
+      defaultDelta,
+      lastCursorOffset,
+    );
+    final anchoredMovementScore = _deltaMovementScore(
+      anchoredDelta,
+      lastCursorOffset,
+    );
     if (anchoredMovementScore != defaultMovementScore) {
       return anchoredMovementScore < defaultMovementScore
           ? anchoredDelta
@@ -1127,25 +1645,45 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         currentText,
         value,
       );
-      if (currentText == _lastSentText) {
+      final normalizedDeleteResetLeadingFragment =
+          _normalizeDeleteResetLeadingFragment(
+            currentText,
+            cursorOffsetHint: targetCursorOffset,
+          );
+      final normalizedCurrentText =
+          normalizedDeleteResetLeadingFragment?.currentText ?? currentText;
+      final normalizedTargetCursorOffset =
+          normalizedDeleteResetLeadingFragment?.cursorOffset ??
+          targetCursorOffset;
+      if (normalizedCurrentText == _lastSentText) {
         final collapsedMoveAwayFromReplacement =
             !_lastProcessedSelectionWasCollapsed &&
-            targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset &&
-            targetCursorOffset != _lastSentCursorOffset + 1;
+            normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset + 1;
         final movedCollapsedCursor =
             _lastProcessedUserSelectionWasValid &&
             (_lastProcessedSelectionWasCollapsed ||
                 collapsedMoveAwayFromReplacement) &&
-            targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset;
-        if (targetCursorOffset != null &&
-            targetCursorOffset != _lastSentCursorOffset) {
+            normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset;
+        final shouldClearAfterCollapsedCursorMove =
+            _clearImeAfterNextTouchCursorMove &&
+            normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset;
+        if (normalizedTargetCursorOffset != null &&
+            normalizedTargetCursorOffset != _lastSentCursorOffset) {
           _notifyUserInput();
-          _moveTerminalCursorTo(targetCursorOffset);
+          _moveTerminalCursorTo(normalizedTargetCursorOffset);
+        }
+        _clearImeAfterNextTouchCursorMove = false;
+        if (shouldClearAfterCollapsedCursorMove) {
+          _clearImeBufferForFreshInput();
+          _sawImeComposition = false;
+          return;
         }
         _syncEditingStateWithUserText(
-          currentText,
+          normalizedCurrentText,
           sourceValue: value,
           forceResyncState: movedCollapsedCursor,
         );
@@ -1153,11 +1691,27 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         return;
       }
 
-      final delta = _computeTextDelta(
-        currentText,
-        cursorOffsetHint: targetCursorOffset,
+      _clearImeAfterNextTouchCursorMove = false;
+      final deleteResetContinuation = _resolveDeleteResetContinuation(
+        normalizedCurrentText,
+        cursorOffsetHint: normalizedTargetCursorOffset,
       );
-      final review = _reviewForInsertedText(currentText, delta);
+      final effectiveCurrentText =
+          deleteResetContinuation?.currentText ?? normalizedCurrentText;
+      final effectiveTargetCursorOffset =
+          deleteResetContinuation?.cursorOffset ?? normalizedTargetCursorOffset;
+      final deltaPreviousText =
+          deleteResetContinuation?.previousText ?? _lastSentText;
+      final deltaPreviousCursorOffset =
+          deleteResetContinuation?.previousCursorOffset ??
+          _lastSentCursorOffset;
+      final delta = _computeTextDelta(
+        effectiveCurrentText,
+        cursorOffsetHint: effectiveTargetCursorOffset,
+        previousTextOverride: deleteResetContinuation?.previousText,
+        lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
+      );
+      final review = _reviewForInsertedText(effectiveCurrentText, delta);
       if (review != null) {
         final shouldInsert = await widget.onReviewInsertedText!(review);
         if (!mounted || revision != _latestEditingValueRevision) {
@@ -1170,27 +1724,122 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         }
       }
 
-      if (currentText != _lastSentText) {
+      if (effectiveCurrentText != _lastSentText) {
         _notifyUserInput();
       }
-      final previousText = _lastSentText;
-      final newlineCount = _sendInputDelta(currentText, delta);
+      final previousText = deltaPreviousText;
+
+      // Capture modifier state BEFORE sending the delta. The send path
+      // synchronously fires terminal.onOutput which may consume one-shot
+      // toolbar modifiers (e.g. Ctrl). Checking after would always be false.
+      final hadActiveToolbarModifier =
+          widget.hasActiveToolbarModifier?.call() ?? false;
+
+      if (deleteResetContinuation != null) {
+        _lastSentText = deltaPreviousText;
+        _lastSentCursorOffset = deltaPreviousCursorOffset;
+      }
+      final newlineCount = _sendInputDelta(effectiveCurrentText, delta);
       if (newlineCount > 0) {
         _resetCommittedInputState(pendingEnterSuppressions: newlineCount);
+        _trimLeadingSuggestionSpaceAfterDelete = true;
         _sawImeComposition = false;
         return;
       }
+
+      // Detect non-additive operations that should clear the IME suggestion
+      // context: pure deletions (backspace with no replacement text) and
+      // modifier chords (Ctrl/Alt + character) where the typed character
+      // becomes a control code instead of visible text.
+      //
+      // IME replacements (e.g. autocorrect changing "teh" to "the") may
+      // also shorten text but include appended replacement text, so they
+      // are NOT treated as pure deletions.
+      final wasPureDeletion =
+          previousText.isNotEmpty &&
+          delta.deletedCount > 0 &&
+          delta.appendedText.isEmpty;
+      final wasTrailingPureDeletion =
+          wasPureDeletion &&
+          delta.deleteCursorOffset == previousText.characters.length;
+      final wasModifiedSingleChar =
+          delta.deletedCount == 0 &&
+          delta.appendedText.characters.length == 1 &&
+          hadActiveToolbarModifier;
+
+      // Also detect the second character of a two-part chord like tmux's
+      // Ctrl+b, c. After the first modifier character resets, the follow-up
+      // character is sent without a modifier but is still part of the chord
+      // and should not accumulate in the IME suggestion context.
+      //
+      // A short time window (500 ms) distinguishes rapid chord follow-ups
+      // from normal typing after a standalone modifier like Ctrl+C.
+      final chordResetTime = _modifierChordResetTime;
+      final chordElapsed = chordResetTime == null
+          ? null
+          : _readModifierChordClock().difference(chordResetTime);
+      final wasChordFollowUp =
+          chordElapsed != null &&
+          !chordElapsed.isNegative &&
+          chordElapsed < modifierChordFollowUpWindow &&
+          delta.deletedCount == 0 &&
+          delta.appendedText.characters.length == 1;
+
+      if (wasModifiedSingleChar || wasChordFollowUp) {
+        // The character was transformed into a control code by the toolbar
+        // modifier (or is the follow-up of a two-part chord), so it does
+        // not represent visible terminal text. Do a full reset — the
+        // shell's response to a control code is unpredictable.
+        _clearImeBufferForFreshInput(
+          armModifierChordWindow: wasModifiedSingleChar,
+        );
+        _sawImeComposition = false;
+        return;
+      }
+
+      // Any non-chord input clears the chord follow-up window.
+      _modifierChordResetTime = null;
+
+      if (wasTrailingPureDeletion) {
+        final previousGraphemes = previousText.characters.toList(
+          growable: false,
+        );
+        final currentGraphemes = effectiveCurrentText.characters.toList(
+          growable: false,
+        );
+        _clearImeBufferForFreshInput(
+          deleteResetBaselineText: effectiveCurrentText,
+          deleteResetBaselineCursorOffset: _lastSentCursorOffset,
+          deleteResetDeletedSuffixText: previousGraphemes
+              .sublist(currentGraphemes.length)
+              .join(),
+        );
+        _sawImeComposition = false;
+        return;
+      }
+
+      _clearPendingDeleteResetBaseline();
+
+      // For IME replacements that shorten text (e.g. autocorrect), keep the
+      // suggestion-space-trim flag since the IME may prepend a space to the
+      // next swiped word.
       _trimLeadingSuggestionSpaceAfterDelete =
           previousText.isNotEmpty &&
-          currentText.characters.length < previousText.characters.length;
+          effectiveCurrentText.characters.length <
+              previousText.characters.length;
       _trimLeadingSwipeSpaceAfterBufferClear =
-          previousText.isNotEmpty && currentText.isEmpty;
-      if (targetCursorOffset != null) {
-        _moveTerminalCursorTo(targetCursorOffset);
+          previousText.isNotEmpty && effectiveCurrentText.isEmpty;
+      if (effectiveTargetCursorOffset != null) {
+        _moveTerminalCursorTo(effectiveTargetCursorOffset);
       }
       _syncEditingStateWithUserText(
-        currentText,
-        sourceValue: normalizedPendingEnter.strippedPendingEnter ? null : value,
+        effectiveCurrentText,
+        sourceValue:
+            normalizedPendingEnter.strippedPendingEnter ||
+                normalizedDeleteResetLeadingFragment != null ||
+                effectiveCurrentText != normalizedCurrentText
+            ? null
+            : value,
       );
       _sawImeComposition = false;
     } finally {
@@ -1212,6 +1861,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       widget.terminal.keyInput(TerminalKey.enter);
       _pendingPerformedEnterText = _lastSentText;
       _resetCommittedInputState(clearPendingPerformedEnterText: false);
+      _trimLeadingSuggestionSpaceAfterDelete = true;
       _sawImeComposition = false;
     }
   }
@@ -1237,6 +1887,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _modifierChordResetTime = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
   }
