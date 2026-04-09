@@ -493,57 +493,67 @@ abstract final class FluttyTheme {
     VoidCallback? onAction,
     String? actionLabel,
     IconData? actionIcon,
+    bool centered = true,
+    bool padded = true,
   }) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
 
-    return Center(
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: spacingLg),
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Container(
-              padding: const EdgeInsets.all(spacingMd),
-              decoration: BoxDecoration(
-                color: colorScheme.primary.withAlpha(
-                  theme.brightness == Brightness.dark ? 15 : 10,
-                ),
-                shape: BoxShape.circle,
-              ),
-              child: Icon(
-                icon,
-                size: emptyStateIconSize,
-                color: colorScheme.onSurface.withAlpha(80),
-              ),
+    Widget child = Column(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        Container(
+          padding: const EdgeInsets.all(spacingMd),
+          decoration: BoxDecoration(
+            color: colorScheme.primary.withAlpha(
+              theme.brightness == Brightness.dark ? 15 : 10,
             ),
-            const SizedBox(height: spacingMd),
-            Text(
-              title,
-              style: theme.textTheme.titleMedium?.copyWith(
-                color: colorScheme.onSurface.withAlpha(180),
-                fontWeight: FontWeight.w600,
-              ),
-            ),
-            const SizedBox(height: spacingXs),
-            Text(
-              subtitle,
-              textAlign: TextAlign.center,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: colorScheme.onSurface.withAlpha(100),
-              ),
-            ),
-            if (onAction != null && actionLabel != null) ...[
-              const SizedBox(height: spacingLg),
-              FilledButton.icon(
-                onPressed: onAction,
-                icon: Icon(actionIcon ?? Icons.add, size: 18),
-                label: Text(actionLabel),
-              ),
-            ],
-          ],
+            shape: BoxShape.circle,
+          ),
+          child: Icon(
+            icon,
+            size: emptyStateIconSize,
+            color: colorScheme.onSurface.withAlpha(80),
+          ),
         ),
-      ),
+        const SizedBox(height: spacingMd),
+        Text(
+          title,
+          style: theme.textTheme.titleMedium?.copyWith(
+            color: colorScheme.onSurface.withAlpha(180),
+            fontWeight: FontWeight.w600,
+          ),
+        ),
+        const SizedBox(height: spacingXs),
+        Text(
+          subtitle,
+          textAlign: TextAlign.center,
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurface.withAlpha(100),
+          ),
+        ),
+        if (onAction != null && actionLabel != null) ...[
+          const SizedBox(height: spacingLg),
+          FilledButton.icon(
+            onPressed: onAction,
+            icon: Icon(actionIcon ?? Icons.add, size: 18),
+            label: Text(actionLabel),
+          ),
+        ],
+      ],
     );
+
+    if (padded) {
+      child = Padding(
+        padding: const EdgeInsets.symmetric(horizontal: spacingLg),
+        child: child,
+      );
+    }
+
+    if (centered) {
+      child = Center(child: child);
+    }
+
+    return child;
   }
 }

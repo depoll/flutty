@@ -552,6 +552,8 @@ class HostsPanel extends ConsumerWidget {
       subtitle: 'Add a host to get started',
       onAction: () => context.push('/hosts/add'),
       actionLabel: 'Add Host',
+      centered: false,
+      padded: false,
     ),
   );
 
