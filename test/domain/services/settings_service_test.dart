@@ -183,15 +183,6 @@ void main() {
       expect(SettingKeys.defaultPort, 'default_port');
       expect(SettingKeys.defaultUsername, 'default_username');
       expect(SettingKeys.autoLockTimeout, 'auto_lock_timeout');
-      expect(SettingKeys.syncVaultEnabled, 'sync_vault_enabled');
-      expect(SettingKeys.syncVaultPath, 'sync_vault_path');
-      expect(SettingKeys.syncVaultLastSyncedAt, 'sync_vault_last_synced_at');
-      expect(
-        SettingKeys.syncVaultLastSnapshotHash,
-        'sync_vault_last_snapshot_hash',
-      );
-      expect(SettingKeys.syncVaultLastError, 'sync_vault_last_error');
-      expect(SettingKeys.syncVaultDeviceId, 'sync_vault_device_id');
     });
   });
 

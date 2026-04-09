@@ -11,11 +11,8 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
-import 'package:monkeyssh/domain/services/sync_vault_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
-
-class _MockSyncVaultService extends Mock implements SyncVaultService {}
 
 class _MockHostRepository extends Mock implements HostRepository {}
 
@@ -100,50 +97,6 @@ void main() {
     await tester.pump(const Duration(milliseconds: 100));
 
     expect(find.text('Imported host'), findsOneWidget);
-  });
-
-  testWidgets('pull to refresh runs encrypted sync when enabled', (
-    tester,
-  ) async {
-    final db = AppDatabase.forTesting(NativeDatabase.memory());
-    addTearDown(db.close);
-
-    final syncVaultService = _MockSyncVaultService();
-    when(syncVaultService.getStatus).thenAnswer(
-      (_) async => const SyncVaultStatus(enabled: true, hasRecoveryKey: true),
-    );
-    when(syncVaultService.syncNow).thenAnswer(
-      (_) async => const SyncVaultSyncResult(
-        outcome: SyncVaultSyncOutcome.noChanges,
-        message: 'Encrypted sync is already up to date',
-      ),
-    );
-
-    await tester.pumpWidget(
-      ProviderScope(
-        overrides: [
-          databaseProvider.overrideWithValue(db),
-          syncVaultServiceProvider.overrideWithValue(syncVaultService),
-          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
-          allHostsProvider.overrideWith(
-            (ref) => Stream.value([
-              _buildHost(id: 1, label: 'Production', sortOrder: 0),
-            ]),
-          ),
-        ],
-        child: const MaterialApp(home: HostsScreen()),
-      ),
-    );
-    await tester.pumpAndSettle();
-
-    await tester.drag(find.byType(Scrollable).first, const Offset(0, 300));
-    await tester.pump();
-    await tester.pump(const Duration(seconds: 1));
-    await tester.pumpAndSettle();
-
-    verify(syncVaultService.getStatus).called(1);
-    verify(syncVaultService.syncNow).called(1);
-    expect(find.text('Encrypted sync is already up to date'), findsOneWidget);
   });
 
   testWidgets('loading state stays scrollable for pull to refresh', (

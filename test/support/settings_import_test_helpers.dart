@@ -1,6 +1,6 @@
 // ignore_for_file: public_member_api_docs, use_super_parameters
 
-import 'dart:io' show Directory, File, FileSystemException;
+import 'dart:io' show Directory, File;
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -13,7 +13,6 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
-import 'package:monkeyssh/domain/services/sync_vault_document_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 
 const _filePickerChannel = MethodChannel(
@@ -100,50 +99,6 @@ class FakeAuthService extends AuthService {
 
   @override
   Future<bool> isBiometricAvailable() async => false;
-}
-
-class FakeSyncVaultDocumentService extends SyncVaultDocumentService {
-  FakeSyncVaultDocumentService({
-    this.savedDocument,
-    this.pickedDocument,
-    this.readDocument,
-    this.writtenDocument,
-  });
-
-  final SavedSyncVaultDocument? savedDocument;
-  final PickedSyncVaultDocument? pickedDocument;
-  final PickedSyncVaultDocument? readDocument;
-  final SavedSyncVaultDocument? writtenDocument;
-
-  @override
-  Future<SavedSyncVaultDocument?> createLinkedVault({
-    required String encryptedVault,
-    required String suggestedFileName,
-  }) async => savedDocument;
-
-  @override
-  Future<PickedSyncVaultDocument?> pickLinkedVault() async => pickedDocument;
-
-  @override
-  Future<PickedSyncVaultDocument> readLinkedVault({
-    required String bookmark,
-  }) async {
-    if (readDocument case final document?) {
-      return document;
-    }
-    throw const FileSystemException('Could not access the linked sync vault');
-  }
-
-  @override
-  Future<SavedSyncVaultDocument> writeLinkedVault({
-    required String bookmark,
-    required String encryptedVault,
-  }) async {
-    if (writtenDocument case final document?) {
-      return document;
-    }
-    throw const FileSystemException('Could not access the linked sync vault');
-  }
 }
 
 class FakeSecureTransferService extends SecureTransferService {
