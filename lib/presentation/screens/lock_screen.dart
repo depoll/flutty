@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../../app/app_metadata.dart';
 import '../../domain/services/auth_service.dart';
 
 /// Lock screen for PIN/biometric authentication.
@@ -120,6 +121,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   @override
   Widget build(BuildContext context) {
     final authState = ref.watch(authStateProvider);
+    final appName = ref.watch(appDisplayNameProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isInitializing =
@@ -156,7 +158,7 @@ class _LockScreenState extends ConsumerState<LockScreen> {
               ),
               const SizedBox(height: 32),
               Text(
-                'MonkeySSH',
+                appName,
                 style: theme.textTheme.headlineMedium?.copyWith(
                   fontWeight: FontWeight.bold,
                 ),

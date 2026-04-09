@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/app_metadata.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -232,7 +233,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             ),
           ),
           const SizedBox(width: 8),
-          const Text('MonkeySSH'),
+          Text(ref.watch(appDisplayNameProvider)),
         ],
       ),
       actions: [
@@ -274,6 +275,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   );
 
   Widget _buildDesktopLayout() {
+    final appName = ref.watch(appDisplayNameProvider);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
@@ -309,7 +311,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                         ),
                         const SizedBox(width: 10),
                         Text(
-                          'MonkeySSH',
+                          appName,
                           style: theme.textTheme.titleMedium?.copyWith(
                             fontWeight: FontWeight.w700,
                           ),

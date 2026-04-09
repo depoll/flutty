@@ -5,6 +5,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
+import '../../app/app_metadata.dart';
 import '../../domain/services/sync_vault_document_service.dart';
 import '../../domain/services/sync_vault_file_io.dart';
 import '../widgets/file_picker_helpers.dart';
@@ -90,8 +91,9 @@ Future<SavedSyncVaultFile?> saveSyncVaultToFile({
 
   final bytes = Uint8List.fromList(utf8.encode(encryptedVault));
   final sanitizedBaseName = sanitizeTransferFileBaseName(defaultFileName);
+  final appName = await loadAppName();
   final targetPath = await FilePicker.platform.saveFile(
-    dialogTitle: 'Save encrypted MonkeySSH sync vault',
+    dialogTitle: 'Save encrypted $appName sync vault',
     fileName: '$sanitizedBaseName.$monkeySshSyncVaultFileExtension',
     type: FileType.custom,
     allowedExtensions: const [monkeySshSyncVaultFileExtension],
@@ -163,8 +165,9 @@ Future<SelectedSyncVaultFile?> pickSyncVaultFromFile(
     }
   }
 
+  final appName = await loadAppName();
   final result = await FilePicker.platform.pickFiles(
-    dialogTitle: 'Select encrypted MonkeySSH sync vault',
+    dialogTitle: 'Select encrypted $appName sync vault',
     type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
     allowedExtensions: pickerAllowedExtensionsForCustomExtension(
       defaultTargetPlatform,

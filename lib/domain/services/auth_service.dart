@@ -7,6 +7,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:local_auth/local_auth.dart';
+import 'package:package_info_plus/package_info_plus.dart';
+
+const _defaultAuthAppName = 'MonkeySSH';
 
 /// Authentication state.
 enum AuthState {
@@ -157,12 +160,11 @@ class AuthService {
   }
 
   /// Authenticate with biometrics.
-  Future<bool> authenticateWithBiometrics({
-    String reason = 'Authenticate to access MonkeySSH',
-  }) async {
+  Future<bool> authenticateWithBiometrics({String? reason}) async {
     try {
+      final localizedReason = reason ?? await _defaultLocalizedReason();
       return await _localAuth.authenticate(
-        localizedReason: reason,
+        localizedReason: localizedReason,
         biometricOnly: true,
         persistAcrossBackgrounding: true,
       );
@@ -172,10 +174,7 @@ class AuthService {
   }
 
   /// Authenticate with any available method.
-  Future<bool> authenticate({
-    String? pin,
-    String reason = 'Authenticate to access MonkeySSH',
-  }) async {
+  Future<bool> authenticate({String? pin, String? reason}) async {
     final method = await getAuthMethod();
 
     switch (method) {
@@ -360,6 +359,13 @@ class AuthService {
     _pinWriteQueue = operation.catchError((_) {});
     await operation;
   }
+}
+
+Future<String> _defaultLocalizedReason() async {
+  final packageInfo = await PackageInfo.fromPlatform();
+  final appName = packageInfo.appName.trim();
+  final normalizedAppName = appName.isEmpty ? _defaultAuthAppName : appName;
+  return 'Authenticate to access $normalizedAppName';
 }
 
 class _PinHashRecord {

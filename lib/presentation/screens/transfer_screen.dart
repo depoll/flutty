@@ -8,6 +8,7 @@ import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
+import '../../app/app_metadata.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../widgets/file_picker_helpers.dart';
@@ -148,8 +149,9 @@ Future<void> _savePayloadToFileDialog({
   required Uint8List bytes,
   required String fileName,
 }) async {
+  final appName = await loadAppName();
   final targetPath = await FilePicker.platform.saveFile(
-    dialogTitle: 'Export encrypted MonkeySSH transfer file',
+    dialogTitle: 'Export encrypted $appName transfer file',
     fileName: fileName,
     type: FileType.custom,
     allowedExtensions: const [monkeySshTransferFileExtension],
@@ -193,8 +195,9 @@ Future<void> _savePayloadToFileDialog({
 
 /// Imports payload content from an encrypted transfer file.
 Future<String?> pickTransferPayloadFromFile(BuildContext context) async {
+  final appName = await loadAppName();
   final result = await FilePicker.platform.pickFiles(
-    dialogTitle: 'Select encrypted MonkeySSH transfer file',
+    dialogTitle: 'Select encrypted $appName transfer file',
     type: pickerFileTypeForCustomExtension(defaultTargetPlatform),
     allowedExtensions: pickerAllowedExtensionsForCustomExtension(
       defaultTargetPlatform,
