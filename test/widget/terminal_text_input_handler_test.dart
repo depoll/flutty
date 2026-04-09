@@ -1418,7 +1418,7 @@ void main() {
     );
 
     testWidgets(
-      'external prompt output resets IME context for the next fresh swipe',
+      'external prompt output does not reconnect the IME client before keyboard input',
       (tester) async {
         final terminalOutput = <String>[];
         final terminal = Terminal(onOutput: terminalOutput.add);
@@ -1443,8 +1443,66 @@ void main() {
         focusNode.requestFocus();
         await tester.pump();
 
+        tester.testTextInput.log.clear();
         controller.handleExternalTerminalOutput();
         await tester.pump();
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setClient',
+          ),
+          isEmpty,
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'external prompt output resets IME context for the next fresh swipe '
+      'after keyboard input',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => '>',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('echo ready', selectionOffset: 'echo ready'.length),
+        );
+        await tester.pump();
+        await tester.testTextInput.receiveAction(TextInputAction.newline);
+        await tester.pump();
+
+        terminalOutput.clear();
+        tester.testTextInput.log.clear();
+        controller.handleExternalTerminalOutput();
+        await tester.pump();
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setClient',
+          ),
+          hasLength(1),
+        );
 
         await _commitSwipeText(tester, '$_deleteDetectionMarker world');
 

@@ -161,7 +161,7 @@ Recent hardening changes:
 - CI/CD workflows pin third-party GitHub Actions by commit SHA, scope `GITHUB_TOKEN` permissions to the minimum needed, and avoid inherited reusable-workflow secrets.
 - CI now runs OSS Gitleaks secret scanning, a pull-request dependency diff review backed by OSV when GitHub dependency review is unavailable, and baseline OSV dependency scanning, while release uploads publish `SHA256SUMS.txt` alongside release artifacts.
 
-Transfer packages are encrypted with a user-provided passphrase and are intended for direct device-to-device transfer through encrypted file import. No cloud sync is required.
+Export packages are encrypted with a user-provided passphrase and are intended for explicit export/import between devices. No cloud sync is required.
 
 If you discover a security vulnerability, please open an issue.
 

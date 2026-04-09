@@ -146,6 +146,8 @@ class SecureTransferService {
   final _aesGcm = AesGcm.with256bits();
   final _sha256 = Sha256();
 
+  static const _minEpochMilliseconds = -8640000000000000;
+  static const _maxEpochMilliseconds = 8640000000000000;
   static const _payloadPrefix = 'MSSH1:';
   static const _schemaVersion = 1;
   static const _envelopeVersion = 1;
@@ -1152,10 +1154,31 @@ class SecureTransferService {
     if (value is DateTime) {
       return value;
     }
+    if (value is num) {
+      return _dateTimeFromMillisecondsSinceEpoch(value.toInt());
+    }
     if (value is String) {
-      return DateTime.tryParse(value);
+      final parsed = DateTime.tryParse(value);
+      if (parsed != null) {
+        return parsed;
+      }
+      final millisecondsSinceEpoch = int.tryParse(value);
+      if (millisecondsSinceEpoch != null) {
+        return _dateTimeFromMillisecondsSinceEpoch(millisecondsSinceEpoch);
+      }
     }
     return null;
+  }
+
+  DateTime? _dateTimeFromMillisecondsSinceEpoch(int millisecondsSinceEpoch) {
+    if (millisecondsSinceEpoch < _minEpochMilliseconds ||
+        millisecondsSinceEpoch > _maxEpochMilliseconds) {
+      return null;
+    }
+    return DateTime.fromMillisecondsSinceEpoch(
+      millisecondsSinceEpoch,
+      isUtc: true,
+    );
   }
 
   String _normalizedImportedKnownHostFingerprint(Map<String, dynamic> item) {

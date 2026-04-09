@@ -673,6 +673,83 @@ void main() {
     );
 
     test(
+      'importMigrationData preserves epoch-millisecond host timestamps',
+      () async {
+        final createdAt = DateTime.utc(2026, 4, 9, 4);
+        final updatedAt = DateTime.utc(2026, 4, 9, 4, 0, 5);
+        await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Timestamped Host',
+            hostname: 'timestamps.example.com',
+            username: 'root',
+            createdAt: Value(createdAt),
+            updatedAt: Value(updatedAt),
+          ),
+        );
+
+        final migrationData = await transferService.createMigrationData(
+          includeKnownHosts: false,
+        );
+
+        final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(importedDb.close);
+        final importedEncryptionService = SecretEncryptionService.forTesting();
+        final importedTransferService = SecureTransferService(
+          importedDb,
+          KeyRepository(importedDb, importedEncryptionService),
+          HostRepository(importedDb, importedEncryptionService),
+        );
+
+        await importedTransferService.importMigrationData(
+          data: migrationData,
+          mode: MigrationImportMode.replace,
+          includeKnownHosts: false,
+        );
+
+        final importedHost = await importedDb
+            .select(importedDb.hosts)
+            .getSingle();
+        expect(importedHost.createdAt.toUtc(), createdAt);
+        expect(importedHost.updatedAt.toUtc(), updatedAt);
+      },
+    );
+
+    test(
+      'importMigrationData tolerates out-of-range epoch-millisecond host timestamps',
+      () async {
+        await transferService.importMigrationData(
+          data: {
+            'hosts': [
+              {
+                'id': 1,
+                'label': 'Out Of Range Host',
+                'hostname': 'out-of-range.example.com',
+                'username': 'root',
+                'createdAt': 8640000000000001,
+                'updatedAt': '8640000000000001',
+              },
+            ],
+          },
+          mode: MigrationImportMode.replace,
+          includeKnownHosts: false,
+        );
+
+        final now = DateTime.now().toUtc();
+        final importedHost = await db.select(db.hosts).getSingle();
+
+        expect(importedHost.label, 'Out Of Range Host');
+        expect(
+          importedHost.createdAt.toUtc().difference(now).abs(),
+          lessThan(const Duration(minutes: 1)),
+        );
+        expect(
+          importedHost.updatedAt.toUtc().difference(now).abs(),
+          lessThan(const Duration(minutes: 1)),
+        );
+      },
+    );
+
+    test(
       'merge import replaces an older known-host entry with newer trust data',
       () async {
         final existingFirstSeen = DateTime.utc(2024);

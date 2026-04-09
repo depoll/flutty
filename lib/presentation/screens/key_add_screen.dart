@@ -448,7 +448,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     if (_isImporting) {
       return;
     }
-    final result = await FilePicker.platform.pickFiles(withData: true);
+    final result = await FilePicker.pickFiles(withData: true);
 
     if (!mounted || result == null || result.files.isEmpty) {
       return;

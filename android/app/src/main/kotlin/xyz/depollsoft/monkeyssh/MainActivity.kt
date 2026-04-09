@@ -12,11 +12,14 @@ import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodChannel
 import java.io.ByteArrayOutputStream
+import java.util.Locale
 
 class MainActivity : FlutterActivity() {
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val MAX_CLIPBOARD_CONTENT_URI_BYTES = 512 * 1024
+        private const val MONKEYSSH_TRANSFER_MIME_TYPE = "application/x-monkeyssh-transfer"
+        private const val MONKEYSSH_TRANSFER_EXTENSION = ".monkeysshx"
     }
 
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
@@ -31,6 +34,20 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleTransferIntent(intent)
+    }
+
+    override fun getInitialRoute(): String? {
+        if (isTransferIntent(intent)) {
+            return "/"
+        }
+        return super.getInitialRoute()
+    }
+
+    override fun shouldHandleDeeplinking(): Boolean {
+        if (isTransferIntent(intent)) {
+            return false
+        }
+        return super.shouldHandleDeeplinking()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -110,8 +127,8 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onNewIntent(intent: Intent) {
-        super.onNewIntent(intent)
         setIntent(intent)
+        super.onNewIntent(intent)
         handleTransferIntent(intent)
     }
 
@@ -160,11 +177,12 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun handleTransferIntent(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_VIEW) {
+        if (!isTransferIntent(intent)) {
             return
         }
 
-        val sourceUri = intent.data ?: return
+        val transferIntent = intent ?: return
+        val sourceUri = transferIntent.data ?: return
         try {
             pendingTransferPayload = contentResolver.openInputStream(sourceUri)?.use { stream ->
                 val buffer = ByteArray(8192)
@@ -189,6 +207,27 @@ class MainActivity : FlutterActivity() {
     private fun notifyIncomingTransferPayload() {
         val payload = pendingTransferPayload ?: return
         transferMethodChannel?.invokeMethod("onIncomingTransferPayload", payload)
+    }
+
+    private fun isTransferIntent(intent: Intent?): Boolean {
+        val transferIntent = intent ?: return false
+        if (transferIntent.action != Intent.ACTION_VIEW) {
+            return false
+        }
+        val sourceUri = transferIntent.data ?: return false
+        val hasSupportedScheme = when (sourceUri.scheme) {
+            "content", "file" -> true
+            else -> false
+        }
+        if (!hasSupportedScheme) {
+            return false
+        }
+        val mimeType = transferIntent.type?.lowercase(Locale.ROOT)
+        if (mimeType == MONKEYSSH_TRANSFER_MIME_TYPE) {
+            return true
+        }
+        val lastPathSegment = sourceUri.lastPathSegment?.lowercase(Locale.ROOT)
+        return lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true
     }
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {

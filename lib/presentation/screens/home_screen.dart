@@ -19,7 +19,6 @@ import '../../domain/services/auth_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
-import '../../domain/services/sync_vault_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
@@ -615,41 +614,8 @@ class HostsPanel extends ConsumerWidget {
   }
 
   Future<void> _refreshHosts(BuildContext context, WidgetRef ref) async {
-    final syncService = ref.read(syncVaultServiceProvider);
-    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-    final syncStatus = await syncService.getStatus();
-    if (!context.mounted) {
-      return;
-    }
-
-    if (!syncStatus.enabled) {
-      ref.invalidate(allHostsProvider);
-      await ref.read(allHostsProvider.future);
-      return;
-    }
-
-    final result = await syncService.syncNow();
-    if (!context.mounted) {
-      return;
-    }
-
-    ref.invalidate(syncVaultStatusProvider);
-    if (result.outcome == SyncVaultSyncOutcome.downloadedRemote) {
-      await sessionsNotifier.disconnectAll();
-      invalidateSyncedDataProviders(ref.invalidate);
-    }
     ref.invalidate(allHostsProvider);
     await ref.read(allHostsProvider.future);
-    if (!context.mounted) {
-      return;
-    }
-
-    final message = result.outcome == SyncVaultSyncOutcome.conflict
-        ? 'Sync conflict detected. Open Settings > Sync to resolve it.'
-        : result.message;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(SnackBar(content: Text(message)));
   }
 }
 
