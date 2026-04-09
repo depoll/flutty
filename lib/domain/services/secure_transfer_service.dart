@@ -1152,8 +1152,21 @@ class SecureTransferService {
     if (value is DateTime) {
       return value;
     }
+    if (value is num) {
+      return DateTime.fromMillisecondsSinceEpoch(value.toInt(), isUtc: true);
+    }
     if (value is String) {
-      return DateTime.tryParse(value);
+      final parsed = DateTime.tryParse(value);
+      if (parsed != null) {
+        return parsed;
+      }
+      final millisecondsSinceEpoch = int.tryParse(value);
+      if (millisecondsSinceEpoch != null) {
+        return DateTime.fromMillisecondsSinceEpoch(
+          millisecondsSinceEpoch,
+          isUtc: true,
+        );
+      }
     }
     return null;
   }
