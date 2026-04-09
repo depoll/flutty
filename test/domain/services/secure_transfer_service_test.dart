@@ -715,6 +715,41 @@ void main() {
     );
 
     test(
+      'importMigrationData tolerates out-of-range epoch-millisecond host timestamps',
+      () async {
+        await transferService.importMigrationData(
+          data: {
+            'hosts': [
+              {
+                'id': 1,
+                'label': 'Out Of Range Host',
+                'hostname': 'out-of-range.example.com',
+                'username': 'root',
+                'createdAt': 8640000000000001,
+                'updatedAt': '8640000000000001',
+              },
+            ],
+          },
+          mode: MigrationImportMode.replace,
+          includeKnownHosts: false,
+        );
+
+        final now = DateTime.now().toUtc();
+        final importedHost = await db.select(db.hosts).getSingle();
+
+        expect(importedHost.label, 'Out Of Range Host');
+        expect(
+          importedHost.createdAt.toUtc().difference(now).abs(),
+          lessThan(const Duration(minutes: 1)),
+        );
+        expect(
+          importedHost.updatedAt.toUtc().difference(now).abs(),
+          lessThan(const Duration(minutes: 1)),
+        );
+      },
+    );
+
+    test(
       'merge import replaces an older known-host entry with newer trust data',
       () async {
         final existingFirstSeen = DateTime.utc(2024);
