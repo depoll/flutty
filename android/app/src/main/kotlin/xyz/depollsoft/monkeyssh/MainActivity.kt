@@ -17,6 +17,8 @@ class MainActivity : FlutterActivity() {
     companion object {
         private const val NOTIFICATION_PERMISSION_REQUEST_CODE = 1001
         private const val MAX_CLIPBOARD_CONTENT_URI_BYTES = 512 * 1024
+        private const val MONKEYSSH_TRANSFER_MIME_TYPE = "application/x-monkeyssh-transfer"
+        private const val MONKEYSSH_TRANSFER_EXTENSION = ".monkeysshx"
     }
 
     private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
@@ -31,6 +33,13 @@ class MainActivity : FlutterActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         handleTransferIntent(intent)
+    }
+
+    override fun getInitialRoute(): String? {
+        if (isTransferIntent(intent)) {
+            return "/"
+        }
+        return super.getInitialRoute()
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
@@ -160,7 +169,7 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun handleTransferIntent(intent: Intent?) {
-        if (intent?.action != Intent.ACTION_VIEW) {
+        if (!isTransferIntent(intent)) {
             return
         }
 
@@ -189,6 +198,26 @@ class MainActivity : FlutterActivity() {
     private fun notifyIncomingTransferPayload() {
         val payload = pendingTransferPayload ?: return
         transferMethodChannel?.invokeMethod("onIncomingTransferPayload", payload)
+    }
+
+    private fun isTransferIntent(intent: Intent?): Boolean {
+        if (intent?.action != Intent.ACTION_VIEW) {
+            return false
+        }
+        val sourceUri = intent.data ?: return false
+        val hasSupportedScheme = when (sourceUri.scheme) {
+            "content", "file" -> true
+            else -> false
+        }
+        if (!hasSupportedScheme) {
+            return false
+        }
+        val mimeType = intent.type?.lowercase()
+        if (mimeType == MONKEYSSH_TRANSFER_MIME_TYPE) {
+            return true
+        }
+        val lastPathSegment = sourceUri.lastPathSegment?.lowercase()
+        return lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true
     }
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {
