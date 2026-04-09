@@ -224,6 +224,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
   bool _clearImeAfterNextTouchCursorMove = false;
+  bool _hasPendingPromptOutputImeReset = false;
   DateTime? _modifierChordResetTime;
   String? _pendingDeleteResetBaselineText;
   int? _pendingDeleteResetBaselineCursorOffset;
@@ -481,6 +482,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _invalidatePendingEditingUpdates();
     _resetCommittedInputState(clearPendingDeleteResetBaseline: false);
     _sawImeComposition = false;
+    _hasPendingPromptOutputImeReset = false;
     if (deleteResetBaselineText != null &&
         deleteResetBaselineCursorOffset != null) {
       _pendingDeleteResetBaselineText = deleteResetBaselineText;
@@ -498,6 +500,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   void _handleExternalTerminalOutput() {
     if (widget.readOnly || !widget.focusNode.hasFocus || !hasInputConnection) {
+      return;
+    }
+    if (!_hasPendingPromptOutputImeReset) {
       return;
     }
     if (_sawImeComposition || _lastSentText.isNotEmpty) {
@@ -539,6 +544,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _queuedEditingValue = null;
   }
 
+  bool _editingValueShowsImeInteraction(TextEditingValue value) =>
+      value.text != _initEditingState.text ||
+      value.selection != _initEditingState.selection ||
+      !value.composing.isCollapsed;
+
   void _openInputConnection({bool show = true}) {
     if (!_shouldCreateInputConnection) return;
 
@@ -567,6 +577,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
+      _hasPendingPromptOutputImeReset = false;
       _modifierChordResetTime = null;
       _clearPendingDeleteResetBaseline();
       _lastSentText = '';
@@ -589,6 +600,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _hasPendingPromptOutputImeReset = false;
     _modifierChordResetTime = null;
     _clearPendingDeleteResetBaseline();
     _lastSentText = '';
@@ -1559,6 +1571,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return;
     }
 
+    if (_editingValueShowsImeInteraction(value)) {
+      _hasPendingPromptOutputImeReset = true;
+    }
+
     if (!value.composing.isCollapsed) {
       _sawImeComposition = true;
     }
@@ -1857,6 +1873,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _pendingEnterActionSuppressions--;
         return;
       }
+      _hasPendingPromptOutputImeReset = true;
       _notifyUserInput();
       widget.terminal.keyInput(TerminalKey.enter);
       _pendingPerformedEnterText = _lastSentText;
@@ -1880,6 +1897,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _connection = null;
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
+    _hasPendingPromptOutputImeReset = false;
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     _pendingPerformedEnterText = null;
