@@ -285,7 +285,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         children: [
           // Sidebar navigation
           Container(
-            width: 220,
+            width: 230,
             decoration: BoxDecoration(
               color: isDark ? const Color(0xFF0F0F14) : Colors.grey.shade50,
               border: Border(
@@ -298,18 +298,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                 children: [
                   // App header
                   Padding(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                    padding: const EdgeInsets.fromLTRB(16, 20, 16, 12),
                     child: Row(
                       children: [
                         ClipRRect(
-                          borderRadius: BorderRadius.circular(6),
+                          borderRadius: BorderRadius.circular(8),
                           child: Image.asset(
                             'assets/icons/monkeyssh_icon.png',
-                            width: 28,
-                            height: 28,
+                            width: 32,
+                            height: 32,
                           ),
                         ),
-                        const SizedBox(width: 10),
+                        const SizedBox(width: 12),
                         Text(
                           appName,
                           style: theme.textTheme.titleMedium?.copyWith(
@@ -319,7 +319,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                       ],
                     ),
                   ),
-                  const SizedBox(height: 8),
+
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    endIndent: 16,
+                    color: colorScheme.outline.withAlpha(40),
+                  ),
+                  const SizedBox(height: 12),
 
                   // Navigation items
                   _NavItem(
@@ -349,6 +356,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
                   const Spacer(),
 
+                  Divider(
+                    height: 1,
+                    indent: 16,
+                    endIndent: 16,
+                    color: colorScheme.outline.withAlpha(40),
+                  ),
+                  const SizedBox(height: 8),
+
                   // Settings at bottom
                   _NavItem(
                     icon: Icons.settings_outlined,
@@ -356,7 +371,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
                     selected: false,
                     onTap: () => context.push('/settings'),
                   ),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: 16),
                 ],
               ),
             ),
@@ -412,34 +427,36 @@ class _NavItem extends StatelessWidget {
     final isDark = theme.brightness == Brightness.dark;
 
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 1),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
       child: Material(
         color: selected
             ? colorScheme.primary.withAlpha(isDark ? 25 : 20)
             : Colors.transparent,
-        borderRadius: BorderRadius.circular(6),
+        borderRadius: BorderRadius.circular(8),
         child: InkWell(
           onTap: onTap,
-          borderRadius: BorderRadius.circular(6),
+          borderRadius: BorderRadius.circular(8),
+          hoverColor: colorScheme.primary.withAlpha(isDark ? 12 : 8),
+          splashColor: colorScheme.primary.withAlpha(isDark ? 20 : 15),
           child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             child: Row(
               children: [
                 Icon(
                   icon,
-                  size: 18,
+                  size: 20,
                   color: selected
                       ? colorScheme.primary
                       : colorScheme.onSurface.withAlpha(150),
                 ),
-                const SizedBox(width: 10),
+                const SizedBox(width: 12),
                 Text(
                   label,
                   style: theme.textTheme.bodyMedium?.copyWith(
                     color: selected
                         ? colorScheme.primary
                         : colorScheme.onSurface.withAlpha(200),
-                    fontWeight: selected ? FontWeight.w600 : FontWeight.w400,
+                    fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
                   ),
                 ),
               ],
@@ -527,43 +544,16 @@ class HostsPanel extends ConsumerWidget {
     ),
   );
 
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return _buildCenteredHostsState(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.dns_outlined,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No hosts yet',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Add a host to get started',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => context.push('/hosts/add'),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Host'),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
+    child: FluttyTheme.buildEmptyState(
+      context: context,
+      icon: Icons.dns_outlined,
+      title: 'No hosts yet',
+      subtitle: 'Add a host to get started',
+      onAction: () => context.push('/hosts/add'),
+      actionLabel: 'Add Host',
+    ),
+  );
 
   Widget _buildCenteredHostsState({required Widget child}) => CustomScrollView(
     physics: const AlwaysScrollableScrollPhysics(),
@@ -865,6 +855,7 @@ class _HostRow extends ConsumerWidget {
                       const SizedBox(width: 8),
                       _SmallIconButton(
                         icon: Icons.add,
+                        tooltip: 'New connection',
                         onTap: () =>
                             unawaited(_openNewConnection(context, ref)),
                       ),
@@ -1382,36 +1373,12 @@ class _ConnectionsPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.link_off,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No active connections',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Open a host to create one',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildEmptyState(BuildContext context) => FluttyTheme.buildEmptyState(
+    context: context,
+    icon: Icons.link_off,
+    title: 'No active connections',
+    subtitle: 'Open a host to create one',
+  );
 }
 
 class _ConnectionPreviewText extends StatelessWidget {
@@ -1492,27 +1459,38 @@ class _ActionButton extends StatelessWidget {
 }
 
 class _SmallIconButton extends StatelessWidget {
-  const _SmallIconButton({required this.icon, required this.onTap});
+  const _SmallIconButton({
+    required this.icon,
+    required this.onTap,
+    this.tooltip,
+  });
 
   final IconData icon;
   final VoidCallback onTap;
+  final String? tooltip;
 
   @override
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    return InkWell(
+    final button = InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(4),
+      borderRadius: BorderRadius.circular(6),
+      hoverColor: colorScheme.onSurface.withAlpha(20),
       child: Padding(
         padding: const EdgeInsets.all(6),
         child: Icon(
           icon,
           size: 16,
-          color: colorScheme.onSurface.withAlpha(100),
+          color: colorScheme.onSurface.withAlpha(120),
         ),
       ),
     );
+
+    if (tooltip case final tooltipText?) {
+      return Tooltip(message: tooltipText, child: button);
+    }
+    return button;
   }
 }
 
@@ -1570,43 +1548,15 @@ class _KeysPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.key_outlined,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No SSH keys yet',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Generate or import a key',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => context.push('/keys/add'),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Key'),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildEmptyState(BuildContext context) => FluttyTheme.buildEmptyState(
+    context: context,
+    icon: Icons.key_outlined,
+    title: 'No SSH keys yet',
+    subtitle: 'Generate or import a key',
+    onAction: () => context.push('/keys/add'),
+    actionLabel: 'Add Key',
+    actionIcon: Icons.add,
+  );
 
   Widget _buildKeysList(
     BuildContext context,
@@ -1687,14 +1637,17 @@ class _KeyRow extends ConsumerWidget {
               // Transfer and key actions
               _SmallIconButton(
                 icon: useShareSheet ? Icons.share : Icons.save_alt,
+                tooltip: useShareSheet ? 'Share encrypted' : 'Export encrypted',
                 onTap: () => unawaited(_exportEncryptedFile(context, ref)),
               ),
               _SmallIconButton(
                 icon: Icons.copy,
+                tooltip: 'Copy public key',
                 onTap: () => _copyPublicKey(context),
               ),
               _SmallIconButton(
                 icon: Icons.delete_outline,
+                tooltip: 'Delete',
                 onTap: () => _confirmDelete(context, ref),
               ),
             ],
@@ -1921,43 +1874,15 @@ class SnippetsPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context, WidgetRef ref) {
-    final theme = Theme.of(context);
-    final colorScheme = theme.colorScheme;
-
-    return Center(
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Icon(
-            Icons.code_outlined,
-            size: 40,
-            color: colorScheme.onSurface.withAlpha(60),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            'No snippets yet',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withAlpha(150),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'Save commands you use often',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: colorScheme.onSurface.withAlpha(100),
-            ),
-          ),
-          const SizedBox(height: 16),
-          FilledButton.icon(
-            onPressed: () => _showAddEditSnippetDialog(context, ref, null),
-            icon: const Icon(Icons.add, size: 18),
-            label: const Text('Add Snippet'),
-          ),
-        ],
-      ),
-    );
-  }
+  Widget _buildEmptyState(BuildContext context, WidgetRef ref) =>
+      FluttyTheme.buildEmptyState(
+        context: context,
+        icon: Icons.code_outlined,
+        title: 'No snippets yet',
+        subtitle: 'Save commands you use often',
+        onAction: () => _showAddEditSnippetDialog(context, ref, null),
+        actionLabel: 'Add Snippet',
+      );
 
   Widget _buildSnippetsList(
     BuildContext context,
@@ -2083,7 +2008,7 @@ class SnippetsPanel extends ConsumerWidget {
                     alignLabelWithHint: true,
                   ),
                   maxLines: 4,
-                  style: const TextStyle(fontFamily: 'monospace', fontSize: 14),
+                  style: FluttyTheme.monoStyle.copyWith(fontSize: 14),
                   validator: (value) {
                     if (value == null || value.isEmpty) {
                       return 'Please enter a command';
@@ -2237,10 +2162,12 @@ class _SnippetRow extends ConsumerWidget {
               reorderHandle,
               _SmallIconButton(
                 icon: Icons.copy,
+                tooltip: 'Copy command',
                 onTap: () => _copySnippet(context, ref),
               ),
               _SmallIconButton(
                 icon: Icons.edit_outlined,
+                tooltip: 'Edit',
                 onTap: () => SnippetsPanel._showAddEditSnippetDialog(
                   context,
                   ref,
@@ -2249,6 +2176,7 @@ class _SnippetRow extends ConsumerWidget {
               ),
               _SmallIconButton(
                 icon: Icons.delete_outline,
+                tooltip: 'Delete',
                 onTap: () => _confirmDelete(context, ref),
               ),
             ],

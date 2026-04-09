@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
@@ -505,10 +506,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                       selectedSnippet.command,
                                       maxLines: 3,
                                       overflow: TextOverflow.ellipsis,
-                                      style: Theme.of(context)
-                                          .textTheme
-                                          .bodySmall
-                                          ?.copyWith(fontFamily: 'monospace'),
+                                      style: FluttyTheme.monoStyle.copyWith(
+                                        fontSize: 12,
+                                        color: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall?.color,
+                                      ),
                                     ),
                                   ),
                                 ],
@@ -1495,9 +1498,9 @@ class _PortForwardTile extends StatelessWidget {
       subtitle: Text(
         '${portForward.localPort} → '
         '${portForward.remoteHost}:${portForward.remotePort}',
-        style: theme.textTheme.bodySmall?.copyWith(
+        style: FluttyTheme.monoStyle.copyWith(
+          fontSize: 12,
           color: colorScheme.onSurfaceVariant,
-          fontFamily: 'monospace',
         ),
       ),
       trailing: Row(

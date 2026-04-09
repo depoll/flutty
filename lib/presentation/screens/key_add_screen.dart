@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/theme.dart';
 import '../../domain/services/key_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import 'transfer_screen.dart';
@@ -342,7 +343,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
             alignLabelWithHint: true,
           ),
           maxLines: 8,
-          style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+          style: FluttyTheme.monoStyle.copyWith(fontSize: 12),
           validator: (value) {
             if (value == null || value.isEmpty) {
               return 'Please enter the private key';

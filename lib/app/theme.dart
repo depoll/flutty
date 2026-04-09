@@ -22,6 +22,33 @@ abstract final class FluttyTheme {
   static const _cardLight = Color(0xFFFFFFFF);
   static const _borderLight = Color(0xFFE8E8EF);
 
+  /// Standard spacing constants for consistent layout.
+  static const double spacingXs = 4;
+
+  /// Small spacing.
+  static const double spacingSm = 8;
+
+  /// Medium spacing.
+  static const double spacingMd = 16;
+
+  /// Large spacing.
+  static const double spacingLg = 24;
+
+  /// Extra-large spacing.
+  static const double spacingXl = 32;
+
+  /// Standard border radius for cards and containers.
+  static const double radiusSm = 8;
+
+  /// Medium border radius.
+  static const double radiusMd = 12;
+
+  /// Large border radius.
+  static const double radiusLg = 16;
+
+  /// Standard icon size for empty states.
+  static const double emptyStateIconSize = 48;
+
   /// Light theme.
   static ThemeData get light => _buildTheme(Brightness.light);
 
@@ -371,6 +398,71 @@ abstract final class FluttyTheme {
           borderRadius: BorderRadius.circular(12),
         ),
       ),
+
+      // Navigation bar (mobile bottom nav)
+      navigationBarTheme: NavigationBarThemeData(
+        backgroundColor: isDark ? _surfaceDark : _surfaceLight,
+        indicatorColor: colorScheme.primary.withAlpha(isDark ? 35 : 30),
+        labelTextStyle: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: selected ? FontWeight.w600 : FontWeight.w500,
+            color: selected
+                ? colorScheme.primary
+                : (isDark ? _textSecondary : Colors.black54),
+          );
+        }),
+        iconTheme: WidgetStateProperty.resolveWith((states) {
+          final selected = states.contains(WidgetState.selected);
+          return IconThemeData(
+            size: 22,
+            color: selected
+                ? colorScheme.primary
+                : (isDark ? _textSecondary : Colors.black54),
+          );
+        }),
+        elevation: isDark ? 0 : 1,
+        surfaceTintColor: Colors.transparent,
+      ),
+
+      // Tooltips
+      tooltipTheme: TooltipThemeData(
+        decoration: BoxDecoration(
+          color: isDark ? _cardDark : Colors.grey.shade800,
+          borderRadius: BorderRadius.circular(8),
+          border: isDark ? Border.all(color: _borderDark) : null,
+        ),
+        textStyle: GoogleFonts.inter(
+          fontSize: 12,
+          fontWeight: FontWeight.w500,
+          color: isDark ? _textPrimary : Colors.white,
+        ),
+        waitDuration: const Duration(milliseconds: 500),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      ),
+
+      // Switch
+      switchTheme: SwitchThemeData(
+        thumbColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return Colors.white;
+          }
+          return isDark ? _textSecondary : Colors.grey.shade400;
+        }),
+        trackColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return colorScheme.primary;
+          }
+          return isDark ? _borderDark : Colors.grey.shade300;
+        }),
+        trackOutlineColor: WidgetStateProperty.resolveWith((states) {
+          if (states.contains(WidgetState.selected)) {
+            return Colors.transparent;
+          }
+          return isDark ? _borderDark.withAlpha(100) : Colors.grey.shade400;
+        }),
+      ),
     );
   }
 
@@ -389,4 +481,69 @@ abstract final class FluttyTheme {
   static List<BoxShadow> glowShadow([Color? color]) => [
     BoxShadow(color: (color ?? _accentTeal).withAlpha(40), blurRadius: 20),
   ];
+
+  /// Builds a consistent empty-state placeholder widget.
+  ///
+  /// Use across all panels and screens for visual consistency.
+  static Widget buildEmptyState({
+    required BuildContext context,
+    required IconData icon,
+    required String title,
+    required String subtitle,
+    VoidCallback? onAction,
+    String? actionLabel,
+    IconData? actionIcon,
+  }) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: spacingLg),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Container(
+              padding: const EdgeInsets.all(spacingMd),
+              decoration: BoxDecoration(
+                color: colorScheme.primary.withAlpha(
+                  theme.brightness == Brightness.dark ? 15 : 10,
+                ),
+                shape: BoxShape.circle,
+              ),
+              child: Icon(
+                icon,
+                size: emptyStateIconSize,
+                color: colorScheme.onSurface.withAlpha(80),
+              ),
+            ),
+            const SizedBox(height: spacingMd),
+            Text(
+              title,
+              style: theme.textTheme.titleMedium?.copyWith(
+                color: colorScheme.onSurface.withAlpha(180),
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: spacingXs),
+            Text(
+              subtitle,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurface.withAlpha(100),
+              ),
+            ),
+            if (onAction != null && actionLabel != null) ...[
+              const SizedBox(height: spacingLg),
+              FilledButton.icon(
+                onPressed: onAction,
+                icon: Icon(actionIcon ?? Icons.add, size: 18),
+                label: Text(actionLabel),
+              ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
 }
