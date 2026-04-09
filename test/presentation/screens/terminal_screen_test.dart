@@ -222,9 +222,37 @@ void main() {
     );
 
     testWidgets(
-      'prompt-like shell output clears stale IME context before the next swipe',
+      'prompt-like shell output does not reconnect the IME input client before keyboard input',
       (tester) async {
         await pumpScreen(tester);
+
+        tester.testTextInput.log.clear();
+        shellStdoutController.add(Uint8List.fromList(utf8.encode('> ')));
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setClient',
+          ),
+          isEmpty,
+        );
+        await tester.pump(const Duration(milliseconds: 200));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'prompt-like shell output reconnects the IME input client after keyboard input',
+      (tester) async {
+        await pumpScreen(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('ls', selectionOffset: 2),
+        );
+        await tester.pump();
+
+        await tester.testTextInput.receiveAction(TextInputAction.newline);
+        await tester.pump();
 
         tester.testTextInput.log.clear();
         shellStdoutController.add(Uint8List.fromList(utf8.encode('> ')));
