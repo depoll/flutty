@@ -325,4 +325,38 @@ void main() {
       verify(() => snippetRepository.reorderByIds([2, 1])).called(1);
     });
   });
+
+  testWidgets('small icon actions expose semantics labels', (tester) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+
+    final semantics = tester.ensureSemantics();
+
+    await tester.pumpWidget(
+      buildMobileHomeScreen(
+        db: db,
+        overrides: [
+          activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
+          allHostsProvider.overrideWith(
+            (ref) =>
+                Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics &&
+            widget.properties.label == 'New connection' &&
+            (widget.properties.button ?? false),
+      ),
+      findsOneWidget,
+    );
+
+    semantics.dispose();
+  });
 }

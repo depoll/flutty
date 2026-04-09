@@ -1441,24 +1441,31 @@ class _SmallIconButton extends StatelessWidget {
   Widget build(BuildContext context) {
     final colorScheme = Theme.of(context).colorScheme;
 
-    final button = InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      hoverColor: colorScheme.onSurface.withAlpha(20),
-      child: Padding(
-        padding: const EdgeInsets.all(6),
-        child: Icon(
-          icon,
-          size: 16,
-          color: colorScheme.onSurface.withAlpha(120),
+    final button = ExcludeSemantics(
+      child: InkWell(
+        onTap: onTap,
+        borderRadius: BorderRadius.circular(6),
+        hoverColor: colorScheme.onSurface.withAlpha(20),
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Icon(
+            icon,
+            size: 16,
+            color: colorScheme.onSurface.withAlpha(120),
+          ),
         ),
       ),
     );
+    final semanticButton = Semantics(
+      button: true,
+      label: tooltip,
+      child: button,
+    );
 
     if (tooltip case final tooltipText?) {
-      return Tooltip(message: tooltipText, child: button);
+      return Tooltip(message: tooltipText, child: semanticButton);
     }
-    return button;
+    return semanticButton;
   }
 }
 
