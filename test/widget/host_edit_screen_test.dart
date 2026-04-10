@@ -160,6 +160,7 @@ void main() {
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
+              databaseProvider.overrideWithValue(database),
               hostRepositoryProvider.overrideWithValue(hostRepository),
               keyRepositoryProvider.overrideWithValue(
                 _FakeKeyRepository(
@@ -240,6 +241,7 @@ void main() {
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
+              databaseProvider.overrideWithValue(database),
               hostRepositoryProvider.overrideWithValue(hostRepository),
               keyRepositoryProvider.overrideWithValue(
                 _FakeKeyRepository(
@@ -300,5 +302,65 @@ void main() {
         );
       },
     );
+
+    testWidgets('shows Pro helper copy for auto-run automation', (
+      tester,
+    ) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(
+              _FakeHostRepository(
+                host: _testHost(
+                  id: 1,
+                  label: 'Imported Host',
+                  autoConnectRequiresConfirmation: false,
+                ),
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: const MaterialApp(home: HostEditScreen()),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('host-advanced-tile')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('host-advanced-tile')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.text(
+          'MonkeySSH Pro unlocks auto-run commands, saved snippets, and guided agent launch presets.',
+        ),
+        findsOneWidget,
+      );
+    });
   });
 }

@@ -27,6 +27,9 @@ abstract final class Routes {
   /// Settings route.
   static const settings = 'settings';
 
+  /// Upgrade route.
+  static const upgrade = 'upgrade';
+
   /// Theme editor route.
   static const themeEditor = 'theme-editor';
 

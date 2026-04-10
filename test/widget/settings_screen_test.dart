@@ -87,6 +87,35 @@ void main() {
       expect(find.text('About'), findsOneWidget);
     });
 
+    testWidgets('displays MonkeySSH Pro subscription section', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      expect(find.text('MonkeySSH Pro'), findsOneWidget);
+      expect(find.text('Subscription'), findsOneWidget);
+      expect(
+        find.text('Unlock transfers, automation, and agent launch presets'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows active subscription state when Pro is unlocked', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await SettingsService(
+        db,
+      ).setBool(SettingKeys.monetizationProUnlocked, value: true);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      expect(find.text('Unlocked on this device'), findsOneWidget);
+      expect(find.text('Active'), findsOneWidget);
+    });
+
     testWidgets('displays theme option', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
@@ -319,6 +348,10 @@ void main() {
       var hostBuilds = 0;
       var keyBuilds = 0;
       var groupBuilds = 0;
+
+      await SettingsService(
+        db,
+      ).setBool(SettingKeys.monetizationProUnlocked, value: true);
 
       await tester.pumpWidget(
         ProviderScope(

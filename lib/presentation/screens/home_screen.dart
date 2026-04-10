@@ -13,6 +13,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
@@ -25,6 +26,7 @@ import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/file_picker_helpers.dart';
+import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import 'transfer_screen.dart';
 
@@ -120,6 +122,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
     try {
+      final hasAccess = await requireMonetizationFeatureAccess(
+        context: context,
+        ref: ref,
+        feature: MonetizationFeature.encryptedTransfers,
+      );
+      if (!hasAccess || !mounted) {
+        return;
+      }
       final transferPassphrase = await showTransferPassphraseDialog(
         context: context,
         title: 'Incoming transfer passphrase',
@@ -1039,7 +1049,9 @@ class _HostRow extends ConsumerWidget {
             contentPadding: EdgeInsets.zero,
             leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
             title: Text(
-              useShareSheet ? 'Share Encrypted' : 'Export Encrypted File',
+              useShareSheet
+                  ? 'Share Encrypted (Pro)'
+                  : 'Export Encrypted File (Pro)',
             ),
           ),
         ),
@@ -1081,6 +1093,14 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.encryptedTransfers,
+    );
+    if (!hasAccess || !context.mounted) {
+      return;
+    }
     if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
@@ -1687,6 +1707,14 @@ class _KeyRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.encryptedTransfers,
+    );
+    if (!hasAccess || !context.mounted) {
+      return;
+    }
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),

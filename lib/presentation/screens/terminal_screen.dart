@@ -24,8 +24,10 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -2172,6 +2174,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final host = _host;
     final shell = _shell;
     if (host == null || shell == null) {
+      return;
+    }
+
+    final hasAccess = await ref
+        .read(monetizationServiceProvider)
+        .canUseFeature(MonetizationFeature.autoConnectAutomation);
+    if (!hasAccess) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'MonkeySSH Pro unlocks auto-connect commands and snippets.',
+            ),
+            action: SnackBarAction(
+              label: 'Upgrade',
+              onPressed: () => context.push(
+                '/upgrade?feature=${MonetizationFeature.autoConnectAutomation.name}',
+              ),
+            ),
+          ),
+        );
+      }
       return;
     }
 

@@ -2,15 +2,21 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import '../../app/app_metadata.dart';
+import '../../app/routes.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/premium_access.dart';
+import '../widgets/premium_badge.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
@@ -26,6 +32,7 @@ class SettingsScreen extends ConsumerWidget {
     body: ListView(
       padding: const EdgeInsets.symmetric(vertical: 8),
       children: const [
+        _SubscriptionSection(),
         _AppearanceSection(),
         _SecuritySection(),
         _TerminalSection(),
@@ -53,6 +60,41 @@ class _SectionHeader extends StatelessWidget {
           fontWeight: FontWeight.w600,
         ),
       ),
+    );
+  }
+}
+
+class _SubscriptionSection extends ConsumerWidget {
+  const _SubscriptionSection();
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final state =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(title: 'MonkeySSH Pro'),
+        ListTile(
+          leading: Icon(
+            state.isProUnlocked
+                ? Icons.workspace_premium_rounded
+                : Icons.workspace_premium_outlined,
+          ),
+          title: const Text('Subscription'),
+          subtitle: Text(
+            state.isProUnlocked
+                ? 'Unlocked on this device'
+                : 'Unlock transfers, automation, and agent launch presets',
+          ),
+          trailing: state.isProUnlocked
+              ? const PremiumBadge(label: 'Active')
+              : const PremiumBadge(),
+          onTap: () => context.pushNamed(Routes.upgrade),
+        ),
+      ],
     );
   }
 }
@@ -806,19 +848,33 @@ class _ImportExportSection extends ConsumerWidget {
       ListTile(
         leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
         title: const Text('Export app data'),
-        subtitle: const Text('Create encrypted .monkeysshx export file'),
+        subtitle: const Text(
+          'Create encrypted .monkeysshx export file (MonkeySSH Pro)',
+        ),
+        trailing: const PremiumBadge(),
         onTap: () => _exportMigration(context, ref),
       ),
       ListTile(
         leading: const Icon(Icons.download_for_offline_outlined),
         title: const Text('Import app data'),
-        subtitle: const Text('Open encrypted .monkeysshx export file'),
+        subtitle: const Text(
+          'Open encrypted .monkeysshx export file (MonkeySSH Pro)',
+        ),
+        trailing: const PremiumBadge(),
         onTap: () => _importMigration(context, ref),
       ),
     ],
   );
 
   Future<void> _exportMigration(BuildContext context, WidgetRef ref) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.migrationImportExport,
+    );
+    if (!hasAccess || !context.mounted) {
+      return;
+    }
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),
@@ -867,6 +923,14 @@ class _ImportExportSection extends ConsumerWidget {
   }
 
   Future<void> _importMigration(BuildContext context, WidgetRef ref) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.migrationImportExport,
+    );
+    if (!hasAccess || !context.mounted) {
+      return;
+    }
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),

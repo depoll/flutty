@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -8,11 +10,17 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/agent_launch_preset_service.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/premium_access.dart';
+import '../widgets/premium_badge.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
@@ -39,6 +47,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _passwordController;
   late TextEditingController _tagsController;
   late TextEditingController _autoConnectCommandController;
+  late TextEditingController _agentWorkingDirectoryController;
+  late TextEditingController _agentTmuxSessionController;
+  late TextEditingController _agentArgumentsController;
 
   int? _selectedKeyId;
   int? _selectedGroupId;
@@ -48,6 +59,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   String? _selectedDarkThemeId;
   String? _selectedFontFamily;
   AutoConnectCommandMode _selectedAutoConnectMode = AutoConnectCommandMode.none;
+  AgentLaunchTool _selectedAgentLaunchTool = AgentLaunchTool.claudeCode;
+  bool _useAgentLaunchPreset = false;
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
@@ -65,6 +78,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _passwordController = TextEditingController();
     _tagsController = TextEditingController();
     _autoConnectCommandController = TextEditingController();
+    _agentWorkingDirectoryController = TextEditingController();
+    _agentTmuxSessionController = TextEditingController();
+    _agentArgumentsController = TextEditingController();
 
     if (widget.hostId != null) {
       _loadHost();
@@ -82,6 +98,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final portForwards = await ref
         .read(portForwardRepositoryProvider)
         .getByHostId(host.id);
+    final preset = await ref
+        .read(agentLaunchPresetServiceProvider)
+        .getPresetForHost(host.id);
     if (!mounted) return;
     setState(() {
       _existingHost = host;
@@ -103,6 +122,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         command: host.autoConnectCommand,
         snippetId: host.autoConnectSnippetId,
       );
+      if (preset != null) {
+        _selectedAgentLaunchTool = preset.tool;
+        _agentWorkingDirectoryController.text = preset.workingDirectory ?? '';
+        _agentTmuxSessionController.text = preset.tmuxSessionName ?? '';
+        _agentArgumentsController.text = preset.additionalArguments ?? '';
+        _useAgentLaunchPreset = true;
+        _autoConnectCommandController.text = buildAgentLaunchCommand(preset);
+      }
       _isFavorite = host.isFavorite;
       _portForwards = portForwards;
       _isLoading = false;
@@ -118,6 +145,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _passwordController.dispose();
     _tagsController.dispose();
     _autoConnectCommandController.dispose();
+    _agentWorkingDirectoryController.dispose();
+    _agentTmuxSessionController.dispose();
+    _agentArgumentsController.dispose();
     super.dispose();
   }
 
@@ -127,6 +157,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final keysAsync = ref.watch(allKeysProvider);
     final hostsAsync = ref.watch(allHostsProvider);
     final snippetsAsync = ref.watch(_allSnippetsProvider);
+    final monetizationState =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final hasAutomationAccess = monetizationState.allowsFeature(
+      MonetizationFeature.autoConnectAutomation,
+    );
+    final hasAgentPresetAccess = monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -136,7 +175,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             IconButton(
               icon: const Icon(Icons.download_for_offline_outlined),
               tooltip: 'Import transfer payload',
-              onPressed: _importFromTransfer,
+              onPressed: () => unawaited(_handleImportTransferTap()),
             ),
           IconButton(
             icon: Icon(_isFavorite ? Icons.star : Icons.star_border),
@@ -382,6 +421,28 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           fontWeight: FontWeight.w600,
                         ),
                       ),
+                      const SizedBox(height: 8),
+                      const PremiumBadge(),
+                      if (!hasAutomationAccess) ...[
+                        const SizedBox(height: 12),
+                        Container(
+                          width: double.infinity,
+                          padding: const EdgeInsets.all(12),
+                          decoration: BoxDecoration(
+                            color: Theme.of(
+                              context,
+                            ).colorScheme.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(12),
+                          ),
+                          child: Text(
+                            _selectedAutoConnectMode ==
+                                    AutoConnectCommandMode.none
+                                ? 'MonkeySSH Pro unlocks auto-run commands, saved snippets, and guided agent launch presets.'
+                                : 'This host keeps its saved Pro automation, but it will not run until MonkeySSH Pro is active again.',
+                            style: Theme.of(context).textTheme.bodySmall,
+                          ),
+                        ),
+                      ],
                       const SizedBox(height: 12),
                       DropdownButtonFormField<AutoConnectCommandMode>(
                         // ignore: deprecated_member_use
@@ -406,27 +467,107 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             child: Text('Run saved snippet'),
                           ),
                         ],
-                        onChanged: (value) {
-                          if (value == null) {
-                            return;
-                          }
-                          setState(() => _selectedAutoConnectMode = value);
-                        },
+                        onChanged: (value) => value == null
+                            ? null
+                            : unawaited(_handleAutoConnectModeSelection(value)),
                       ),
                       if (_selectedAutoConnectMode ==
                           AutoConnectCommandMode.custom) ...[
                         const SizedBox(height: 16),
+                        SwitchListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: const Text('Use agent launch preset'),
+                          subtitle: const Text(
+                            'Build a repeatable startup flow for Claude Code, Copilot CLI, or Aider.',
+                          ),
+                          value: _useAgentLaunchPreset,
+                          onChanged: hasAgentPresetAccess
+                              ? (value) {
+                                  setState(() => _useAgentLaunchPreset = value);
+                                  if (value) {
+                                    _syncAutoConnectCommandFromPreset();
+                                  }
+                                }
+                              : null,
+                        ),
+                        if (_useAgentLaunchPreset) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            'Agent launch preset',
+                            style: Theme.of(context).textTheme.titleSmall,
+                          ),
+                          const SizedBox(height: 12),
+                          SegmentedButton<AgentLaunchTool>(
+                            segments: AgentLaunchTool.values
+                                .map(
+                                  (tool) => ButtonSegment<AgentLaunchTool>(
+                                    value: tool,
+                                    label: Text(tool.label),
+                                  ),
+                                )
+                                .toList(growable: false),
+                            selected: {_selectedAgentLaunchTool},
+                            onSelectionChanged: hasAgentPresetAccess
+                                ? (selection) {
+                                    setState(
+                                      () => _selectedAgentLaunchTool =
+                                          selection.first,
+                                    );
+                                    _syncAutoConnectCommandFromPreset();
+                                  }
+                                : null,
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _agentWorkingDirectoryController,
+                            decoration: const InputDecoration(
+                              labelText: 'Working directory (optional)',
+                              hintText: '~/src/app',
+                              prefixIcon: Icon(Icons.folder_outlined),
+                            ),
+                            onChanged: (_) =>
+                                _syncAutoConnectCommandFromPreset(),
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _agentTmuxSessionController,
+                            decoration: const InputDecoration(
+                              labelText: 'tmux session (optional)',
+                              hintText: 'app-agent',
+                              prefixIcon: Icon(Icons.view_carousel_outlined),
+                            ),
+                            onChanged: (_) =>
+                                _syncAutoConnectCommandFromPreset(),
+                          ),
+                          const SizedBox(height: 12),
+                          TextFormField(
+                            controller: _agentArgumentsController,
+                            decoration: const InputDecoration(
+                              labelText: 'Extra arguments (optional)',
+                              hintText: '--resume',
+                              prefixIcon: Icon(Icons.tune_outlined),
+                            ),
+                            onChanged: (_) =>
+                                _syncAutoConnectCommandFromPreset(),
+                          ),
+                          const SizedBox(height: 12),
+                        ],
                         TextFormField(
                           key: const Key('host-auto-connect-command-field'),
                           controller: _autoConnectCommandController,
-                          decoration: const InputDecoration(
-                            labelText: 'Custom command',
+                          decoration: InputDecoration(
+                            labelText: _useAgentLaunchPreset
+                                ? 'Generated command'
+                                : 'Custom command',
                             hintText: defaultAutoConnectCommandSuggestion,
-                            helperText: 'Suggested: tmux new -As MonkeySSH',
-                            prefixIcon: Icon(Icons.terminal),
+                            helperText: _useAgentLaunchPreset
+                                ? 'Turn off the preset builder to edit the raw command directly.'
+                                : 'Suggested: tmux new -As MonkeySSH',
+                            prefixIcon: const Icon(Icons.terminal),
                           ),
                           minLines: 1,
                           maxLines: 3,
+                          readOnly: _useAgentLaunchPreset,
                           autocorrect: false,
                           validator: (value) {
                             if (_selectedAutoConnectMode !=
@@ -586,6 +727,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     try {
       final repo = ref.read(hostRepositoryProvider);
+      final presetService = ref.read(agentLaunchPresetServiceProvider);
       final port = int.parse(_portController.text);
       final password = _passwordController.text.isEmpty
           ? null
@@ -601,10 +743,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final selectedSnippet = autoConnectSnippetId == null
           ? null
           : await snippetRepo.getById(autoConnectSnippetId);
+      final currentPreset = _buildCurrentAgentLaunchPreset();
+      final presetCommand = currentPreset == null
+          ? null
+          : buildAgentLaunchCommand(currentPreset);
       final autoConnectCommand = switch (_selectedAutoConnectMode) {
         AutoConnectCommandMode.none => null,
         AutoConnectCommandMode.custom =>
-          _autoConnectCommandController.text.trim(),
+          _useAgentLaunchPreset && presetCommand != null
+              ? presetCommand
+              : _autoConnectCommandController.text.trim(),
         AutoConnectCommandMode.snippet =>
           selectedSnippet?.command ?? _autoConnectCommandController.text,
       };
@@ -621,6 +769,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         command: normalizedAutoConnectCommand,
         snippetId: normalizedAutoConnectSnippetId,
       );
+      var savedHostId = widget.hostId;
 
       if (widget.hostId != null && _existingHost != null) {
         // Update existing host
@@ -645,7 +794,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         await repo.update(updatedHost);
       } else {
         // Create new host
-        await repo.insert(
+        savedHostId = await repo.insert(
           HostsCompanion.insert(
             label: _labelController.text,
             hostname: _hostnameController.text,
@@ -669,6 +818,17 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         );
       }
 
+      if (savedHostId != null) {
+        final preset = _buildCurrentAgentLaunchPreset();
+        if (_selectedAutoConnectMode == AutoConnectCommandMode.custom &&
+            _useAgentLaunchPreset &&
+            preset != null) {
+          await presetService.setPresetForHost(savedHostId, preset);
+        } else {
+          await presetService.deletePresetForHost(savedHostId);
+        }
+      }
+
       ref.invalidate(allHostsProvider);
 
       if (mounted) {
@@ -689,6 +849,31 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
+    }
+  }
+
+  Future<void> _handleAutoConnectModeSelection(
+    AutoConnectCommandMode value,
+  ) async {
+    if (value != AutoConnectCommandMode.none) {
+      final hasAccess = await requireMonetizationFeatureAccess(
+        context: context,
+        ref: ref,
+        feature: MonetizationFeature.autoConnectAutomation,
+      );
+      if (!hasAccess || !mounted) {
+        return;
+      }
+    }
+
+    setState(() {
+      _selectedAutoConnectMode = value;
+      if (value != AutoConnectCommandMode.custom) {
+        _useAgentLaunchPreset = false;
+      }
+    });
+    if (_useAgentLaunchPreset) {
+      _syncAutoConnectCommandFromPreset();
     }
   }
 
@@ -787,6 +972,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
   }
 
+  Future<void> _handleImportTransferTap() async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.encryptedTransfers,
+    );
+    if (!hasAccess) {
+      return;
+    }
+    await _importFromTransfer();
+  }
+
   Future<void> _importFromTransfer() async {
     final encodedPayload = await pickTransferPayloadFromFile(context);
     if (!mounted || encodedPayload == null) {
@@ -837,6 +1034,26 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         context,
       ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
     }
+  }
+
+  AgentLaunchPreset? _buildCurrentAgentLaunchPreset() {
+    if (!_useAgentLaunchPreset) {
+      return null;
+    }
+    return AgentLaunchPreset(
+      tool: _selectedAgentLaunchTool,
+      workingDirectory: _agentWorkingDirectoryController.text.trim(),
+      tmuxSessionName: _agentTmuxSessionController.text.trim(),
+      additionalArguments: _agentArgumentsController.text.trim(),
+    );
+  }
+
+  void _syncAutoConnectCommandFromPreset() {
+    final preset = _buildCurrentAgentLaunchPreset();
+    if (preset == null) {
+      return;
+    }
+    _autoConnectCommandController.text = buildAgentLaunchCommand(preset);
   }
 
   Future<void> _selectTheme({required bool isLight}) async {
