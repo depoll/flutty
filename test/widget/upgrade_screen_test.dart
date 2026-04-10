@@ -19,7 +19,7 @@ Future<MonetizationActionResult> _restoredPurchaseResult(Invocation _) =>
     Future.value(const MonetizationActionResult.success('Restored purchases.'));
 
 void main() {
-  testWidgets('selected plan stays legible in dark mode', (tester) async {
+  testWidgets('plan cards stay legible in dark mode', (tester) async {
     final service = _MockMonetizationService();
     const state = MonetizationState(
       billingAvailability: MonetizationBillingAvailability.available,
@@ -50,6 +50,7 @@ void main() {
       ],
       debugUnlockAvailable: false,
       debugUnlocked: false,
+      activeOfferId: 'monthly',
     );
 
     when(() => service.currentState).thenReturn(state);
@@ -79,19 +80,71 @@ void main() {
     final monthlyCard = tester.widget<Card>(
       find.ancestor(of: find.text('Monthly'), matching: find.byType(Card)),
     );
-    final monthlyTitle = tester.widget<Text>(find.text('Monthly'));
+    final monthlyTitle = tester.widget<Text>(find.text('Monthly').first);
     final monthlyShape = monthlyCard.shape! as RoundedRectangleBorder;
-    final monthlyTile = tester.widget<RadioListTile<String>>(
-      find.byType(RadioListTile<String>).first,
-    );
 
-    expect(
-      monthlyCard.color,
-      isNot(equals(darkTheme.colorScheme.secondaryContainer)),
-    );
+    expect(find.byType(RadioListTile<String>), findsNothing);
     expect(monthlyTitle.style?.color, equals(darkTheme.colorScheme.onSurface));
     expect(monthlyShape.side.color, equals(darkTheme.colorScheme.primary));
     expect(monthlyShape.side.width, 2);
-    expect(monthlyTile.selected, isFalse);
+    expect(find.text('Current'), findsOneWidget);
+  });
+
+  testWidgets('shows switch action for a different plan when subscribed', (
+    tester,
+  ) async {
+    final service = _MockMonetizationService();
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.pro(),
+      offers: [
+        MonetizationOffer(
+          id: 'monthly',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.monthly,
+          planLabel: 'Monthly',
+          priceLabel: r'$4.99',
+          displayPriceLabel: r'$4.99 / month',
+          rawPrice: 4.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+        MonetizationOffer(
+          id: 'annual',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.annual,
+          planLabel: 'Annual',
+          priceLabel: r'$49.99',
+          displayPriceLabel: r'$49.99 / year',
+          rawPrice: 49.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+      ],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+      activeProductId: 'monkeyssh_pro',
+      activeOfferId: 'monthly',
+    );
+
+    when(() => service.currentState).thenReturn(state);
+    when(
+      () => service.purchaseOffer(any()),
+    ).thenAnswer(_cancelledPurchaseResult);
+    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(home: UpgradeScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Manage current plan'), findsOneWidget);
+    expect(find.text('Switch to Annual'), findsOneWidget);
   });
 }

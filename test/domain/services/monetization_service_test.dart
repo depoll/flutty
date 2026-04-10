@@ -260,6 +260,10 @@ void main() {
         MonetizationProductIds.iosAnnual,
       );
       await settings.setString(
+        SettingKeys.monetizationActiveOfferId,
+        MonetizationProductIds.iosAnnual,
+      );
+      await settings.setString(
         SettingKeys.monetizationEntitlementUpdatedAt,
         updatedAt.toIso8601String(),
       );
@@ -276,6 +280,10 @@ void main() {
       expect(service.currentState.isProUnlocked, isTrue);
       expect(
         service.currentState.activeProductId,
+        MonetizationProductIds.iosAnnual,
+      );
+      expect(
+        service.currentState.activeOfferId,
         MonetizationProductIds.iosAnnual,
       );
       expect(service.currentState.entitlementUpdatedAt, updatedAt.toLocal());
@@ -355,9 +363,65 @@ void main() {
           service.currentState.activeProductId,
           MonetizationProductIds.androidPro,
         );
+        expect(service.currentState.activeOfferId, isNull);
         verify(() => inAppPurchase.completePurchase(purchase)).called(1);
       },
     );
+
+    test('purchaseOffer persists the selected Android plan', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+      when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+        (_) async => ProductDetailsResponse(
+          productDetails: _androidCatalogDetails(),
+          notFoundIDs: const [],
+        ),
+      );
+      when(
+        () => inAppPurchase.buyNonConsumable(
+          purchaseParam: any(named: 'purchaseParam'),
+        ),
+      ).thenAnswer((_) async => true);
+
+      final purchase = MockPurchaseDetails();
+      when(
+        () => purchase.productID,
+      ).thenReturn(MonetizationProductIds.androidPro);
+      when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
+      when(() => purchase.pendingCompletePurchase).thenReturn(true);
+      when(() => purchase.transactionDate).thenReturn('1712732400000');
+      when(
+        () => inAppPurchase.completePurchase(purchase),
+      ).thenAnswer((_) async {});
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+      );
+      addTearDown(service.dispose);
+
+      await service.initialize();
+      final annualOfferId = service.currentState.offers
+          .firstWhere(
+            (offer) => offer.billingPeriod == MonetizationBillingPeriod.annual,
+          )
+          .id;
+      final resultFuture = service.purchaseOffer(annualOfferId);
+      await Future<void>.delayed(Duration.zero);
+      purchaseController.add([purchase]);
+
+      final result = await resultFuture;
+
+      expect(result.success, isTrue);
+      expect(service.currentState.activeOfferId, annualOfferId);
+      expect(
+        await settings.getString(SettingKeys.monetizationActiveOfferId),
+        annualOfferId,
+      );
+    });
 
     test('restore timeout clears a stale cached store entitlement', () async {
       await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
@@ -427,45 +491,6 @@ void main() {
         expect(service.currentState.isLoading, isFalse);
       },
     );
-
-    test('recoverInterruptedPurchase clears a stuck purchase state', () async {
-      debugDefaultTargetPlatformOverride = TargetPlatform.android;
-      addTearDown(() => debugDefaultTargetPlatformOverride = null);
-
-      when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
-      when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
-        (_) async => ProductDetailsResponse(
-          productDetails: _androidCatalogDetails(),
-          notFoundIDs: const [],
-        ),
-      );
-      when(
-        () => inAppPurchase.buyNonConsumable(
-          purchaseParam: any(named: 'purchaseParam'),
-        ),
-      ).thenAnswer((_) async => true);
-
-      final service = MonetizationService(
-        settings,
-        inAppPurchase: inAppPurchase,
-        allowDebugUnlock: false,
-      );
-      addTearDown(service.dispose);
-
-      await service.initialize();
-      final resultFuture = service.purchaseOffer(
-        service.currentState.defaultOffer!.id,
-      );
-      await Future<void>.delayed(Duration.zero);
-
-      expect(service.currentState.isLoading, isTrue);
-
-      service.recoverInterruptedPurchase();
-      final result = await resultFuture;
-
-      expect(result.cancelled, isTrue);
-      expect(service.currentState.isLoading, isFalse);
-    });
 
     test(
       'purchase finalization failure resolves the pending purchase',
@@ -575,6 +600,18 @@ List<ProductDetails> _androidCatalogDetails() => [
               formattedPrice: r'$5.00',
               priceAmountMicros: 5000000,
               billingPeriod: 'P1M',
+              recurrenceMode: RecurrenceMode.infiniteRecurring,
+            ),
+          ],
+        ),
+        _subscriptionOfferDetails(
+          basePlanId: 'annual',
+          offerIdToken: 'annual-base-token',
+          pricingPhases: [
+            _pricingPhase(
+              formattedPrice: r'$50.00',
+              priceAmountMicros: 50000000,
+              billingPeriod: 'P1Y',
               recurrenceMode: RecurrenceMode.infiniteRecurring,
             ),
           ],

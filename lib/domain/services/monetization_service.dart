@@ -37,6 +37,7 @@ class MonetizationService {
 
   StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
   Completer<MonetizationActionResult>? _pendingPurchaseResult;
+  String? _pendingOfferId;
   bool _restoreInFlight = false;
   bool _restoreObservedPurchaseUpdate = false;
   bool _initialized = false;
@@ -82,6 +83,9 @@ class MonetizationService {
     final activeProductId = await _settings.getString(
       SettingKeys.monetizationActiveProductId,
     );
+    final activeOfferId = await _settings.getString(
+      SettingKeys.monetizationActiveOfferId,
+    );
 
     _emit(
       _state.copyWith(
@@ -94,6 +98,7 @@ class MonetizationService {
         debugUnlockAvailable: _allowDebugUnlock,
         debugUnlocked: debugUnlocked,
         activeProductId: activeProductId,
+        activeOfferId: activeOfferId,
         entitlementUpdatedAt: updatedAt,
       ),
     );
@@ -157,6 +162,11 @@ class MonetizationService {
         'Subscriptions are only available on iPhone and Android.',
       );
     }
+    if (_pendingPurchaseResult != null) {
+      return const MonetizationActionResult.failure(
+        'A subscription purchase is already in progress.',
+      );
+    }
     var purchaseOption = _purchaseOptionsByOfferId[offerId];
     if (purchaseOption == null) {
       await refreshCatalog();
@@ -170,6 +180,7 @@ class MonetizationService {
 
     final completer = Completer<MonetizationActionResult>();
     _pendingPurchaseResult = completer;
+    _pendingOfferId = offerId;
     _restoreInFlight = false;
     _restoreObservedPurchaseUpdate = false;
     _emit(_state.copyWith(isLoading: true, lastError: null));
@@ -190,6 +201,7 @@ class MonetizationService {
     );
     if (!started) {
       _pendingPurchaseResult = null;
+      _pendingOfferId = null;
       _emit(_state.copyWith(isLoading: false));
       return const MonetizationActionResult.failure(
         'Could not start the purchase flow.',
@@ -200,6 +212,7 @@ class MonetizationService {
       _purchaseTimeout,
       onTimeout: () {
         _pendingPurchaseResult = null;
+        _pendingOfferId = null;
         _restoreInFlight = false;
         _restoreObservedPurchaseUpdate = false;
         _emit(_state.copyWith(isLoading: false));
@@ -230,6 +243,7 @@ class MonetizationService {
       _restoreTimeout,
       onTimeout: () async {
         _pendingPurchaseResult = null;
+        _pendingOfferId = null;
         final restoreObservedPurchaseUpdate = _restoreObservedPurchaseUpdate;
         _restoreInFlight = false;
         _restoreObservedPurchaseUpdate = false;
@@ -242,18 +256,6 @@ class MonetizationService {
           'No active subscription could be restored.',
         );
       },
-    );
-  }
-
-  /// Recovers the UI if an interrupted purchase flow never delivered a result.
-  void recoverInterruptedPurchase() {
-    final completer = _pendingPurchaseResult;
-    if (_restoreInFlight || completer == null || completer.isCompleted) {
-      return;
-    }
-    _emit(_state.copyWith(isLoading: false, lastError: null));
-    _resolvePendingPurchase(
-      const MonetizationActionResult.cancelled('Purchase cancelled.'),
     );
   }
 
@@ -341,6 +343,18 @@ class MonetizationService {
         SettingKeys.monetizationActiveProductId,
         purchase.productID,
       );
+      final activeOfferId =
+          _pendingOfferId ??
+          _resolveOfferIdForPurchase(purchase) ??
+          _state.activeOfferId;
+      if (activeOfferId != null) {
+        await _settings.setString(
+          SettingKeys.monetizationActiveOfferId,
+          activeOfferId,
+        );
+      } else {
+        await _settings.delete(SettingKeys.monetizationActiveOfferId);
+      }
       await _settings.setString(
         SettingKeys.monetizationEntitlementUpdatedAt,
         timestamp.toUtc().toIso8601String(),
@@ -350,6 +364,7 @@ class MonetizationService {
           isLoading: false,
           entitlements: const MonetizationEntitlements.pro(),
           activeProductId: purchase.productID,
+          activeOfferId: activeOfferId,
           entitlementUpdatedAt: timestamp,
           lastError: null,
         ),
@@ -374,6 +389,7 @@ class MonetizationService {
   Future<void> _clearCachedStoreEntitlement() async {
     await _settings.setBool(SettingKeys.monetizationProUnlocked, value: false);
     await _settings.delete(SettingKeys.monetizationActiveProductId);
+    await _settings.delete(SettingKeys.monetizationActiveOfferId);
     await _settings.delete(SettingKeys.monetizationEntitlementUpdatedAt);
     _emit(
       _state.copyWith(
@@ -382,6 +398,7 @@ class MonetizationService {
             ? const MonetizationEntitlements.pro()
             : const MonetizationEntitlements.free(),
         activeProductId: null,
+        activeOfferId: null,
         entitlementUpdatedAt: null,
         lastError: null,
       ),
@@ -394,9 +411,18 @@ class MonetizationService {
       return;
     }
     _pendingPurchaseResult = null;
+    _pendingOfferId = null;
     _restoreInFlight = false;
     _restoreObservedPurchaseUpdate = false;
     completer.complete(result);
+  }
+
+  String? _resolveOfferIdForPurchase(PurchaseDetails purchase) {
+    final matches = _purchaseOptionsByOfferId.entries
+        .where((entry) => entry.value.productDetails.id == purchase.productID)
+        .map((entry) => entry.key)
+        .toList(growable: false);
+    return matches.length == 1 ? matches.first : null;
   }
 
   void _emit(MonetizationState state) {

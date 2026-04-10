@@ -1,6 +1,3 @@
-import 'dart:async';
-
-import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -22,35 +19,8 @@ class UpgradeScreen extends ConsumerStatefulWidget {
   ConsumerState<UpgradeScreen> createState() => _UpgradeScreenState();
 }
 
-class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
-    with WidgetsBindingObserver {
-  String? _selectedOfferId;
-  var _purchaseInProgress = false;
+class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   var _restoreInProgress = false;
-  var _purchaseAttempt = 0;
-
-  @override
-  void initState() {
-    super.initState();
-    WidgetsBinding.instance.addObserver(this);
-  }
-
-  @override
-  void dispose() {
-    WidgetsBinding.instance.removeObserver(this);
-    super.dispose();
-  }
-
-  @override
-  void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state != AppLifecycleState.resumed ||
-        defaultTargetPlatform != TargetPlatform.android ||
-        !_purchaseInProgress) {
-      return;
-    }
-    final purchaseAttempt = _purchaseAttempt;
-    unawaited(_recoverInterruptedAndroidPurchase(purchaseAttempt));
-  }
 
   String _pricingSourceLabel() => switch (defaultTargetPlatform) {
     TargetPlatform.iOS => 'Pricing loads from the App Store',
@@ -60,23 +30,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
 
   Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
-    setState(() {
-      _purchaseInProgress = true;
-      _purchaseAttempt += 1;
-    });
-    try {
-      final result = await ref
-          .read(monetizationServiceProvider)
-          .purchaseOffer(offerId);
-      if (!mounted) {
-        return;
-      }
-      messenger.showSnackBar(SnackBar(content: Text(result.message)));
-    } finally {
-      if (mounted) {
-        setState(() => _purchaseInProgress = false);
-      }
+    final result = await ref
+        .read(monetizationServiceProvider)
+        .purchaseOffer(offerId);
+    if (!mounted) {
+      return;
     }
+    messenger.showSnackBar(SnackBar(content: Text(result.message)));
   }
 
   Future<void> _restorePurchases() async {
@@ -95,22 +55,6 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
         setState(() => _restoreInProgress = false);
       }
     }
-  }
-
-  Future<void> _recoverInterruptedAndroidPurchase(int purchaseAttempt) async {
-    await Future<void>.delayed(const Duration(milliseconds: 800));
-    if (!mounted ||
-        !_purchaseInProgress ||
-        purchaseAttempt != _purchaseAttempt) {
-      return;
-    }
-    final state =
-        ref.read(monetizationStateProvider).asData?.value ??
-        ref.read(monetizationServiceProvider).currentState;
-    if (!state.isLoading || state.isProUnlocked) {
-      return;
-    }
-    ref.read(monetizationServiceProvider).recoverInterruptedPurchase();
   }
 
   Uri? _manageSubscriptionUrl() => switch (defaultTargetPlatform) {
@@ -159,26 +103,18 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
     final isCatalogLoading = state.isLoading && state.offers.isEmpty;
-    final isBusy =
-        isCatalogLoading || _purchaseInProgress || _restoreInProgress;
+    final isBusy = isCatalogLoading || _restoreInProgress;
     final feature = widget.feature;
-    final selectedOffer =
-        state.offers.firstWhereOrNull(
-          (offer) => offer.id == _selectedOfferId,
-        ) ??
-        state.defaultOffer;
+    final highlightedOffer = state.activeOffer ?? state.defaultOffer;
     final priceLabel =
-        selectedOffer?.displayPriceLabel ??
+        highlightedOffer?.displayPriceLabel ??
         (isCatalogLoading ? 'Loading pricing...' : _pricingSourceLabel());
     final priceDetailLabel =
-        selectedOffer?.detailLabel ??
-        (selectedOffer == null
+        highlightedOffer?.detailLabel ??
+        (highlightedOffer == null
             ? 'The exact price comes from your local storefront and currency.'
             : null);
-    final introductoryOfferLabel = selectedOffer?.introductoryOfferLabel;
-    final purchaseLabel = selectedOffer == null
-        ? 'Subscription unavailable'
-        : 'Continue with ${selectedOffer.planLabel}';
+    final introductoryOfferLabel = highlightedOffer?.introductoryOfferLabel;
 
     return Scaffold(
       appBar: AppBar(title: const Text('MonkeySSH Pro')),
@@ -224,90 +160,25 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
           ),
           if (state.offers.isNotEmpty) ...[
             const SizedBox(height: 24),
-            Text(
-              'Choose a plan',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
+            Text('Choose a plan', style: theme.textTheme.titleMedium),
             const SizedBox(height: 12),
-            RadioGroup<String>(
-              groupValue: selectedOffer?.id,
-              onChanged: isBusy
-                  ? (_) {}
-                  : (value) => setState(() => _selectedOfferId = value),
-              child: Column(
-                children: state.offers
-                    .map((offer) {
-                      final isSelected = selectedOffer?.id == offer.id;
-                      final baseCardColor = theme.cardColor;
-                      final cardColor = isSelected
-                          ? Color.alphaBlend(
-                              colorScheme.primary.withAlpha(28),
-                              baseCardColor,
-                            )
-                          : baseCardColor;
-                      final titleColor = colorScheme.onSurface;
-                      final subtitleColor = isSelected
-                          ? colorScheme.onSurface.withAlpha(220)
-                          : theme.textTheme.bodyMedium?.color ??
-                                colorScheme.onSurface.withAlpha(180);
-                      final introColor = colorScheme.primary;
-                      return Card(
-                        clipBehavior: Clip.antiAlias,
-                        color: cardColor,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(12),
-                          side: BorderSide(
-                            color: isSelected
-                                ? colorScheme.primary
-                                : colorScheme.outlineVariant,
-                            width: isSelected ? 2 : 1,
-                          ),
-                        ),
-                        child: RadioListTile<String>(
-                          value: offer.id,
-                          enabled: !isBusy,
-                          activeColor: colorScheme.primary,
-                          title: Text(
-                            offer.planLabel,
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              color: titleColor,
-                              fontWeight: isSelected
-                                  ? FontWeight.w700
-                                  : FontWeight.w600,
-                            ),
-                          ),
-                          subtitle: Column(
-                            crossAxisAlignment: CrossAxisAlignment.start,
-                            children: [
-                              Text(
-                                offer.displayPriceLabel,
-                                style: theme.textTheme.bodyMedium?.copyWith(
-                                  color: subtitleColor,
-                                ),
-                              ),
-                              if (offer.detailLabel case final detail?)
-                                Text(
-                                  detail,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: subtitleColor,
-                                  ),
-                                ),
-                              if (offer.introductoryOfferLabel
-                                  case final intro?)
-                                Text(
-                                  intro,
-                                  style: theme.textTheme.bodySmall?.copyWith(
-                                    color: introColor,
-                                    fontWeight: FontWeight.w600,
-                                  ),
-                                ),
-                            ],
-                          ),
-                        ),
-                      );
-                    })
-                    .toList(growable: false),
-              ),
+            Column(
+              children: state.offers
+                  .map(
+                    (offer) => Padding(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      child: _PlanOfferCard(
+                        offer: offer,
+                        isCurrentPlan: state.isActiveOffer(offer),
+                        hasAnyActiveSubscription: state.isProUnlocked,
+                        isBusy: isBusy,
+                        canManageSubscription: manageSubscriptionUrl != null,
+                        onSelect: () => _purchasePro(offer.id),
+                        onManage: _openManageSubscriptions,
+                      ),
+                    ),
+                  )
+                  .toList(growable: false),
             ),
           ],
           const SizedBox(height: 24),
@@ -340,7 +211,12 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
                   ],
                   Text(
                     state.isProUnlocked
-                        ? 'MonkeySSH Pro is already unlocked on this device.'
+                        ? switch (state.activeOffer) {
+                            final activeOffer? =>
+                              '${activeOffer.planLabel} is active on this device.',
+                            null =>
+                              'MonkeySSH Pro is already unlocked on this device.',
+                          }
                         : 'No trial traps, fake urgency, or hidden close buttons. You can restore or manage your subscription from Settings at any time.',
                     style: theme.textTheme.bodyMedium,
                   ),
@@ -359,13 +235,6 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
             ),
           ),
           const SizedBox(height: 20),
-          FilledButton(
-            onPressed: state.isProUnlocked || isBusy || selectedOffer == null
-                ? null
-                : () => _purchasePro(selectedOffer.id),
-            child: Text(_purchaseInProgress ? 'Working...' : purchaseLabel),
-          ),
-          const SizedBox(height: 12),
           OutlinedButton(
             onPressed: isBusy ? null : _restorePurchases,
             child: Text(
@@ -393,6 +262,132 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _PlanOfferCard extends StatelessWidget {
+  const _PlanOfferCard({
+    required this.offer,
+    required this.isCurrentPlan,
+    required this.hasAnyActiveSubscription,
+    required this.isBusy,
+    required this.canManageSubscription,
+    required this.onSelect,
+    required this.onManage,
+  });
+
+  final MonetizationOffer offer;
+  final bool isCurrentPlan;
+  final bool hasAnyActiveSubscription;
+  final bool isBusy;
+  final bool canManageSubscription;
+  final VoidCallback onSelect;
+  final VoidCallback onManage;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    final cardColor = isCurrentPlan
+        ? Color.alphaBlend(colorScheme.primary.withAlpha(24), theme.cardColor)
+        : theme.cardColor;
+    final actionLabel = isCurrentPlan
+        ? canManageSubscription
+              ? 'Manage current plan'
+              : 'Current plan'
+        : hasAnyActiveSubscription
+        ? 'Switch to ${offer.planLabel}'
+        : 'Subscribe ${offer.planLabel.toLowerCase()}';
+    final onTap = isBusy
+        ? null
+        : isCurrentPlan
+        ? (canManageSubscription ? onManage : null)
+        : onSelect;
+
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      color: cardColor,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: isCurrentPlan
+              ? colorScheme.primary
+              : colorScheme.outlineVariant,
+          width: isCurrentPlan ? 2 : 1,
+        ),
+      ),
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(20),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      offer.planLabel,
+                      style: theme.textTheme.titleLarge?.copyWith(
+                        color: colorScheme.onSurface,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                  if (isCurrentPlan)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 10,
+                        vertical: 6,
+                      ),
+                      decoration: BoxDecoration(
+                        color: colorScheme.primary.withAlpha(26),
+                        borderRadius: BorderRadius.circular(999),
+                      ),
+                      child: Text(
+                        'Current',
+                        style: theme.textTheme.labelMedium?.copyWith(
+                          color: colorScheme.primary,
+                          fontWeight: FontWeight.w700,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                offer.displayPriceLabel,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  color: colorScheme.onSurface,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              if (offer.detailLabel case final detail?) ...[
+                const SizedBox(height: 4),
+                Text(
+                  detail,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+              if (offer.introductoryOfferLabel case final intro?) ...[
+                const SizedBox(height: 8),
+                Text(
+                  intro,
+                  style: theme.textTheme.bodyMedium?.copyWith(
+                    color: colorScheme.primary,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ],
+              const SizedBox(height: 16),
+              FilledButton.tonal(onPressed: onTap, child: Text(actionLabel)),
+            ],
+          ),
+        ),
       ),
     );
   }

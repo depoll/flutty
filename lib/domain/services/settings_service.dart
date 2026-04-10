@@ -67,6 +67,9 @@ abstract final class SettingKeys {
   /// Active product ID that most recently unlocked MonkeySSH Pro.
   static const monetizationActiveProductId = 'monetization_active_product_id';
 
+  /// Active offer ID that most recently unlocked MonkeySSH Pro.
+  static const monetizationActiveOfferId = 'monetization_active_offer_id';
+
   /// Timestamp of the most recent entitlement update.
   static const monetizationEntitlementUpdatedAt =
       'monetization_entitlement_updated_at';

@@ -193,6 +193,7 @@ class MonetizationState {
     required this.debugUnlockAvailable,
     required this.debugUnlocked,
     this.activeProductId,
+    this.activeOfferId,
     this.entitlementUpdatedAt,
     this.lastError,
     this.isLoading = false,
@@ -226,6 +227,9 @@ class MonetizationState {
   /// Product ID that most recently unlocked Pro, if known.
   final String? activeProductId;
 
+  /// Offer ID that most recently unlocked Pro, if known.
+  final String? activeOfferId;
+
   /// Timestamp of the most recent entitlement update.
   final DateTime? entitlementUpdatedAt;
 
@@ -245,6 +249,31 @@ class MonetizationState {
       ) ??
       (offers.isEmpty ? null : offers.first);
 
+  /// Offer that matches the current active subscription, when it can be inferred.
+  MonetizationOffer? get activeOffer {
+    if (activeOfferId != null) {
+      return offers.firstWhereOrNull((offer) => offer.id == activeOfferId);
+    }
+    if (activeProductId == null) {
+      return null;
+    }
+    final matches = offers
+        .where((offer) => offer.productId == activeProductId)
+        .toList(growable: false);
+    return matches.length == 1 ? matches.first : null;
+  }
+
+  /// Whether [offer] is the currently active subscription offer.
+  bool isActiveOffer(MonetizationOffer offer) {
+    if (activeOfferId != null) {
+      return offer.id == activeOfferId;
+    }
+    if (activeProductId == null) {
+      return false;
+    }
+    return activeOffer?.id == offer.id;
+  }
+
   /// Whether [feature] is currently available.
   bool allowsFeature(MonetizationFeature feature) =>
       entitlements.allows(feature);
@@ -257,6 +286,7 @@ class MonetizationState {
     bool? debugUnlockAvailable,
     bool? debugUnlocked,
     Object? activeProductId = _unsetField,
+    Object? activeOfferId = _unsetField,
     Object? entitlementUpdatedAt = _unsetField,
     Object? lastError = _unsetField,
     bool? isLoading,
@@ -269,6 +299,9 @@ class MonetizationState {
     activeProductId: identical(activeProductId, _unsetField)
         ? this.activeProductId
         : activeProductId as String?,
+    activeOfferId: identical(activeOfferId, _unsetField)
+        ? this.activeOfferId
+        : activeOfferId as String?,
     entitlementUpdatedAt: identical(entitlementUpdatedAt, _unsetField)
         ? this.entitlementUpdatedAt
         : entitlementUpdatedAt as DateTime?,
