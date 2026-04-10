@@ -27,6 +27,19 @@ void main() {
     expect(resolveTerminalTabInput(shiftActive: true), '\x1b[Z');
   });
 
+  test('Shift-only Enter sends a literal line feed', () {
+    final output = <String>[];
+
+    sendTerminalEnterInput(
+      Terminal(onOutput: output.add),
+      shiftActive: true,
+      altActive: false,
+      ctrlActive: false,
+    );
+
+    expect(output.join(), '\n');
+  });
+
   group('KeyboardToolbar', () {
     late Terminal terminal;
 
@@ -252,10 +265,7 @@ void main() {
       await tester.tap(find.byTooltip('Enter'));
       await tester.pump();
 
-      expect(
-        output,
-        contains(_terminalKeyOutput(TerminalKey.enter, shift: true)),
-      );
+      expect(output.join(), '\n');
     });
     test('keeps bottom safe-area padding when keyboard is closed', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));

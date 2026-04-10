@@ -4570,8 +4570,7 @@ void main() {
 
       expect(
         harness.terminalOutput.join(),
-        _terminalKeyOutput(TerminalKey.enter, shift: true) +
-            _terminalKeyOutput(TerminalKey.enter),
+        '\n${_terminalKeyOutput(TerminalKey.enter)}',
       );
 
       await _disposeTerminalHarness(tester, harness);

@@ -20,17 +20,31 @@ String resolveTerminalTabInput({required bool shiftActive}) =>
     shiftActive ? '\x1b[Z' : '\t';
 
 /// Sends Enter with the active terminal modifiers applied.
-bool sendTerminalEnterInput(
+///
+/// Many terminal-based CLIs (including Copilot CLI) treat a literal line feed
+/// as "insert newline" inside multiline prompts, while xterm's default
+/// Shift+Enter key sequence is a keypad-enter escape that those apps ignore.
+/// Preserve xterm behavior for Ctrl/Alt-modified Enter, but map Shift-only
+/// Enter to a literal `\n` so mobile IME and toolbar Enter behave like desktop
+/// Shift+Enter in multiline editors.
+void sendTerminalEnterInput(
   Terminal terminal, {
   required bool shiftActive,
   required bool altActive,
   required bool ctrlActive,
-}) => terminal.keyInput(
-  TerminalKey.enter,
-  shift: shiftActive,
-  alt: altActive,
-  ctrl: ctrlActive,
-);
+}) {
+  if (shiftActive && !altActive && !ctrlActive) {
+    terminal.textInput('\n');
+    return;
+  }
+
+  terminal.keyInput(
+    TerminalKey.enter,
+    shift: shiftActive,
+    alt: altActive,
+    ctrl: ctrlActive,
+  );
+}
 
 int? _ctrlCodeForCharacter(String text) {
   if (text.length != 1) {
