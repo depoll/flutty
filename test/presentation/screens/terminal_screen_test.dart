@@ -313,21 +313,21 @@ void main() {
         expect(
           find.descendant(
             of: find.byTooltip('Hide extra keys'),
-            matching: find.byIcon(Icons.view_week_rounded),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-active')),
           ),
           findsOneWidget,
         );
         expect(
           find.descendant(
             of: find.byTooltip('Hide extra keys'),
-            matching: find.byIcon(Icons.expand_more_rounded),
+            matching: find.text('Fn'),
           ),
           findsOneWidget,
         );
         expect(
           find.descendant(
             of: find.byTooltip('Hide extra keys'),
-            matching: find.byIcon(Icons.expand_less_rounded),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-inactive')),
           ),
           findsNothing,
         );
@@ -341,21 +341,21 @@ void main() {
         expect(
           find.descendant(
             of: find.byTooltip('Show extra keys'),
-            matching: find.byIcon(Icons.view_week_rounded),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-inactive')),
           ),
           findsOneWidget,
         );
         expect(
           find.descendant(
             of: find.byTooltip('Show extra keys'),
-            matching: find.byIcon(Icons.expand_less_rounded),
+            matching: find.text('Fn'),
           ),
           findsOneWidget,
         );
         expect(
           find.descendant(
             of: find.byTooltip('Show extra keys'),
-            matching: find.byIcon(Icons.expand_more_rounded),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-active')),
           ),
           findsNothing,
         );

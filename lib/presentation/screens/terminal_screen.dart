@@ -108,6 +108,50 @@ const _terminalFilePathVerificationExtensions = <String>[
   'h',
   'm',
 ];
+
+class _ExtraKeysToggleKeycap extends StatelessWidget {
+  const _ExtraKeysToggleKeycap({required this.isActive, super.key});
+
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final iconColor =
+        IconTheme.of(context).color ?? theme.colorScheme.onSurface;
+
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: Center(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          width: 22,
+          height: 18,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: isActive ? iconColor.withAlpha(56) : Colors.transparent,
+            border: Border.all(
+              color: isActive ? iconColor : iconColor.withAlpha(190),
+            ),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(
+            'Fn',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: iconColor,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.2,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
@@ -2592,30 +2636,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show system keyboard',
             ),
           IconButton(
-            icon: SizedBox.square(
-              dimension: 24,
-              child: Stack(
-                clipBehavior: Clip.none,
-                children: [
-                  const Positioned(
-                    top: 1,
-                    left: 0,
-                    right: 0,
-                    child: Icon(Icons.view_week_rounded, size: 18),
-                  ),
-                  Positioned(
-                    bottom: -2,
-                    left: 0,
-                    right: 0,
-                    child: Icon(
-                      _showKeyboardToolbar
-                          ? Icons.expand_more_rounded
-                          : Icons.expand_less_rounded,
-                      size: 16,
-                    ),
-                  ),
-                ],
+            icon: _ExtraKeysToggleKeycap(
+              key: ValueKey<String>(
+                _showKeyboardToolbar
+                    ? 'extra-keys-toggle-active'
+                    : 'extra-keys-toggle-inactive',
               ),
+              isActive: _showKeyboardToolbar,
             ),
             onPressed: () =>
                 setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
