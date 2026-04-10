@@ -1,10 +1,26 @@
+import 'package:collection/collection.dart';
+import 'package:flutter/foundation.dart';
+
 /// Product identifiers used by the mobile subscription flow.
 abstract final class MonetizationProductIds {
-  /// MonkeySSH Pro subscription product.
-  static const pro = 'monkeyssh_pro';
+  /// Google Play subscription product.
+  static const androidPro = 'monkeyssh_pro';
 
-  /// All recognized paid products.
-  static const all = <String>{pro};
+  /// App Store monthly subscription product.
+  static const iosMonthly = 'monkeyssh_pro_monthly';
+
+  /// App Store annual subscription product.
+  static const iosAnnual = 'monkeyssh_pro_annual';
+
+  /// All recognized paid products across platforms.
+  static const allKnown = <String>{androidPro, iosMonthly, iosAnnual};
+
+  /// Product identifiers to query on the current platform.
+  static Set<String> forPlatform(TargetPlatform platform) => switch (platform) {
+    TargetPlatform.android => {androidPro},
+    TargetPlatform.iOS => {iosMonthly, iosAnnual},
+    _ => const {},
+  };
 }
 
 /// Premium features controlled by MonkeySSH Pro.
@@ -41,7 +57,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.autoConnectAutomation =>
       'Run commands or saved snippets automatically after connect.',
     MonetizationFeature.agentLaunchPresets =>
-      'Save repeatable Claude Code, Copilot CLI, or Aider startup flows.',
+      'Save repeatable startup flows for tools like Codex, Claude Code, Copilot CLI, or OpenCode.',
   };
 }
 
@@ -58,6 +74,35 @@ enum MonetizationBillingAvailability {
 
   /// Billing is supported and product information was loaded.
   available,
+}
+
+/// Billing period for a MonkeySSH Pro plan.
+enum MonetizationBillingPeriod {
+  /// Monthly billing cadence.
+  monthly,
+
+  /// Annual billing cadence.
+  annual,
+
+  /// A billing cadence that could not be identified.
+  unknown,
+}
+
+/// Presentation helpers for [MonetizationBillingPeriod].
+extension MonetizationBillingPeriodPresentation on MonetizationBillingPeriod {
+  /// Human-readable plan title.
+  String get label => switch (this) {
+    MonetizationBillingPeriod.monthly => 'Monthly',
+    MonetizationBillingPeriod.annual => 'Annual',
+    MonetizationBillingPeriod.unknown => 'MonkeySSH Pro',
+  };
+
+  /// Short suffix for billing copy.
+  String get billingSuffix => switch (this) {
+    MonetizationBillingPeriod.monthly => 'month',
+    MonetizationBillingPeriod.annual => 'year',
+    MonetizationBillingPeriod.unknown => 'billing period',
+  };
 }
 
 /// Current subscription entitlements.
@@ -82,23 +127,54 @@ class MonetizationEntitlements {
 class MonetizationOffer {
   /// Creates a new [MonetizationOffer].
   const MonetizationOffer({
+    required this.id,
     required this.productId,
-    required this.title,
-    required this.description,
+    required this.billingPeriod,
+    required this.planLabel,
     required this.priceLabel,
+    required this.displayPriceLabel,
+    required this.rawPrice,
+    required this.currencyCode,
+    required this.currencySymbol,
+    this.detailLabel,
+    this.introductoryOfferLabel,
   });
+
+  /// Unique identifier for this selectable offer.
+  final String id;
 
   /// Store product identifier.
   final String productId;
 
-  /// Offer title.
-  final String title;
+  /// Billing period represented by this offer.
+  final MonetizationBillingPeriod billingPeriod;
 
-  /// Offer description.
-  final String description;
+  /// Human-readable plan title.
+  final String planLabel;
 
-  /// Store-provided price string.
+  /// Store-provided recurring price string.
   final String priceLabel;
+
+  /// UI-ready recurring price label with billing cadence.
+  final String displayPriceLabel;
+
+  /// Raw recurring price in the store currency.
+  final double rawPrice;
+
+  /// ISO currency code for this offer.
+  final String currencyCode;
+
+  /// Currency symbol for this offer locale.
+  final String currencySymbol;
+
+  /// Secondary billing detail for this offer.
+  final String? detailLabel;
+
+  /// Introductory offer copy, such as a free trial.
+  final String? introductoryOfferLabel;
+
+  /// Whether this offer includes an introductory discount or trial.
+  bool get hasIntroductoryOffer => introductoryOfferLabel != null;
 }
 
 /// Current billing and entitlement state for MonkeySSH Pro.
@@ -156,8 +232,12 @@ class MonetizationState {
   /// Whether MonkeySSH Pro is currently unlocked.
   bool get isProUnlocked => entitlements.proUnlocked;
 
-  /// First offer to show on the paywall, if any.
-  MonetizationOffer? get primaryOffer => offers.isEmpty ? null : offers.first;
+  /// Default offer to preselect on the paywall, if any.
+  MonetizationOffer? get defaultOffer =>
+      offers.firstWhereOrNull(
+        (offer) => offer.billingPeriod == MonetizationBillingPeriod.monthly,
+      ) ??
+      (offers.isEmpty ? null : offers.first);
 
   /// Whether [feature] is currently available.
   bool allowsFeature(MonetizationFeature feature) =>

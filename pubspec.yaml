@@ -63,6 +63,8 @@ dependencies:
   url_launcher: ^6.3.2
   package_info_plus: ^9.0.0
   in_app_purchase: ^3.2.3
+  in_app_purchase_android: ^0.4.0+10
+  in_app_purchase_storekit: ^0.4.8+1
 
 dev_dependencies:
   flutter_test:
@@ -78,6 +80,7 @@ dev_dependencies:
   
   # Testing
   mocktail: ^1.0.4
+  in_app_purchase_platform_interface: ^1.4.0
   integration_test:
     sdk: flutter
   

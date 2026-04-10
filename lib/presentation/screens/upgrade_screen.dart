@@ -1,3 +1,4 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -20,11 +21,13 @@ class UpgradeScreen extends ConsumerStatefulWidget {
 }
 
 class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
-  Future<void> _purchasePro() async {
+  String? _selectedOfferId;
+
+  Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
     final result = await ref
         .read(monetizationServiceProvider)
-        .purchaseProMonthly();
+        .purchaseOffer(offerId);
     if (!mounted) {
       return;
     }
@@ -64,8 +67,25 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
     final feature = widget.feature;
-    final offer = state.primaryOffer;
-    final priceLabel = offer?.priceLabel ?? r'$4.99 / month';
+    final selectedOffer =
+        state.offers.firstWhereOrNull(
+          (offer) => offer.id == _selectedOfferId,
+        ) ??
+        state.defaultOffer;
+    final priceLabel =
+        selectedOffer?.displayPriceLabel ??
+        (state.isLoading
+            ? 'Loading pricing...'
+            : 'Pricing loads from the App Store or Google Play');
+    final priceDetailLabel =
+        selectedOffer?.detailLabel ??
+        (selectedOffer == null
+            ? 'The exact price comes from your local storefront and currency.'
+            : null);
+    final introductoryOfferLabel = selectedOffer?.introductoryOfferLabel;
+    final purchaseLabel = selectedOffer == null
+        ? 'Subscription unavailable'
+        : 'Continue with ${selectedOffer.planLabel}';
 
     return Scaffold(
       appBar: AppBar(title: const Text('MonkeySSH Pro')),
@@ -98,7 +118,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             icon: Icons.rocket_launch_outlined,
             title: 'Agent launch presets',
             subtitle:
-                'Save repeatable Claude Code, Copilot CLI, or Aider startup flows per host.',
+                'Save repeatable startup flows per host for tools like Codex, Claude Code, Copilot CLI, or OpenCode.',
           ),
           const _UpgradeBenefitTile(
             icon: Icons.play_circle_outline,
@@ -112,6 +132,46 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             subtitle:
                 'Share hosts, keys, and migration bundles through encrypted files.',
           ),
+          if (state.offers.isNotEmpty) ...[
+            const SizedBox(height: 24),
+            Text(
+              'Choose a plan',
+              style: Theme.of(context).textTheme.titleMedium,
+            ),
+            const SizedBox(height: 12),
+            RadioGroup<String>(
+              groupValue: selectedOffer?.id,
+              onChanged: state.isLoading
+                  ? (_) {}
+                  : (value) => setState(() => _selectedOfferId = value),
+              child: Column(
+                children: state.offers
+                    .map(
+                      (offer) => Card(
+                        clipBehavior: Clip.antiAlias,
+                        child: RadioListTile<String>(
+                          value: offer.id,
+                          selected: selectedOffer?.id == offer.id,
+                          enabled: !state.isLoading,
+                          title: Text(offer.planLabel),
+                          subtitle: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            children: [
+                              Text(offer.displayPriceLabel),
+                              if (offer.detailLabel case final detail?)
+                                Text(detail),
+                              if (offer.introductoryOfferLabel
+                                  case final intro?)
+                                Text(intro),
+                            ],
+                          ),
+                        ),
+                      ),
+                    )
+                    .toList(growable: false),
+              ),
+            ),
+          ],
           const SizedBox(height: 24),
           Card(
             child: Padding(
@@ -126,6 +186,20 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                     ),
                   ),
                   const SizedBox(height: 8),
+                  if (priceDetailLabel case final detail?) ...[
+                    Text(detail, style: Theme.of(context).textTheme.bodyMedium),
+                    const SizedBox(height: 8),
+                  ],
+                  if (introductoryOfferLabel case final intro?) ...[
+                    Text(
+                      intro,
+                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                        color: Theme.of(context).colorScheme.primary,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                  ],
                   Text(
                     state.isProUnlocked
                         ? 'MonkeySSH Pro is already unlocked on this device.'
@@ -148,12 +222,11 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           ),
           const SizedBox(height: 20),
           FilledButton(
-            onPressed: state.isProUnlocked || state.isLoading
+            onPressed:
+                state.isProUnlocked || state.isLoading || selectedOffer == null
                 ? null
-                : _purchasePro,
-            child: Text(
-              state.isLoading ? 'Working...' : 'Subscribe for $priceLabel',
-            ),
+                : () => _purchasePro(selectedOffer.id),
+            child: Text(state.isLoading ? 'Working...' : purchaseLabel),
           ),
           const SizedBox(height: 12),
           OutlinedButton(
