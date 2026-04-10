@@ -302,5 +302,65 @@ void main() {
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
+
+    testWidgets(
+      'extra keys toggle uses distinct copy',
+      (tester) async {
+        await pumpScreen(tester);
+
+        expect(find.byTooltip('Hide extra keys'), findsOneWidget);
+        expect(find.byTooltip('Show system keyboard'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-active')),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.text('Fn'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-inactive')),
+          ),
+          findsNothing,
+        );
+        expect(find.byIcon(Icons.keyboard_alt_outlined), findsOneWidget);
+        expect(find.byIcon(Icons.keyboard_outlined), findsNothing);
+
+        await tester.tap(find.byTooltip('Hide extra keys'));
+        await tester.pump();
+
+        expect(find.byTooltip('Show extra keys'), findsOneWidget);
+        expect(
+          find.descendant(
+            of: find.byTooltip('Show extra keys'),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-inactive')),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Show extra keys'),
+            matching: find.text('Fn'),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Show extra keys'),
+            matching: find.byKey(const ValueKey('extra-keys-toggle-active')),
+          ),
+          findsNothing,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
   });
 }

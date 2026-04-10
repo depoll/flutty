@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/snippet_repository.dart';
 
@@ -156,10 +157,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                       alignLabelWithHint: true,
                     ),
                     maxLines: 6,
-                    style: const TextStyle(
-                      fontFamily: 'monospace',
-                      fontSize: 14,
-                    ),
+                    style: FluttyTheme.monoStyle.copyWith(fontSize: 14),
                     validator: (value) {
                       if (value == null || value.isEmpty) {
                         return 'Please enter a command';

@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
+import 'terminal_key_input.dart';
+
 /// Whether the toolbar should keep the bottom safe-area inset.
 ///
 /// When the system keyboard is visible, the toolbar is already lifted above the
@@ -459,7 +461,12 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   void _sendEnter() {
     HapticFeedback.lightImpact();
-    widget.terminal.keyInput(TerminalKey.enter);
+    sendTerminalEnterInput(
+      widget.terminal,
+      shiftActive: _controller.isShiftActive,
+      altActive: _controller.isAltActive,
+      ctrlActive: _controller.isCtrlActive,
+    );
     widget.onKeyPressed?.call();
     _consumeOneShot();
   }

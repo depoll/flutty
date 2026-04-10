@@ -3,6 +3,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/key_repository.dart';
 import '../providers/entity_list_providers.dart';
@@ -27,15 +28,16 @@ class KeysScreen extends ConsumerWidget {
             children: [
               Icon(
                 Icons.error_outline,
-                size: 48,
+                size: FluttyTheme.emptyStateIconSize,
                 color: theme.colorScheme.error,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: FluttyTheme.spacingMd),
               Text('Error loading keys: $error'),
-              const SizedBox(height: 16),
-              ElevatedButton(
+              const SizedBox(height: FluttyTheme.spacingMd),
+              FilledButton.icon(
                 onPressed: () => ref.invalidate(allKeysProvider),
-                child: const Text('Retry'),
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Retry'),
               ),
             ],
           ),
@@ -56,27 +58,11 @@ class KeysScreen extends ConsumerWidget {
     List<SshKey> keys,
   ) {
     if (keys.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.vpn_key_outlined,
-              size: 64,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No SSH keys yet',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Tap + to generate or import a key',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ],
-        ),
+      return FluttyTheme.buildEmptyState(
+        context: context,
+        icon: Icons.vpn_key_outlined,
+        title: 'No SSH keys yet',
+        subtitle: 'Tap + to generate or import a key',
       );
     }
 
@@ -161,14 +147,25 @@ class _KeyListTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final isDark = theme.brightness == Brightness.dark;
 
     return ListTile(
-      leading: CircleAvatar(
-        backgroundColor: theme.colorScheme.primaryContainer,
-        child: Icon(_getKeyIcon(), color: theme.colorScheme.onPrimaryContainer),
+      leading: Container(
+        padding: const EdgeInsets.all(8),
+        decoration: BoxDecoration(
+          color: const Color(0xFF00C9FF).withAlpha(isDark ? 25 : 15),
+          borderRadius: BorderRadius.circular(FluttyTheme.radiusSm),
+        ),
+        child: Icon(_getKeyIcon(), size: 20, color: const Color(0xFF00C9FF)),
       ),
       title: Text(sshKey.name),
-      subtitle: Text(_getKeyTypeLabel(), style: theme.textTheme.bodySmall),
+      subtitle: Text(
+        _getKeyTypeLabel(),
+        style: FluttyTheme.monoStyle.copyWith(
+          fontSize: 11,
+          color: theme.colorScheme.onSurface.withAlpha(120),
+        ),
+      ),
       trailing: PopupMenuButton<String>(
         onSelected: (action) {
           switch (action) {
@@ -272,7 +269,7 @@ class _KeyDetailsSheet extends StatelessWidget {
             ),
             child: SelectableText(
               sshKey.publicKey,
-              style: const TextStyle(fontFamily: 'monospace', fontSize: 12),
+              style: FluttyTheme.monoStyle.copyWith(fontSize: 12),
             ),
           ),
           const SizedBox(height: 8),
@@ -299,10 +296,7 @@ class _KeyDetailsSheet extends StatelessWidget {
                     child: isPrivateKeyVisible
                         ? SelectableText(
                             sshKey.privateKey,
-                            style: const TextStyle(
-                              fontFamily: 'monospace',
-                              fontSize: 12,
-                            ),
+                            style: FluttyTheme.monoStyle.copyWith(fontSize: 12),
                           )
                         : const Text(
                             'Private key hidden. Tap "Reveal Private Key" to view.',

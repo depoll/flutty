@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
@@ -27,15 +28,16 @@ class PortForwardsScreen extends ConsumerWidget {
             children: [
               Icon(
                 Icons.error_outline,
-                size: 48,
+                size: FluttyTheme.emptyStateIconSize,
                 color: theme.colorScheme.error,
               ),
-              const SizedBox(height: 16),
+              const SizedBox(height: FluttyTheme.spacingMd),
               Text('Error: $error'),
-              const SizedBox(height: 16),
-              ElevatedButton(
+              const SizedBox(height: FluttyTheme.spacingMd),
+              FilledButton.icon(
                 onPressed: () => ref.invalidate(_allPortForwardsProvider),
-                child: const Text('Retry'),
+                icon: const Icon(Icons.refresh, size: 18),
+                label: const Text('Retry'),
               ),
             ],
           ),
@@ -62,27 +64,11 @@ class PortForwardsScreen extends ConsumerWidget {
     List<Host> hosts,
   ) {
     if (portForwards.isEmpty) {
-      return Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.swap_horiz,
-              size: 64,
-              color: Theme.of(context).colorScheme.outline,
-            ),
-            const SizedBox(height: 16),
-            Text(
-              'No port forwards yet',
-              style: Theme.of(context).textTheme.titleMedium,
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Tap + to create a port forward rule',
-              style: Theme.of(context).textTheme.bodyMedium,
-            ),
-          ],
-        ),
+      return FluttyTheme.buildEmptyState(
+        context: context,
+        icon: Icons.swap_horiz,
+        title: 'No port forwards yet',
+        subtitle: 'Tap + to create a port forward rule',
       );
     }
 
@@ -128,10 +114,11 @@ class PortForwardsScreen extends ConsumerWidget {
             onPressed: () => Navigator.pop(context, false),
             child: const Text('Cancel'),
           ),
-          TextButton(
+          FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            style: TextButton.styleFrom(
-              foregroundColor: Theme.of(context).colorScheme.error,
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
             ),
             child: const Text('Delete'),
           ),
@@ -235,8 +222,7 @@ class _PortForwardListTile extends StatelessWidget {
         isLocal
             ? 'L ${portForward.localHost}:${portForward.localPort} → ${portForward.remoteHost}:${portForward.remotePort}'
             : 'R ${portForward.remoteHost}:${portForward.remotePort} → ${portForward.localHost}:${portForward.localPort}',
-        style: TextStyle(
-          fontFamily: 'monospace',
+        style: FluttyTheme.monoStyle.copyWith(
           fontSize: 12,
           color: theme.colorScheme.outline,
         ),
