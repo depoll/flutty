@@ -19,16 +19,19 @@ class MonetizationService {
   MonetizationService(
     this._settings, {
     InAppPurchase? inAppPurchase,
+    InAppPurchaseAndroidPlatformAddition? androidPlatformAddition,
     bool? allowDebugUnlock,
     Duration purchaseTimeout = const Duration(seconds: 60),
     Duration restoreTimeout = const Duration(seconds: 45),
   }) : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance,
+       _androidPlatformAddition = androidPlatformAddition,
        _allowDebugUnlock = allowDebugUnlock ?? kDebugMode,
        _purchaseTimeout = purchaseTimeout,
        _restoreTimeout = restoreTimeout;
 
   final SettingsService _settings;
   final InAppPurchase _inAppPurchase;
+  final InAppPurchaseAndroidPlatformAddition? _androidPlatformAddition;
   final bool _allowDebugUnlock;
   final Duration _purchaseTimeout;
   final Duration _restoreTimeout;
@@ -105,6 +108,10 @@ class MonetizationService {
 
     if (_supportsStoreBilling) {
       await refreshCatalog();
+      if (defaultTargetPlatform == TargetPlatform.android &&
+          cachedProUnlocked) {
+        await _reconcileAndroidStoreEntitlement();
+      }
     }
   }
 
@@ -231,6 +238,9 @@ class MonetizationService {
         'Restoring purchases is only available on iPhone and Android.',
       );
     }
+    if (defaultTargetPlatform == TargetPlatform.android) {
+      return _restoreAndroidPurchases();
+    }
 
     final completer = Completer<MonetizationActionResult>();
     _pendingPurchaseResult = completer;
@@ -334,6 +344,17 @@ class MonetizationService {
   }
 
   Future<void> _handleSuccessfulPurchase(PurchaseDetails purchase) async {
+    final result = await _applySuccessfulPurchase(
+      purchase,
+      successMessage: 'MonkeySSH Pro unlocked.',
+    );
+    _resolvePendingPurchase(result);
+  }
+
+  Future<MonetizationActionResult> _applySuccessfulPurchase(
+    PurchaseDetails purchase, {
+    required String successMessage,
+  }) async {
     try {
       await _completePurchaseIfNeeded(purchase);
       final timestamp =
@@ -369,14 +390,12 @@ class MonetizationService {
           lastError: null,
         ),
       );
-      _resolvePendingPurchase(
-        const MonetizationActionResult.success('MonkeySSH Pro unlocked.'),
-      );
+      return MonetizationActionResult.success(successMessage);
     } on Object catch (error, stackTrace) {
       final message = 'Failed to finalize purchase: $error';
       debugPrint('$message\n$stackTrace');
       _emit(_state.copyWith(isLoading: false, lastError: message));
-      _resolvePendingPurchase(MonetizationActionResult.failure(message));
+      return MonetizationActionResult.failure(message);
     }
   }
 
@@ -429,6 +448,63 @@ class MonetizationService {
     _state = state;
     if (!_controller.isClosed) {
       _controller.add(state);
+    }
+  }
+
+  InAppPurchaseAndroidPlatformAddition get _playBillingAddition =>
+      _androidPlatformAddition ??
+      _inAppPurchase
+          .getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
+
+  Future<MonetizationActionResult> _restoreAndroidPurchases() async {
+    _emit(_state.copyWith(isLoading: true, lastError: null));
+    final response = await _playBillingAddition.queryPastPurchases();
+    if (response.error case final error?) {
+      final message = error.message.isEmpty
+          ? 'Could not check Google Play subscriptions.'
+          : error.message;
+      _emit(_state.copyWith(isLoading: false, lastError: message));
+      return MonetizationActionResult.failure(message);
+    }
+
+    final purchases = response.pastPurchases
+        .where(
+          (purchase) =>
+              MonetizationProductIds.allKnown.contains(purchase.productID),
+        )
+        .toList(growable: false);
+    if (purchases.isEmpty) {
+      await _clearCachedStoreEntitlement();
+      return const MonetizationActionResult.failure(
+        'No active subscription could be restored.',
+      );
+    }
+
+    final latestPurchase = purchases.reduce(
+      (latest, purchase) =>
+          purchase.billingClientPurchase.purchaseTime >
+              latest.billingClientPurchase.purchaseTime
+          ? purchase
+          : latest,
+    );
+
+    return _applySuccessfulPurchase(
+      latestPurchase,
+      successMessage: 'Restored MonkeySSH Pro subscription.',
+    );
+  }
+
+  Future<void> _reconcileAndroidStoreEntitlement() async {
+    final response = await _playBillingAddition.queryPastPurchases();
+    if (response.error != null) {
+      return;
+    }
+    final hasActiveMonkeySshSubscription = response.pastPurchases.any(
+      (purchase) =>
+          MonetizationProductIds.allKnown.contains(purchase.productID),
+    );
+    if (!hasActiveMonkeySshSubscription) {
+      await _clearCachedStoreEntitlement();
     }
   }
 

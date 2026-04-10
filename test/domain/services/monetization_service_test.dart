@@ -23,6 +23,9 @@ class MockPurchaseDetails extends Mock implements PurchaseDetails {}
 class MockGooglePlayProductDetails extends Mock
     implements GooglePlayProductDetails {}
 
+class MockInAppPurchaseAndroidPlatformAddition extends Mock
+    implements InAppPurchaseAndroidPlatformAddition {}
+
 class _FakePurchaseParam extends Fake implements PurchaseParam {}
 
 void main() {
@@ -233,12 +236,14 @@ void main() {
     late AppDatabase database;
     late SettingsService settings;
     late MockInAppPurchase inAppPurchase;
+    late MockInAppPurchaseAndroidPlatformAddition androidPlatformAddition;
     late StreamController<List<PurchaseDetails>> purchaseController;
 
     setUp(() {
       database = AppDatabase.forTesting(NativeDatabase.memory());
       settings = SettingsService(database);
       inAppPurchase = MockInAppPurchase();
+      androidPlatformAddition = MockInAppPurchaseAndroidPlatformAddition();
       purchaseController = StreamController<List<PurchaseDetails>>.broadcast();
 
       when(
@@ -253,6 +258,8 @@ void main() {
     });
 
     test('initializes cached entitlements from settings', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       final updatedAt = DateTime.utc(2026, 4, 10, 7);
       await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
       await settings.setString(
@@ -294,6 +301,8 @@ void main() {
     });
 
     test('canUseFeature reflects the cached Pro entitlement state', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       final freeService = MonetizationService(
         settings,
         inAppPurchase: inAppPurchase,
@@ -399,6 +408,7 @@ void main() {
       final service = MonetizationService(
         settings,
         inAppPurchase: inAppPurchase,
+        androidPlatformAddition: androidPlatformAddition,
         allowDebugUnlock: false,
       );
       addTearDown(service.dispose);
@@ -423,7 +433,92 @@ void main() {
       );
     });
 
+    test(
+      'initialization clears cached Android entitlement when Play has no active subscription',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        await settings.setBool(
+          SettingKeys.monetizationProUnlocked,
+          value: true,
+        );
+        await settings.setString(
+          SettingKeys.monetizationActiveProductId,
+          MonetizationProductIds.androidPro,
+        );
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: _androidCatalogDetails(),
+            notFoundIDs: const [],
+          ),
+        );
+        when(androidPlatformAddition.queryPastPurchases).thenAnswer(
+          (_) async => QueryPurchaseDetailsResponse(pastPurchases: []),
+        );
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+
+        expect(service.currentState.isProUnlocked, isFalse);
+        expect(
+          await settings.getBool(SettingKeys.monetizationProUnlocked),
+          isFalse,
+        );
+      },
+    );
+
+    test(
+      'restorePurchases uses active Google Play subscriptions on Android',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: _androidCatalogDetails(),
+            notFoundIDs: const [],
+          ),
+        );
+        when(androidPlatformAddition.queryPastPurchases).thenAnswer(
+          (_) async => QueryPurchaseDetailsResponse(
+            pastPurchases: [
+              _androidPastPurchase(purchaseTimeMillis: 1712732400000),
+            ],
+          ),
+        );
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        final result = await service.restorePurchases();
+
+        expect(result.success, isTrue);
+        expect(service.currentState.isProUnlocked, isTrue);
+        expect(
+          await settings.getBool(SettingKeys.monetizationProUnlocked),
+          isTrue,
+        );
+      },
+    );
+
     test('restore timeout clears a stale cached store entitlement', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
       await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
       await settings.setString(
         SettingKeys.monetizationActiveProductId,
@@ -457,6 +552,8 @@ void main() {
     test(
       'restore timeout clears loading when a purchase update was observed',
       () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
         final purchase = MockPurchaseDetails();
         when(
           () => purchase.productID,
@@ -472,6 +569,7 @@ void main() {
         final service = MonetizationService(
           settings,
           inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
           allowDebugUnlock: false,
           restoreTimeout: const Duration(milliseconds: 10),
         );
@@ -525,6 +623,7 @@ void main() {
         final service = MonetizationService(
           settings,
           inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
           allowDebugUnlock: false,
         );
         addTearDown(service.dispose);
@@ -620,3 +719,29 @@ List<ProductDetails> _androidCatalogDetails() => [
     ),
   ),
 ];
+
+GooglePlayPurchaseDetails _androidPastPurchase({
+  required int purchaseTimeMillis,
+}) => GooglePlayPurchaseDetails(
+  purchaseID: 'order-$purchaseTimeMillis',
+  productID: MonetizationProductIds.androidPro,
+  verificationData: PurchaseVerificationData(
+    localVerificationData: 'local-verification-data',
+    serverVerificationData: 'server-verification-data',
+    source: 'google_play',
+  ),
+  transactionDate: purchaseTimeMillis.toString(),
+  billingClientPurchase: PurchaseWrapper(
+    orderId: 'order-$purchaseTimeMillis',
+    packageName: 'xyz.depollsoft.monkeyssh',
+    purchaseTime: purchaseTimeMillis,
+    purchaseToken: 'token-$purchaseTimeMillis',
+    signature: 'signature',
+    products: const [MonetizationProductIds.androidPro],
+    isAutoRenewing: true,
+    originalJson: '{}',
+    isAcknowledged: true,
+    purchaseState: PurchaseStateWrapper.purchased,
+  ),
+  status: PurchaseStatus.restored,
+);
