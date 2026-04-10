@@ -109,21 +109,41 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
     final commandParts = <String>[
       'tmux new-session -A -s ${_quoteShellArgument(tmuxSessionName)}',
       if (workingDirectory != null && workingDirectory.isNotEmpty)
-        '-c ${_quoteShellArgument(workingDirectory)}',
+        '-c ${_quoteShellPath(workingDirectory)}',
       _quoteShellArgument(baseCommand),
     ];
     return commandParts.join(' ');
   }
 
   if (workingDirectory != null && workingDirectory.isNotEmpty) {
-    return 'cd ${_quoteShellArgument(workingDirectory)} && $baseCommand';
+    return 'cd ${_quoteShellPath(workingDirectory)} && $baseCommand';
   }
 
   return baseCommand;
 }
 
+String _quoteShellPath(String value) {
+  if (value == '~') {
+    return r'$HOME';
+  }
+  if (value.startsWith('~/')) {
+    final relativePath = value.substring(2);
+    if (relativePath.isEmpty) {
+      return r'$HOME';
+    }
+    return '"\$HOME/${_escapeForDoubleQuotedShellContent(relativePath)}"';
+  }
+  return _quoteShellArgument(value);
+}
+
 String _quoteShellArgument(String value) =>
     '\'${value.replaceAll('\'', '\'"\'"\'')}\'';
+
+String _escapeForDoubleQuotedShellContent(String value) => value
+    .replaceAll(RegExp(r'\\'), r'\\')
+    .replaceAll('"', r'\"')
+    .replaceAll(r'$', r'\$')
+    .replaceAll('`', r'\`');
 
 String? _readTrimmedString(Object? value) {
   if (value is! String) {

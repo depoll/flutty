@@ -390,6 +390,44 @@ void main() {
       );
     });
 
+    test(
+      'restore timeout clears loading when a purchase update was observed',
+      () async {
+        final purchase = MockPurchaseDetails();
+        when(
+          () => purchase.productID,
+        ).thenReturn(MonetizationProductIds.androidPro);
+        when(() => purchase.status).thenReturn(PurchaseStatus.restored);
+        when(() => purchase.pendingCompletePurchase).thenReturn(true);
+        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(purchase),
+        ).thenAnswer((_) => Completer<void>().future);
+        when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {});
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+          restoreTimeout: const Duration(milliseconds: 10),
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+        unawaited(
+          Future<void>(() async {
+            await Future<void>.delayed(const Duration(milliseconds: 1));
+            purchaseController.add([purchase]);
+          }),
+        );
+
+        final result = await service.restorePurchases();
+
+        expect(result.success, isFalse);
+        expect(service.currentState.isLoading, isFalse);
+      },
+    );
+
     test('recoverInterruptedPurchase clears a stuck purchase state', () async {
       debugDefaultTargetPlatformOverride = TargetPlatform.android;
       addTearDown(() => debugDefaultTargetPlatformOverride = null);
@@ -397,31 +435,7 @@ void main() {
       when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
       when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
         (_) async => ProductDetailsResponse(
-          productDetails: [
-            ...GooglePlayProductDetails.fromProductDetails(
-              ProductDetailsWrapper(
-                description: 'MonkeySSH Pro subscription',
-                name: 'MonkeySSH Pro',
-                productId: MonetizationProductIds.androidPro,
-                productType: ProductType.subs,
-                title: 'MonkeySSH Pro',
-                subscriptionOfferDetails: [
-                  _subscriptionOfferDetails(
-                    basePlanId: 'monthly',
-                    offerIdToken: 'monthly-base-token',
-                    pricingPhases: [
-                      _pricingPhase(
-                        formattedPrice: r'$5.00',
-                        priceAmountMicros: 5000000,
-                        billingPeriod: 'P1M',
-                        recurrenceMode: RecurrenceMode.infiniteRecurring,
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
+          productDetails: _androidCatalogDetails(),
           notFoundIDs: const [],
         ),
       );
@@ -452,6 +466,62 @@ void main() {
       expect(result.cancelled, isTrue);
       expect(service.currentState.isLoading, isFalse);
     });
+
+    test(
+      'purchase finalization failure resolves the pending purchase',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: _androidCatalogDetails(),
+            notFoundIDs: const [],
+          ),
+        );
+        when(
+          () => inAppPurchase.buyNonConsumable(
+            purchaseParam: any(named: 'purchaseParam'),
+          ),
+        ).thenAnswer((_) async => true);
+
+        final purchase = MockPurchaseDetails();
+        when(
+          () => purchase.productID,
+        ).thenReturn(MonetizationProductIds.androidPro);
+        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
+        when(() => purchase.pendingCompletePurchase).thenReturn(true);
+        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(purchase),
+        ).thenThrow(Exception('billing finalize failed'));
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+        final resultFuture = service.purchaseOffer(
+          service.currentState.defaultOffer!.id,
+        );
+        await Future<void>.delayed(Duration.zero);
+        purchaseController.add([purchase]);
+
+        final result = await resultFuture;
+
+        expect(result.success, isFalse);
+        expect(result.message, contains('Failed to finalize purchase'));
+        expect(service.currentState.isLoading, isFalse);
+        expect(
+          service.currentState.lastError,
+          contains('Failed to finalize purchase'),
+        );
+      },
+    );
   });
 }
 
@@ -487,3 +557,29 @@ PricingPhaseWrapper _pricingPhase({
   priceCurrencyCode: 'USD',
   recurrenceMode: recurrenceMode,
 );
+
+List<ProductDetails> _androidCatalogDetails() => [
+  ...GooglePlayProductDetails.fromProductDetails(
+    ProductDetailsWrapper(
+      description: 'MonkeySSH Pro subscription',
+      name: 'MonkeySSH Pro',
+      productId: MonetizationProductIds.androidPro,
+      productType: ProductType.subs,
+      title: 'MonkeySSH Pro',
+      subscriptionOfferDetails: [
+        _subscriptionOfferDetails(
+          basePlanId: 'monthly',
+          offerIdToken: 'monthly-base-token',
+          pricingPhases: [
+            _pricingPhase(
+              formattedPrice: r'$5.00',
+              priceAmountMicros: 5000000,
+              billingPeriod: 'P1M',
+              recurrenceMode: RecurrenceMode.infiniteRecurring,
+            ),
+          ],
+        ),
+      ],
+    ),
+  ),
+];

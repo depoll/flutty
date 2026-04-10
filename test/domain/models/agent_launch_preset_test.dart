@@ -14,7 +14,7 @@ void main() {
 
       expect(
         buildAgentLaunchCommand(preset),
-        "cd '~/src/app' && claude --resume",
+        r'cd "$HOME/src/app" && claude --resume',
       );
     });
 
@@ -28,7 +28,7 @@ void main() {
 
       expect(
         buildAgentLaunchCommand(preset),
-        "tmux new-session -A -s 'nightly review' -c '~/src/app' 'aider --yes-always'",
+        'tmux new-session -A -s \'nightly review\' -c "\$HOME/src/app" \'aider --yes-always\'',
       );
     });
   });

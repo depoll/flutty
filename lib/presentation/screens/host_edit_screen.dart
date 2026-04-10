@@ -474,9 +474,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             child: Text('Run saved snippet'),
                           ),
                         ],
-                        onChanged: (value) => value == null
-                            ? null
-                            : unawaited(_handleAutoConnectModeSelection(value)),
+                        onChanged: (value) {
+                          if (value == null) {
+                            return;
+                          }
+                          unawaited(_handleAutoConnectModeSelection(value));
+                        },
                       ),
                       if (_selectedAutoConnectMode ==
                           AutoConnectCommandMode.custom) ...[

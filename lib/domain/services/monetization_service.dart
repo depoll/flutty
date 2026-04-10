@@ -235,6 +235,8 @@ class MonetizationService {
         _restoreObservedPurchaseUpdate = false;
         if (!restoreObservedPurchaseUpdate) {
           await _clearCachedStoreEntitlement();
+        } else {
+          _emit(_state.copyWith(isLoading: false));
         }
         return const MonetizationActionResult.failure(
           'No active subscription could be restored.',
@@ -330,30 +332,37 @@ class MonetizationService {
   }
 
   Future<void> _handleSuccessfulPurchase(PurchaseDetails purchase) async {
-    await _completePurchaseIfNeeded(purchase);
-    final timestamp =
-        _parsePurchaseDate(purchase.transactionDate) ?? DateTime.now();
-    await _settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
-    await _settings.setString(
-      SettingKeys.monetizationActiveProductId,
-      purchase.productID,
-    );
-    await _settings.setString(
-      SettingKeys.monetizationEntitlementUpdatedAt,
-      timestamp.toUtc().toIso8601String(),
-    );
-    _emit(
-      _state.copyWith(
-        isLoading: false,
-        entitlements: const MonetizationEntitlements.pro(),
-        activeProductId: purchase.productID,
-        entitlementUpdatedAt: timestamp,
-        lastError: null,
-      ),
-    );
-    _resolvePendingPurchase(
-      const MonetizationActionResult.success('MonkeySSH Pro unlocked.'),
-    );
+    try {
+      await _completePurchaseIfNeeded(purchase);
+      final timestamp =
+          _parsePurchaseDate(purchase.transactionDate) ?? DateTime.now();
+      await _settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      await _settings.setString(
+        SettingKeys.monetizationActiveProductId,
+        purchase.productID,
+      );
+      await _settings.setString(
+        SettingKeys.monetizationEntitlementUpdatedAt,
+        timestamp.toUtc().toIso8601String(),
+      );
+      _emit(
+        _state.copyWith(
+          isLoading: false,
+          entitlements: const MonetizationEntitlements.pro(),
+          activeProductId: purchase.productID,
+          entitlementUpdatedAt: timestamp,
+          lastError: null,
+        ),
+      );
+      _resolvePendingPurchase(
+        const MonetizationActionResult.success('MonkeySSH Pro unlocked.'),
+      );
+    } on Object catch (error, stackTrace) {
+      final message = 'Failed to finalize purchase: $error';
+      debugPrint('$message\n$stackTrace');
+      _emit(_state.copyWith(isLoading: false, lastError: message));
+      _resolvePendingPurchase(MonetizationActionResult.failure(message));
+    }
   }
 
   Future<void> _completePurchaseIfNeeded(PurchaseDetails purchase) async {
