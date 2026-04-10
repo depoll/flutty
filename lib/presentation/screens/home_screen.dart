@@ -1458,12 +1458,17 @@ class _SmallIconButton extends StatelessWidget {
     );
     final semanticButton = Semantics(
       button: true,
+      onTap: onTap,
       label: tooltip,
       child: button,
     );
 
     if (tooltip case final tooltipText?) {
-      return Tooltip(message: tooltipText, child: semanticButton);
+      return Tooltip(
+        message: tooltipText,
+        excludeFromSemantics: true,
+        child: semanticButton,
+      );
     }
     return semanticButton;
   }

@@ -350,7 +350,8 @@ void main() {
         (widget) =>
             widget is Semantics &&
             widget.properties.label == 'New connection' &&
-            (widget.properties.button ?? false),
+            (widget.properties.button ?? false) &&
+            widget.properties.onTap != null,
       ),
       findsOneWidget,
     );

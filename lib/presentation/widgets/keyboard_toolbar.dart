@@ -4,6 +4,8 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/xterm.dart';
 
+import 'terminal_key_input.dart';
+
 /// Whether the toolbar should keep the bottom safe-area inset.
 ///
 /// When the system keyboard is visible, the toolbar is already lifted above the
@@ -18,19 +20,6 @@ bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
 /// reverse-tab escape sequence. Plain Tab remains a literal tab character.
 String resolveTerminalTabInput({required bool shiftActive}) =>
     shiftActive ? '\x1b[Z' : '\t';
-
-/// Sends Enter with the active terminal modifiers applied.
-bool sendTerminalEnterInput(
-  Terminal terminal, {
-  required bool shiftActive,
-  required bool altActive,
-  required bool ctrlActive,
-}) => terminal.keyInput(
-  TerminalKey.enter,
-  shift: shiftActive,
-  alt: altActive,
-  ctrl: ctrlActive,
-);
 
 int? _ctrlCodeForCharacter(String text) {
   if (text.length != 1) {

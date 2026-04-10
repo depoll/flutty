@@ -11,7 +11,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/xterm.dart';
 
 import '../../domain/models/auto_connect_command.dart';
-import 'keyboard_toolbar.dart';
+import 'terminal_key_input.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
