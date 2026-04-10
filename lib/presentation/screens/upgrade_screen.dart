@@ -22,6 +22,35 @@ class UpgradeScreen extends ConsumerStatefulWidget {
 class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   var _restoreInProgress = false;
 
+  String? _sharedIntroductoryOfferLabel(List<MonetizationOffer> offers) {
+    final offersWithIntro = offers
+        .where((offer) => offer.introductoryOfferLabel != null)
+        .toList(growable: false);
+    if (offersWithIntro.isEmpty) {
+      return null;
+    }
+    if (offersWithIntro.length == 1) {
+      return offersWithIntro.first.introductoryOfferLabel;
+    }
+    final sharedIntro = offersWithIntro.first.introductoryOfferLabel!;
+    if (offersWithIntro.any(
+      (offer) => offer.introductoryOfferLabel != sharedIntro,
+    )) {
+      return null;
+    }
+    final planLabels = offersWithIntro
+        .map((offer) => offer.planLabel.toLowerCase())
+        .toList(growable: false);
+    late final String planSummary;
+    if (planLabels.length == 2) {
+      planSummary = '${planLabels.first} and ${planLabels.last}';
+    } else {
+      final leadingPlans = planLabels.take(planLabels.length - 1).join(', ');
+      planSummary = '$leadingPlans, and ${planLabels.last}';
+    }
+    return '$sharedIntro on $planSummary plans.';
+  }
+
   String _pricingSourceLabel() => switch (defaultTargetPlatform) {
     TargetPlatform.iOS => 'Pricing loads from the App Store',
     TargetPlatform.android => 'Pricing loads from Google Play',
@@ -114,7 +143,12 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
         (highlightedOffer == null
             ? 'The exact price comes from your local storefront and currency.'
             : null);
-    final introductoryOfferLabel = highlightedOffer?.introductoryOfferLabel;
+    final sharedIntroductoryOfferLabel = _sharedIntroductoryOfferLabel(
+      state.offers,
+    );
+    final introductoryOfferLabel =
+        sharedIntroductoryOfferLabel ??
+        highlightedOffer?.introductoryOfferLabel;
 
     return Scaffold(
       appBar: AppBar(title: const Text('MonkeySSH Pro')),
@@ -161,6 +195,17 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           if (state.offers.isNotEmpty) ...[
             const SizedBox(height: 24),
             Text('Choose a plan', style: theme.textTheme.titleMedium),
+            if (sharedIntroductoryOfferLabel case final intro?) ...[
+              const SizedBox(height: 8),
+              Text(
+                intro,
+                key: const ValueKey('shared-intro-offer-label'),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.primary,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+            ],
             const SizedBox(height: 12),
             Column(
               children: state.offers

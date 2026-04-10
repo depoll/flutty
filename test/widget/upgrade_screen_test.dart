@@ -147,4 +147,66 @@ void main() {
     expect(find.text('Manage current plan'), findsOneWidget);
     expect(find.text('Switch to Annual'), findsOneWidget);
   });
+
+  testWidgets('shared trial copy mentions monthly and annual plans', (
+    tester,
+  ) async {
+    final service = _MockMonetizationService();
+    const trialLabel = '2 weeks free trial for eligible new customers';
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.free(),
+      offers: [
+        MonetizationOffer(
+          id: 'monthly',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.monthly,
+          planLabel: 'Monthly',
+          priceLabel: r'$4.99',
+          displayPriceLabel: r'$4.99 / month',
+          rawPrice: 4.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+          introductoryOfferLabel: trialLabel,
+        ),
+        MonetizationOffer(
+          id: 'annual',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.annual,
+          planLabel: 'Annual',
+          priceLabel: r'$49.99',
+          displayPriceLabel: r'$49.99 / year',
+          rawPrice: 49.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+          introductoryOfferLabel: trialLabel,
+        ),
+      ],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+    );
+
+    when(() => service.currentState).thenReturn(state);
+    when(
+      () => service.purchaseOffer(any()),
+    ).thenAnswer(_cancelledPurchaseResult);
+    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(home: UpgradeScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.textContaining(trialLabel), findsWidgets);
+    final sharedIntroText = tester.widget<Text>(
+      find.byKey(const ValueKey('shared-intro-offer-label')),
+    );
+    expect(sharedIntroText.data, contains('monthly and annual'));
+  });
 }
