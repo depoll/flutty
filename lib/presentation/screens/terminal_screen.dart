@@ -2595,16 +2595,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             icon: SizedBox.square(
               dimension: 24,
               child: Stack(
+                clipBehavior: Clip.none,
                 children: [
-                  const Center(child: Icon(Icons.dialpad_rounded, size: 22)),
-                  Positioned(
+                  const Positioned(
+                    top: 1,
+                    left: 0,
                     right: 0,
-                    bottom: 1,
+                    child: Icon(Icons.view_week_rounded, size: 18),
+                  ),
+                  Positioned(
+                    bottom: -2,
+                    left: 0,
+                    right: 0,
                     child: Icon(
                       _showKeyboardToolbar
                           ? Icons.expand_more_rounded
                           : Icons.expand_less_rounded,
-                      size: 13,
+                      size: 16,
                     ),
                   ),
                 ],

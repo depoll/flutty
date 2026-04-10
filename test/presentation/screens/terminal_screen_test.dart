@@ -313,7 +313,7 @@ void main() {
         expect(
           find.descendant(
             of: find.byTooltip('Hide extra keys'),
-            matching: find.byIcon(Icons.dialpad_rounded),
+            matching: find.byIcon(Icons.view_week_rounded),
           ),
           findsOneWidget,
         );
@@ -341,7 +341,7 @@ void main() {
         expect(
           find.descendant(
             of: find.byTooltip('Show extra keys'),
-            matching: find.byIcon(Icons.dialpad_rounded),
+            matching: find.byIcon(Icons.view_week_rounded),
           ),
           findsOneWidget,
         );
