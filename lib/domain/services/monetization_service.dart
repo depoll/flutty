@@ -156,12 +156,11 @@ class MonetizationService {
         'Subscriptions are only available on iPhone and Android.',
       );
     }
-    final details = _productDetailsById[MonetizationProductIds.proMonthly];
+    final details = _productDetailsById[MonetizationProductIds.pro];
     if (details == null) {
       await refreshCatalog();
     }
-    final resolvedDetails =
-        _productDetailsById[MonetizationProductIds.proMonthly];
+    final resolvedDetails = _productDetailsById[MonetizationProductIds.pro];
     if (resolvedDetails == null) {
       return const MonetizationActionResult.failure(
         'The subscription is not currently available.',

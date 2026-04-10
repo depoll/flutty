@@ -1,10 +1,10 @@
 /// Product identifiers used by the mobile subscription flow.
 abstract final class MonetizationProductIds {
-  /// Monthly MonkeySSH Pro subscription.
-  static const proMonthly = 'monkeyssh_pro_monthly';
+  /// MonkeySSH Pro subscription product.
+  static const pro = 'monkeyssh_pro';
 
   /// All recognized paid products.
-  static const all = <String>{proMonthly};
+  static const all = <String>{pro};
 }
 
 /// Premium features controlled by MonkeySSH Pro.
