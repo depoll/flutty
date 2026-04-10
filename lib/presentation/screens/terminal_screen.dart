@@ -2592,21 +2592,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show system keyboard',
             ),
           IconButton(
-            icon: Stack(
-              clipBehavior: Clip.none,
-              children: [
-                const Icon(Icons.dialpad_rounded),
-                Positioned(
-                  right: -2,
-                  bottom: -3,
-                  child: Icon(
-                    _showKeyboardToolbar
-                        ? Icons.expand_more_rounded
-                        : Icons.expand_less_rounded,
-                    size: 16,
+            icon: SizedBox.square(
+              dimension: 24,
+              child: Stack(
+                children: [
+                  const Center(child: Icon(Icons.dialpad_rounded, size: 22)),
+                  Positioned(
+                    right: 0,
+                    bottom: 1,
+                    child: Icon(
+                      _showKeyboardToolbar
+                          ? Icons.expand_more_rounded
+                          : Icons.expand_less_rounded,
+                      size: 13,
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
             onPressed: () =>
                 setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
