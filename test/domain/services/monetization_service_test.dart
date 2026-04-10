@@ -3,6 +3,7 @@
 import 'dart:async';
 
 import 'package:drift/native.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/billing_client_wrappers.dart';
@@ -22,7 +23,13 @@ class MockPurchaseDetails extends Mock implements PurchaseDetails {}
 class MockGooglePlayProductDetails extends Mock
     implements GooglePlayProductDetails {}
 
+class _FakePurchaseParam extends Fake implements PurchaseParam {}
+
 void main() {
+  setUpAll(() {
+    registerFallbackValue(_FakePurchaseParam());
+  });
+
   group('buildMonetizationOffers', () {
     test('deduplicates Google Play base plans and keeps trial offers', () {
       final productDetails = GooglePlayProductDetails.fromProductDetails(
@@ -381,6 +388,69 @@ void main() {
         await settings.getString(SettingKeys.monetizationActiveProductId),
         isNull,
       );
+    });
+
+    test('recoverInterruptedPurchase clears a stuck purchase state', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+      when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+        (_) async => ProductDetailsResponse(
+          productDetails: [
+            ...GooglePlayProductDetails.fromProductDetails(
+              ProductDetailsWrapper(
+                description: 'MonkeySSH Pro subscription',
+                name: 'MonkeySSH Pro',
+                productId: MonetizationProductIds.androidPro,
+                productType: ProductType.subs,
+                title: 'MonkeySSH Pro',
+                subscriptionOfferDetails: [
+                  _subscriptionOfferDetails(
+                    basePlanId: 'monthly',
+                    offerIdToken: 'monthly-base-token',
+                    pricingPhases: [
+                      _pricingPhase(
+                        formattedPrice: r'$5.00',
+                        priceAmountMicros: 5000000,
+                        billingPeriod: 'P1M',
+                        recurrenceMode: RecurrenceMode.infiniteRecurring,
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+          ],
+          notFoundIDs: const [],
+        ),
+      );
+      when(
+        () => inAppPurchase.buyNonConsumable(
+          purchaseParam: any(named: 'purchaseParam'),
+        ),
+      ).thenAnswer((_) async => true);
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+      );
+      addTearDown(service.dispose);
+
+      await service.initialize();
+      final resultFuture = service.purchaseOffer(
+        service.currentState.defaultOffer!.id,
+      );
+      await Future<void>.delayed(Duration.zero);
+
+      expect(service.currentState.isLoading, isTrue);
+
+      service.recoverInterruptedPurchase();
+      final result = await resultFuture;
+
+      expect(result.cancelled, isTrue);
+      expect(service.currentState.isLoading, isFalse);
     });
   });
 }

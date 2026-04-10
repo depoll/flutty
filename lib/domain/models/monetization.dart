@@ -36,6 +36,9 @@ enum MonetizationFeature {
 
   /// Guided launch presets for coding-agent CLIs.
   agentLaunchPresets,
+
+  /// Per-host terminal theme overrides.
+  hostSpecificThemes,
 }
 
 /// Presentation helpers for [MonetizationFeature].
@@ -46,6 +49,7 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.migrationImportExport => 'Migration import/export',
     MonetizationFeature.autoConnectAutomation => 'Auto-connect automation',
     MonetizationFeature.agentLaunchPresets => 'Agent launch presets',
+    MonetizationFeature.hostSpecificThemes => 'Host-specific themes',
   };
 
   /// Plain-language description shown in upgrade prompts.
@@ -58,6 +62,8 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
       'Run commands or saved snippets automatically after connect.',
     MonetizationFeature.agentLaunchPresets =>
       'Save repeatable startup flows for tools like Codex, Claude Code, Copilot CLI, or OpenCode.',
+    MonetizationFeature.hostSpecificThemes =>
+      'Save terminal theme overrides for individual hosts while keeping app-wide defaults unchanged.',
   };
 }
 

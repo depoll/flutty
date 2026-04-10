@@ -38,6 +38,31 @@ void main() {
         );
         expect(theme.id, TerminalThemes.cleanWhite.id);
       });
+
+      test('ignores host override when disabled', () async {
+        final host = Host(
+          id: 1,
+          label: 'Prod',
+          hostname: 'prod.example.com',
+          port: 22,
+          username: 'root',
+          isFavorite: false,
+          createdAt: DateTime(2024),
+          updatedAt: DateTime(2024),
+          terminalThemeLightId: TerminalThemes.paper.id,
+          terminalThemeDarkId: TerminalThemes.oceanDark.id,
+          autoConnectRequiresConfirmation: false,
+          sortOrder: 0,
+        );
+
+        final theme = await themeService.getThemeForHost(
+          host,
+          Brightness.dark,
+          allowHostOverride: false,
+        );
+
+        expect(theme.id, TerminalThemes.midnightPurple.id);
+      });
     });
 
     group('getThemeById', () {

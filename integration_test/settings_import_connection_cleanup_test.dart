@@ -47,6 +47,7 @@ class _FakeActiveSessionsSshService extends SshService {
   Future<SshConnectionResult> connectToHost(
     int hostId, {
     ConnectionProgressCallback? onProgress,
+    bool useHostThemeOverrides = true,
   }) async {
     final connectionId = _nextConnectionId++;
     final client = _MockSshClient();

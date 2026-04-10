@@ -170,6 +170,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final hasAgentPresetAccess = monetizationState.allowsFeature(
       MonetizationFeature.agentLaunchPresets,
     );
+    final hasHostThemeAccess = monetizationState.allowsFeature(
+      MonetizationFeature.hostSpecificThemes,
+    );
 
     return Scaffold(
       appBar: AppBar(
@@ -664,20 +667,34 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                       ],
                       const SizedBox(height: 24),
                       // Terminal theme section
-                      Text(
-                        'Terminal Theme',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
+                      Row(
+                        children: [
+                          Text(
+                            'Terminal Theme',
+                            style: Theme.of(context).textTheme.titleSmall
+                                ?.copyWith(
+                                  color: Theme.of(context).colorScheme.primary,
+                                  fontWeight: FontWeight.w600,
+                                ),
+                          ),
+                          const SizedBox(width: 8),
+                          const PremiumBadge(),
+                        ],
                       ),
                       const SizedBox(height: 12),
+                      if (!hasHostThemeAccess) ...[
+                        Text(
+                          'MonkeySSH Pro unlocks per-host theme overrides. App-wide default themes stay free in Settings.',
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 12),
+                      ],
                       // Light mode theme
                       _ThemeSelectionTile(
                         label: 'Light Mode Theme',
                         themeId: _selectedLightThemeId,
                         defaultLabel: 'Use default',
-                        onTap: () => _selectTheme(isLight: true),
+                        onTap: () => _handleThemeSelectionTap(isLight: true),
                       ),
                       const SizedBox(height: 8),
                       // Dark mode theme
@@ -685,7 +702,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                         label: 'Dark Mode Theme',
                         themeId: _selectedDarkThemeId,
                         defaultLabel: 'Use default',
-                        onTap: () => _selectTheme(isLight: false),
+                        onTap: () => _handleThemeSelectionTap(isLight: false),
                       ),
                       const SizedBox(height: 16),
                       // Terminal font section
@@ -1075,6 +1092,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         }
       });
     }
+  }
+
+  Future<void> _handleThemeSelectionTap({required bool isLight}) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.hostSpecificThemes,
+    );
+    if (!hasAccess || !mounted) {
+      return;
+    }
+    await _selectTheme(isLight: isLight);
   }
 
   Future<void> _selectFont() async {

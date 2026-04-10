@@ -243,6 +243,18 @@ class MonetizationService {
     );
   }
 
+  /// Recovers the UI if an interrupted purchase flow never delivered a result.
+  void recoverInterruptedPurchase() {
+    final completer = _pendingPurchaseResult;
+    if (_restoreInFlight || completer == null || completer.isCompleted) {
+      return;
+    }
+    _emit(_state.copyWith(isLoading: false, lastError: null));
+    _resolvePendingPurchase(
+      const MonetizationActionResult.cancelled('Purchase cancelled.'),
+    );
+  }
+
   /// Enables or disables the debug-only local unlock.
   Future<void> setDebugUnlocked({required bool unlocked}) async {
     if (!_allowDebugUnlock) {

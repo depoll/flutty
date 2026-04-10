@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:collection/collection.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -20,29 +22,95 @@ class UpgradeScreen extends ConsumerStatefulWidget {
   ConsumerState<UpgradeScreen> createState() => _UpgradeScreenState();
 }
 
-class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
+class _UpgradeScreenState extends ConsumerState<UpgradeScreen>
+    with WidgetsBindingObserver {
   String? _selectedOfferId;
+  var _purchaseInProgress = false;
+  var _restoreInProgress = false;
+  var _purchaseAttempt = 0;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed ||
+        defaultTargetPlatform != TargetPlatform.android ||
+        !_purchaseInProgress) {
+      return;
+    }
+    final purchaseAttempt = _purchaseAttempt;
+    unawaited(_recoverInterruptedAndroidPurchase(purchaseAttempt));
+  }
+
+  String _pricingSourceLabel() => switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => 'Pricing loads from the App Store',
+    TargetPlatform.android => 'Pricing loads from Google Play',
+    _ => 'Pricing loads from your local storefront',
+  };
 
   Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
-    final result = await ref
-        .read(monetizationServiceProvider)
-        .purchaseOffer(offerId);
-    if (!mounted) {
-      return;
+    setState(() {
+      _purchaseInProgress = true;
+      _purchaseAttempt += 1;
+    });
+    try {
+      final result = await ref
+          .read(monetizationServiceProvider)
+          .purchaseOffer(offerId);
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text(result.message)));
+    } finally {
+      if (mounted) {
+        setState(() => _purchaseInProgress = false);
+      }
     }
-    messenger.showSnackBar(SnackBar(content: Text(result.message)));
   }
 
   Future<void> _restorePurchases() async {
     final messenger = ScaffoldMessenger.of(context);
-    final result = await ref
-        .read(monetizationServiceProvider)
-        .restorePurchases();
-    if (!mounted) {
+    setState(() => _restoreInProgress = true);
+    try {
+      final result = await ref
+          .read(monetizationServiceProvider)
+          .restorePurchases();
+      if (!mounted) {
+        return;
+      }
+      messenger.showSnackBar(SnackBar(content: Text(result.message)));
+    } finally {
+      if (mounted) {
+        setState(() => _restoreInProgress = false);
+      }
+    }
+  }
+
+  Future<void> _recoverInterruptedAndroidPurchase(int purchaseAttempt) async {
+    await Future<void>.delayed(const Duration(milliseconds: 800));
+    if (!mounted ||
+        !_purchaseInProgress ||
+        purchaseAttempt != _purchaseAttempt) {
       return;
     }
-    messenger.showSnackBar(SnackBar(content: Text(result.message)));
+    final state =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    if (!state.isLoading || state.isProUnlocked) {
+      return;
+    }
+    ref.read(monetizationServiceProvider).recoverInterruptedPurchase();
   }
 
   Uri? _manageSubscriptionUrl() => switch (defaultTargetPlatform) {
@@ -84,10 +152,15 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
     final manageSubscriptionUrl = _manageSubscriptionUrl();
     final state =
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
+    final isCatalogLoading = state.isLoading && state.offers.isEmpty;
+    final isBusy =
+        isCatalogLoading || _purchaseInProgress || _restoreInProgress;
     final feature = widget.feature;
     final selectedOffer =
         state.offers.firstWhereOrNull(
@@ -96,9 +169,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
         state.defaultOffer;
     final priceLabel =
         selectedOffer?.displayPriceLabel ??
-        (state.isLoading
-            ? 'Loading pricing...'
-            : 'Pricing loads from the App Store or Google Play');
+        (isCatalogLoading ? 'Loading pricing...' : _pricingSourceLabel());
     final priceDetailLabel =
         selectedOffer?.detailLabel ??
         (selectedOffer == null
@@ -121,7 +192,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
               Expanded(
                 child: Text(
                   'Unlock the workflow extras that make remote coding-agent sessions faster to start and easier to move between devices.',
-                  style: Theme.of(context).textTheme.bodyLarge,
+                  style: theme.textTheme.bodyLarge,
                 ),
               ),
             ],
@@ -131,10 +202,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             _UpgradeReasonCard(feature: feature),
           ],
           const SizedBox(height: 24),
-          Text(
-            'Included with Pro',
-            style: Theme.of(context).textTheme.titleMedium,
-          ),
+          Text('Included with Pro', style: theme.textTheme.titleMedium),
           const SizedBox(height: 12),
           const _UpgradeBenefitTile(
             icon: Icons.rocket_launch_outlined,
@@ -163,33 +231,81 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             const SizedBox(height: 12),
             RadioGroup<String>(
               groupValue: selectedOffer?.id,
-              onChanged: state.isLoading
+              onChanged: isBusy
                   ? (_) {}
                   : (value) => setState(() => _selectedOfferId = value),
               child: Column(
                 children: state.offers
-                    .map(
-                      (offer) => Card(
+                    .map((offer) {
+                      final isSelected = selectedOffer?.id == offer.id;
+                      final baseCardColor = theme.cardColor;
+                      final cardColor = isSelected
+                          ? Color.alphaBlend(
+                              colorScheme.primary.withAlpha(28),
+                              baseCardColor,
+                            )
+                          : baseCardColor;
+                      final titleColor = colorScheme.onSurface;
+                      final subtitleColor = isSelected
+                          ? colorScheme.onSurface.withAlpha(220)
+                          : theme.textTheme.bodyMedium?.color ??
+                                colorScheme.onSurface.withAlpha(180);
+                      final introColor = colorScheme.primary;
+                      return Card(
                         clipBehavior: Clip.antiAlias,
+                        color: cardColor,
+                        shape: RoundedRectangleBorder(
+                          borderRadius: BorderRadius.circular(12),
+                          side: BorderSide(
+                            color: isSelected
+                                ? colorScheme.primary
+                                : colorScheme.outlineVariant,
+                            width: isSelected ? 2 : 1,
+                          ),
+                        ),
                         child: RadioListTile<String>(
                           value: offer.id,
-                          selected: selectedOffer?.id == offer.id,
-                          enabled: !state.isLoading,
-                          title: Text(offer.planLabel),
+                          enabled: !isBusy,
+                          activeColor: colorScheme.primary,
+                          title: Text(
+                            offer.planLabel,
+                            style: theme.textTheme.titleMedium?.copyWith(
+                              color: titleColor,
+                              fontWeight: isSelected
+                                  ? FontWeight.w700
+                                  : FontWeight.w600,
+                            ),
+                          ),
                           subtitle: Column(
                             crossAxisAlignment: CrossAxisAlignment.start,
                             children: [
-                              Text(offer.displayPriceLabel),
+                              Text(
+                                offer.displayPriceLabel,
+                                style: theme.textTheme.bodyMedium?.copyWith(
+                                  color: subtitleColor,
+                                ),
+                              ),
                               if (offer.detailLabel case final detail?)
-                                Text(detail),
+                                Text(
+                                  detail,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: subtitleColor,
+                                  ),
+                                ),
                               if (offer.introductoryOfferLabel
                                   case final intro?)
-                                Text(intro),
+                                Text(
+                                  intro,
+                                  style: theme.textTheme.bodySmall?.copyWith(
+                                    color: introColor,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
                             ],
                           ),
                         ),
-                      ),
-                    )
+                      );
+                    })
                     .toList(growable: false),
               ),
             ),
@@ -203,20 +319,20 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                 children: [
                   Text(
                     priceLabel,
-                    style: Theme.of(context).textTheme.headlineSmall?.copyWith(
+                    style: theme.textTheme.headlineSmall?.copyWith(
                       fontWeight: FontWeight.w700,
                     ),
                   ),
                   const SizedBox(height: 8),
                   if (priceDetailLabel case final detail?) ...[
-                    Text(detail, style: Theme.of(context).textTheme.bodyMedium),
+                    Text(detail, style: theme.textTheme.bodyMedium),
                     const SizedBox(height: 8),
                   ],
                   if (introductoryOfferLabel case final intro?) ...[
                     Text(
                       intro,
-                      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
-                        color: Theme.of(context).colorScheme.primary,
+                      style: theme.textTheme.bodyMedium?.copyWith(
+                        color: colorScheme.primary,
                         fontWeight: FontWeight.w600,
                       ),
                     ),
@@ -226,15 +342,15 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                     state.isProUnlocked
                         ? 'MonkeySSH Pro is already unlocked on this device.'
                         : 'No trial traps, fake urgency, or hidden close buttons. You can restore or manage your subscription from Settings at any time.',
-                    style: Theme.of(context).textTheme.bodyMedium,
+                    style: theme.textTheme.bodyMedium,
                   ),
                   if (state.lastError case final error?
                       when error.isNotEmpty) ...[
                     const SizedBox(height: 12),
                     Text(
                       error,
-                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                        color: Theme.of(context).colorScheme.error,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colorScheme.error,
                       ),
                     ),
                   ],
@@ -244,19 +360,20 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           ),
           const SizedBox(height: 20),
           FilledButton(
-            onPressed:
-                state.isProUnlocked || state.isLoading || selectedOffer == null
+            onPressed: state.isProUnlocked || isBusy || selectedOffer == null
                 ? null
                 : () => _purchasePro(selectedOffer.id),
-            child: Text(state.isLoading ? 'Working...' : purchaseLabel),
+            child: Text(_purchaseInProgress ? 'Working...' : purchaseLabel),
           ),
           const SizedBox(height: 12),
           OutlinedButton(
-            onPressed: state.isLoading ? null : _restorePurchases,
-            child: const Text('Restore purchases'),
+            onPressed: isBusy ? null : _restorePurchases,
+            child: Text(
+              _restoreInProgress ? 'Working...' : 'Restore purchases',
+            ),
           ),
           TextButton(
-            onPressed: state.isLoading || manageSubscriptionUrl == null
+            onPressed: isBusy || manageSubscriptionUrl == null
                 ? null
                 : _openManageSubscriptions,
             child: const Text('Manage subscription'),

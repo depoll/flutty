@@ -17,6 +17,7 @@ import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -681,6 +682,12 @@ class _HostRow extends ConsumerWidget {
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
+    final monetizationState =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final hasHostThemeAccess = monetizationState.allowsFeature(
+      MonetizationFeature.hostSpecificThemes,
+    );
     final previewEntries = connectionIds
         .map((connectionId) {
           final connection = sessionsNotifier.getActiveConnection(connectionId);
@@ -698,8 +705,12 @@ class _HostRow extends ConsumerWidget {
             brightness: theme.brightness,
             themeSettings: terminalThemeSettings,
             availableThemes: terminalThemes,
-            hostLightThemeId: host.terminalThemeLightId,
-            hostDarkThemeId: host.terminalThemeDarkId,
+            hostLightThemeId: hasHostThemeAccess
+                ? host.terminalThemeLightId
+                : null,
+            hostDarkThemeId: hasHostThemeAccess
+                ? host.terminalThemeDarkId
+                : null,
             connectionLightThemeId: connection?.terminalThemeLightId,
             connectionDarkThemeId: connection?.terminalThemeDarkId,
           );
@@ -1276,6 +1287,12 @@ class _ConnectionsPanel extends ConsumerWidget {
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
+    final monetizationState =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final hasHostThemeAccess = monetizationState.allowsFeature(
+      MonetizationFeature.hostSpecificThemes,
+    );
     final connections = sessionsNotifier.getActiveConnections();
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
@@ -1319,10 +1336,14 @@ class _ConnectionsPanel extends ConsumerWidget {
                       availableThemes: terminalThemes,
                       lightThemeId:
                           connection.terminalThemeLightId ??
-                          host?.terminalThemeLightId,
+                          (hasHostThemeAccess
+                              ? host?.terminalThemeLightId
+                              : null),
                       darkThemeId:
                           connection.terminalThemeDarkId ??
-                          host?.terminalThemeDarkId,
+                          (hasHostThemeAccess
+                              ? host?.terminalThemeDarkId
+                              : null),
                     );
 
                     return ListTile(

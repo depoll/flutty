@@ -385,6 +385,7 @@ class SshService {
   Future<SshConnectionResult> connectToHost(
     int hostId, {
     ConnectionProgressCallback? onProgress,
+    bool useHostThemeOverrides = true,
   }) async {
     if (hostRepository == null) {
       return const SshConnectionResult(
@@ -471,8 +472,12 @@ class SshService {
         client: result.client!,
         config: config,
         dependentClients: result.dependentClients,
-        terminalThemeLightId: host.terminalThemeLightId,
-        terminalThemeDarkId: host.terminalThemeDarkId,
+        terminalThemeLightId: useHostThemeOverrides
+            ? host.terminalThemeLightId
+            : null,
+        terminalThemeDarkId: useHostThemeOverrides
+            ? host.terminalThemeDarkId
+            : null,
       );
 
       // Update last connected timestamp
@@ -1781,6 +1786,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   Future<SshConnectionResult> connect(
     int hostId, {
     bool forceNew = false,
+    bool useHostThemeOverrides = true,
   }) async {
     if (!forceNew) {
       final existingConnectionId = getPreferredConnectionForHost(hostId);
@@ -1806,6 +1812,7 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final result = await _sshService.connectToHost(
       hostId,
       onProgress: (update) => _updateConnectionAttempt(hostId, update),
+      useHostThemeOverrides: useHostThemeOverrides,
     );
 
     if (result.success && result.connectionId != null) {
