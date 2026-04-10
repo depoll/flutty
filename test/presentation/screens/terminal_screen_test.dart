@@ -310,8 +310,27 @@ void main() {
 
         expect(find.byTooltip('Hide extra keys'), findsOneWidget);
         expect(find.byTooltip('Show system keyboard'), findsOneWidget);
-        expect(find.byIcon(Icons.dialpad_rounded), findsOneWidget);
-        expect(find.byIcon(Icons.dialpad_outlined), findsNothing);
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.byIcon(Icons.dialpad_rounded),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.byIcon(Icons.expand_more_rounded),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Hide extra keys'),
+            matching: find.byIcon(Icons.expand_less_rounded),
+          ),
+          findsNothing,
+        );
         expect(find.byIcon(Icons.keyboard_alt_outlined), findsOneWidget);
         expect(find.byIcon(Icons.keyboard_outlined), findsNothing);
 
@@ -319,8 +338,27 @@ void main() {
         await tester.pump();
 
         expect(find.byTooltip('Show extra keys'), findsOneWidget);
-        expect(find.byIcon(Icons.dialpad_outlined), findsOneWidget);
-        expect(find.byIcon(Icons.dialpad_rounded), findsNothing);
+        expect(
+          find.descendant(
+            of: find.byTooltip('Show extra keys'),
+            matching: find.byIcon(Icons.dialpad_rounded),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Show extra keys'),
+            matching: find.byIcon(Icons.expand_less_rounded),
+          ),
+          findsOneWidget,
+        );
+        expect(
+          find.descendant(
+            of: find.byTooltip('Show extra keys'),
+            matching: find.byIcon(Icons.expand_more_rounded),
+          ),
+          findsNothing,
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
