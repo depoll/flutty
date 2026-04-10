@@ -45,24 +45,46 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
     messenger.showSnackBar(SnackBar(content: Text(result.message)));
   }
 
+  Uri? _manageSubscriptionUrl() => switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => Uri.parse(
+      'https://apps.apple.com/account/subscriptions',
+    ),
+    TargetPlatform.android => Uri.parse(
+      'https://play.google.com/store/account/subscriptions',
+    ),
+    _ => null,
+  };
+
   Future<void> _openManageSubscriptions() async {
-    final url = switch (defaultTargetPlatform) {
-      TargetPlatform.iOS => Uri.parse(
-        'https://apps.apple.com/account/subscriptions',
-      ),
-      TargetPlatform.android => Uri.parse(
-        'https://play.google.com/store/account/subscriptions',
-      ),
-      _ => null,
-    };
+    final messenger = ScaffoldMessenger.of(context);
+    final url = _manageSubscriptionUrl();
     if (url == null) {
       return;
     }
-    await launchUrl(url, mode: LaunchMode.externalApplication);
+    final canOpen = await canLaunchUrl(url);
+    if (!canOpen) {
+      if (mounted) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Could not open the subscription management page.'),
+          ),
+        );
+      }
+      return;
+    }
+    final didOpen = await launchUrl(url, mode: LaunchMode.externalApplication);
+    if (!didOpen && mounted) {
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text('Could not open the subscription management page.'),
+        ),
+      );
+    }
   }
 
   @override
   Widget build(BuildContext context) {
+    final manageSubscriptionUrl = _manageSubscriptionUrl();
     final state =
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
@@ -234,7 +256,9 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             child: const Text('Restore purchases'),
           ),
           TextButton(
-            onPressed: _openManageSubscriptions,
+            onPressed: state.isLoading || manageSubscriptionUrl == null
+                ? null
+                : _openManageSubscriptions,
             child: const Text('Manage subscription'),
           ),
           if (state.debugUnlockAvailable) ...[

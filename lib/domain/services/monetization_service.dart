@@ -20,17 +20,25 @@ class MonetizationService {
     this._settings, {
     InAppPurchase? inAppPurchase,
     bool? allowDebugUnlock,
+    Duration purchaseTimeout = const Duration(seconds: 60),
+    Duration restoreTimeout = const Duration(seconds: 45),
   }) : _inAppPurchase = inAppPurchase ?? InAppPurchase.instance,
-       _allowDebugUnlock = allowDebugUnlock ?? kDebugMode;
+       _allowDebugUnlock = allowDebugUnlock ?? kDebugMode,
+       _purchaseTimeout = purchaseTimeout,
+       _restoreTimeout = restoreTimeout;
 
   final SettingsService _settings;
   final InAppPurchase _inAppPurchase;
   final bool _allowDebugUnlock;
+  final Duration _purchaseTimeout;
+  final Duration _restoreTimeout;
   final _controller = StreamController<MonetizationState>.broadcast();
   final _purchaseOptionsByOfferId = <String, _MonetizationPurchaseOption>{};
 
   StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
   Completer<MonetizationActionResult>? _pendingPurchaseResult;
+  bool _restoreInFlight = false;
+  bool _restoreObservedPurchaseUpdate = false;
   bool _initialized = false;
   MonetizationState _state = MonetizationState.initial(
     debugUnlockAvailable: kDebugMode,
@@ -162,6 +170,8 @@ class MonetizationService {
 
     final completer = Completer<MonetizationActionResult>();
     _pendingPurchaseResult = completer;
+    _restoreInFlight = false;
+    _restoreObservedPurchaseUpdate = false;
     _emit(_state.copyWith(isLoading: true, lastError: null));
     final purchaseParam = switch (purchaseOption) {
       _MonetizationPurchaseOption(
@@ -187,9 +197,11 @@ class MonetizationService {
     }
 
     return completer.future.timeout(
-      const Duration(seconds: 60),
+      _purchaseTimeout,
       onTimeout: () {
         _pendingPurchaseResult = null;
+        _restoreInFlight = false;
+        _restoreObservedPurchaseUpdate = false;
         _emit(_state.copyWith(isLoading: false));
         return const MonetizationActionResult.failure(
           'The purchase is taking longer than expected. If it completed, try restoring purchases.',
@@ -209,18 +221,20 @@ class MonetizationService {
 
     final completer = Completer<MonetizationActionResult>();
     _pendingPurchaseResult = completer;
+    _restoreInFlight = true;
+    _restoreObservedPurchaseUpdate = false;
     _emit(_state.copyWith(isLoading: true, lastError: null));
     await _inAppPurchase.restorePurchases();
 
     return completer.future.timeout(
-      const Duration(seconds: 45),
-      onTimeout: () {
+      _restoreTimeout,
+      onTimeout: () async {
         _pendingPurchaseResult = null;
-        _emit(_state.copyWith(isLoading: false));
-        if (_state.isProUnlocked) {
-          return const MonetizationActionResult.success(
-            'MonkeySSH Pro is already unlocked on this device.',
-          );
+        final restoreObservedPurchaseUpdate = _restoreObservedPurchaseUpdate;
+        _restoreInFlight = false;
+        _restoreObservedPurchaseUpdate = false;
+        if (!restoreObservedPurchaseUpdate) {
+          await _clearCachedStoreEntitlement();
         }
         return const MonetizationActionResult.failure(
           'No active subscription could be restored.',
@@ -274,6 +288,9 @@ class MonetizationService {
           break;
         case PurchaseStatus.purchased:
         case PurchaseStatus.restored:
+          if (_restoreInFlight) {
+            _restoreObservedPurchaseUpdate = true;
+          }
           unawaited(_handleSuccessfulPurchase(purchase));
           break;
         case PurchaseStatus.error:
@@ -333,12 +350,31 @@ class MonetizationService {
     }
   }
 
+  Future<void> _clearCachedStoreEntitlement() async {
+    await _settings.setBool(SettingKeys.monetizationProUnlocked, value: false);
+    await _settings.delete(SettingKeys.monetizationActiveProductId);
+    await _settings.delete(SettingKeys.monetizationEntitlementUpdatedAt);
+    _emit(
+      _state.copyWith(
+        isLoading: false,
+        entitlements: _state.debugUnlocked
+            ? const MonetizationEntitlements.pro()
+            : const MonetizationEntitlements.free(),
+        activeProductId: null,
+        entitlementUpdatedAt: null,
+        lastError: null,
+      ),
+    );
+  }
+
   void _resolvePendingPurchase(MonetizationActionResult result) {
     final completer = _pendingPurchaseResult;
     if (completer == null || completer.isCompleted) {
       return;
     }
     _pendingPurchaseResult = null;
+    _restoreInFlight = false;
+    _restoreObservedPurchaseUpdate = false;
     completer.complete(result);
   }
 
@@ -434,6 +470,9 @@ _CatalogOfferCandidate? _buildGooglePlayOfferCandidate(
       ? null
       : details.productDetails.subscriptionOfferDetails?[subscriptionIndex];
   if (offerDetails == null) {
+    return null;
+  }
+  if (offerDetails.pricingPhases.isEmpty) {
     return null;
   }
 
@@ -798,9 +837,15 @@ String _pluralize(int count, String unit) =>
 String _extractCurrencySymbol(
   String formattedPrice,
   String fallbackCurrencyCode,
-) =>
-    RegExp(r'^[^\d ]*|[^\d ]*$').firstMatch(formattedPrice)?.group(0) ??
-    fallbackCurrencyCode;
+) {
+  final currencySymbol = RegExp(
+    r'^[^\d ]+|[^\d ]+$',
+  ).firstMatch(formattedPrice)?.group(0);
+  if (currencySymbol == null || currencySymbol.isEmpty) {
+    return fallbackCurrencyCode;
+  }
+  return currencySymbol;
+}
 
 class _MonetizationCatalog {
   const _MonetizationCatalog({

@@ -1,12 +1,26 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
+import 'package:drift/native.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/billing_client_wrappers.dart';
 import 'package:in_app_purchase_android/in_app_purchase_android.dart';
 import 'package:in_app_purchase_storekit/in_app_purchase_storekit.dart';
 import 'package:in_app_purchase_storekit/store_kit_wrappers.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
+
+class MockInAppPurchase extends Mock implements InAppPurchase {}
+
+class MockPurchaseDetails extends Mock implements PurchaseDetails {}
+
+class MockGooglePlayProductDetails extends Mock
+    implements GooglePlayProductDetails {}
 
 void main() {
   group('buildMonetizationOffers', () {
@@ -146,6 +160,227 @@ void main() {
       );
       expect(offers[1].displayPriceLabel, r'$50.00 / year');
       expect(offers[1].introductoryOfferLabel, isNull);
+    });
+
+    test('skips Google Play offers with no pricing phases', () {
+      final productDetails = MockGooglePlayProductDetails();
+      when(() => productDetails.subscriptionIndex).thenReturn(0);
+      when(
+        () => productDetails.id,
+      ).thenReturn(MonetizationProductIds.androidPro);
+      when(() => productDetails.offerToken).thenReturn('monthly-base-token');
+      when(() => productDetails.productDetails).thenReturn(
+        ProductDetailsWrapper(
+          description: 'MonkeySSH Pro subscription',
+          name: 'MonkeySSH Pro',
+          productId: MonetizationProductIds.androidPro,
+          productType: ProductType.subs,
+          title: 'MonkeySSH Pro',
+          subscriptionOfferDetails: [
+            _subscriptionOfferDetails(
+              basePlanId: 'monthly',
+              offerIdToken: 'monthly-base-token',
+              pricingPhases: const [],
+            ),
+          ],
+        ),
+      );
+
+      final offers = buildMonetizationOffers([productDetails]);
+
+      expect(offers, isEmpty);
+    });
+
+    test('keeps a trailing currency code when no symbol is prefixed', () {
+      final offers = buildMonetizationOffers(
+        GooglePlayProductDetails.fromProductDetails(
+          ProductDetailsWrapper(
+            description: 'MonkeySSH Pro subscription',
+            name: 'MonkeySSH Pro',
+            productId: MonetizationProductIds.androidPro,
+            productType: ProductType.subs,
+            title: 'MonkeySSH Pro',
+            subscriptionOfferDetails: [
+              _subscriptionOfferDetails(
+                basePlanId: 'monthly',
+                offerIdToken: 'monthly-base-token',
+                pricingPhases: [
+                  _pricingPhase(
+                    formattedPrice: '5.00 USD',
+                    priceAmountMicros: 5000000,
+                    billingPeriod: 'P1M',
+                    recurrenceMode: RecurrenceMode.infiniteRecurring,
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      );
+
+      expect(offers.single.currencySymbol, 'USD');
+    });
+  });
+
+  group('MonetizationService', () {
+    late AppDatabase database;
+    late SettingsService settings;
+    late MockInAppPurchase inAppPurchase;
+    late StreamController<List<PurchaseDetails>> purchaseController;
+
+    setUp(() {
+      database = AppDatabase.forTesting(NativeDatabase.memory());
+      settings = SettingsService(database);
+      inAppPurchase = MockInAppPurchase();
+      purchaseController = StreamController<List<PurchaseDetails>>.broadcast();
+
+      when(
+        () => inAppPurchase.purchaseStream,
+      ).thenAnswer((_) => purchaseController.stream);
+      when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => false);
+    });
+
+    tearDown(() async {
+      await purchaseController.close();
+      await database.close();
+    });
+
+    test('initializes cached entitlements from settings', () async {
+      final updatedAt = DateTime.utc(2026, 4, 10, 7);
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      await settings.setString(
+        SettingKeys.monetizationActiveProductId,
+        MonetizationProductIds.iosAnnual,
+      );
+      await settings.setString(
+        SettingKeys.monetizationEntitlementUpdatedAt,
+        updatedAt.toIso8601String(),
+      );
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+      );
+      addTearDown(service.dispose);
+
+      await service.initialize();
+
+      expect(service.currentState.isProUnlocked, isTrue);
+      expect(
+        service.currentState.activeProductId,
+        MonetizationProductIds.iosAnnual,
+      );
+      expect(service.currentState.entitlementUpdatedAt, updatedAt.toLocal());
+      expect(
+        service.currentState.billingAvailability,
+        MonetizationBillingAvailability.unavailable,
+      );
+    });
+
+    test('canUseFeature reflects the cached Pro entitlement state', () async {
+      final freeService = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+      );
+      addTearDown(freeService.dispose);
+
+      await freeService.initialize();
+      expect(
+        await freeService.canUseFeature(MonetizationFeature.agentLaunchPresets),
+        isFalse,
+      );
+
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+
+      final unlockedService = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+      );
+      addTearDown(unlockedService.dispose);
+
+      await unlockedService.initialize();
+      expect(
+        await unlockedService.canUseFeature(
+          MonetizationFeature.autoConnectAutomation,
+        ),
+        isTrue,
+      );
+    });
+
+    test(
+      'purchase stream updates cached entitlements after a purchase',
+      () async {
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        final purchase = MockPurchaseDetails();
+        when(
+          () => purchase.productID,
+        ).thenReturn(MonetizationProductIds.androidPro);
+        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
+        when(() => purchase.pendingCompletePurchase).thenReturn(true);
+        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(purchase),
+        ).thenAnswer((_) async {});
+
+        await service.initialize();
+        purchaseController.add([purchase]);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(service.currentState.isProUnlocked, isTrue);
+        expect(
+          await settings.getBool(SettingKeys.monetizationProUnlocked),
+          isTrue,
+        );
+        expect(
+          await settings.getString(SettingKeys.monetizationActiveProductId),
+          MonetizationProductIds.androidPro,
+        );
+        expect(
+          service.currentState.activeProductId,
+          MonetizationProductIds.androidPro,
+        );
+        verify(() => inAppPurchase.completePurchase(purchase)).called(1);
+      },
+    );
+
+    test('restore timeout clears a stale cached store entitlement', () async {
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      await settings.setString(
+        SettingKeys.monetizationActiveProductId,
+        MonetizationProductIds.androidPro,
+      );
+
+      when(() => inAppPurchase.restorePurchases()).thenAnswer((_) async {});
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        allowDebugUnlock: false,
+        restoreTimeout: Duration.zero,
+      );
+      addTearDown(service.dispose);
+
+      final result = await service.restorePurchases();
+
+      expect(result.success, isFalse);
+      expect(service.currentState.isProUnlocked, isFalse);
+      expect(
+        await settings.getBool(SettingKeys.monetizationProUnlocked),
+        isFalse,
+      );
+      expect(
+        await settings.getString(SettingKeys.monetizationActiveProductId),
+        isNull,
+      );
     });
   });
 }

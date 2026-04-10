@@ -2189,8 +2189,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
             action: SnackBarAction(
               label: 'Upgrade',
-              onPressed: () => context.push(
-                '/upgrade?feature=${MonetizationFeature.autoConnectAutomation.name}',
+              onPressed: () => context.pushNamed(
+                Routes.upgrade,
+                queryParameters: <String, String>{
+                  'feature': MonetizationFeature.autoConnectAutomation.name,
+                },
               ),
             ),
           ),

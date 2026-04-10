@@ -123,12 +123,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         snippetId: host.autoConnectSnippetId,
       );
       if (preset != null) {
+        final presetCommand = buildAgentLaunchCommand(preset);
         _selectedAgentLaunchTool = preset.tool;
         _agentWorkingDirectoryController.text = preset.workingDirectory ?? '';
         _agentTmuxSessionController.text = preset.tmuxSessionName ?? '';
         _agentArgumentsController.text = preset.additionalArguments ?? '';
         _useAgentLaunchPreset = true;
-        _autoConnectCommandController.text = buildAgentLaunchCommand(preset);
+        if (_selectedAutoConnectMode == AutoConnectCommandMode.custom ||
+            host.autoConnectCommand == presetCommand) {
+          _autoConnectCommandController.text = presetCommand;
+        }
       }
       _isFavorite = host.isFavorite;
       _portForwards = portForwards;
