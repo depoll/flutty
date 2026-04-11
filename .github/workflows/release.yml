@@ -25,7 +25,13 @@ jobs:
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
+      build-codename: ${{ steps.version.outputs.build-codename }}
+      build-display: ${{ steps.version.outputs.build-display }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
       - name: Compute version
         id: version
         run: |
@@ -37,11 +43,18 @@ jobs:
           fi
 
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          BUILD_CODENAME=$(python3 scripts/version_codename.py "$BUILD_NAME")
+          BUILD_DISPLAY="$BUILD_NAME"
+          if [ -n "$BUILD_CODENAME" ]; then
+            BUILD_DISPLAY="$BUILD_NAME \"$BUILD_CODENAME\""
+          fi
 
           echo "build-name=${BUILD_NAME}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
+          echo "build-display=${BUILD_DISPLAY}" >> "$GITHUB_OUTPUT"
           echo "## Release Info" >> "$GITHUB_STEP_SUMMARY"
-          echo "- **Version:** ${BUILD_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          echo "- **Version:** ${BUILD_DISPLAY}" >> "$GITHUB_STEP_SUMMARY"
           echo "- **Build Number:** ${BUILD_NUMBER}" >> "$GITHUB_STEP_SUMMARY"
 
   deploy:
@@ -51,6 +64,7 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      build-codename: ${{ needs.compute-version.outputs.build-codename }}
       flavor: production
       deploy-ios-to: appstore
       deploy-android-to: production
