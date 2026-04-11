@@ -468,6 +468,84 @@ void main() {
     });
 
     test(
+      'purchaseOffer lets Android users retry with another plan after dismissing Play checkout',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: _androidCatalogDetails(),
+            notFoundIDs: const [],
+          ),
+        );
+        var buyCallCount = 0;
+        when(
+          () => inAppPurchase.buyNonConsumable(
+            purchaseParam: any(named: 'purchaseParam'),
+          ),
+        ).thenAnswer((_) async {
+          buyCallCount += 1;
+          return true;
+        });
+        when(androidPlatformAddition.queryPastPurchases).thenAnswer(
+          (_) async => QueryPurchaseDetailsResponse(pastPurchases: const []),
+        );
+
+        final purchase = MockPurchaseDetails();
+        when(
+          () => purchase.productID,
+        ).thenReturn(MonetizationProductIds.androidPro);
+        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
+        when(() => purchase.pendingCompletePurchase).thenReturn(true);
+        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(purchase),
+        ).thenAnswer((_) async {});
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+        final monthlyOfferId = service.currentState.offers
+            .firstWhere(
+              (offer) =>
+                  offer.billingPeriod == MonetizationBillingPeriod.monthly,
+            )
+            .id;
+        final annualOfferId = service.currentState.offers
+            .firstWhere(
+              (offer) =>
+                  offer.billingPeriod == MonetizationBillingPeriod.annual,
+            )
+            .id;
+
+        final firstAttempt = service.purchaseOffer(monthlyOfferId);
+        await Future<void>.delayed(Duration.zero);
+
+        final secondAttempt = service.purchaseOffer(annualOfferId);
+        await Future<void>.delayed(Duration.zero);
+
+        final firstResult = await firstAttempt;
+        purchaseController.add([purchase]);
+        final secondResult = await secondAttempt;
+
+        expect(firstResult.success, isFalse);
+        expect(firstResult.cancelled, isTrue);
+        expect(secondResult.success, isTrue);
+        expect(service.currentState.activeOfferId, annualOfferId);
+        expect(buyCallCount, 2);
+        verify(androidPlatformAddition.queryPastPurchases).called(1);
+      },
+    );
+
+    test(
       'restorePurchases refuses to start while another purchase is in progress',
       () async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;

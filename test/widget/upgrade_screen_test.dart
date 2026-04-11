@@ -77,16 +77,25 @@ void main() {
     );
     await tester.pump();
 
-    final monthlyCard = tester.widget<Card>(
-      find.ancestor(of: find.text('Monthly'), matching: find.byType(Card)),
+    final monthlyCardFinder = find.ancestor(
+      of: find.text('Monthly'),
+      matching: find.byType(Card),
     );
+    final monthlyCard = tester.widget<Card>(monthlyCardFinder);
     final monthlyTitle = tester.widget<Text>(find.text('Monthly').first);
     final monthlyShape = monthlyCard.shape! as RoundedRectangleBorder;
 
     expect(find.byType(RadioListTile<String>), findsNothing);
+    expect(
+      find.descendant(
+        of: monthlyCardFinder,
+        matching: find.byType(FilledButton),
+      ),
+      findsNothing,
+    );
     expect(monthlyTitle.style?.color, equals(darkTheme.colorScheme.onSurface));
     expect(monthlyShape.side.color, equals(darkTheme.colorScheme.primary));
-    expect(monthlyShape.side.width, 2);
+    expect(monthlyShape.side.width, 3);
     expect(find.text('Current'), findsOneWidget);
   });
 
@@ -146,6 +155,61 @@ void main() {
 
     expect(find.text('Manage current plan'), findsOneWidget);
     expect(find.text('Switch to Annual'), findsOneWidget);
+  });
+
+  testWidgets('highlights annual savings and best value copy', (tester) async {
+    final service = _MockMonetizationService();
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.free(),
+      offers: [
+        MonetizationOffer(
+          id: 'monthly',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.monthly,
+          planLabel: 'Monthly',
+          priceLabel: r'$4.99',
+          displayPriceLabel: r'$4.99 / month',
+          rawPrice: 4.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+        MonetizationOffer(
+          id: 'annual',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.annual,
+          planLabel: 'Annual',
+          priceLabel: r'$49.99',
+          displayPriceLabel: r'$49.99 / year',
+          rawPrice: 49.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+      ],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+    );
+
+    when(() => service.currentState).thenReturn(state);
+    when(
+      () => service.purchaseOffer(any()),
+    ).thenAnswer(_cancelledPurchaseResult);
+    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(home: UpgradeScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('annual-savings-label')), findsOneWidget);
+    expect(find.textContaining('save about 17%'), findsOneWidget);
+    expect(find.text('Best value - Save 17%'), findsOneWidget);
   });
 
   testWidgets('shared trial copy mentions monthly and annual plans', (

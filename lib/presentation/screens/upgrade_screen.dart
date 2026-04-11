@@ -22,6 +22,42 @@ class UpgradeScreen extends ConsumerStatefulWidget {
 class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   var _restoreInProgress = false;
 
+  MonetizationOffer? _offerForPeriod(
+    List<MonetizationOffer> offers,
+    MonetizationBillingPeriod billingPeriod,
+  ) {
+    for (final offer in offers) {
+      if (offer.billingPeriod == billingPeriod) {
+        return offer;
+      }
+    }
+    return null;
+  }
+
+  int? _annualSavingsPercent(List<MonetizationOffer> offers) {
+    final monthlyOffer = _offerForPeriod(
+      offers,
+      MonetizationBillingPeriod.monthly,
+    );
+    final annualOffer = _offerForPeriod(
+      offers,
+      MonetizationBillingPeriod.annual,
+    );
+    if (monthlyOffer == null ||
+        annualOffer == null ||
+        monthlyOffer.currencyCode != annualOffer.currencyCode) {
+      return null;
+    }
+    final yearlyMonthlyCost = monthlyOffer.rawPrice * 12;
+    if (yearlyMonthlyCost <= annualOffer.rawPrice) {
+      return null;
+    }
+    final savingsPercent =
+        ((yearlyMonthlyCost - annualOffer.rawPrice) / yearlyMonthlyCost * 100)
+            .round();
+    return savingsPercent <= 0 ? null : savingsPercent;
+  }
+
   String? _sharedIntroductoryOfferLabel(List<MonetizationOffer> offers) {
     final offersWithIntro = offers
         .where((offer) => offer.introductoryOfferLabel != null)
@@ -149,6 +185,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
     final introductoryOfferLabel =
         sharedIntroductoryOfferLabel ??
         highlightedOffer?.introductoryOfferLabel;
+    final annualSavingsPercent = _annualSavingsPercent(state.offers);
 
     return Scaffold(
       appBar: AppBar(title: const Text('MonkeySSH Pro')),
@@ -161,7 +198,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
-                  'Unlock the workflow extras that make remote coding-agent sessions faster to start and easier to move between devices.',
+                  'Get the polished extras that make remote coding-agent sessions feel faster to launch, easier to repeat, and more fun to jump back into.',
                   style: theme.textTheme.bodyLarge,
                 ),
               ),
@@ -195,6 +232,17 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           if (state.offers.isNotEmpty) ...[
             const SizedBox(height: 24),
             Text('Choose a plan', style: theme.textTheme.titleMedium),
+            if (annualSavingsPercent case final savings?) ...[
+              const SizedBox(height: 8),
+              Text(
+                'Annual is the best value - save about $savings% compared with paying monthly.',
+                key: const ValueKey('annual-savings-label'),
+                style: theme.textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.primary,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+            ],
             if (sharedIntroductoryOfferLabel case final intro?) ...[
               const SizedBox(height: 8),
               Text(
@@ -215,6 +263,15 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                       child: _PlanOfferCard(
                         offer: offer,
                         isCurrentPlan: state.isActiveOffer(offer),
+                        isBestValue:
+                            annualSavingsPercent != null &&
+                            offer.billingPeriod ==
+                                MonetizationBillingPeriod.annual,
+                        savingsPercent:
+                            offer.billingPeriod ==
+                                MonetizationBillingPeriod.annual
+                            ? annualSavingsPercent
+                            : null,
                         hasAnyActiveSubscription: state.isProUnlocked,
                         isBusy: isBusy,
                         canManageSubscription: manageSubscriptionUrl != null,
@@ -316,6 +373,8 @@ class _PlanOfferCard extends StatelessWidget {
   const _PlanOfferCard({
     required this.offer,
     required this.isCurrentPlan,
+    required this.isBestValue,
+    required this.savingsPercent,
     required this.hasAnyActiveSubscription,
     required this.isBusy,
     required this.canManageSubscription,
@@ -325,6 +384,8 @@ class _PlanOfferCard extends StatelessWidget {
 
   final MonetizationOffer offer;
   final bool isCurrentPlan;
+  final bool isBestValue;
+  final int? savingsPercent;
   final bool hasAnyActiveSubscription;
   final bool isBusy;
   final bool canManageSubscription;
@@ -338,6 +399,11 @@ class _PlanOfferCard extends StatelessWidget {
     final cardColor = isCurrentPlan
         ? Color.alphaBlend(colorScheme.primary.withAlpha(24), theme.cardColor)
         : theme.cardColor;
+    final borderColor = isCurrentPlan
+        ? colorScheme.primary
+        : isBestValue
+        ? colorScheme.secondary
+        : colorScheme.outlineVariant;
     final actionLabel = isCurrentPlan
         ? canManageSubscription
               ? 'Manage current plan'
@@ -357,10 +423,8 @@ class _PlanOfferCard extends StatelessWidget {
       shape: RoundedRectangleBorder(
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
-          color: isCurrentPlan
-              ? colorScheme.primary
-              : colorScheme.outlineVariant,
-          width: isCurrentPlan ? 2 : 1,
+          color: borderColor,
+          width: isCurrentPlan ? 3 : (isBestValue ? 2 : 1),
         ),
       ),
       child: InkWell(
@@ -381,23 +445,24 @@ class _PlanOfferCard extends StatelessWidget {
                       ),
                     ),
                   ),
-                  if (isCurrentPlan)
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 10,
-                        vertical: 6,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colorScheme.primary.withAlpha(26),
-                        borderRadius: BorderRadius.circular(999),
-                      ),
-                      child: Text(
-                        'Current',
-                        style: theme.textTheme.labelMedium?.copyWith(
-                          color: colorScheme.primary,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
+                  if (isCurrentPlan || isBestValue)
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        if (isBestValue)
+                          _PlanPill(
+                            label: savingsPercent == null
+                                ? 'Best value'
+                                : 'Best value - Save $savingsPercent%',
+                            color: colorScheme.secondary,
+                          ),
+                        if (isCurrentPlan)
+                          _PlanPill(
+                            label: 'Current',
+                            color: colorScheme.primary,
+                          ),
+                      ],
                     ),
                 ],
               ),
@@ -429,13 +494,44 @@ class _PlanOfferCard extends StatelessWidget {
                 ),
               ],
               const SizedBox(height: 16),
-              FilledButton.tonal(onPressed: onTap, child: Text(actionLabel)),
+              Text(
+                actionLabel,
+                style: theme.textTheme.titleSmall?.copyWith(
+                  color: onTap == null
+                      ? colorScheme.onSurfaceVariant
+                      : (isCurrentPlan ? colorScheme.primary : borderColor),
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
             ],
           ),
         ),
       ),
     );
   }
+}
+
+class _PlanPill extends StatelessWidget {
+  const _PlanPill({required this.label, required this.color});
+
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+    decoration: BoxDecoration(
+      color: color.withAlpha(26),
+      borderRadius: BorderRadius.circular(999),
+    ),
+    child: Text(
+      label,
+      style: Theme.of(context).textTheme.labelMedium?.copyWith(
+        color: color,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
 }
 
 class _UpgradeReasonCard extends StatelessWidget {

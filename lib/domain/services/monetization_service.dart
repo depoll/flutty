@@ -41,6 +41,8 @@ class MonetizationService {
   StreamSubscription<List<PurchaseDetails>>? _purchaseSubscription;
   Completer<MonetizationActionResult>? _pendingPurchaseResult;
   String? _pendingOfferId;
+  bool _pendingPurchaseFlowStarted = false;
+  bool _pendingPurchaseObservedUpdate = false;
   bool _restoreInFlight = false;
   bool _restoreObservedPurchaseUpdate = false;
   Future<void>? _initializationFuture;
@@ -188,6 +190,7 @@ class MonetizationService {
         'Subscriptions are only available on iPhone and Android.',
       );
     }
+    await _tryRecoverStaleAndroidPurchaseAttempt();
     if (_pendingPurchaseResult != null || _restoreInFlight) {
       return const MonetizationActionResult.failure(
         'Another purchase or restore is already in progress.',
@@ -207,6 +210,8 @@ class MonetizationService {
     final completer = Completer<MonetizationActionResult>();
     _pendingPurchaseResult = completer;
     _pendingOfferId = offerId;
+    _pendingPurchaseFlowStarted = false;
+    _pendingPurchaseObservedUpdate = false;
     _restoreInFlight = false;
     _restoreObservedPurchaseUpdate = false;
     _emit(_state.copyWith(isLoading: true, lastError: null));
@@ -228,17 +233,22 @@ class MonetizationService {
     if (!started) {
       _pendingPurchaseResult = null;
       _pendingOfferId = null;
+      _pendingPurchaseFlowStarted = false;
+      _pendingPurchaseObservedUpdate = false;
       _emit(_state.copyWith(isLoading: false));
       return const MonetizationActionResult.failure(
         'Could not start the purchase flow.',
       );
     }
+    _pendingPurchaseFlowStarted = true;
 
     return completer.future.timeout(
       _purchaseTimeout,
       onTimeout: () {
         _pendingPurchaseResult = null;
         _pendingOfferId = null;
+        _pendingPurchaseFlowStarted = false;
+        _pendingPurchaseObservedUpdate = false;
         _restoreInFlight = false;
         _restoreObservedPurchaseUpdate = false;
         _emit(_state.copyWith(isLoading: false));
@@ -257,6 +267,7 @@ class MonetizationService {
         'Restoring purchases is only available on iPhone and Android.',
       );
     }
+    await _tryRecoverStaleAndroidPurchaseAttempt();
     if (_pendingPurchaseResult != null || _restoreInFlight) {
       return const MonetizationActionResult.failure(
         'Another purchase or restore is already in progress.',
@@ -268,6 +279,8 @@ class MonetizationService {
 
     final completer = Completer<MonetizationActionResult>();
     _pendingPurchaseResult = completer;
+    _pendingPurchaseFlowStarted = false;
+    _pendingPurchaseObservedUpdate = false;
     _restoreInFlight = true;
     _restoreObservedPurchaseUpdate = false;
     _emit(_state.copyWith(isLoading: true, lastError: null));
@@ -278,6 +291,8 @@ class MonetizationService {
       onTimeout: () async {
         _pendingPurchaseResult = null;
         _pendingOfferId = null;
+        _pendingPurchaseFlowStarted = false;
+        _pendingPurchaseObservedUpdate = false;
         final restoreObservedPurchaseUpdate = _restoreObservedPurchaseUpdate;
         _restoreInFlight = false;
         _restoreObservedPurchaseUpdate = false;
@@ -330,6 +345,9 @@ class MonetizationService {
     for (final purchase in purchases) {
       if (!MonetizationProductIds.allKnown.contains(purchase.productID)) {
         continue;
+      }
+      if (_pendingPurchaseResult != null) {
+        _pendingPurchaseObservedUpdate = true;
       }
 
       switch (purchase.status) {
@@ -455,6 +473,8 @@ class MonetizationService {
     }
     _pendingPurchaseResult = null;
     _pendingOfferId = null;
+    _pendingPurchaseFlowStarted = false;
+    _pendingPurchaseObservedUpdate = false;
     _restoreInFlight = false;
     _restoreObservedPurchaseUpdate = false;
     completer.complete(result);
@@ -535,6 +555,48 @@ class MonetizationService {
     if (!hasActiveMonkeySshSubscription) {
       await _clearCachedStoreEntitlement();
     }
+  }
+
+  Future<void> _tryRecoverStaleAndroidPurchaseAttempt() async {
+    if (defaultTargetPlatform != TargetPlatform.android ||
+        _pendingPurchaseResult == null ||
+        _restoreInFlight ||
+        !_pendingPurchaseFlowStarted ||
+        _pendingPurchaseObservedUpdate) {
+      return;
+    }
+
+    final response = await _playBillingAddition.queryPastPurchases();
+    if (response.error != null) {
+      return;
+    }
+
+    final purchases = response.pastPurchases
+        .where(
+          (purchase) =>
+              MonetizationProductIds.allKnown.contains(purchase.productID),
+        )
+        .toList(growable: false);
+    if (purchases.isEmpty) {
+      _emit(_state.copyWith(isLoading: false, lastError: null));
+      _resolvePendingPurchase(
+        const MonetizationActionResult.cancelled('Purchase cancelled.'),
+      );
+      return;
+    }
+
+    final latestPurchase = purchases.reduce(
+      (latest, purchase) =>
+          purchase.billingClientPurchase.purchaseTime >
+              latest.billingClientPurchase.purchaseTime
+          ? purchase
+          : latest,
+    );
+    final result = await _applySuccessfulPurchase(
+      latestPurchase,
+      successMessage: 'MonkeySSH Pro unlocked.',
+    );
+    _resolvePendingPurchase(result);
   }
 
   DateTime? _parseCachedDate(String? rawValue) =>
