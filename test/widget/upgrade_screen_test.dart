@@ -342,4 +342,51 @@ void main() {
     );
     expect(sharedIntroText.data, contains('monthly and annual'));
   });
+
+  testWidgets('shows inline store progress while processing loaded plans', (
+    tester,
+  ) async {
+    final service = _MockMonetizationService();
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.free(),
+      offers: [
+        MonetizationOffer(
+          id: 'monthly',
+          productId: 'monkeyssh_pro',
+          billingPeriod: MonetizationBillingPeriod.monthly,
+          planLabel: 'Monthly',
+          priceLabel: r'$4.99',
+          displayPriceLabel: r'$4.99 / month',
+          rawPrice: 4.99,
+          currencyCode: 'USD',
+          currencySymbol: r'$',
+        ),
+      ],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+      isLoading: true,
+    );
+
+    when(() => service.currentState).thenReturn(state);
+    when(
+      () => service.purchaseOffer(any()),
+    ).thenAnswer(_cancelledPurchaseResult);
+    _stubRestorePurchases(service);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(home: UpgradeScreen()),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('store-progress-banner')), findsOneWidget);
+    expect(find.textContaining('Processing your request with'), findsOneWidget);
+    expect(find.byType(LinearProgressIndicator), findsOneWidget);
+  });
 }

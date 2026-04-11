@@ -93,6 +93,12 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
     _ => 'Pricing loads from your local storefront',
   };
 
+  String _storefrontLabel() => switch (defaultTargetPlatform) {
+    TargetPlatform.iOS => 'the App Store',
+    TargetPlatform.android => 'Google Play',
+    _ => 'your local storefront',
+  };
+
   Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
     final result = await ref
@@ -168,7 +174,14 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
     final isCatalogLoading = state.isLoading && state.offers.isEmpty;
-    final isBusy = isCatalogLoading || _restoreInProgress;
+    final isBusy = state.isLoading || _restoreInProgress;
+    final progressMessage = switch ((state.isLoading, _restoreInProgress)) {
+      (_, true) => 'Restoring purchases from ${_storefrontLabel()}...',
+      (true, false) when state.offers.isEmpty =>
+        'Loading plans from ${_storefrontLabel()}...',
+      (true, false) => 'Processing your request with ${_storefrontLabel()}...',
+      _ => null,
+    };
     final feature = widget.feature;
     final highlightedOffer = state.activeOffer ?? state.defaultOffer;
     final priceLabel =
@@ -214,6 +227,10 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           if (feature != null) ...[
             const SizedBox(height: 20),
             _UpgradeReasonCard(feature: feature),
+          ],
+          if (progressMessage case final message?) ...[
+            const SizedBox(height: 20),
+            _UpgradeProgressBanner(message: message),
           ],
           const SizedBox(height: 24),
           Text('Included with Pro', style: theme.textTheme.titleMedium),
@@ -588,6 +605,45 @@ class _UpgradeBanner extends StatelessWidget {
       ),
     ),
   );
+}
+
+class _UpgradeProgressBanner extends StatelessWidget {
+  const _UpgradeProgressBanner({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+
+    return Container(
+      key: const ValueKey('store-progress-banner'),
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: colorScheme.outlineVariant),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            message,
+            style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+              color: colorScheme.onSurface,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 12),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(999),
+            child: const LinearProgressIndicator(minHeight: 4),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
 class _UpgradeReasonCard extends StatelessWidget {
