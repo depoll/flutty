@@ -43,6 +43,7 @@ class MonetizationService {
   String? _pendingOfferId;
   bool _restoreInFlight = false;
   bool _restoreObservedPurchaseUpdate = false;
+  Future<void>? _initializationFuture;
   bool _initialized = false;
   MonetizationState _state = MonetizationState.initial(
     debugUnlockAvailable: kDebugMode,
@@ -58,66 +59,84 @@ class MonetizationService {
   }
 
   /// Initializes cached state and starts listening for store purchase updates.
-  Future<void> initialize() async {
+  Future<void> initialize() {
     if (_initialized) {
-      return;
+      return Future.value();
     }
-    _initialized = true;
-    _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
-      _handlePurchaseUpdates,
-      onError: (Object error, StackTrace stackTrace) {
-        debugPrint('Purchase stream error: $error');
-        _emit(_state.copyWith(isLoading: false, lastError: '$error'));
-      },
-    );
+    final initializationFuture = _initializationFuture;
+    if (initializationFuture != null) {
+      return initializationFuture;
+    }
+    final future = _initializeInternal();
+    _initializationFuture = future;
+    return future;
+  }
 
-    final cachedProUnlocked = await _settings.getBool(
-      SettingKeys.monetizationProUnlocked,
-    );
-    var debugUnlocked = false;
-    if (_allowDebugUnlock) {
-      debugUnlocked = await _settings.getBool(
-        SettingKeys.monetizationDebugUnlocked,
+  Future<void> _initializeInternal() async {
+    try {
+      _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
+        _handlePurchaseUpdates,
+        onError: (Object error, StackTrace stackTrace) {
+          debugPrint('Purchase stream error: $error');
+          _emit(_state.copyWith(isLoading: false, lastError: '$error'));
+        },
       );
-    }
-    final updatedAt = _parseCachedDate(
-      await _settings.getString(SettingKeys.monetizationEntitlementUpdatedAt),
-    );
-    final activeProductId = await _settings.getString(
-      SettingKeys.monetizationActiveProductId,
-    );
-    final activeOfferId = await _settings.getString(
-      SettingKeys.monetizationActiveOfferId,
-    );
 
-    _emit(
-      _state.copyWith(
-        billingAvailability: _supportsStoreBilling
-            ? MonetizationBillingAvailability.unknown
-            : MonetizationBillingAvailability.unsupported,
-        entitlements: cachedProUnlocked || debugUnlocked
-            ? const MonetizationEntitlements.pro()
-            : const MonetizationEntitlements.free(),
-        debugUnlockAvailable: _allowDebugUnlock,
-        debugUnlocked: debugUnlocked,
-        activeProductId: activeProductId,
-        activeOfferId: activeOfferId,
-        entitlementUpdatedAt: updatedAt,
-      ),
-    );
-
-    if (_supportsStoreBilling) {
-      await refreshCatalog();
-      if (defaultTargetPlatform == TargetPlatform.android &&
-          cachedProUnlocked) {
-        await _reconcileAndroidStoreEntitlement();
+      final cachedProUnlocked = await _settings.getBool(
+        SettingKeys.monetizationProUnlocked,
+      );
+      var debugUnlocked = false;
+      if (_allowDebugUnlock) {
+        debugUnlocked = await _settings.getBool(
+          SettingKeys.monetizationDebugUnlocked,
+        );
       }
+      final updatedAt = _parseCachedDate(
+        await _settings.getString(SettingKeys.monetizationEntitlementUpdatedAt),
+      );
+      final activeProductId = await _settings.getString(
+        SettingKeys.monetizationActiveProductId,
+      );
+      final activeOfferId = await _settings.getString(
+        SettingKeys.monetizationActiveOfferId,
+      );
+
+      _emit(
+        _state.copyWith(
+          billingAvailability: _supportsStoreBilling
+              ? MonetizationBillingAvailability.unknown
+              : MonetizationBillingAvailability.unsupported,
+          entitlements: cachedProUnlocked || debugUnlocked
+              ? const MonetizationEntitlements.pro()
+              : const MonetizationEntitlements.free(),
+          debugUnlockAvailable: _allowDebugUnlock,
+          debugUnlocked: debugUnlocked,
+          activeProductId: activeProductId,
+          activeOfferId: activeOfferId,
+          entitlementUpdatedAt: updatedAt,
+        ),
+      );
+
+      if (_supportsStoreBilling) {
+        await _refreshCatalogInternal();
+        if (defaultTargetPlatform == TargetPlatform.android &&
+            cachedProUnlocked) {
+          await _reconcileAndroidStoreEntitlement();
+        }
+      }
+      _initialized = true;
+    } finally {
+      _initializationFuture = null;
     }
   }
 
   /// Refreshes store product metadata.
   Future<void> refreshCatalog() async {
     await initialize();
+    await _refreshCatalogInternal();
+  }
+
+  Future<void> _refreshCatalogInternal() async {
     if (!_supportsStoreBilling) {
       return;
     }
@@ -169,9 +188,9 @@ class MonetizationService {
         'Subscriptions are only available on iPhone and Android.',
       );
     }
-    if (_pendingPurchaseResult != null) {
+    if (_pendingPurchaseResult != null || _restoreInFlight) {
       return const MonetizationActionResult.failure(
-        'A subscription purchase is already in progress.',
+        'Another purchase or restore is already in progress.',
       );
     }
     var purchaseOption = _purchaseOptionsByOfferId[offerId];
@@ -236,6 +255,11 @@ class MonetizationService {
     if (!_supportsStoreBilling) {
       return const MonetizationActionResult.failure(
         'Restoring purchases is only available on iPhone and Android.',
+      );
+    }
+    if (_pendingPurchaseResult != null || _restoreInFlight) {
+      return const MonetizationActionResult.failure(
+        'Another purchase or restore is already in progress.',
       );
     }
     if (defaultTargetPlatform == TargetPlatform.android) {
@@ -457,41 +481,46 @@ class MonetizationService {
           .getPlatformAddition<InAppPurchaseAndroidPlatformAddition>();
 
   Future<MonetizationActionResult> _restoreAndroidPurchases() async {
+    _restoreInFlight = true;
     _emit(_state.copyWith(isLoading: true, lastError: null));
-    final response = await _playBillingAddition.queryPastPurchases();
-    if (response.error case final error?) {
-      final message = error.message.isEmpty
-          ? 'Could not check Google Play subscriptions.'
-          : error.message;
-      _emit(_state.copyWith(isLoading: false, lastError: message));
-      return MonetizationActionResult.failure(message);
-    }
+    try {
+      final response = await _playBillingAddition.queryPastPurchases();
+      if (response.error case final error?) {
+        final message = error.message.isEmpty
+            ? 'Could not check Google Play subscriptions.'
+            : error.message;
+        _emit(_state.copyWith(isLoading: false, lastError: message));
+        return MonetizationActionResult.failure(message);
+      }
 
-    final purchases = response.pastPurchases
-        .where(
-          (purchase) =>
-              MonetizationProductIds.allKnown.contains(purchase.productID),
-        )
-        .toList(growable: false);
-    if (purchases.isEmpty) {
-      await _clearCachedStoreEntitlement();
-      return const MonetizationActionResult.failure(
-        'No active subscription could be restored.',
+      final purchases = response.pastPurchases
+          .where(
+            (purchase) =>
+                MonetizationProductIds.allKnown.contains(purchase.productID),
+          )
+          .toList(growable: false);
+      if (purchases.isEmpty) {
+        await _clearCachedStoreEntitlement();
+        return const MonetizationActionResult.failure(
+          'No active subscription could be restored.',
+        );
+      }
+
+      final latestPurchase = purchases.reduce(
+        (latest, purchase) =>
+            purchase.billingClientPurchase.purchaseTime >
+                latest.billingClientPurchase.purchaseTime
+            ? purchase
+            : latest,
       );
+
+      return _applySuccessfulPurchase(
+        latestPurchase,
+        successMessage: 'Restored MonkeySSH Pro subscription.',
+      );
+    } finally {
+      _restoreInFlight = false;
     }
-
-    final latestPurchase = purchases.reduce(
-      (latest, purchase) =>
-          purchase.billingClientPurchase.purchaseTime >
-              latest.billingClientPurchase.purchaseTime
-          ? purchase
-          : latest,
-    );
-
-    return _applySuccessfulPurchase(
-      latestPurchase,
-      successMessage: 'Restored MonkeySSH Pro subscription.',
-    );
   }
 
   Future<void> _reconcileAndroidStoreEntitlement() async {

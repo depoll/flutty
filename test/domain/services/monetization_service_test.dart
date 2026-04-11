@@ -335,6 +335,40 @@ void main() {
     });
 
     test(
+      'concurrent initialize calls wait for the same in-flight work',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        final availabilityCompleter = Completer<bool>();
+        when(
+          () => inAppPurchase.isAvailable(),
+        ).thenAnswer((_) => availabilityCompleter.future);
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        var secondInitializeCompleted = false;
+        final firstInitialize = service.initialize();
+        final secondInitialize = service.initialize().then((_) {
+          secondInitializeCompleted = true;
+        });
+        await Future<void>.delayed(Duration.zero);
+
+        expect(secondInitializeCompleted, isFalse);
+
+        availabilityCompleter.complete(false);
+        await Future.wait([firstInitialize, secondInitialize]);
+
+        expect(secondInitializeCompleted, isTrue);
+        verify(() => inAppPurchase.isAvailable()).called(1);
+      },
+    );
+
+    test(
       'purchase stream updates cached entitlements after a purchase',
       () async {
         final service = MonetizationService(
@@ -432,6 +466,53 @@ void main() {
         annualOfferId,
       );
     });
+
+    test(
+      'restorePurchases refuses to start while another purchase is in progress',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: _androidCatalogDetails(),
+            notFoundIDs: const [],
+          ),
+        );
+        final buyStartedCompleter = Completer<bool>();
+        when(
+          () => inAppPurchase.buyNonConsumable(
+            purchaseParam: any(named: 'purchaseParam'),
+          ),
+        ).thenAnswer((_) => buyStartedCompleter.future);
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+        final purchaseFuture = service.purchaseOffer(
+          service.currentState.defaultOffer!.id,
+        );
+        await Future<void>.delayed(Duration.zero);
+
+        final restoreResult = await service.restorePurchases();
+
+        expect(restoreResult.success, isFalse);
+        expect(
+          restoreResult.message,
+          'Another purchase or restore is already in progress.',
+        );
+
+        buyStartedCompleter.complete(false);
+        await purchaseFuture;
+      },
+    );
 
     test(
       'initialization clears cached Android entitlement when Play has no active subscription',
