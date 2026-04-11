@@ -23,7 +23,7 @@ void main() {
     final service = _MockMonetizationService();
     const state = MonetizationState(
       billingAvailability: MonetizationBillingAvailability.available,
-      entitlements: MonetizationEntitlements.free(),
+      entitlements: MonetizationEntitlements.pro(),
       offers: [
         MonetizationOffer(
           id: 'monthly',
@@ -50,6 +50,7 @@ void main() {
       ],
       debugUnlockAvailable: false,
       debugUnlocked: false,
+      activeProductId: 'monkeyssh_pro_monthly',
       activeOfferId: 'monthly',
     );
 
@@ -91,12 +92,16 @@ void main() {
     final monthlyCard = tester.widget<Card>(monthlyCardFinder);
     final monthlyTitle = tester.widget<Text>(find.text('Monthly').first);
     final monthlyShape = monthlyCard.shape! as RoundedRectangleBorder;
+    final annualCard = tester.widget<Card>(
+      find.ancestor(of: find.text('Annual'), matching: find.byType(Card)),
+    );
+    final annualShape = annualCard.shape! as RoundedRectangleBorder;
     final currentPill = tester.widget<Text>(find.text('Current'));
     final currentAction = tester.widget<Text>(find.text('Manage current plan'));
     final bestValuePill = tester.widget<Text>(
       find.text('Best value - Save 17%'),
     );
-    final annualAction = tester.widget<Text>(find.text('Subscribe annual'));
+    final annualAction = tester.widget<Text>(find.text('Switch to Annual'));
 
     expect(find.byType(RadioListTile<String>), findsNothing);
     expect(
@@ -109,6 +114,8 @@ void main() {
     expect(monthlyTitle.style?.color, equals(darkTheme.colorScheme.onSurface));
     expect(monthlyShape.side.color, equals(darkTheme.colorScheme.primary));
     expect(monthlyShape.side.width, 3);
+    expect(annualShape.side.color, equals(darkTheme.colorScheme.outline));
+    expect(annualShape.side.width, 1);
     expect(find.text('Current'), findsOneWidget);
     expect(
       currentPill.style?.color,
@@ -126,10 +133,7 @@ void main() {
       bestValuePill.style?.color,
       equals(darkTheme.colorScheme.onSecondaryContainer),
     );
-    expect(
-      annualAction.style?.color,
-      equals(darkTheme.colorScheme.onSecondaryContainer),
-    );
+    expect(annualAction.style?.color, equals(darkTheme.colorScheme.onSurface));
   });
 
   testWidgets('shows switch action for a different plan when subscribed', (

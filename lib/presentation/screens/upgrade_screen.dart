@@ -400,12 +400,13 @@ class _PlanOfferCard extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
+    final shouldEmphasizeBestValue = isBestValue && !hasAnyActiveSubscription;
     final cardColor = isCurrentPlan
         ? Color.alphaBlend(
             colorScheme.primaryContainer.withAlpha(72),
             theme.cardColor,
           )
-        : isBestValue
+        : shouldEmphasizeBestValue
         ? Color.alphaBlend(
             colorScheme.secondaryContainer.withAlpha(60),
             theme.cardColor,
@@ -413,7 +414,7 @@ class _PlanOfferCard extends StatelessWidget {
         : theme.cardColor;
     final borderColor = isCurrentPlan
         ? colorScheme.primary
-        : isBestValue
+        : shouldEmphasizeBestValue
         ? colorScheme.onSecondaryContainer
         : colorScheme.outline;
     final actionLabel = isCurrentPlan
@@ -436,7 +437,7 @@ class _PlanOfferCard extends StatelessWidget {
         borderRadius: BorderRadius.circular(12),
         side: BorderSide(
           color: borderColor,
-          width: isCurrentPlan ? 3 : (isBestValue ? 2 : 1),
+          width: isCurrentPlan ? 3 : (shouldEmphasizeBestValue ? 2 : 1),
         ),
       ),
       child: InkWell(
@@ -514,7 +515,7 @@ class _PlanOfferCard extends StatelessWidget {
                       ? colorScheme.onSurfaceVariant
                       : isCurrentPlan
                       ? colorScheme.onPrimaryContainer
-                      : isBestValue
+                      : shouldEmphasizeBestValue
                       ? colorScheme.onSecondaryContainer
                       : colorScheme.onSurface,
                   fontWeight: FontWeight.w700,
