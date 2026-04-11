@@ -738,6 +738,8 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   bool deleteDetection = true,
   bool tapToShowKeyboard = true,
   String Function()? resolveTextBeforeCursor,
+  TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
+  VoidCallback? consumeTerminalKeyModifiers,
   ValueGetter<bool>? hasActiveToolbarModifier,
   TerminalTextInputHandlerController? controller,
 }) async {
@@ -758,6 +760,8 @@ Future<_TerminalHarness> _pumpTerminalHarness(
           readOnly: readOnly,
           tapToShowKeyboard: tapToShowKeyboard,
           resolveTextBeforeCursor: resolveTextBeforeCursor,
+          resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
+          consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
           hasActiveToolbarModifier: hasActiveToolbarModifier,
           child: const SizedBox.expand(),
         ),
@@ -952,9 +956,16 @@ TextEditingValue _editingValue(
         ),
 );
 
-String _terminalKeyOutput(TerminalKey key) {
+String _terminalKeyOutput(
+  TerminalKey key, {
+  bool shift = false,
+  bool alt = false,
+  bool ctrl = false,
+}) {
   final output = <String>[];
-  Terminal(onOutput: output.add).keyInput(key);
+  Terminal(
+    onOutput: output.add,
+  ).keyInput(key, shift: shift, alt: alt, ctrl: ctrl);
   return output.join();
 }
 
@@ -4540,6 +4551,31 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets('newline actions consume one-shot toolbar modifiers', (
+      tester,
+    ) async {
+      var shiftActive = true;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        resolveTerminalKeyModifiers: () =>
+            (ctrl: false, alt: false, shift: shiftActive),
+        consumeTerminalKeyModifiers: () => shiftActive = false,
+      );
+
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+      _terminalTextInputClient(tester).performAction(TextInputAction.newline);
+      await tester.pump();
+
+      expect(
+        harness.terminalOutput.join(),
+        _terminalKeyOutput(TerminalKey.enter, shift: true) +
+            _terminalKeyOutput(TerminalKey.enter),
+      );
+
+      await _disposeTerminalHarness(tester, harness);
+    });
 
     testWidgets('keeps ctrl combos working while IME composition is active', (
       tester,

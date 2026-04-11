@@ -5,6 +5,19 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/widgets/keyboard_toolbar.dart';
 import 'package:xterm/xterm.dart';
 
+String _terminalKeyOutput(
+  TerminalKey key, {
+  bool shift = false,
+  bool alt = false,
+  bool ctrl = false,
+}) {
+  final output = <String>[];
+  Terminal(
+    onOutput: output.add,
+  ).keyInput(key, shift: shift, alt: alt, ctrl: ctrl);
+  return output.join();
+}
+
 void main() {
   test('resolveTerminalTabInput returns plain tab by default', () {
     expect(resolveTerminalTabInput(shiftActive: false), '\t');
@@ -184,8 +197,7 @@ void main() {
       await tester.pump();
 
       expect(callCount, 1);
-      // keyInput(TerminalKey.enter) produces '\r'
-      expect(output, contains('\r'));
+      expect(output, contains(_terminalKeyOutput(TerminalKey.enter)));
     });
 
     testWidgets('Tab ignores the system keyboard shift state', (tester) async {
@@ -223,6 +235,27 @@ void main() {
       await tester.pump();
 
       expect(output, contains('\x1b[Z'));
+    });
+
+    testWidgets('toolbar Shift applies to Enter', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Shift'));
+      await tester.pump();
+      await tester.tap(find.byTooltip('Enter'));
+      await tester.pump();
+
+      expect(
+        output,
+        contains(_terminalKeyOutput(TerminalKey.enter, shift: true)),
+      );
     });
     test('keeps bottom safe-area padding when keyboard is closed', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));

@@ -30,7 +30,7 @@ class SettingsScreen extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => Scaffold(
     appBar: AppBar(title: const Text('Settings')),
     body: ListView(
-      padding: const EdgeInsets.symmetric(vertical: 8),
+      padding: const EdgeInsets.only(top: 4, bottom: 32),
       children: const [
         _SubscriptionSection(),
         _AppearanceSection(),
@@ -52,12 +52,13 @@ class _SectionHeader extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 24, 16, 8),
+      padding: const EdgeInsets.fromLTRB(16, 28, 16, 8),
       child: Text(
         title,
-        style: theme.textTheme.titleSmall?.copyWith(
+        style: theme.textTheme.labelMedium?.copyWith(
           color: theme.colorScheme.primary,
-          fontWeight: FontWeight.w600,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.5,
         ),
       ),
     );

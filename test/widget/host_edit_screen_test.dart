@@ -135,7 +135,8 @@ MonetizationService _buildProMonetizationService() {
   when(
     () => service.states,
   ).thenAnswer((_) => Stream.value(_proMonetizationState));
-  when(service.initialize).thenAnswer((_) => Future<void>.value());
+  // ignore: unnecessary_lambdas
+  when(() => service.initialize()).thenAnswer((_) => Future<void>.value());
   return service;
 }
 

@@ -111,6 +111,50 @@ const _terminalFilePathVerificationExtensions = <String>[
   'h',
   'm',
 ];
+
+class _ExtraKeysToggleKeycap extends StatelessWidget {
+  const _ExtraKeysToggleKeycap({required this.isActive, super.key});
+
+  final bool isActive;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final iconColor =
+        IconTheme.of(context).color ?? theme.colorScheme.onSurface;
+
+    return SizedBox(
+      width: 24,
+      height: 24,
+      child: Center(
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          width: 22,
+          height: 18,
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: isActive ? iconColor.withAlpha(56) : Colors.transparent,
+            border: Border.all(
+              color: isActive ? iconColor : iconColor.withAlpha(190),
+            ),
+            borderRadius: BorderRadius.circular(6),
+          ),
+          child: Text(
+            'Fn',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: iconColor,
+              fontSize: 10,
+              fontWeight: FontWeight.w700,
+              letterSpacing: -0.2,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
 final _trailingTerminalPaddingPattern = RegExp(r' +$');
@@ -1275,7 +1319,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
-  bool _showKeyboard = true;
+  bool _showKeyboardToolbar = true;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
@@ -2636,11 +2680,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   : 'Show system keyboard',
             ),
           IconButton(
-            icon: Icon(
-              _showKeyboard ? Icons.space_bar : Icons.keyboard_outlined,
+            icon: _ExtraKeysToggleKeycap(
+              key: ValueKey<String>(
+                _showKeyboardToolbar
+                    ? 'extra-keys-toggle-active'
+                    : 'extra-keys-toggle-inactive',
+              ),
+              isActive: _showKeyboardToolbar,
             ),
-            onPressed: () => setState(() => _showKeyboard = !_showKeyboard),
-            tooltip: _showKeyboard ? 'Hide toolbar' : 'Show toolbar',
+            onPressed: () =>
+                setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
+            tooltip: _showKeyboardToolbar
+                ? 'Hide extra keys'
+                : 'Show extra keys',
           ),
           PopupMenuButton<String>(
             onSelected: _handleMenuAction,
@@ -2781,7 +2833,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_showKeyboard &&
+          if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
             KeyboardToolbar(
@@ -3345,6 +3397,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
       resolveTextBeforeCursor: _terminalTextBeforeCursor,
+      resolveTerminalKeyModifiers: () => (
+        ctrl: _toolbarController.isCtrlActive,
+        alt: _toolbarController.isAltActive,
+        shift: _toolbarController.isShiftActive,
+      ),
+      consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,

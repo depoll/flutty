@@ -18,6 +18,11 @@ Future<MonetizationActionResult> _cancelledPurchaseResult(Invocation _) =>
 Future<MonetizationActionResult> _restoredPurchaseResult(Invocation _) =>
     Future.value(const MonetizationActionResult.success('Restored purchases.'));
 
+void _stubRestorePurchases(_MockMonetizationService service) {
+  // ignore: unnecessary_lambdas
+  when(() => service.restorePurchases()).thenAnswer(_restoredPurchaseResult);
+}
+
 void main() {
   testWidgets('plan cards stay legible in dark mode', (tester) async {
     final service = _MockMonetizationService();
@@ -58,7 +63,7 @@ void main() {
     when(
       () => service.purchaseOffer(any()),
     ).thenAnswer(_cancelledPurchaseResult);
-    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+    _stubRestorePurchases(service);
 
     final darkTheme = ThemeData.dark(useMaterial3: true);
 
@@ -177,7 +182,7 @@ void main() {
     when(
       () => service.purchaseOffer(any()),
     ).thenAnswer(_cancelledPurchaseResult);
-    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+    _stubRestorePurchases(service);
 
     await tester.pumpWidget(
       ProviderScope(
@@ -233,7 +238,7 @@ void main() {
     when(
       () => service.purchaseOffer(any()),
     ).thenAnswer(_cancelledPurchaseResult);
-    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+    _stubRestorePurchases(service);
 
     await tester.pumpWidget(
       ProviderScope(
@@ -310,7 +315,7 @@ void main() {
     when(
       () => service.purchaseOffer(any()),
     ).thenAnswer(_cancelledPurchaseResult);
-    when(service.restorePurchases).thenAnswer(_restoredPurchaseResult);
+    _stubRestorePurchases(service);
 
     await tester.pumpWidget(
       ProviderScope(
