@@ -26,45 +26,49 @@ class TerminalThemeService {
   /// 3. Built-in default theme
   Future<TerminalThemeData> getThemeForHost(
     Host? host,
-    Brightness brightness,
-  ) async {
+    Brightness brightness, {
+    bool allowHostOverride = true,
+  }) async {
     final isDark = brightness == Brightness.dark;
 
-    // 1. Check host-specific override
-    if (host != null) {
+    if (allowHostOverride && host != null) {
       final hostThemeId = isDark
           ? host.terminalThemeDarkId
           : host.terminalThemeLightId;
       if (hostThemeId != null) {
         final theme = await getThemeById(hostThemeId);
-        if (theme != null) return theme;
+        if (theme != null) {
+          return theme;
+        }
       }
     }
 
-    // 2. Fall back to global default
     final globalThemeId = isDark
         ? await _settings.getString(SettingKeys.defaultTerminalThemeDark)
         : await _settings.getString(SettingKeys.defaultTerminalThemeLight);
 
     if (globalThemeId != null) {
       final theme = await getThemeById(globalThemeId);
-      if (theme != null) return theme;
+      if (theme != null) {
+        return theme;
+      }
     }
 
-    // 3. Built-in default
     return isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite;
   }
 
   /// Gets a theme by ID (checks built-in themes first, then custom).
   Future<TerminalThemeData?> getThemeById(String id) async {
-    // Check built-in themes first
     final builtIn = TerminalThemes.getById(id);
-    if (builtIn != null) return builtIn;
+    if (builtIn != null) {
+      return builtIn;
+    }
 
-    // Check custom themes
     final customThemes = await getCustomThemes();
     for (final theme in customThemes) {
-      if (theme.id == id) return theme;
+      if (theme.id == id) {
+        return theme;
+      }
     }
     return null;
   }
@@ -78,24 +82,28 @@ class TerminalThemeService {
   /// Gets all dark themes.
   Future<List<TerminalThemeData>> getDarkThemes() async {
     final all = await getAllThemes();
-    return all.where((t) => t.isDark).toList();
+    return all.where((theme) => theme.isDark).toList();
   }
 
   /// Gets all light themes.
   Future<List<TerminalThemeData>> getLightThemes() async {
     final all = await getAllThemes();
-    return all.where((t) => !t.isDark).toList();
+    return all.where((theme) => !theme.isDark).toList();
   }
 
   /// Gets all custom themes.
   Future<List<TerminalThemeData>> getCustomThemes() async {
     final json = await _settings.getString(SettingKeys.customTerminalThemes);
-    if (json == null || json.isEmpty) return [];
+    if (json == null || json.isEmpty) {
+      return [];
+    }
 
     try {
       final list = jsonDecode(json) as List<dynamic>;
       return list
-          .map((e) => TerminalThemeData.fromJson(e as Map<String, dynamic>))
+          .map(
+            (item) => TerminalThemeData.fromJson(item as Map<String, dynamic>),
+          )
           .toList();
     } on FormatException {
       return [];
@@ -105,9 +113,9 @@ class TerminalThemeService {
   /// Saves a custom theme.
   Future<void> saveCustomTheme(TerminalThemeData theme) async {
     final themes = await getCustomThemes();
-
-    // Update existing or add new
-    final index = themes.indexWhere((t) => t.id == theme.id);
+    final index = themes.indexWhere(
+      (existingTheme) => existingTheme.id == theme.id,
+    );
     if (index >= 0) {
       themes[index] = theme;
     } else {
@@ -120,12 +128,12 @@ class TerminalThemeService {
   /// Deletes a custom theme.
   Future<void> deleteCustomTheme(String themeId) async {
     final themes = await getCustomThemes();
-    themes.removeWhere((t) => t.id == themeId);
+    themes.removeWhere((theme) => theme.id == themeId);
     await _saveCustomThemes(themes);
   }
 
   Future<void> _saveCustomThemes(List<TerminalThemeData> themes) async {
-    final json = jsonEncode(themes.map((t) => t.toJson()).toList());
+    final json = jsonEncode(themes.map((theme) => theme.toJson()).toList());
     await _settings.setString(SettingKeys.customTerminalThemes, json);
   }
 }

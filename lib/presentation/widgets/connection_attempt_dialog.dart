@@ -3,6 +3,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
+import '../../domain/models/monetization.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/ssh_service.dart';
 
 /// Runs a host connection while showing a live progress dialog.
@@ -14,6 +16,12 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
 }) async {
   final navigator = Navigator.of(context, rootNavigator: true);
   final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+  final monetizationState =
+      ref.read(monetizationStateProvider).asData?.value ??
+      ref.read(monetizationServiceProvider).currentState;
+  final useHostThemeOverrides = monetizationState.allowsFeature(
+    MonetizationFeature.hostSpecificThemes,
+  );
   final dialogFuture = showDialog<void>(
     context: context,
     barrierDismissible: false,
@@ -22,7 +30,11 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
 
   late final SshConnectionResult result;
   try {
-    result = await sessionsNotifier.connect(host.id, forceNew: forceNew);
+    result = await sessionsNotifier.connect(
+      host.id,
+      forceNew: forceNew,
+      useHostThemeOverrides: useHostThemeOverrides,
+    );
   } catch (error, stackTrace) {
     FlutterError.reportError(
       FlutterErrorDetails(

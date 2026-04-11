@@ -13,9 +13,11 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -25,6 +27,7 @@ import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/file_picker_helpers.dart';
+import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import 'transfer_screen.dart';
 
@@ -120,6 +123,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   Future<void> _handleIncomingTransferPayload(String encodedPayload) async {
     try {
+      final hasAccess = await requireMonetizationFeatureAccess(
+        context: context,
+        ref: ref,
+        feature: MonetizationFeature.encryptedTransfers,
+      );
+      if (!hasAccess || !mounted) {
+        return;
+      }
       final transferPassphrase = await showTransferPassphraseDialog(
         context: context,
         title: 'Incoming transfer passphrase',
@@ -663,6 +674,12 @@ class _HostRow extends ConsumerWidget {
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
+    final monetizationState =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final hasHostThemeAccess = monetizationState.allowsFeature(
+      MonetizationFeature.hostSpecificThemes,
+    );
     final previewEntries = connectionIds
         .map((connectionId) {
           final connection = sessionsNotifier.getActiveConnection(connectionId);
@@ -680,8 +697,12 @@ class _HostRow extends ConsumerWidget {
             brightness: theme.brightness,
             themeSettings: terminalThemeSettings,
             availableThemes: terminalThemes,
-            hostLightThemeId: host.terminalThemeLightId,
-            hostDarkThemeId: host.terminalThemeDarkId,
+            hostLightThemeId: hasHostThemeAccess
+                ? host.terminalThemeLightId
+                : null,
+            hostDarkThemeId: hasHostThemeAccess
+                ? host.terminalThemeDarkId
+                : null,
             connectionLightThemeId: connection?.terminalThemeLightId,
             connectionDarkThemeId: connection?.terminalThemeDarkId,
           );
@@ -1032,7 +1053,9 @@ class _HostRow extends ConsumerWidget {
             contentPadding: EdgeInsets.zero,
             leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
             title: Text(
-              useShareSheet ? 'Share Encrypted' : 'Export Encrypted File',
+              useShareSheet
+                  ? 'Share Encrypted (Pro)'
+                  : 'Export Encrypted File (Pro)',
             ),
           ),
         ),
@@ -1074,6 +1097,14 @@ class _HostRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.encryptedTransfers,
+    );
+    if (!hasAccess || !context.mounted) {
+      return;
+    }
     if ((host.password?.isNotEmpty ?? false) || host.keyId != null) {
       final isAuthorized = await authorizeSensitiveTransferExport(
         context: context,
@@ -1249,6 +1280,12 @@ class _ConnectionsPanel extends ConsumerWidget {
     final terminalThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
+    final monetizationState =
+        ref.watch(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final hasHostThemeAccess = monetizationState.allowsFeature(
+      MonetizationFeature.hostSpecificThemes,
+    );
     final connections = sessionsNotifier.getActiveConnections();
     final hosts = hostsAsync.asData?.value ?? <Host>[];
     final hostLookup = {for (final host in hosts) host.id: host};
@@ -1292,10 +1329,14 @@ class _ConnectionsPanel extends ConsumerWidget {
                       availableThemes: terminalThemes,
                       lightThemeId:
                           connection.terminalThemeLightId ??
-                          host?.terminalThemeLightId,
+                          (hasHostThemeAccess
+                              ? host?.terminalThemeLightId
+                              : null),
                       darkThemeId:
                           connection.terminalThemeDarkId ??
-                          host?.terminalThemeDarkId,
+                          (hasHostThemeAccess
+                              ? host?.terminalThemeDarkId
+                              : null),
                     );
 
                     return ListTile(
@@ -1654,6 +1695,14 @@ class _KeyRow extends ConsumerWidget {
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.encryptedTransfers,
+    );
+    if (!hasAccess || !context.mounted) {
+      return;
+    }
     final isAuthorized = await authorizeSensitiveTransferExport(
       context: context,
       authService: ref.read(authServiceProvider),

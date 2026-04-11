@@ -6,8 +6,11 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/services/key_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
+import '../widgets/premium_access.dart';
+import '../widgets/premium_badge.dart';
 import 'transfer_screen.dart';
 
 /// Screen for adding or importing SSH keys.
@@ -297,13 +300,15 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
                   style: Theme.of(context).textTheme.titleSmall,
                 ),
                 const SizedBox(height: 8),
+                const PremiumBadge(),
+                const SizedBox(height: 8),
                 Row(
                   children: [
                     Expanded(
                       child: OutlinedButton.icon(
                         onPressed: _isImporting
                             ? null
-                            : _importFromEncryptedFile,
+                            : _handleEncryptedImportTap,
                         icon: const Icon(Icons.file_open),
                         label: const Text('Import Encrypted File'),
                       ),
@@ -481,6 +486,18 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
     }
     final encodedPayload = await pickTransferPayloadFromFile(context);
     await _importFromTransferPayload(encodedPayload);
+  }
+
+  Future<void> _handleEncryptedImportTap() async {
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.encryptedTransfers,
+    );
+    if (!hasAccess) {
+      return;
+    }
+    await _importFromEncryptedFile();
   }
 
   Future<void> _importFromTransferPayload(String? encodedPayload) async {

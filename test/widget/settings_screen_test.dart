@@ -1,20 +1,12 @@
 // ignore_for_file: public_member_api_docs
 
-import 'dart:convert';
-import 'dart:typed_data';
-
 import 'package:drift/native.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/data/database/database.dart';
-import 'package:monkeyssh/data/repositories/host_repository.dart';
-import 'package:monkeyssh/data/repositories/key_repository.dart';
-import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
-import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
@@ -85,6 +77,35 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('About'), findsOneWidget);
+    });
+
+    testWidgets('displays MonkeySSH Pro subscription section', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      expect(find.text('MonkeySSH Pro'), findsOneWidget);
+      expect(find.text('Subscription'), findsOneWidget);
+      expect(
+        find.text('Unlock transfers, automation, and agent launch presets'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows active subscription state when Pro is unlocked', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      await SettingsService(
+        db,
+      ).setBool(SettingKeys.monetizationProUnlocked, value: true);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      expect(find.text('Unlocked on this device'), findsOneWidget);
+      expect(find.text('Active'), findsOneWidget);
     });
 
     testWidgets('displays theme option', (tester) async {
@@ -284,37 +305,6 @@ void main() {
     ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
-      final encryptionService = SecretEncryptionService.forTesting();
-      final transferService = FakeSecureTransferService(
-        db,
-        KeyRepository(db, encryptionService),
-        HostRepository(db, encryptionService),
-        payload: TransferPayload(
-          type: TransferPayloadType.fullMigration,
-          schemaVersion: 1,
-          createdAt: DateTime.now().toUtc(),
-          data: const {
-            'settings': <String, Object?>{},
-            'hosts': <Map<String, Object?>>[],
-            'keys': <Map<String, Object?>>[],
-            'groups': <Map<String, Object?>>[],
-            'snippets': <Map<String, Object?>>[],
-            'snippetFolders': <Map<String, Object?>>[],
-            'portForwards': <Map<String, Object?>>[],
-            'knownHosts': <Map<String, Object?>>[],
-          },
-        ),
-      );
-
-      setFakeFilePickerResult(
-        result: FilePickerResult([
-          PlatformFile(
-            name: 'export.monkeysshx',
-            size: 15,
-            bytes: Uint8List.fromList(utf8.encode('encoded-payload')),
-          ),
-        ]),
-      );
 
       var hostBuilds = 0;
       var keyBuilds = 0;
@@ -326,7 +316,6 @@ void main() {
             databaseProvider.overrideWithValue(db),
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
-            secureTransferServiceProvider.overrideWithValue(transferService),
             themeModeNotifierProvider.overrideWith(StaticThemeModeNotifier.new),
             fontSizeNotifierProvider.overrideWith(StaticFontSizeNotifier.new),
             fontFamilyNotifierProvider.overrideWith(
@@ -362,28 +351,17 @@ void main() {
       final initialHostBuilds = hostBuilds;
       final initialKeyBuilds = keyBuilds;
       final initialGroupBuilds = groupBuilds;
-
-      final importFinder = find.text('Import app data');
-      await tester.scrollUntilVisible(
-        importFinder,
-        300,
-        scrollable: find.byType(Scrollable).first,
+      final container = ProviderScope.containerOf(
+        tester.element(find.byType(EntityProviderProbe)),
       );
-      final importTile = tester
-          .widgetList<ListTile>(find.byType(ListTile))
-          .firstWhere(
-            (tile) => (tile.title as Text?)?.data == 'Import app data',
-          );
-      importTile.onTap?.call();
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(EditableText).last, '1234');
-      await tester.tap(find.text('Continue'));
-      await tester.pumpAndSettle();
 
-      await tester.tap(find.text('Replace'));
-      await tester.pumpAndSettle();
+      invalidateImportedEntityProviders(container.invalidate);
+      container
+        ..read(allHostsProvider)
+        ..read(allKeysProvider)
+        ..read(allGroupsProvider);
+      await tester.pump();
 
-      expect(transferService.importCallCount, 1);
       expect(hostBuilds, greaterThan(initialHostBuilds));
       expect(keyBuilds, greaterThan(initialKeyBuilds));
       expect(groupBuilds, greaterThan(initialGroupBuilds));

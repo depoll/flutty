@@ -61,6 +61,25 @@ abstract final class SettingKeys {
   /// Auto-lock timeout in minutes.
   static const autoLockTimeout = 'auto_lock_timeout';
 
+  /// Whether MonkeySSH Pro is currently unlocked from the store.
+  static const monetizationProUnlocked = 'monetization_pro_unlocked';
+
+  /// Active product ID that most recently unlocked MonkeySSH Pro.
+  static const monetizationActiveProductId = 'monetization_active_product_id';
+
+  /// Active offer ID that most recently unlocked MonkeySSH Pro.
+  static const monetizationActiveOfferId = 'monetization_active_offer_id';
+
+  /// Timestamp of the most recent entitlement update.
+  static const monetizationEntitlementUpdatedAt =
+      'monetization_entitlement_updated_at';
+
+  /// Debug-only local premium override.
+  static const monetizationDebugUnlocked = 'monetization_debug_unlocked';
+
+  /// Saved host-scoped coding-agent launch presets.
+  static const agentLaunchPresets = 'agent_launch_presets';
+
   /// Enable shared clipboard between device and remote session.
   ///
   /// The terminal can sync through OSC 52 and remote clipboard utilities when

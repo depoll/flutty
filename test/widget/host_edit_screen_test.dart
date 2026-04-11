@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
@@ -14,6 +15,8 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
 
 Host _testHost({
@@ -116,6 +119,27 @@ class _FakePortForwardRepository extends PortForwardRepository {
   Future<List<PortForward>> getByHostId(int hostId) async => const [];
 }
 
+class _MockMonetizationService extends Mock implements MonetizationService {}
+
+const _proMonetizationState = MonetizationState(
+  billingAvailability: MonetizationBillingAvailability.available,
+  entitlements: MonetizationEntitlements.pro(),
+  offers: [],
+  debugUnlockAvailable: false,
+  debugUnlocked: false,
+);
+
+MonetizationService _buildProMonetizationService() {
+  final service = _MockMonetizationService();
+  when(() => service.currentState).thenReturn(_proMonetizationState);
+  when(
+    () => service.states,
+  ).thenAnswer((_) => Stream.value(_proMonetizationState));
+  // ignore: unnecessary_lambdas
+  when(() => service.initialize()).thenAnswer((_) => Future<void>.value());
+  return service;
+}
+
 void main() {
   group('HostEditScreen', () {
     testWidgets(
@@ -160,6 +184,19 @@ void main() {
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(
+                  const MonetizationState(
+                    billingAvailability:
+                        MonetizationBillingAvailability.available,
+                    entitlements: MonetizationEntitlements.pro(),
+                    offers: [],
+                    debugUnlockAvailable: false,
+                    debugUnlocked: false,
+                  ),
+                ),
+              ),
+              databaseProvider.overrideWithValue(database),
               hostRepositoryProvider.overrideWithValue(hostRepository),
               keyRepositoryProvider.overrideWithValue(
                 _FakeKeyRepository(
@@ -197,6 +234,7 @@ void main() {
 
         expect(hostRepository.updatedHost, isNotNull);
         expect(hostRepository.updatedHost!.label, 'Reviewed Host');
+        expect(hostRepository.updatedHost!.autoConnectCommand, 'tmux attach');
         expect(hostRepository.updatedHost!.autoConnectSnippetId, 7);
         expect(
           hostRepository.updatedHost!.autoConnectRequiresConfirmation,
@@ -222,6 +260,7 @@ void main() {
           database: database,
           encryptionService: encryptionService,
         );
+        final monetizationService = _buildProMonetizationService();
         final router = GoRouter(
           routes: [
             GoRoute(
@@ -240,6 +279,10 @@ void main() {
         await tester.pumpWidget(
           ProviderScope(
             overrides: [
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              databaseProvider.overrideWithValue(database),
               hostRepositoryProvider.overrideWithValue(hostRepository),
               keyRepositoryProvider.overrideWithValue(
                 _FakeKeyRepository(
@@ -300,5 +343,140 @@ void main() {
         );
       },
     );
+
+    testWidgets('shows Pro helper copy for auto-run automation', (
+      tester,
+    ) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(
+              _FakeHostRepository(
+                host: _testHost(
+                  id: 1,
+                  label: 'Imported Host',
+                  autoConnectRequiresConfirmation: false,
+                ),
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: const MaterialApp(home: HostEditScreen()),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('host-advanced-tile')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.byKey(const Key('host-advanced-tile')));
+      await tester.tap(
+        find.byKey(const Key('host-advanced-tile')),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(
+        find.text(
+          'MonkeySSH Pro unlocks auto-run commands, saved snippets, and guided agent launch presets.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('keeps auto-run command read-only without Pro access', (
+      tester,
+    ) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(
+              _FakeHostRepository(
+                host: _testHost(
+                  id: 1,
+                  label: 'Imported Host',
+                  autoConnectCommand: 'tmux attach',
+                  autoConnectRequiresConfirmation: false,
+                ),
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: const MaterialApp(home: HostEditScreen(hostId: 1)),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('host-advanced-tile')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(find.byKey(const Key('host-advanced-tile')));
+      await tester.tap(
+        find.byKey(const Key('host-advanced-tile')),
+        warnIfMissed: false,
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('host-auto-connect-command-field')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+
+      final commandField = tester.widget<EditableText>(
+        find.descendant(
+          of: find.byKey(const Key('host-auto-connect-command-field')),
+          matching: find.byType(EditableText),
+        ),
+      );
+      expect(commandField.readOnly, isTrue);
+    });
   });
 }

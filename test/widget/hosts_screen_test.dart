@@ -190,7 +190,7 @@ void main() {
     expect(find.text('New connection'), findsOneWidget);
     expect(find.text('Edit'), findsOneWidget);
     expect(find.text('Duplicate'), findsOneWidget);
-    expect(find.text('Export Encrypted File'), findsOneWidget);
+    expect(find.text('Export Encrypted File (Pro)'), findsOneWidget);
     expect(find.text('Delete'), findsOneWidget);
   });
 }

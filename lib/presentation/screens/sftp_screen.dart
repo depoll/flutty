@@ -12,7 +12,9 @@ import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as path;
 
 import '../../data/repositories/host_repository.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -255,10 +257,19 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       var session = connectionId == null
           ? null
           : sessionsNotifier.getSession(connectionId);
+      final monetizationState =
+          ref.read(monetizationStateProvider).asData?.value ??
+          ref.read(monetizationServiceProvider).currentState;
+      final useHostThemeOverrides = monetizationState.allowsFeature(
+        MonetizationFeature.hostSpecificThemes,
+      );
 
       // Connect if not already connected
       if (session == null) {
-        final result = await sessionsNotifier.connect(widget.hostId);
+        final result = await sessionsNotifier.connect(
+          widget.hostId,
+          useHostThemeOverrides: useHostThemeOverrides,
+        );
         if (!mounted) {
           return;
         }
@@ -1348,6 +1359,12 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       final session = preferredConnectionId == null
           ? null
           : sessionsNotifier.getSession(preferredConnectionId);
+      final monetizationState =
+          ref.read(monetizationStateProvider).asData?.value ??
+          ref.read(monetizationServiceProvider).currentState;
+      final useHostThemeOverrides = monetizationState.allowsFeature(
+        MonetizationFeature.hostSpecificThemes,
+      );
       final terminalThemeSettings = ref.read(terminalThemeSettingsProvider);
       final terminalThemes =
           ref.read(allTerminalThemesProvider).asData?.value ??
@@ -1357,8 +1374,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         themeSettings: terminalThemeSettings,
         availableThemes: terminalThemes,
         lightThemeId:
-            session?.terminalThemeLightId ?? host?.terminalThemeLightId,
-        darkThemeId: session?.terminalThemeDarkId ?? host?.terminalThemeDarkId,
+            session?.terminalThemeLightId ??
+            (useHostThemeOverrides ? host?.terminalThemeLightId : null),
+        darkThemeId:
+            session?.terminalThemeDarkId ??
+            (useHostThemeOverrides ? host?.terminalThemeDarkId : null),
       );
       final fontFamily =
           host?.terminalFontFamily ??

@@ -24,8 +24,10 @@ import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -34,6 +36,7 @@ import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
+import '../widgets/premium_access.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
@@ -1879,7 +1882,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final brightness = MediaQuery.of(context).platformBrightness;
     final themeService = ref.read(terminalThemeServiceProvider);
-    final theme = await themeService.getThemeForHost(_host, brightness);
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final theme = await themeService.getThemeForHost(
+      _host,
+      brightness,
+      allowHostOverride: monetizationState.allowsFeature(
+        MonetizationFeature.hostSpecificThemes,
+      ),
+    );
 
     if (mounted) {
       setState(() => _currentTheme = theme);
@@ -1943,9 +1955,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       shouldForceNew = true;
     }
 
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+
     final result = await _sessionsNotifier!.connect(
       widget.hostId,
       forceNew: shouldForceNew,
+      useHostThemeOverrides: monetizationState.allowsFeature(
+        MonetizationFeature.hostSpecificThemes,
+      ),
     );
 
     if (!mounted) return;
@@ -2216,6 +2235,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final host = _host;
     final shell = _shell;
     if (host == null || shell == null) {
+      return;
+    }
+
+    final hasAccess = await ref
+        .read(monetizationServiceProvider)
+        .canUseFeature(MonetizationFeature.autoConnectAutomation);
+    if (!hasAccess) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: const Text(
+              'MonkeySSH Pro unlocks auto-connect commands and snippets.',
+            ),
+            action: SnackBarAction(
+              label: 'Upgrade',
+              onPressed: () => context.pushNamed(
+                Routes.upgrade,
+                queryParameters: <String, String>{
+                  'feature': MonetizationFeature.autoConnectAutomation.name,
+                },
+              ),
+            ),
+          ),
+        );
+      }
       return;
     }
 
@@ -2929,6 +2973,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (theme != null && mounted) {
       final isDark = Theme.of(context).brightness == Brightness.dark;
+      final monetizationState =
+          ref.read(monetizationStateProvider).asData?.value ??
+          ref.read(monetizationServiceProvider).currentState;
+      final hasHostThemeAccess = monetizationState.allowsFeature(
+        MonetizationFeature.hostSpecificThemes,
+      );
       if (_connectionId != null) {
         ref
             .read(activeSessionsProvider.notifier)
@@ -2954,7 +3004,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       scaffoldMessenger.hideCurrentSnackBar();
                       _saveThemeToHost(theme, isDark: isDark);
                     },
-                    child: const Text('Save to Host'),
+                    child: Text(
+                      hasHostThemeAccess
+                          ? 'Save to Host'
+                          : 'Save to Host (Pro)',
+                    ),
                   ),
                 ],
               ),
@@ -2970,6 +3024,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required bool isDark,
   }) async {
     if (_host == null) return;
+    final hasAccess = await requireMonetizationFeatureAccess(
+      context: context,
+      ref: ref,
+      feature: MonetizationFeature.hostSpecificThemes,
+    );
+    if (!hasAccess || !mounted) {
+      return;
+    }
 
     final hostRepo = ref.read(hostRepositoryProvider);
     final updatedHost = isDark

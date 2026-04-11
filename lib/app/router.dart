@@ -1,7 +1,9 @@
+import 'package:collection/collection.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 
+import '../domain/models/monetization.dart';
 import '../domain/services/auth_service.dart';
 import '../presentation/screens/auth_setup_screen.dart';
 import '../presentation/screens/home_screen.dart';
@@ -18,6 +20,7 @@ import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
 import '../presentation/screens/theme_editor_screen.dart';
+import '../presentation/screens/upgrade_screen.dart';
 import 'routes.dart';
 
 /// Root navigator key used for global modal prompts.
@@ -155,6 +158,17 @@ final routerProvider = Provider<GoRouter>((ref) {
         path: '/settings',
         name: Routes.settings,
         builder: (context, state) => const SettingsScreen(),
+      ),
+      GoRoute(
+        path: '/upgrade',
+        name: Routes.upgrade,
+        builder: (context, state) {
+          final featureName = state.uri.queryParameters['feature'];
+          final feature = MonetizationFeature.values.firstWhereOrNull(
+            (value) => value.name == featureName,
+          );
+          return UpgradeScreen(feature: feature);
+        },
       ),
       GoRoute(
         path: '/theme-editor',
