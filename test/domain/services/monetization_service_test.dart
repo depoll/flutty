@@ -33,6 +33,22 @@ void main() {
     registerFallbackValue(_FakePurchaseParam());
   });
 
+  test('queries both preview and prod App Store product IDs on iOS', () {
+    expect(MonetizationProductIds.forPlatform(TargetPlatform.iOS), {
+      MonetizationProductIds.iosMonthly,
+      MonetizationProductIds.iosAnnual,
+      MonetizationProductIds.iosMonthlyProd,
+      MonetizationProductIds.iosAnnualProd,
+    });
+    expect(
+      MonetizationProductIds.allKnown,
+      containsAll({
+        MonetizationProductIds.iosMonthlyProd,
+        MonetizationProductIds.iosAnnualProd,
+      }),
+    );
+  });
+
   group('buildMonetizationOffers', () {
     test('deduplicates Google Play base plans and keeps trial offers', () {
       final productDetails = GooglePlayProductDetails.fromProductDetails(

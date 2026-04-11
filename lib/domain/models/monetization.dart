@@ -12,13 +12,30 @@ abstract final class MonetizationProductIds {
   /// App Store annual subscription product.
   static const iosAnnual = 'monkeyssh_pro_annual';
 
+  /// App Store monthly subscription product for the production app.
+  static const iosMonthlyProd = 'monkeyssh_pro_monthly_prod';
+
+  /// App Store annual subscription product for the production app.
+  static const iosAnnualProd = 'monkeyssh_pro_annual_prod';
+
   /// All recognized paid products across platforms.
-  static const allKnown = <String>{androidPro, iosMonthly, iosAnnual};
+  static const allKnown = <String>{
+    androidPro,
+    iosMonthly,
+    iosAnnual,
+    iosMonthlyProd,
+    iosAnnualProd,
+  };
 
   /// Product identifiers to query on the current platform.
   static Set<String> forPlatform(TargetPlatform platform) => switch (platform) {
     TargetPlatform.android => {androidPro},
-    TargetPlatform.iOS => {iosMonthly, iosAnnual},
+    TargetPlatform.iOS => {
+      iosMonthly,
+      iosAnnual,
+      iosMonthlyProd,
+      iosAnnualProd,
+    },
     _ => const {},
   };
 }
