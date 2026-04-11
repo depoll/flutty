@@ -475,7 +475,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           ),
                         ],
                         onChanged: (value) {
-                          if (value == null) {
+                          if (value == null || !hasAutomationAccess) {
                             return;
                           }
                           unawaited(_handleAutoConnectModeSelection(value));
@@ -530,35 +530,41 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: _agentWorkingDirectoryController,
+                            readOnly: !hasAgentPresetAccess,
                             decoration: const InputDecoration(
                               labelText: 'Working directory (optional)',
                               hintText: '~/src/app',
                               prefixIcon: Icon(Icons.folder_outlined),
                             ),
-                            onChanged: (_) =>
-                                _syncAutoConnectCommandFromPreset(),
+                            onChanged: hasAgentPresetAccess
+                                ? (_) => _syncAutoConnectCommandFromPreset()
+                                : null,
                           ),
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: _agentTmuxSessionController,
+                            readOnly: !hasAgentPresetAccess,
                             decoration: const InputDecoration(
                               labelText: 'tmux session (optional)',
                               hintText: 'app-agent',
                               prefixIcon: Icon(Icons.view_carousel_outlined),
                             ),
-                            onChanged: (_) =>
-                                _syncAutoConnectCommandFromPreset(),
+                            onChanged: hasAgentPresetAccess
+                                ? (_) => _syncAutoConnectCommandFromPreset()
+                                : null,
                           ),
                           const SizedBox(height: 12),
                           TextFormField(
                             controller: _agentArgumentsController,
+                            readOnly: !hasAgentPresetAccess,
                             decoration: const InputDecoration(
                               labelText: 'Extra arguments (optional)',
                               hintText: '--resume',
                               prefixIcon: Icon(Icons.tune_outlined),
                             ),
-                            onChanged: (_) =>
-                                _syncAutoConnectCommandFromPreset(),
+                            onChanged: hasAgentPresetAccess
+                                ? (_) => _syncAutoConnectCommandFromPreset()
+                                : null,
                           ),
                           const SizedBox(height: 12),
                         ],
@@ -577,7 +583,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           ),
                           minLines: 1,
                           maxLines: 3,
-                          readOnly: _useAgentLaunchPreset,
+                          readOnly:
+                              _useAgentLaunchPreset || !hasAutomationAccess,
                           autocorrect: false,
                           validator: (value) {
                             if (_selectedAutoConnectMode !=
@@ -634,9 +641,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                       ),
                                     ),
                                   ],
-                                  onChanged: (value) => setState(
-                                    () => _selectedAutoConnectSnippetId = value,
-                                  ),
+                                  onChanged: hasAutomationAccess
+                                      ? (value) => setState(
+                                          () => _selectedAutoConnectSnippetId =
+                                              value,
+                                        )
+                                      : null,
                                   validator: (value) {
                                     if (_selectedAutoConnectMode !=
                                         AutoConnectCommandMode.snippet) {
@@ -750,6 +760,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     setState(() => _isLoading = true);
 
     try {
+      final monetizationState =
+          ref.read(monetizationStateProvider).asData?.value ??
+          ref.read(monetizationServiceProvider).currentState;
+      final hasAutomationAccess = monetizationState.allowsFeature(
+        MonetizationFeature.autoConnectAutomation,
+      );
+      final hasAgentPresetAccess = monetizationState.allowsFeature(
+        MonetizationFeature.agentLaunchPresets,
+      );
       final repo = ref.read(hostRepositoryProvider);
       final presetService = ref.read(agentLaunchPresetServiceProvider);
       final port = int.parse(_portController.text);
@@ -780,18 +799,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         AutoConnectCommandMode.snippet =>
           selectedSnippet?.command ?? _autoConnectCommandController.text,
       };
-      final normalizedAutoConnectCommand =
-          autoConnectCommand == null || autoConnectCommand.trim().isEmpty
-          ? null
-          : autoConnectCommand;
-      final normalizedAutoConnectSnippetId =
-          _selectedAutoConnectMode == AutoConnectCommandMode.snippet &&
-              selectedSnippet != null
-          ? selectedSnippet.id
-          : null;
+      final normalizedAutoConnectCommand = hasAutomationAccess
+          ? (autoConnectCommand == null || autoConnectCommand.trim().isEmpty
+                ? null
+                : autoConnectCommand)
+          : _existingHost?.autoConnectCommand;
+      final normalizedAutoConnectSnippetId = hasAutomationAccess
+          ? (_selectedAutoConnectMode == AutoConnectCommandMode.snippet &&
+                    selectedSnippet != null
+                ? selectedSnippet.id
+                : null)
+          : _existingHost?.autoConnectSnippetId;
       final autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-        command: normalizedAutoConnectCommand,
-        snippetId: normalizedAutoConnectSnippetId,
+        command: hasAutomationAccess
+            ? normalizedAutoConnectCommand
+            : _existingHost?.autoConnectCommand,
+        snippetId: hasAutomationAccess
+            ? normalizedAutoConnectSnippetId
+            : _existingHost?.autoConnectSnippetId,
       );
       var savedHostId = widget.hostId;
 
@@ -844,11 +869,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
       if (savedHostId != null) {
         final preset = _buildCurrentAgentLaunchPreset();
-        if (_selectedAutoConnectMode == AutoConnectCommandMode.custom &&
+        if (hasAutomationAccess &&
+            hasAgentPresetAccess &&
+            _selectedAutoConnectMode == AutoConnectCommandMode.custom &&
             _useAgentLaunchPreset &&
             preset != null) {
           await presetService.setPresetForHost(savedHostId, preset);
-        } else {
+        } else if (hasAutomationAccess && hasAgentPresetAccess) {
           await presetService.deletePresetForHost(savedHostId);
         }
       }

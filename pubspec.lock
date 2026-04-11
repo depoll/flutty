@@ -555,7 +555,7 @@ packages:
     source: hosted
     version: "0.4.0+10"
   in_app_purchase_platform_interface:
-    dependency: "direct dev"
+    dependency: transitive
     description:
       name: in_app_purchase_platform_interface
       sha256: "1d353d38251da5b9fea6635c0ebfc6bb17a2d28d0e86ea5e083bf64244f1fb4c"
