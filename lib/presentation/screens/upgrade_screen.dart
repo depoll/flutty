@@ -186,6 +186,13 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
         sharedIntroductoryOfferLabel ??
         highlightedOffer?.introductoryOfferLabel;
     final annualSavingsPercent = _annualSavingsPercent(state.offers);
+    final priceCardTextStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: colorScheme.onSurfaceVariant,
+    );
+    final priceCardEmphasisStyle = theme.textTheme.bodyMedium?.copyWith(
+      color: colorScheme.onSurface,
+      fontWeight: FontWeight.w600,
+    );
 
     return Scaffold(
       appBar: AppBar(title: const Text('MonkeySSH Pro')),
@@ -234,24 +241,21 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             Text('Choose a plan', style: theme.textTheme.titleMedium),
             if (annualSavingsPercent case final savings?) ...[
               const SizedBox(height: 8),
-              Text(
-                'Annual is the best value - save about $savings% compared with paying monthly.',
+              _UpgradeBanner(
                 key: const ValueKey('annual-savings-label'),
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.primary,
-                  fontWeight: FontWeight.w700,
-                ),
+                message:
+                    'Annual is the best value - save about $savings% compared with paying monthly.',
+                backgroundColor: colorScheme.secondaryContainer,
+                foregroundColor: colorScheme.onSecondaryContainer,
               ),
             ],
             if (sharedIntroductoryOfferLabel case final intro?) ...[
               const SizedBox(height: 8),
-              Text(
-                intro,
+              _UpgradeBanner(
                 key: const ValueKey('shared-intro-offer-label'),
-                style: theme.textTheme.bodyMedium?.copyWith(
-                  color: colorScheme.primary,
-                  fontWeight: FontWeight.w600,
-                ),
+                message: intro,
+                backgroundColor: colorScheme.primaryContainer,
+                foregroundColor: colorScheme.onPrimaryContainer,
               ),
             ],
             const SizedBox(height: 12),
@@ -298,16 +302,15 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                   ),
                   const SizedBox(height: 8),
                   if (priceDetailLabel case final detail?) ...[
-                    Text(detail, style: theme.textTheme.bodyMedium),
+                    Text(detail, style: priceCardTextStyle),
                     const SizedBox(height: 8),
                   ],
                   if (introductoryOfferLabel case final intro?) ...[
-                    Text(
-                      intro,
-                      style: theme.textTheme.bodyMedium?.copyWith(
-                        color: colorScheme.primary,
-                        fontWeight: FontWeight.w600,
-                      ),
+                    _UpgradeBanner(
+                      message: intro,
+                      backgroundColor: colorScheme.primaryContainer,
+                      foregroundColor: colorScheme.onPrimaryContainer,
+                      compact: true,
                     ),
                     const SizedBox(height: 8),
                   ],
@@ -320,7 +323,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                               'MonkeySSH Pro is already unlocked on this device.',
                           }
                         : 'No trial traps, fake urgency, or hidden close buttons. You can restore or manage your subscription from Settings at any time.',
-                    style: theme.textTheme.bodyMedium,
+                    style: priceCardEmphasisStyle,
                   ),
                   if (state.lastError case final error?
                       when error.isNotEmpty) ...[
@@ -347,6 +350,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             onPressed: isBusy || manageSubscriptionUrl == null
                 ? null
                 : _openManageSubscriptions,
+            style: TextButton.styleFrom(foregroundColor: colorScheme.onSurface),
             child: const Text('Manage subscription'),
           ),
           if (state.debugUnlockAvailable) ...[
@@ -397,13 +401,21 @@ class _PlanOfferCard extends StatelessWidget {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
     final cardColor = isCurrentPlan
-        ? Color.alphaBlend(colorScheme.primary.withAlpha(24), theme.cardColor)
+        ? Color.alphaBlend(
+            colorScheme.primaryContainer.withAlpha(72),
+            theme.cardColor,
+          )
+        : isBestValue
+        ? Color.alphaBlend(
+            colorScheme.secondaryContainer.withAlpha(60),
+            theme.cardColor,
+          )
         : theme.cardColor;
     final borderColor = isCurrentPlan
         ? colorScheme.primary
         : isBestValue
-        ? colorScheme.secondary
-        : colorScheme.outlineVariant;
+        ? colorScheme.onSecondaryContainer
+        : colorScheme.outline;
     final actionLabel = isCurrentPlan
         ? canManageSubscription
               ? 'Manage current plan'
@@ -455,12 +467,14 @@ class _PlanOfferCard extends StatelessWidget {
                             label: savingsPercent == null
                                 ? 'Best value'
                                 : 'Best value - Save $savingsPercent%',
-                            color: colorScheme.secondary,
+                            backgroundColor: colorScheme.secondaryContainer,
+                            foregroundColor: colorScheme.onSecondaryContainer,
                           ),
                         if (isCurrentPlan)
                           _PlanPill(
                             label: 'Current',
-                            color: colorScheme.primary,
+                            backgroundColor: colorScheme.primaryContainer,
+                            foregroundColor: colorScheme.onPrimaryContainer,
                           ),
                       ],
                     ),
@@ -485,12 +499,11 @@ class _PlanOfferCard extends StatelessWidget {
               ],
               if (offer.introductoryOfferLabel case final intro?) ...[
                 const SizedBox(height: 8),
-                Text(
-                  intro,
-                  style: theme.textTheme.bodyMedium?.copyWith(
-                    color: colorScheme.primary,
-                    fontWeight: FontWeight.w600,
-                  ),
+                _UpgradeBanner(
+                  message: intro,
+                  backgroundColor: colorScheme.primaryContainer,
+                  foregroundColor: colorScheme.onPrimaryContainer,
+                  compact: true,
                 ),
               ],
               const SizedBox(height: 16),
@@ -499,7 +512,11 @@ class _PlanOfferCard extends StatelessWidget {
                 style: theme.textTheme.titleSmall?.copyWith(
                   color: onTap == null
                       ? colorScheme.onSurfaceVariant
-                      : (isCurrentPlan ? colorScheme.primary : borderColor),
+                      : isCurrentPlan
+                      ? colorScheme.onPrimaryContainer
+                      : isBestValue
+                      ? colorScheme.onSecondaryContainer
+                      : colorScheme.onSurface,
                   fontWeight: FontWeight.w700,
                 ),
               ),
@@ -512,22 +529,60 @@ class _PlanOfferCard extends StatelessWidget {
 }
 
 class _PlanPill extends StatelessWidget {
-  const _PlanPill({required this.label, required this.color});
+  const _PlanPill({
+    required this.label,
+    required this.backgroundColor,
+    required this.foregroundColor,
+  });
 
   final String label;
-  final Color color;
+  final Color backgroundColor;
+  final Color foregroundColor;
 
   @override
   Widget build(BuildContext context) => Container(
     padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
     decoration: BoxDecoration(
-      color: color.withAlpha(26),
+      color: backgroundColor,
+      border: Border.all(color: foregroundColor.withAlpha(40)),
       borderRadius: BorderRadius.circular(999),
     ),
     child: Text(
       label,
       style: Theme.of(context).textTheme.labelMedium?.copyWith(
-        color: color,
+        color: foregroundColor,
+        fontWeight: FontWeight.w700,
+      ),
+    ),
+  );
+}
+
+class _UpgradeBanner extends StatelessWidget {
+  const _UpgradeBanner({
+    required this.message,
+    required this.backgroundColor,
+    required this.foregroundColor,
+    this.compact = false,
+    super.key,
+  });
+
+  final String message;
+  final Color backgroundColor;
+  final Color foregroundColor;
+  final bool compact;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    padding: EdgeInsets.symmetric(horizontal: 12, vertical: compact ? 10 : 12),
+    decoration: BoxDecoration(
+      color: backgroundColor,
+      borderRadius: BorderRadius.circular(12),
+    ),
+    child: Text(
+      message,
+      style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+        color: foregroundColor,
         fontWeight: FontWeight.w700,
       ),
     ),

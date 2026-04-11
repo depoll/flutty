@@ -76,6 +76,13 @@ void main() {
       ),
     );
     await tester.pump();
+    final annualSavingsBanner = tester.widget<Text>(
+      find.text(
+        'Annual is the best value - save about 17% compared with paying monthly.',
+      ),
+    );
+    await tester.scrollUntilVisible(find.text('Monthly'), 300);
+    await tester.pumpAndSettle();
 
     final monthlyCardFinder = find.ancestor(
       of: find.text('Monthly'),
@@ -84,6 +91,12 @@ void main() {
     final monthlyCard = tester.widget<Card>(monthlyCardFinder);
     final monthlyTitle = tester.widget<Text>(find.text('Monthly').first);
     final monthlyShape = monthlyCard.shape! as RoundedRectangleBorder;
+    final currentPill = tester.widget<Text>(find.text('Current'));
+    final currentAction = tester.widget<Text>(find.text('Manage current plan'));
+    final bestValuePill = tester.widget<Text>(
+      find.text('Best value - Save 17%'),
+    );
+    final annualAction = tester.widget<Text>(find.text('Subscribe annual'));
 
     expect(find.byType(RadioListTile<String>), findsNothing);
     expect(
@@ -97,6 +110,26 @@ void main() {
     expect(monthlyShape.side.color, equals(darkTheme.colorScheme.primary));
     expect(monthlyShape.side.width, 3);
     expect(find.text('Current'), findsOneWidget);
+    expect(
+      currentPill.style?.color,
+      equals(darkTheme.colorScheme.onPrimaryContainer),
+    );
+    expect(
+      currentAction.style?.color,
+      equals(darkTheme.colorScheme.onPrimaryContainer),
+    );
+    expect(
+      annualSavingsBanner.style?.color,
+      equals(darkTheme.colorScheme.onSecondaryContainer),
+    );
+    expect(
+      bestValuePill.style?.color,
+      equals(darkTheme.colorScheme.onSecondaryContainer),
+    );
+    expect(
+      annualAction.style?.color,
+      equals(darkTheme.colorScheme.onSecondaryContainer),
+    );
   });
 
   testWidgets('shows switch action for a different plan when subscribed', (
@@ -152,6 +185,8 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.scrollUntilVisible(find.text('Manage current plan'), 300);
+    await tester.pumpAndSettle();
 
     expect(find.text('Manage current plan'), findsOneWidget);
     expect(find.text('Switch to Annual'), findsOneWidget);
@@ -206,10 +241,27 @@ void main() {
       ),
     );
     await tester.pump();
+    final annualSavingsBanner = tester.widget<Text>(
+      find.text(
+        'Annual is the best value - save about 17% compared with paying monthly.',
+      ),
+    );
+    await tester.scrollUntilVisible(find.text('Best value - Save 17%'), 300);
+    await tester.pumpAndSettle();
 
-    expect(find.byKey(const ValueKey('annual-savings-label')), findsOneWidget);
-    expect(find.textContaining('save about 17%'), findsOneWidget);
     expect(find.text('Best value - Save 17%'), findsOneWidget);
+    final bestValuePill = tester.widget<Text>(
+      find.text('Best value - Save 17%'),
+    );
+    final theme = ThemeData.light(useMaterial3: true);
+    expect(
+      annualSavingsBanner.style?.color,
+      equals(theme.colorScheme.onSecondaryContainer),
+    );
+    expect(
+      bestValuePill.style?.color,
+      equals(theme.colorScheme.onSecondaryContainer),
+    );
   });
 
   testWidgets('shared trial copy mentions monthly and annual plans', (
@@ -266,10 +318,18 @@ void main() {
       ),
     );
     await tester.pump();
+    await tester.scrollUntilVisible(
+      find.byKey(const ValueKey('shared-intro-offer-label')),
+      300,
+    );
+    await tester.pumpAndSettle();
 
     expect(find.textContaining(trialLabel), findsWidgets);
     final sharedIntroText = tester.widget<Text>(
-      find.byKey(const ValueKey('shared-intro-offer-label')),
+      find.descendant(
+        of: find.byKey(const ValueKey('shared-intro-offer-label')),
+        matching: find.textContaining(trialLabel),
+      ),
     );
     expect(sharedIntroText.data, contains('monthly and annual'));
   });

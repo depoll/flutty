@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../domain/services/background_ssh_service.dart';
+import '../domain/services/monetization_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
 import 'app_lifecycle_coordinator.dart';
@@ -62,6 +63,11 @@ class _BackgroundLifecycleBridgeState
           BackgroundSshService.setForegroundState(isForeground: false),
     );
     _runLifecycleSync(
+      _refreshMonetizationOnStartup,
+      errorContext: 'while refreshing subscription state during app startup',
+      defer: true,
+    );
+    _runLifecycleSync(
       _syncForegroundBackgroundStatus,
       errorContext: 'while syncing background SSH status during app startup',
       defer: true,
@@ -77,6 +83,10 @@ class _BackgroundLifecycleBridgeState
   Future<void> _syncForegroundBackgroundStatus() async {
     await BackgroundSshService.setForegroundState(isForeground: true);
     await ref.read(activeSessionsProvider.notifier).syncBackgroundStatus();
+  }
+
+  Future<void> _refreshMonetizationOnStartup() async {
+    await ref.read(monetizationServiceProvider).initialize();
   }
 
   Future<void> _syncAuthLifecycle(AppLifecycleState state) => ref
