@@ -33,24 +33,36 @@ void main() {
     registerFallbackValue(_FakePurchaseParam());
   });
 
-  test('queries both preview and prod App Store product IDs on iOS', () {
-    expect(
-      MonetizationProductIds.forPlatform(TargetPlatform.iOS),
-      unorderedEquals([
-        MonetizationProductIds.iosMonthly,
-        MonetizationProductIds.iosAnnual,
-        MonetizationProductIds.iosMonthlyProd,
-        MonetizationProductIds.iosAnnualProd,
-      ]),
-    );
-    expect(
-      MonetizationProductIds.allKnown,
-      containsAll({
-        MonetizationProductIds.iosMonthlyProd,
-        MonetizationProductIds.iosAnnualProd,
-      }),
-    );
-  });
+  test(
+    'queries both preview and prod App Store product IDs on Apple platforms',
+    () {
+      expect(
+        MonetizationProductIds.forPlatform(TargetPlatform.iOS),
+        unorderedEquals([
+          MonetizationProductIds.iosMonthly,
+          MonetizationProductIds.iosAnnual,
+          MonetizationProductIds.iosMonthlyProd,
+          MonetizationProductIds.iosAnnualProd,
+        ]),
+      );
+      expect(
+        MonetizationProductIds.forPlatform(TargetPlatform.macOS),
+        unorderedEquals([
+          MonetizationProductIds.iosMonthly,
+          MonetizationProductIds.iosAnnual,
+          MonetizationProductIds.iosMonthlyProd,
+          MonetizationProductIds.iosAnnualProd,
+        ]),
+      );
+      expect(
+        MonetizationProductIds.allKnown,
+        containsAll({
+          MonetizationProductIds.iosMonthlyProd,
+          MonetizationProductIds.iosAnnualProd,
+        }),
+      );
+    },
+  );
 
   group('buildMonetizationOffers', () {
     test('deduplicates Google Play base plans and keeps trial offers', () {
@@ -352,6 +364,28 @@ void main() {
         isTrue,
       );
     });
+
+    test(
+      'macOS uses the Apple storefront path for billing availability',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.macOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+
+        expect(
+          service.currentState.billingAvailability,
+          MonetizationBillingAvailability.unavailable,
+        );
+      },
+    );
 
     test(
       'concurrent initialize calls wait for the same in-flight work',

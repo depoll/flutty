@@ -187,7 +187,7 @@ class MonetizationService {
     await initialize();
     if (!_supportsStoreBilling) {
       return const MonetizationActionResult.failure(
-        'Subscriptions are only available on iPhone and Android.',
+        'Subscriptions are only available through the App Store and Google Play.',
       );
     }
     await _tryRecoverStaleAndroidPurchaseAttempt();
@@ -264,7 +264,7 @@ class MonetizationService {
     await initialize();
     if (!_supportsStoreBilling) {
       return const MonetizationActionResult.failure(
-        'Restoring purchases is only available on iPhone and Android.',
+        'Restoring purchases is only available through the App Store and Google Play.',
       );
     }
     await _tryRecoverStaleAndroidPurchaseAttempt();
@@ -339,7 +339,8 @@ class MonetizationService {
 
   bool get _supportsStoreBilling =>
       defaultTargetPlatform == TargetPlatform.android ||
-      defaultTargetPlatform == TargetPlatform.iOS;
+      defaultTargetPlatform == TargetPlatform.iOS ||
+      defaultTargetPlatform == TargetPlatform.macOS;
 
   void _handlePurchaseUpdates(List<PurchaseDetails> purchases) {
     for (final purchase in purchases) {
