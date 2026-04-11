@@ -88,13 +88,14 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   }
 
   String _pricingSourceLabel() => switch (defaultTargetPlatform) {
-    TargetPlatform.iOS => 'Pricing loads from the App Store',
+    TargetPlatform.iOS ||
+    TargetPlatform.macOS => 'Pricing loads from the App Store',
     TargetPlatform.android => 'Pricing loads from Google Play',
     _ => 'Pricing loads from your local storefront',
   };
 
   String _storefrontLabel() => switch (defaultTargetPlatform) {
-    TargetPlatform.iOS => 'the App Store',
+    TargetPlatform.iOS || TargetPlatform.macOS => 'the App Store',
     TargetPlatform.android => 'Google Play',
     _ => 'your local storefront',
   };
@@ -129,7 +130,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
   }
 
   Uri? _manageSubscriptionUrl() => switch (defaultTargetPlatform) {
-    TargetPlatform.iOS => Uri.parse(
+    TargetPlatform.iOS || TargetPlatform.macOS => Uri.parse(
       'https://apps.apple.com/account/subscriptions',
     ),
     TargetPlatform.android => Uri.parse(
