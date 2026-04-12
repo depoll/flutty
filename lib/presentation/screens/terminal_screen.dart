@@ -388,10 +388,24 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       mainAxisSize: MainAxisSize.min,
       children: [
         if (window.hasAlert)
-          Icon(
-            Icons.notifications_active,
-            size: 16,
-            color: theme.colorScheme.error,
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Icon(
+              Icons.notifications_active,
+              size: 16,
+              color: theme.colorScheme.error,
+            ),
+          )
+        else if (window.isIdle)
+          Padding(
+            padding: const EdgeInsets.only(right: 4),
+            child: Text(
+              'waiting',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.tertiary,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
           ),
         IconButton(
           icon: const Icon(Icons.close, size: 16),

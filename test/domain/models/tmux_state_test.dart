@@ -107,10 +107,19 @@ void main() {
         currentCommand: 'make',
       );
       const idle = TmuxWindow(index: 2, name: 'bash', isActive: false);
+      const waiting = TmuxWindow(
+        index: 3,
+        name: 'claude',
+        isActive: false,
+        currentCommand: 'claude',
+        idleSeconds: 120,
+      );
 
-      expect(active.statusLabel, 'active');
-      expect(running.statusLabel, 'running');
-      expect(idle.statusLabel, 'idle');
+      expect(active.statusLabel, '');
+      expect(running.statusLabel, '');
+      expect(idle.statusLabel, '');
+      expect(waiting.statusLabel, 'waiting');
+      expect(waiting.isIdle, true);
     });
 
     test('equality works correctly', () {

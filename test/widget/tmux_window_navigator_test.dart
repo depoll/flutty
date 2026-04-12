@@ -19,6 +19,7 @@ void main() {
         name: 'claude',
         isActive: false,
         currentCommand: 'claude',
+        idleSeconds: 120,
       ),
       const TmuxWindow(index: 2, name: 'bash', isActive: false),
       const TmuxWindow(
@@ -40,9 +41,8 @@ void main() {
       expect(find.text('claude'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
       expect(find.text('htop'), findsOneWidget);
-      expect(find.text('active'), findsOneWidget);
-      expect(find.text('running'), findsNWidgets(2));
-      expect(find.text('idle'), findsOneWidget);
+      // Only "waiting" shows as a status — active/running are silent.
+      expect(find.text('waiting'), findsOneWidget);
     });
 
     testWidgets('renders tmux badge with window chips', (tester) async {

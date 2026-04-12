@@ -74,17 +74,30 @@ class TmuxWindow {
     this.currentPath,
     this.flags,
     this.paneTitle,
+    this.idleSeconds,
   });
 
   /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-windows -F`):
-  /// `index|name|active_flag|command|path|flags|pane_title`
+  /// `index|name|active_flag|command|path|flags|pane_title|activity_epoch`
   factory TmuxWindow.fromTmuxFormat(String line) {
     final parts = line.split('|');
     if (parts.length < 3) {
       throw FormatException('Invalid tmux window format: $line');
     }
+
+    // Compute idle seconds from window_activity epoch if available.
+    int? idleSeconds;
+    if (parts.length > 7) {
+      final activityEpoch = int.tryParse(parts[7]);
+      if (activityEpoch != null && activityEpoch > 0) {
+        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+        idleSeconds = now - activityEpoch;
+        if (idleSeconds < 0) idleSeconds = 0;
+      }
+    }
+
     return TmuxWindow(
       index: int.tryParse(parts[0]) ?? 0,
       name: parts[1],
@@ -93,6 +106,7 @@ class TmuxWindow {
       currentPath: parts.length > 4 ? _nonEmpty(parts[4]) : null,
       flags: parts.length > 5 ? _nonEmpty(parts[5]) : null,
       paneTitle: parts.length > 6 ? _nonEmpty(parts[6]) : null,
+      idleSeconds: idleSeconds,
     );
   }
 
@@ -117,18 +131,34 @@ class TmuxWindow {
   /// The pane title set by the running application, if available.
   final String? paneTitle;
 
+  /// Seconds since last output activity in this window, if available.
+  final int? idleSeconds;
+
+  /// Idle threshold (seconds) above which a window is considered "waiting".
+  static const _idleThreshold = 15;
+
   /// Whether this window has a pending alert or bell.
   bool get hasAlert => flags != null && flags!.contains('#');
+
+  /// Whether the window appears to be idle (no output for a while).
+  ///
+  /// A CLI that has finished working and is waiting for the user to
+  /// return will have a high idle time while still showing as the
+  /// `currentCommand`.
+  bool get isIdle =>
+      idleSeconds != null && idleSeconds! > _idleThreshold && !isActive;
 
   /// A short display title — prefers paneTitle, falls back to name.
   String get displayTitle => paneTitle ?? name;
 
   /// A human-readable status label for display.
+  ///
+  /// Only returns a label for noteworthy states — the active window
+  /// is already visually highlighted via the index badge.
   String get statusLabel {
     if (hasAlert) return 'alert';
-    if (isActive) return 'active';
-    if (currentCommand != null) return 'running';
-    return 'idle';
+    if (isIdle) return 'waiting';
+    return '';
   }
 
   @override
@@ -146,7 +176,8 @@ class TmuxWindow {
           currentCommand == other.currentCommand &&
           currentPath == other.currentPath &&
           flags == other.flags &&
-          paneTitle == other.paneTitle;
+          paneTitle == other.paneTitle &&
+          idleSeconds == other.idleSeconds;
 
   @override
   int get hashCode => Object.hash(
@@ -157,6 +188,7 @@ class TmuxWindow {
     currentPath,
     flags,
     paneTitle,
+    idleSeconds,
   );
 }
 

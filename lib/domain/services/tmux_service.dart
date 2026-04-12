@@ -122,7 +122,7 @@ class TmuxService {
         'tmux list-windows -t $quotedName -F '
         "'#{window_index}|#{window_name}|#{window_active}|"
         '#{pane_current_command}|#{pane_current_path}|'
-        "#{window_flags}|#{pane_title}'",
+        "#{window_flags}|#{pane_title}|#{window_activity}'",
       );
       return _parseLines(output, TmuxWindow.fromTmuxFormat);
     } on Exception {
