@@ -128,6 +128,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.isProUser,
     required this.ref,
     required this.onAction,
+    required this.onOverlayChanged,
     super.key,
   });
 
@@ -145,6 +146,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  /// Called when the overlay visibility changes (expand/collapse/drag).
+  final VoidCallback onOverlayChanged;
 
   @override
   State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
@@ -196,19 +200,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
+    final wasDragging = _dragOffset > 0;
     setState(() {
       _dragOffset -= details.delta.dy;
       _dragOffset = _dragOffset.clamp(0.0, 300.0);
     });
+    if (wasDragging != (_dragOffset > 0)) widget.onOverlayChanged();
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
     final shouldExpand = velocity < -200 || (!_expanded && _dragOffset > 60);
+    final changed = _expanded != shouldExpand || _dragOffset > 0;
     setState(() {
       _expanded = shouldExpand;
       _dragOffset = 0;
     });
+    if (changed) widget.onOverlayChanged();
     // Refresh window list when expanding to get current active state.
     if (shouldExpand) _loadWindows();
   }
@@ -245,6 +253,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
     onTap: () {
       final wasExpanded = _expanded;
       setState(() => _expanded = !_expanded);
+      widget.onOverlayChanged();
       // Refresh window list when expanding to get current active state.
       if (!wasExpanded) _loadWindows();
     },
@@ -330,6 +339,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
             title: const Text('New Window'),
             onTap: () {
               setState(() => _expanded = false);
+              widget.onOverlayChanged();
               showModalBottomSheet<AgentLaunchTool?>(
                 context: context,
                 builder: (ctx) => TmuxToolPickerSheet(
@@ -1664,6 +1674,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   bool _showTmuxBar = true;
+  bool _tmuxOverlayVisible = false;
   String? _tmuxWorkingDirectory;
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
@@ -2830,6 +2841,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isProUser: isProUser,
       ref: ref,
       onAction: _handleTmuxAction,
+      onOverlayChanged: () {
+        final visible = _tmuxBarKey.currentState?.showOverlay ?? false;
+        if (visible != _tmuxOverlayVisible) {
+          setState(() => _tmuxOverlayVisible = visible);
+        }
+      },
     );
   }
 
@@ -3499,7 +3516,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 if (_isTmuxActive &&
                     _showTmuxBar &&
                     connectionState == SshConnectionState.connected &&
-                    (_tmuxBarKey.currentState?.showOverlay ?? false))
+                    _tmuxOverlayVisible)
                   Positioned(
                     left: 0,
                     right: 0,

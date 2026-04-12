@@ -143,15 +143,13 @@ class TmuxService {
     String? name,
     String? workingDirectory,
   }) async {
-    // If no working directory was specified, inherit the current pane's
-    // working directory — this matches tmux's Ctrl+b,c behavior.
-    final cwd = workingDirectory ?? await _currentPaneCwd(session, sessionName);
-
-    // Create the window without a command — it gets a normal interactive
-    // login shell with full PATH, aliases, and profile scripts loaded.
+    // Don't pass -c unless an explicit workingDirectory was provided
+    // (e.g. resuming an AI session in a specific project). Without -c,
+    // tmux uses the session's default-directory — matching Ctrl+b,c.
     final parts = <String>[
       'tmux new-window -t ${_shellQuote(sessionName)}',
-      if (cwd != null && cwd.trim().isNotEmpty) '-c ${_shellQuote(cwd.trim())}',
+      if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
+        '-c ${_shellQuote(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
         '-n ${_shellQuote(name.trim())}',
     ];
@@ -166,24 +164,6 @@ class TmuxService {
         'tmux send-keys -t ${_shellQuote(sessionName)} '
         '${_shellQuote(command.trim())} Enter',
       );
-    }
-  }
-
-  /// Returns the current pane's working directory via tmux.
-  Future<String?> _currentPaneCwd(
-    SshSession session,
-    String sessionName,
-  ) async {
-    try {
-      final output = await _exec(
-        session,
-        'tmux display-message -t ${_shellQuote(sessionName)} '
-        "-p '#{pane_current_path}'",
-      );
-      final path = output.trim();
-      return path.isNotEmpty ? path : null;
-    } on Object {
-      return null;
     }
   }
 
