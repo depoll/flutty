@@ -165,6 +165,17 @@ class TmuxService {
     );
   }
 
+  /// Closes a window in [sessionName] via exec channel.
+  ///
+  /// Uses fire-and-forget — if this was the last window, the tmux session
+  /// ends and the interactive shell exits naturally.
+  void killWindow(SshSession session, String sessionName, int windowIndex) {
+    _execFireAndForget(
+      session,
+      'tmux kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
+    );
+  }
+
   // ── Helpers ────────────────────────────────────────────────────────────
 
   /// Returns the profile source prefix for this session's login shell.

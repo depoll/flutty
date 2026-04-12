@@ -17,6 +17,7 @@ import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -2301,8 +2302,12 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
+  List<ToolSessionInfo>? _recentSessions;
+  String? _sessionName;
   bool _queried = false;
   bool _expanded = false;
+  bool _showSessions = false;
+  bool _isLoadingSessions = false;
 
   @override
   void initState() {
@@ -2336,6 +2341,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     if (!mounted) return;
     setState(() {
       _windows = windows;
+      _sessionName = sessionName;
       _queried = true;
     });
   }
@@ -2402,8 +2408,191 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           if (_expanded) ...[
             const SizedBox(height: 4),
             for (final window in windows) _buildWindowRow(theme, window),
+
+            // Recent AI Sessions subsection.
+            const SizedBox(height: 4),
+            GestureDetector(
+              onTap: () {
+                setState(() => _showSessions = !_showSessions);
+                if (_showSessions) _loadRecentSessions();
+              },
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.smart_toy_outlined,
+                    size: 12,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'AI Sessions',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  const Spacer(),
+                  Icon(
+                    _showSessions ? Icons.expand_less : Icons.expand_more,
+                    size: 14,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+            if (_showSessions) ...[
+              if (_isLoadingSessions)
+                const Padding(
+                  padding: EdgeInsets.symmetric(vertical: 8),
+                  child: Center(
+                    child: SizedBox(
+                      width: 14,
+                      height: 14,
+                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                    ),
+                  ),
+                )
+              else if (_recentSessions != null && _recentSessions!.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    'No recent sessions found',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                )
+              else if (_recentSessions != null)
+                for (final session in _recentSessions!.take(5))
+                  _buildSessionRow(theme, session),
+            ],
           ],
         ],
+      ),
+    );
+  }
+
+  void _closeWindow(int windowIndex) {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null || _sessionName == null) return;
+
+    ref
+        .read(tmuxServiceProvider)
+        .killWindow(session, _sessionName!, windowIndex);
+
+    // Optimistically remove from the list.
+    setState(() {
+      _windows = _windows?.where((w) => w.index != windowIndex).toList();
+    });
+  }
+
+  void _switchAndOpenWindow(int windowIndex) {
+    // Switch tmux to the target window before opening the terminal.
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session != null && _sessionName != null) {
+      ref
+          .read(tmuxServiceProvider)
+          .selectWindow(session, _sessionName!, windowIndex);
+    }
+    widget.onTap();
+  }
+
+  Future<void> _loadRecentSessions() async {
+    if (_isLoadingSessions || _recentSessions != null) return;
+    setState(() => _isLoadingSessions = true);
+
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null) {
+      if (mounted) {
+        setState(() {
+          _recentSessions = const [];
+          _isLoadingSessions = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      final discovery = ref.read(agentSessionDiscoveryServiceProvider);
+      final sessions = await discovery.discoverSessions(session, maxPerTool: 3);
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = sessions;
+        _isLoadingSessions = false;
+      });
+    } on Exception {
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = const [];
+        _isLoadingSessions = false;
+      });
+    }
+  }
+
+  void _resumeSession(ToolSessionInfo info) {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null || _sessionName == null) return;
+
+    final discovery = ref.read(agentSessionDiscoveryServiceProvider);
+    final command = discovery.buildResumeCommand(info);
+    final tmux = ref.read(tmuxServiceProvider);
+    tmux
+        .createWindow(
+          session,
+          _sessionName!,
+          command: command,
+          name: info.toolName,
+        )
+        .then((_) => widget.onTap())
+        .ignore();
+  }
+
+  Widget _buildSessionRow(ThemeData theme, ToolSessionInfo info) {
+    final iconData = switch (info.toolName) {
+      'Claude Code' => Icons.auto_awesome,
+      'Codex' => Icons.code,
+      'Copilot CLI' => Icons.flight,
+      'Gemini CLI' => Icons.diamond_outlined,
+      'OpenCode' => Icons.terminal,
+      _ => Icons.smart_toy_outlined,
+    };
+
+    return InkWell(
+      onTap: () => _resumeSession(info),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+        child: Row(
+          children: [
+            Icon(iconData, size: 14, color: theme.colorScheme.primary),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                info.summary ?? info.sessionId,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurface,
+                ),
+              ),
+            ),
+            if (info.timeAgoLabel.isNotEmpty)
+              Text(
+                info.timeAgoLabel,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -2412,7 +2601,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final title = window.paneTitle ?? window.name;
 
     return InkWell(
-      onTap: widget.onTap,
+      onTap: () => _switchAndOpenWindow(window.index),
       borderRadius: BorderRadius.circular(6),
       child: Padding(
         padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
@@ -2465,6 +2654,15 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                       ? FontWeight.bold
                       : FontWeight.normal,
                 ),
+              ),
+            ),
+            // Close button.
+            GestureDetector(
+              onTap: () => _closeWindow(window.index),
+              child: Icon(
+                Icons.close,
+                size: 14,
+                color: theme.colorScheme.onSurfaceVariant,
               ),
             ),
           ],

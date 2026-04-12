@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -64,6 +67,15 @@ class TmuxResumeSessionAction extends TmuxNavigatorAction {
   final String resumeCommand;
 }
 
+/// Close a tmux window.
+class TmuxCloseWindowAction extends TmuxNavigatorAction {
+  /// Creates a new [TmuxCloseWindowAction].
+  const TmuxCloseWindowAction(this.windowIndex);
+
+  /// The window index to close.
+  final int windowIndex;
+}
+
 class _TmuxNavigatorSheet extends StatefulWidget {
   const _TmuxNavigatorSheet({
     required this.session,
@@ -90,6 +102,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
+  Set<AgentLaunchTool>? _installedTools;
   bool _isLoadingWindows = true;
   bool _isLoadingSessions = false;
   bool _showRecentSessions = false;
@@ -117,6 +130,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         _windows = windows;
         _isLoadingWindows = false;
       });
+      // Detect installed CLIs in parallel (non-blocking).
+      unawaited(_detectInstalledTools());
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() {
@@ -125,6 +140,41 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       });
     }
   }
+
+  Future<void> _detectInstalledTools() async {
+    try {
+      final output = await widget.session.execute(
+        'command -v claude copilot codex gemini opencode 2>/dev/null'
+        ' || true',
+      );
+      final stdout = await output.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .join();
+      await output.stderr.cast<List<int>>().transform(utf8.decoder).join();
+      if (!mounted) return;
+
+      final paths = stdout.trim().split('\n').where((l) => l.isNotEmpty);
+      final installed = <AgentLaunchTool>{};
+      for (final path in paths) {
+        final bin = path.split('/').last;
+        final tool = _toolForBinary(bin);
+        if (tool != null) installed.add(tool);
+      }
+      setState(() => _installedTools = installed);
+    } on Object {
+      // Ignore — show all tools if detection fails.
+    }
+  }
+
+  static AgentLaunchTool? _toolForBinary(String bin) => switch (bin) {
+    'claude' => AgentLaunchTool.claudeCode,
+    'copilot' => AgentLaunchTool.copilotCli,
+    'codex' => AgentLaunchTool.codex,
+    'gemini' => AgentLaunchTool.geminiCli,
+    'opencode' => AgentLaunchTool.openCode,
+    _ => null,
+  };
 
   Future<void> _loadRecentSessions() async {
     if (_isLoadingSessions || _recentSessions != null) return;
@@ -156,6 +206,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     Navigator.pop(context, TmuxSwitchWindowAction(windowIndex));
   }
 
+  void _closeWindow(int windowIndex) {
+    Navigator.pop(context, TmuxCloseWindowAction(windowIndex));
+  }
+
   void _createNewWindow({String? command, String? name}) {
     Navigator.pop(
       context,
@@ -173,6 +227,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       context: context,
       builder: (context) => _ToolPickerSheet(
         isProUser: widget.isProUser,
+        installedTools: _installedTools,
         onToolSelected: (tool) {
           Navigator.pop(context);
           _createNewWindow(command: tool.commandName, name: tool.commandName);
@@ -323,20 +378,19 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                 color: theme.colorScheme.error,
               ),
             ),
-          Text(
-            window.statusLabel,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: window.hasAlert
-                  ? theme.colorScheme.error
-                  : isActive
-                  ? theme.colorScheme.primary
-                  : theme.colorScheme.onSurfaceVariant,
-            ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Close window',
+            onPressed: () => _closeWindow(window.index),
           ),
         ],
       ),
       selected: isActive,
-      onTap: isActive ? null : () => _switchToWindow(window.index),
+      // Active window: dismiss. Other windows: switch.
+      onTap: isActive
+          ? () => Navigator.pop(context)
+          : () => _switchToWindow(window.index),
     );
   }
 
@@ -455,14 +509,16 @@ class _ToolPickerSheet extends StatelessWidget {
     required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
+    this.installedTools,
   });
 
   final bool isProUser;
+  final Set<AgentLaunchTool>? installedTools;
   final void Function(AgentLaunchTool tool) onToolSelected;
   final VoidCallback onEmptyWindow;
 
-  /// Tools shown in the picker (excludes Aider for the navigator).
-  static const _navigatorTools = [
+  /// All tools that can be shown in the picker.
+  static const _allTools = [
     AgentLaunchTool.claudeCode,
     AgentLaunchTool.copilotCli,
     AgentLaunchTool.codex,
@@ -473,6 +529,10 @@ class _ToolPickerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    // Show only installed tools, or all if detection hasn't completed.
+    final tools = installedTools != null
+        ? _allTools.where((t) => installedTools!.contains(t)).toList()
+        : _allTools;
 
     return SafeArea(
       child: SingleChildScrollView(
@@ -484,7 +544,7 @@ class _ToolPickerSheet extends StatelessWidget {
               padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
               child: Text('New Window', style: theme.textTheme.titleMedium),
             ),
-            for (final tool in _navigatorTools)
+            for (final tool in tools)
               ListTile(
                 leading: _ToolPickerSheet._iconForTool(tool, theme),
                 title: Text(tool.label),

@@ -2471,6 +2471,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         await _createTmuxWindow(session, command: command, name: windowName);
       case TmuxResumeSessionAction(:final resumeCommand):
         await _createTmuxWindow(session, command: resumeCommand);
+      case TmuxCloseWindowAction(:final windowIndex):
+        _closeTmuxWindow(session, windowIndex);
     }
   }
 
@@ -2503,6 +2505,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // After creating a new window, tmux automatically selects it.
     // No explicit switch needed.
+  }
+
+  /// Closes a tmux window via exec channel.
+  void _closeTmuxWindow(SshSession session, int windowIndex) {
+    final sessionName = _tmuxSessionName;
+    if (sessionName == null) return;
+
+    ref.read(tmuxServiceProvider).killWindow(session, sessionName, windowIndex);
   }
 
   void _handleTrackedConnectionStateChange(
