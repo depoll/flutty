@@ -200,26 +200,27 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
-    final wasDragging = _dragOffset > 0;
     setState(() {
       _dragOffset -= details.delta.dy;
       _dragOffset = _dragOffset.clamp(0.0, 300.0);
     });
-    if (wasDragging != (_dragOffset > 0)) widget.onOverlayChanged();
+    // Update overlay visibility via notifier (no parent rebuild needed).
+    _syncOverlayNotifier();
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
     final shouldExpand = velocity < -200 || (!_expanded && _dragOffset > 60);
-    final changed = _expanded != shouldExpand || _dragOffset > 0;
     setState(() {
       _expanded = shouldExpand;
       _dragOffset = 0;
     });
-    if (changed) widget.onOverlayChanged();
+    _syncOverlayNotifier();
     // Refresh window list when expanding to get current active state.
     if (shouldExpand) _loadWindows();
   }
+
+  void _syncOverlayNotifier() => widget.onOverlayChanged();
 
   @override
   Widget build(BuildContext context) {
@@ -253,7 +254,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
     onTap: () {
       final wasExpanded = _expanded;
       setState(() => _expanded = !_expanded);
-      widget.onOverlayChanged();
+      _syncOverlayNotifier();
       // Refresh window list when expanding to get current active state.
       if (!wasExpanded) _loadWindows();
     },
@@ -339,7 +340,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
             title: const Text('New Window'),
             onTap: () {
               setState(() => _expanded = false);
-              widget.onOverlayChanged();
+              _syncOverlayNotifier();
               showModalBottomSheet<AgentLaunchTool?>(
                 context: context,
                 builder: (ctx) => TmuxToolPickerSheet(
@@ -1705,7 +1706,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   bool _showTmuxBar = true;
-  bool _tmuxOverlayVisible = false;
+  final _tmuxOverlayNotifier = ValueNotifier<bool>(false);
   String? _tmuxWorkingDirectory;
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
@@ -2873,10 +2874,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ref: ref,
       onAction: _handleTmuxAction,
       onOverlayChanged: () {
-        final visible = _tmuxBarKey.currentState?.showOverlay ?? false;
-        if (visible != _tmuxOverlayVisible) {
-          setState(() => _tmuxOverlayVisible = visible);
-        }
+        _tmuxOverlayNotifier.value =
+            _tmuxBarKey.currentState?.showOverlay ?? false;
       },
     );
   }
@@ -2981,17 +2980,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
+    // Fall back to the known tmux working directory so new windows
+    // open in the project folder, not the session start directory.
+    final cwd = workingDirectory ?? _tmuxWorkingDirectory;
+
     final tmux = ref.read(tmuxServiceProvider);
     await tmux.createWindow(
       session,
       sessionName,
       command: command,
       name: name,
-      workingDirectory: workingDirectory,
+      workingDirectory: cwd,
     );
 
     // Update cached working directory to the new window's directory.
-    _tmuxWorkingDirectory = workingDirectory;
+    if (cwd != null) _tmuxWorkingDirectory = cwd;
   }
 
   /// Closes a tmux window via exec channel.
@@ -3151,6 +3154,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
     _toolbarController.dispose();
+    _tmuxOverlayNotifier.dispose();
     super.dispose();
   }
 
@@ -3544,15 +3548,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   child: _buildTerminalView(terminalTheme, isMobile),
                 ),
                 // Overlay: expanded window list floats above the terminal.
+                // Uses ValueListenableBuilder so the parent doesn't rebuild
+                // on drag updates — that would kill the gesture recognizer.
                 if (_isTmuxActive &&
                     _showTmuxBar &&
-                    connectionState == SshConnectionState.connected &&
-                    _tmuxOverlayVisible)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    bottom: 0,
-                    child: _buildTmuxOverlay(theme),
+                    connectionState == SshConnectionState.connected)
+                  ValueListenableBuilder<bool>(
+                    valueListenable: _tmuxOverlayNotifier,
+                    builder: (context, visible, _) {
+                      if (!visible) return const SizedBox.shrink();
+                      return Positioned(
+                        left: 0,
+                        right: 0,
+                        bottom: 0,
+                        child: _buildTmuxOverlay(theme),
+                      );
+                    },
                   ),
               ],
             ),
