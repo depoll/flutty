@@ -96,12 +96,14 @@ class TmuxService {
       // Fall through to fallback.
     }
 
-    // Fallback — find the first attached session.
+    // Fallback — find attached sessions.
     try {
       final sessions = await listSessions(session);
       final attached = sessions.where((s) => s.isAttached).toList();
-      if (attached.isNotEmpty) return attached.first.name;
-      // If no attached session, tmux is running but user isn't in it.
+      if (attached.length == 1) return attached.first.name;
+      // Multiple attached sessions are ambiguous — we can't determine
+      // which one belongs to this terminal connection. Return null to
+      // avoid targeting the wrong session with destructive operations.
       return null;
     } on Exception {
       return null;
@@ -218,7 +220,7 @@ class TmuxService {
     final results = await Future.wait([
       execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
       execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-    ]);
+    ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
     return results[0];
   }
 
@@ -232,8 +234,8 @@ class TmuxService {
     // Launch and ignore — the exec channel self-closes on completion.
     session.execute(wrappedCommand).then((exec) {
       // Drain streams to prevent backpressure, but don't wait.
-      exec.stdout.drain<void>();
-      exec.stderr.drain<void>();
+      exec.stdout.drain<void>().ignore();
+      exec.stderr.drain<void>().ignore();
     }).ignore();
   }
 
@@ -259,7 +261,7 @@ class TmuxService {
       final results = await Future.wait([
         execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
         execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-      ]);
+      ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
       final lines = results[0].trim().split('\n');
       if (lines.isNotEmpty) {
         final shellName = lines[0].trim();

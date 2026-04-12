@@ -2831,6 +2831,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ref
         .read(tmuxServiceProvider)
         .selectWindow(session, sessionName, windowIndex);
+
+    // Clear stale working directory — it will be refreshed from
+    // OSC 7 or the next tmux query.
+    _tmuxWorkingDirectory = null;
   }
 
   /// Creates a new tmux window via exec channel, then switches to it.
@@ -2852,8 +2856,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       workingDirectory: workingDirectory,
     );
 
-    // After creating a new window, tmux automatically selects it.
-    // No explicit switch needed.
+    // Update cached working directory to the new window's directory.
+    _tmuxWorkingDirectory = workingDirectory;
   }
 
   /// Closes a tmux window via exec channel.
@@ -2946,6 +2950,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _doneSubscription = null;
     _shell = null;
     if (connectionId != null) {
+      ref.read(tmuxServiceProvider).clearCache(connectionId);
       await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
