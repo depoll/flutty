@@ -21,8 +21,8 @@ import '../widgets/premium_badge.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
-/// Settings screen with appearance, security, terminal, background,
-/// import/export, and about sections.
+/// Settings screen with appearance, security, terminal, import/export,
+/// background, and about sections.
 class SettingsScreen extends ConsumerWidget {
   /// Creates a new [SettingsScreen].
   const SettingsScreen({super.key});
@@ -852,7 +852,7 @@ class _AndroidBackgroundSection extends ConsumerStatefulWidget {
 class _AndroidBackgroundSectionState
     extends ConsumerState<_AndroidBackgroundSection>
     with WidgetsBindingObserver {
-  late Future<bool> _batteryOptimizationStatus;
+  late Future<bool?> _batteryOptimizationStatus;
 
   @override
   void initState() {
@@ -901,31 +901,47 @@ class _AndroidBackgroundSectionState
   }
 
   @override
-  Widget build(BuildContext context) => FutureBuilder<bool>(
+  Widget build(BuildContext context) => FutureBuilder<bool?>(
     future: _batteryOptimizationStatus,
     builder: (context, snapshot) {
+      final isLoading = snapshot.connectionState != ConnectionState.done;
+      final isUnavailable = !isLoading && snapshot.data == null;
+      final hasResolvedStatus = snapshot.data != null && !isLoading;
       final isDisabled = snapshot.data ?? false;
+      final leadingIcon = isLoading
+          ? Icons.hourglass_top_outlined
+          : isUnavailable
+          ? Icons.error_outline
+          : isDisabled
+          ? Icons.battery_saver_outlined
+          : Icons.battery_alert_outlined;
+      final subtitle = isLoading
+          ? 'Checking Android battery optimization status...'
+          : isUnavailable
+          ? 'Could not determine battery optimization status right now.'
+          : isDisabled
+          ? 'Disabled for MonkeySSH. Android is less likely to pause background SSH.'
+          : 'Still enabled. Foreground notifications alone are not always enough on Android. Tap to allow MonkeySSH to request an exemption.';
+      final trailingText = hasResolvedStatus
+          ? (isDisabled ? 'Disabled' : 'Enabled')
+          : isUnavailable
+          ? 'Unavailable'
+          : 'Loading...';
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           const _SectionHeader(title: 'Background SSH'),
           ListTile(
-            leading: Icon(
-              isDisabled
-                  ? Icons.battery_saver_outlined
-                  : Icons.battery_alert_outlined,
-            ),
+            leading: Icon(leadingIcon),
             title: const Text('Battery optimization'),
-            subtitle: Text(
-              isDisabled
-                  ? 'Disabled for MonkeySSH. Android is less likely to pause background SSH.'
-                  : 'Still enabled. Foreground notifications alone are not always enough on Android. Tap to allow MonkeySSH to request an exemption.',
-            ),
+            subtitle: Text(subtitle),
             trailing: Text(
-              isDisabled ? 'Disabled' : 'Enabled',
+              trailingText,
               style: Theme.of(context).textTheme.labelMedium,
             ),
-            onTap: _requestBatteryOptimizationExemption,
+            onTap: hasResolvedStatus
+                ? _requestBatteryOptimizationExemption
+                : null,
           ),
         ],
       );

@@ -49,6 +49,24 @@ void main() {
     });
 
     test(
+      'isBatteryOptimizationIgnored returns null when the channel fails',
+      () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(_backgroundSshChannel, (call) async {
+              methodCalls.add(call);
+              throw PlatformException(code: 'failed');
+            });
+
+        final result =
+            await BackgroundSshService.isBatteryOptimizationIgnored();
+
+        expect(result, isNull);
+        expect(methodCalls, hasLength(1));
+        expect(methodCalls.single.method, 'isBatteryOptimizationIgnored');
+      },
+    );
+
+    test(
       'requestDisableBatteryOptimization opens the native settings flow',
       () async {
         openedBatterySettings = true;

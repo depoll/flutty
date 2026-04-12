@@ -1,3 +1,5 @@
+import 'dart:async';
+
 // ignore_for_file: public_member_api_docs
 
 import 'package:drift/native.dart';
@@ -328,6 +330,92 @@ void main() {
         ),
         findsOneWidget,
       );
+    });
+
+    testWidgets('shows loading state before battery optimization resolves', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final completer = Completer<bool?>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            _backgroundSshChannel,
+            (call) => switch (call.method) {
+              'isBatteryOptimizationIgnored' => completer.future,
+              'requestDisableBatteryOptimization' => Future<bool>.value(true),
+              _ => Future<Object?>.value(),
+            },
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+      await tester.pump();
+
+      await tester.scrollUntilVisible(
+        find.text('Battery optimization'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pump();
+
+      expect(find.text('Loading...'), findsOneWidget);
+      expect(
+        find.text('Checking Android battery optimization status...'),
+        findsOneWidget,
+      );
+      final tile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'Battery optimization'),
+      );
+      expect(tile.onTap, isNull);
+
+      completer.complete(false);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('shows unavailable state when battery status cannot be read', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            _backgroundSshChannel,
+            (call) async => switch (call.method) {
+              'isBatteryOptimizationIgnored' => throw PlatformException(
+                code: 'failed',
+              ),
+              'requestDisableBatteryOptimization' => true,
+              _ => null,
+            },
+          );
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Battery optimization'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unavailable'), findsOneWidget);
+      expect(
+        find.text('Could not determine battery optimization status right now.'),
+        findsOneWidget,
+      );
+      final tile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'Battery optimization'),
+      );
+      expect(tile.onTap, isNull);
     });
 
     testWidgets('displays import and export actions', (tester) async {

@@ -1,11 +1,13 @@
 package xyz.depollsoft.monkeyssh
 
+import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
 import android.provider.Settings
+import android.util.Log
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.MethodCall
 import io.flutter.plugin.common.MethodChannel
@@ -13,6 +15,7 @@ import java.lang.ref.WeakReference
 
 object SshServiceChannelHandler {
     private const val CHANNEL = "xyz.depollsoft.monkeyssh/ssh_service"
+    private const val TAG = "SshServiceChannel"
 
     private var currentActivityRef = WeakReference<MainActivity>(null)
     private var methodChannel: MethodChannel? = null
@@ -123,7 +126,14 @@ object SshServiceChannelHandler {
         return try {
             context.startActivity(launchIntent)
             true
-        } catch (_: SecurityException) {
+        } catch (error: SecurityException) {
+            Log.w(TAG, "Battery optimization settings launch denied", error)
+            false
+        } catch (error: ActivityNotFoundException) {
+            Log.w(TAG, "Battery optimization settings activity missing", error)
+            false
+        } catch (error: RuntimeException) {
+            Log.w(TAG, "Battery optimization settings launch failed", error)
             false
         }
     }

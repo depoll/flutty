@@ -57,8 +57,6 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
-        super.configureFlutterEngine(flutterEngine)
-
         clipboardMethodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
             clipboardChannel,

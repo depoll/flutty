@@ -103,7 +103,7 @@ class BackgroundSshService {
   }
 
   /// Whether Android battery optimization is already disabled for the app.
-  static Future<bool> isBatteryOptimizationIgnored() async {
+  static Future<bool?> isBatteryOptimizationIgnored() async {
     if (!_supportsBatteryOptimizationControls) {
       return true;
     }
@@ -117,13 +117,13 @@ class BackgroundSshService {
         'Failed to read Android battery optimization status: '
         '${error.message ?? error.code}',
       );
-      return false;
+      return null;
     } on MissingPluginException catch (error) {
       debugPrint(
         'Failed to read Android battery optimization status: '
         '${error.message ?? 'missing plugin'}',
       );
-      return false;
+      return null;
     }
   }
 
