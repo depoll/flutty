@@ -49,8 +49,8 @@ class TmuxService {
       final output = await _exec(
         session,
         'tmux list-sessions -F '
-        "'#{session_name}\t#{session_windows}\t"
-        "#{session_attached}\t#{session_activity}'",
+        "'#{session_name}|#{session_windows}|"
+        "#{session_attached}|#{session_activity}'",
       );
       return _parseLines(output, TmuxSession.fromTmuxFormat);
     } on Exception {
@@ -103,8 +103,8 @@ class TmuxService {
       final output = await _exec(
         session,
         'tmux list-windows -t $quotedName -F '
-        "'#{window_index}\t#{window_name}\t#{window_active}\t"
-        "#{pane_current_command}\t#{pane_current_path}'",
+        "'#{window_index}|#{window_name}|#{window_active}|"
+        "#{pane_current_command}|#{pane_current_path}'",
       );
       return _parseLines(output, TmuxWindow.fromTmuxFormat);
     } on Exception {
@@ -152,10 +152,22 @@ class TmuxService {
 
   /// Runs a command via SSH exec channel and returns stdout as a string.
   ///
+  /// SSH exec channels start with a minimal PATH that may not include
+  /// user-installed tools (e.g. Homebrew on macOS). The command is
+  /// wrapped to source common shell profiles first so tmux is found
+  /// regardless of install location.
+  ///
   /// Drains both stdout and stderr to prevent SSH channel flow-control
   /// deadlocks, and awaits channel completion.
   Future<String> _exec(SshSession session, String command) async {
-    final execSession = await session.execute(command);
+    // Source the user's shell profile to pick up PATH additions (e.g.
+    // Homebrew, linuxbrew, nix, etc.) before running the actual command.
+    final wrappedCommand =
+        'source ~/.profile 2>/dev/null; '
+        'source ~/.bash_profile 2>/dev/null; '
+        'source ~/.zprofile 2>/dev/null; '
+        '$command';
+    final execSession = await session.execute(wrappedCommand);
     final results = await Future.wait([
       execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
       execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),

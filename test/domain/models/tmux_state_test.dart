@@ -6,7 +6,7 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 void main() {
   group('TmuxSession', () {
     test('parses from tmux format string', () {
-      const line = 'dev\t3\t1\t1712930000';
+      const line = 'dev|3|1|1712930000';
       final session = TmuxSession.fromTmuxFormat(line);
 
       expect(session.name, 'dev');
@@ -16,7 +16,7 @@ void main() {
     });
 
     test('parses unattached session', () {
-      const line = 'build\t1\t0\t1712920000';
+      const line = 'build|1|0|1712920000';
       final session = TmuxSession.fromTmuxFormat(line);
 
       expect(session.name, 'build');
@@ -25,7 +25,7 @@ void main() {
     });
 
     test('handles missing activity field', () {
-      const line = 'test\t2\t0';
+      const line = 'test|2|0';
       final session = TmuxSession.fromTmuxFormat(line);
 
       expect(session.name, 'test');
@@ -34,7 +34,7 @@ void main() {
     });
 
     test('throws on too few fields', () {
-      expect(() => TmuxSession.fromTmuxFormat('bad\t1'), throwsFormatException);
+      expect(() => TmuxSession.fromTmuxFormat('bad|1'), throwsFormatException);
     });
 
     test('equality works correctly', () {
@@ -50,7 +50,7 @@ void main() {
 
   group('TmuxWindow', () {
     test('parses from tmux format string with all fields', () {
-      const line = '0\tvim\t1\tvim\t/home/user/project';
+      const line = '0|vim|1|vim|/home/user/project';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 0);
@@ -61,7 +61,7 @@ void main() {
     });
 
     test('parses with minimal fields', () {
-      const line = '2\tbash\t0';
+      const line = '2|bash|0';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 2);
@@ -72,7 +72,7 @@ void main() {
     });
 
     test('handles empty command and path', () {
-      const line = '1\tshell\t0\t\t';
+      const line = '1|shell|0||';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.currentCommand, isNull);
@@ -80,7 +80,7 @@ void main() {
     });
 
     test('throws on too few fields', () {
-      expect(() => TmuxWindow.fromTmuxFormat('0\tvim'), throwsFormatException);
+      expect(() => TmuxWindow.fromTmuxFormat('0|vim'), throwsFormatException);
     });
 
     test('statusLabel returns correct values', () {

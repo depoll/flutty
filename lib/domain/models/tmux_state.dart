@@ -11,12 +11,12 @@ class TmuxSession {
     this.lastActivity,
   });
 
-  /// Parses a [TmuxSession] from a tab-delimited tmux format string.
+  /// Parses a [TmuxSession] from a pipe-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-sessions -F`):
-  /// `session_name\twindow_count\tattached_flag\tactivity_epoch`
+  /// `session_name|window_count|attached_flag|activity_epoch`
   factory TmuxSession.fromTmuxFormat(String line) {
-    final parts = line.split('\t');
+    final parts = line.split('|');
     if (parts.length < 3) {
       throw FormatException('Invalid tmux session format: $line');
     }
@@ -76,9 +76,9 @@ class TmuxWindow {
   /// Parses a [TmuxWindow] from a tab-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-windows -F`):
-  /// `index\tname\tactive_flag\tcurrent_command\tcurrent_path`
+  /// `index|name|active_flag|current_command|current_path`
   factory TmuxWindow.fromTmuxFormat(String line) {
-    final parts = line.split('\t');
+    final parts = line.split('|');
     if (parts.length < 3) {
       throw FormatException('Invalid tmux window format: $line');
     }
