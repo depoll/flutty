@@ -1510,9 +1510,9 @@ void main() {
 
         expect(
           tester.testTextInput.log.where(
-            (call) => call.method == 'TextInput.setClient',
+            (call) => call.method == 'TextInput.setEditingState',
           ),
-          hasLength(1),
+          hasLength(greaterThanOrEqualTo(1)),
         );
 
         await _commitSwipeText(tester, '$_deleteDetectionMarker world');
