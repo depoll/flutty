@@ -1384,6 +1384,9 @@ class _ConnectionsPanel extends ConsumerWidget {
                         ),
                         if (state == SshConnectionState.connected)
                           _TmuxConnectionBadge(
+                            key: ValueKey(
+                              'tmux-badge-${connection.connectionId}',
+                            ),
                             connectionId: connection.connectionId,
                             hostId: connection.hostId,
                           ),
@@ -2278,6 +2281,7 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
   const _TmuxConnectionBadge({
     required this.connectionId,
     required this.hostId,
+    super.key,
   });
 
   final int connectionId;

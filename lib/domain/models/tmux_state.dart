@@ -1,10 +1,3 @@
-/// Domain models for tmux session and window state.
-///
-/// These models represent the tmux state as queried over SSH exec channels.
-/// They deliberately avoid tmux implementation details in their public API,
-/// using user-friendly terminology ("windows" not "tmux windows").
-library;
-
 import 'package:flutter/foundation.dart';
 
 /// Represents a tmux session on a remote host.
@@ -98,7 +91,7 @@ class TmuxWindow {
     );
   }
 
-  /// The zero-based window index within the session.
+  /// The tmux-reported window index within the session.
   final int index;
 
   /// The window name (often set by the running program or user).

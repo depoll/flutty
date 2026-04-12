@@ -16,14 +16,15 @@ class TmuxService {
 
   // ── Detection ──────────────────────────────────────────────────────────
 
-  /// Returns `true` if the connected shell appears to be inside a tmux
-  /// session.
+  /// Returns `true` if there is at least one tmux session running on the
+  /// remote host.
   ///
-  /// Checks by running `echo $TMUX` via an exec channel. A non-empty
-  /// response means tmux is active.
+  /// Uses `tmux list-sessions` rather than checking the `TMUX` environment
+  /// variable, because SSH exec channels do not share the interactive
+  /// shell's environment.
   Future<bool> isTmuxActive(SshSession session) async {
     try {
-      final output = await _exec(session, r'echo $TMUX');
+      final output = await _exec(session, 'tmux list-sessions 2>/dev/null');
       return output.trim().isNotEmpty;
     } on Exception {
       return false;
@@ -113,24 +114,35 @@ class TmuxService {
     await _exec(session, parts.join(' '));
   }
 
-  /// Builds the shell command to switch to window [windowIndex] in the
-  /// current tmux session.
+  /// Switches to window [windowIndex] in [sessionName] via exec channel.
   ///
-  /// This returns the command string rather than executing it, because
-  /// window switching must be sent through the **interactive shell** (not
-  /// an exec channel) so that the terminal display updates.
-  String buildSelectWindowCommand(String sessionName, int windowIndex) =>
-      'tmux select-window -t ${_shellQuote(sessionName)}:$windowIndex';
+  /// This is a tmux server operation — the server notifies all attached
+  /// clients of the change, so it works correctly regardless of which
+  /// channel sends the command.
+  Future<void> selectWindow(
+    SshSession session,
+    String sessionName,
+    int windowIndex,
+  ) async {
+    await _exec(
+      session,
+      'tmux select-window -t ${_shellQuote(sessionName)}:$windowIndex',
+    );
+  }
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
+  /// Runs a command via SSH exec channel and returns stdout as a string.
+  ///
+  /// Drains both stdout and stderr to prevent SSH channel flow-control
+  /// deadlocks, and awaits channel completion.
   Future<String> _exec(SshSession session, String command) async {
     final execSession = await session.execute(command);
-    final stdout = await execSession.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .join();
-    return stdout;
+    final results = await Future.wait([
+      execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+      execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+    ]);
+    return results[0];
   }
 
   /// Parses non-empty lines from [output] using [parser].

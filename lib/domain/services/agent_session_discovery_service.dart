@@ -125,27 +125,20 @@ class AgentSessionDiscoveryService {
       final output = await _exec(
         session,
         'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
-        '-printf "%T@\\t%p\\n" 2>/dev/null | sort -rn | head -n $max',
+        '2>/dev/null | xargs ls -1t 2>/dev/null | head -n $max',
       );
       if (output.trim().isEmpty) return const [];
 
       final sessions = <ToolSessionInfo>[];
       for (final line in output.trim().split('\n')) {
-        final parts = line.split('\t');
-        if (parts.length < 2) continue;
-
-        final epochStr = parts[0];
-        final filePath = parts[1];
-        final epoch = double.tryParse(epochStr);
+        if (line.trim().isEmpty) continue;
+        final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
 
         sessions.add(
           ToolSessionInfo(
             toolName: 'Codex',
             sessionId: fileName,
-            lastActive: epoch != null
-                ? DateTime.fromMillisecondsSinceEpoch((epoch * 1000).toInt())
-                : null,
             summary: fileName,
           ),
         );
@@ -202,27 +195,20 @@ class AgentSessionDiscoveryService {
       final output = await _exec(
         session,
         'find ~/.gemini/tmp -name "*.json" -path "*/chats/*" -type f '
-        '-printf "%T@\\t%p\\n" 2>/dev/null | sort -rn | head -n $max',
+        '2>/dev/null | xargs ls -1t 2>/dev/null | head -n $max',
       );
       if (output.trim().isEmpty) return const [];
 
       final sessions = <ToolSessionInfo>[];
       for (final line in output.trim().split('\n')) {
-        final parts = line.split('\t');
-        if (parts.length < 2) continue;
-
-        final epochStr = parts[0];
-        final filePath = parts[1];
-        final epoch = double.tryParse(epochStr);
+        if (line.trim().isEmpty) continue;
+        final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.json', '');
 
         sessions.add(
           ToolSessionInfo(
             toolName: 'Gemini CLI',
             sessionId: fileName,
-            lastActive: epoch != null
-                ? DateTime.fromMillisecondsSinceEpoch((epoch * 1000).toInt())
-                : null,
             summary: _truncateId(fileName),
           ),
         );
@@ -273,11 +259,11 @@ class AgentSessionDiscoveryService {
 
   Future<String> _exec(SshSession session, String command) async {
     final execSession = await session.execute(command);
-    final stdout = await execSession.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .join();
-    return stdout;
+    final results = await Future.wait([
+      execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+      execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+    ]);
+    return results[0];
   }
 
   static String _shellQuote(String value) =>

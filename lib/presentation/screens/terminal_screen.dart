@@ -2334,16 +2334,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Detects whether the connected session is inside tmux.
   ///
   /// Waits briefly for the auto-connect command to initialize, then
-  /// checks the TMUX environment variable via an exec channel. If tmux
-  /// is active, also queries the current session name.
+  /// checks for tmux sessions via an exec channel. If tmux is active,
+  /// also queries the current session name.
   Future<void> _detectTmux(SshSession session) async {
+    // Clear any stale tmux state from a previous connection.
+    if (mounted) {
+      setState(() {
+        _isTmuxActive = false;
+        _tmuxSessionName = null;
+      });
+    }
+
     // Give the auto-connect command (which may start tmux) time to init.
     await Future<void>.delayed(const Duration(seconds: 2));
     if (!mounted) return;
 
     final tmux = ref.read(tmuxServiceProvider);
     final active = await tmux.isTmuxActive(session);
-    if (!mounted || !active) return;
+    if (!mounted) return;
+
+    if (!active) return;
 
     final sessionName = await tmux.currentSessionName(session);
     if (!mounted) return;
@@ -2382,7 +2392,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     switch (action) {
       case TmuxSwitchWindowAction(:final windowIndex):
-        _sendTmuxSwitchCommand(windowIndex);
+        await _switchTmuxWindow(session, windowIndex);
       case TmuxNewWindowAction(:final command, :final windowName):
         await _createTmuxWindow(session, command: command, name: windowName);
       case TmuxResumeSessionAction(:final resumeCommand):
@@ -2390,15 +2400,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  /// Sends a tmux select-window command through the interactive shell.
-  void _sendTmuxSwitchCommand(int windowIndex) {
-    final shell = _shell;
+  /// Switches to a different tmux window via exec channel.
+  ///
+  /// Uses an exec channel (not the interactive shell) because
+  /// `tmux select-window` is a server operation — the tmux server
+  /// notifies all attached clients of the change. Writing to the PTY
+  /// would inject the command as input to whatever program is running.
+  Future<void> _switchTmuxWindow(SshSession session, int windowIndex) async {
     final sessionName = _tmuxSessionName;
-    if (shell == null || sessionName == null) return;
+    if (sessionName == null) return;
 
     final tmux = ref.read(tmuxServiceProvider);
-    final command = tmux.buildSelectWindowCommand(sessionName, windowIndex);
-    shell.write(utf8.encode('$command\n'));
+    await tmux.selectWindow(session, sessionName, windowIndex);
   }
 
   /// Creates a new tmux window via exec channel, then switches to it.

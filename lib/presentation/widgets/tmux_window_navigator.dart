@@ -184,72 +184,86 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     final theme = Theme.of(context);
 
     return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Header
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 8, 0),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.window_outlined,
-                  size: 20,
-                  color: theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 8),
-                Text('Windows', style: theme.textTheme.titleMedium),
-                const Spacer(),
-                IconButton(
-                  icon: const Icon(Icons.close, size: 20),
-                  onPressed: () => Navigator.pop(context),
-                  visualDensity: VisualDensity.compact,
-                ),
-              ],
-            ),
-          ),
-
-          const SizedBox(height: 4),
-
-          // Window list
-          if (_isLoadingWindows)
-            const Padding(
-              padding: EdgeInsets.all(24),
-              child: Center(child: CircularProgressIndicator.adaptive()),
-            )
-          else if (_error != null)
+      child: ConstrainedBox(
+        constraints: BoxConstraints(
+          maxHeight: MediaQuery.sizeOf(context).height * 0.7,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header
             Padding(
-              padding: const EdgeInsets.all(16),
-              child: Text(
-                'Could not load windows: $_error',
-                style: TextStyle(color: theme.colorScheme.error),
+              padding: const EdgeInsets.fromLTRB(16, 16, 8, 0),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.window_outlined,
+                    size: 20,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 8),
+                  Text('Windows', style: theme.textTheme.titleMedium),
+                  const Spacer(),
+                  IconButton(
+                    icon: const Icon(Icons.close, size: 20),
+                    onPressed: () => Navigator.pop(context),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ],
               ),
-            )
-          else if (_windows != null && _windows!.isNotEmpty)
-            ..._windows!.map(_buildWindowTile),
-
-          const Divider(height: 1),
-
-          // New Window button
-          ListTile(
-            leading: Icon(
-              Icons.add_circle_outline,
-              color: theme.colorScheme.primary,
             ),
-            title: const Text('New Window'),
-            dense: true,
-            onTap: _showNewWindowPicker,
-          ),
 
-          // Recent AI Sessions (collapsed by default)
-          if (widget.isProUser) ...[
+            const SizedBox(height: 4),
+
+            // Scrollable window list
+            Flexible(
+              child: ListView(
+                shrinkWrap: true,
+                children: [
+                  if (_isLoadingWindows)
+                    const Padding(
+                      padding: EdgeInsets.all(24),
+                      child: Center(
+                        child: CircularProgressIndicator.adaptive(),
+                      ),
+                    )
+                  else if (_error != null)
+                    Padding(
+                      padding: const EdgeInsets.all(16),
+                      child: Text(
+                        'Could not load windows: $_error',
+                        style: TextStyle(color: theme.colorScheme.error),
+                      ),
+                    )
+                  else if (_windows != null && _windows!.isNotEmpty)
+                    ..._windows!.map(_buildWindowTile),
+                ],
+              ),
+            ),
+
             const Divider(height: 1),
-            _buildRecentSessionsSection(theme),
-          ],
 
-          const SizedBox(height: 8),
-        ],
+            // New Window button
+            ListTile(
+              leading: Icon(
+                Icons.add_circle_outline,
+                color: theme.colorScheme.primary,
+              ),
+              title: const Text('New Window'),
+              dense: true,
+              onTap: _showNewWindowPicker,
+            ),
+
+            // Recent AI Sessions (collapsed by default)
+            if (widget.isProUser) ...[
+              const Divider(height: 1),
+              _buildRecentSessionsSection(theme),
+            ],
+
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
