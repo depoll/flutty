@@ -1,18 +1,26 @@
+import 'dart:async';
+
 // ignore_for_file: public_member_api_docs
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
+import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../support/settings_import_test_helpers.dart';
+
+const _backgroundSshChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/ssh_service',
+);
 
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
@@ -42,6 +50,22 @@ void main() {
         buildNumber: '123',
         buildSignature: '',
       );
+      BackgroundSshService.debugIsAndroidPlatformOverride = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            _backgroundSshChannel,
+            (call) async => switch (call.method) {
+              'isBatteryOptimizationIgnored' => false,
+              'requestDisableBatteryOptimization' => true,
+              _ => null,
+            },
+          );
+    });
+
+    tearDown(() {
+      BackgroundSshService.debugIsAndroidPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_backgroundSshChannel, null);
     });
 
     testWidgets('displays all sections', (tester) async {
@@ -69,6 +93,14 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Import & Export'), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.text('Background SSH'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Background SSH'), findsOneWidget);
 
       await tester.scrollUntilVisible(
         find.text('About'),
@@ -291,6 +323,126 @@ void main() {
       expect(find.text('Change PIN'), findsOneWidget);
       expect(find.text('Biometric authentication'), findsOneWidget);
       expect(find.text('Auto-lock timeout'), findsOneWidget);
+    });
+
+    testWidgets('displays Android background reliability controls', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Battery optimization'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Background SSH'), findsOneWidget);
+      expect(find.text('Battery optimization'), findsOneWidget);
+      expect(find.text('Enabled'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Foreground notifications alone are not always enough on Android.',
+        ),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets('shows loading state before battery optimization resolves', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final completer = Completer<bool?>();
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            _backgroundSshChannel,
+            (call) => switch (call.method) {
+              'isBatteryOptimizationIgnored' => completer.future,
+              'requestDisableBatteryOptimization' => Future<bool>.value(true),
+              _ => Future<Object?>.value(),
+            },
+          );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+      await tester.pump();
+
+      await tester.scrollUntilVisible(
+        find.text('Battery optimization'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pump();
+
+      final batteryOptimizationTile = find.widgetWithText(
+        ListTile,
+        'Battery optimization',
+      );
+      expect(
+        find.descendant(
+          of: batteryOptimizationTile,
+          matching: find.text('Loading...'),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Checking Android battery optimization status...'),
+        findsOneWidget,
+      );
+      final tile = tester.widget<ListTile>(batteryOptimizationTile);
+      expect(tile.onTap, isNull);
+
+      completer.complete(false);
+      await tester.pumpAndSettle();
+    });
+
+    testWidgets('shows unavailable state when battery status cannot be read', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            _backgroundSshChannel,
+            (call) async => switch (call.method) {
+              'isBatteryOptimizationIgnored' => throw PlatformException(
+                code: 'failed',
+              ),
+              'requestDisableBatteryOptimization' => true,
+              _ => null,
+            },
+          );
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Battery optimization'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Unavailable'), findsOneWidget);
+      expect(
+        find.text('Could not determine battery optimization status right now.'),
+        findsOneWidget,
+      );
+      final tile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'Battery optimization'),
+      );
+      expect(tile.onTap, isNull);
     });
 
     testWidgets('displays import and export actions', (tester) async {

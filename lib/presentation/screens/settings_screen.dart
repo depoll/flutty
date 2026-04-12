@@ -10,6 +10,7 @@ import '../../app/routes.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/background_ssh_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -21,7 +22,7 @@ import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
 /// Settings screen with appearance, security, terminal, import/export,
-/// and about sections.
+/// background and about sections.
 class SettingsScreen extends ConsumerWidget {
   /// Creates a new [SettingsScreen].
   const SettingsScreen({super.key});
@@ -31,13 +32,15 @@ class SettingsScreen extends ConsumerWidget {
     appBar: AppBar(title: const Text('Settings')),
     body: ListView(
       padding: const EdgeInsets.only(top: 4, bottom: 32),
-      children: const [
-        _SubscriptionSection(),
-        _AppearanceSection(),
-        _SecuritySection(),
-        _TerminalSection(),
-        _ImportExportSection(),
-        _AboutSection(),
+      children: [
+        const _SubscriptionSection(),
+        const _AppearanceSection(),
+        const _SecuritySection(),
+        const _TerminalSection(),
+        const _ImportExportSection(),
+        if (BackgroundSshService.supportsBatteryOptimizationControls)
+          const _AndroidBackgroundSection(),
+        const _AboutSection(),
       ],
     ),
   );
@@ -836,6 +839,114 @@ class _AboutSection extends ConsumerWidget {
       ),
     );
   }
+}
+
+class _AndroidBackgroundSection extends ConsumerStatefulWidget {
+  const _AndroidBackgroundSection();
+
+  @override
+  ConsumerState<_AndroidBackgroundSection> createState() =>
+      _AndroidBackgroundSectionState();
+}
+
+class _AndroidBackgroundSectionState
+    extends ConsumerState<_AndroidBackgroundSection>
+    with WidgetsBindingObserver {
+  late Future<bool?> _batteryOptimizationStatus;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    _batteryOptimizationStatus =
+        BackgroundSshService.isBatteryOptimizationIgnored();
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state != AppLifecycleState.resumed || !mounted) {
+      return;
+    }
+    _refreshStatus();
+  }
+
+  void _refreshStatus() {
+    setState(() {
+      _batteryOptimizationStatus =
+          BackgroundSshService.isBatteryOptimizationIgnored();
+    });
+  }
+
+  Future<void> _requestBatteryOptimizationExemption() async {
+    final openedSettings =
+        await BackgroundSshService.requestDisableBatteryOptimization();
+    if (!mounted) {
+      return;
+    }
+    if (!openedSettings) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Could not open Android battery optimization settings'),
+        ),
+      );
+      return;
+    }
+    _refreshStatus();
+  }
+
+  @override
+  Widget build(BuildContext context) => FutureBuilder<bool?>(
+    future: _batteryOptimizationStatus,
+    builder: (context, snapshot) {
+      final isLoading = snapshot.connectionState != ConnectionState.done;
+      final isUnavailable = !isLoading && snapshot.data == null;
+      final hasResolvedStatus = snapshot.data != null && !isLoading;
+      final isDisabled = snapshot.data ?? false;
+      final leadingIcon = isLoading
+          ? Icons.hourglass_top_outlined
+          : isUnavailable
+          ? Icons.error_outline
+          : isDisabled
+          ? Icons.battery_saver_outlined
+          : Icons.battery_alert_outlined;
+      final subtitle = isLoading
+          ? 'Checking Android battery optimization status...'
+          : isUnavailable
+          ? 'Could not determine battery optimization status right now.'
+          : isDisabled
+          ? 'Disabled for MonkeySSH. Android is less likely to pause background SSH.'
+          : 'Still enabled. Foreground notifications alone are not always enough on Android. Tap to allow MonkeySSH to request an exemption.';
+      final trailingText = hasResolvedStatus
+          ? (isDisabled ? 'Disabled' : 'Enabled')
+          : isUnavailable
+          ? 'Unavailable'
+          : 'Loading...';
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const _SectionHeader(title: 'Background SSH'),
+          ListTile(
+            leading: Icon(leadingIcon),
+            title: const Text('Battery optimization'),
+            subtitle: Text(subtitle),
+            trailing: Text(
+              trailingText,
+              style: Theme.of(context).textTheme.labelMedium,
+            ),
+            onTap: hasResolvedStatus
+                ? _requestBatteryOptimizationExemption
+                : null,
+          ),
+        ],
+      );
+    },
+  );
 }
 
 class _ImportExportSection extends ConsumerWidget {

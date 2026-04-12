@@ -30,6 +30,8 @@ class SshConnectionService : Service() {
         const val NOTIFICATION_ID = 1
 
         private const val ACTION_SYNC = "xyz.depollsoft.monkeyssh.action.SYNC"
+        private const val ACTION_RESHOW_NOTIFICATION =
+            "xyz.depollsoft.monkeyssh.action.RESHOW_NOTIFICATION"
         private const val EXTRA_CONNECTION_COUNT = "connectionCount"
         private const val EXTRA_CONNECTED_COUNT = "connectedCount"
 
@@ -107,6 +109,8 @@ class SshConnectionService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         if (intent?.action == ACTION_SYNC) {
             latestStatus = extractStatus(intent) ?: latestStatus
+        } else if (intent?.action == ACTION_RESHOW_NOTIFICATION) {
+            Log.d(TAG, "Re-showing SSH foreground notification after dismissal")
         } else if (intent == null) {
             latestStatus = latestStatus ?: Companion.latestStatus
         }
@@ -158,6 +162,7 @@ class SshConnectionService : Service() {
             return
         }
 
+        MonkeySshApplication.from(this).ensureSharedFlutterEngine()
         latestStatus = status
         val manager = getSystemService(NotificationManager::class.java)
         val notification = buildNotification(status)
@@ -186,6 +191,14 @@ class SshConnectionService : Service() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
         } else null
+        val reShowNotificationIntent = PendingIntent.getService(
+            this,
+            1,
+            Intent(this, SshConnectionService::class.java).apply {
+                action = ACTION_RESHOW_NOTIFICATION
+            },
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE,
+        )
 
         val title = if (status.connectionCount == 1) {
             "1 active SSH connection"
@@ -210,6 +223,7 @@ class SshConnectionService : Service() {
             .setCategory(NotificationCompat.CATEGORY_SERVICE)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .setContentIntent(tapPendingIntent)
+            .setDeleteIntent(reShowNotificationIntent)
             .setSubText(summary)
             .setForegroundServiceBehavior(NotificationCompat.FOREGROUND_SERVICE_IMMEDIATE)
             .setStyle(
