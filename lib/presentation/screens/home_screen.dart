@@ -2551,6 +2551,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           _sessionName!,
           command: command,
           name: info.toolName,
+          workingDirectory: info.workingDirectory,
         )
         .then((_) => widget.onTap())
         .ignore();

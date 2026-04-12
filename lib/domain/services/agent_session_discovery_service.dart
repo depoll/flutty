@@ -64,24 +64,27 @@ class AgentSessionDiscoveryService {
   }
 
   /// Builds the shell command to resume a specific session.
+  ///
+  /// If the session has a [ToolSessionInfo.workingDirectory], the command
+  /// `cd`s there first so the CLI finds its project context.
   String buildResumeCommand(ToolSessionInfo info) {
-    switch (info.toolName) {
-      case 'Claude Code':
-        return 'claude --resume ${_shellQuote(info.sessionId)}';
-      case 'Codex':
-        return 'codex resume ${_shellQuote(info.sessionId)}';
-      case 'Copilot CLI':
-        return 'copilot --resume ${_shellQuote(info.sessionId)}';
-      case 'Gemini CLI':
-        return 'gemini --resume ${_shellQuote(info.sessionId)}';
-      case 'OpenCode':
-        if (info.sessionId == '_continue') {
-          return 'opencode --continue';
-        }
-        return 'opencode --session ${_shellQuote(info.sessionId)}';
-      default:
-        return info.toolName.toLowerCase();
+    final resume = switch (info.toolName) {
+      'Claude Code' => 'claude --resume ${_shellQuote(info.sessionId)}',
+      'Codex' => 'codex resume ${_shellQuote(info.sessionId)}',
+      'Copilot CLI' => 'copilot --resume ${_shellQuote(info.sessionId)}',
+      'Gemini CLI' => 'gemini --resume ${_shellQuote(info.sessionId)}',
+      'OpenCode' =>
+        info.sessionId == '_continue'
+            ? 'opencode --continue'
+            : 'opencode --session ${_shellQuote(info.sessionId)}',
+      _ => info.toolName.toLowerCase(),
+    };
+
+    final dir = info.workingDirectory;
+    if (dir != null && dir.isNotEmpty) {
+      return 'cd ${_shellQuote(dir)} && $resume';
     }
+    return resume;
   }
 
   // ── Claude Code ────────────────────────────────────────────────────────

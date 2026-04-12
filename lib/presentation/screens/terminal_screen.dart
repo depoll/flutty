@@ -2759,8 +2759,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _switchTmuxWindow(session, windowIndex);
       case TmuxNewWindowAction(:final command, :final windowName):
         await _createTmuxWindow(session, command: command, name: windowName);
-      case TmuxResumeSessionAction(:final resumeCommand):
-        await _createTmuxWindow(session, command: resumeCommand);
+      case TmuxResumeSessionAction(
+        :final resumeCommand,
+        :final workingDirectory,
+      ):
+        await _createTmuxWindow(
+          session,
+          command: resumeCommand,
+          workingDirectory: workingDirectory,
+        );
       case TmuxCloseWindowAction(:final windowIndex):
         _closeTmuxWindow(session, windowIndex);
     }
@@ -2797,8 +2804,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _switchTmuxWindow(session, windowIndex);
       case TmuxNewWindowAction(:final command, :final windowName):
         await _createTmuxWindow(session, command: command, name: windowName);
-      case TmuxResumeSessionAction(:final resumeCommand):
-        await _createTmuxWindow(session, command: resumeCommand);
+      case TmuxResumeSessionAction(
+        :final resumeCommand,
+        :final workingDirectory,
+      ):
+        await _createTmuxWindow(
+          session,
+          command: resumeCommand,
+          workingDirectory: workingDirectory,
+        );
       case TmuxCloseWindowAction(:final windowIndex):
         _closeTmuxWindow(session, windowIndex);
     }
@@ -2824,12 +2838,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     String? command,
     String? name,
+    String? workingDirectory,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
     final tmux = ref.read(tmuxServiceProvider);
-    await tmux.createWindow(session, sessionName, command: command, name: name);
+    await tmux.createWindow(
+      session,
+      sessionName,
+      command: command,
+      name: name,
+      workingDirectory: workingDirectory,
+    );
 
     // After creating a new window, tmux automatically selects it.
     // No explicit switch needed.

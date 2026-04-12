@@ -132,16 +132,19 @@ class TmuxService {
 
   // ── Window mutations ───────────────────────────────────────────────────
 
-  /// Creates a new window in [sessionName], optionally running [command]
-  /// and/or setting a window [name].
+  /// Creates a new window in [sessionName], optionally running [command],
+  /// setting a window [name], and/or starting in [workingDirectory].
   Future<void> createWindow(
     SshSession session,
     String sessionName, {
     String? command,
     String? name,
+    String? workingDirectory,
   }) async {
     final parts = <String>[
       'tmux new-window -t ${_shellQuote(sessionName)}',
+      if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
+        '-c ${_shellQuote(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
         '-n ${_shellQuote(name.trim())}',
       if (command != null && command.trim().isNotEmpty)

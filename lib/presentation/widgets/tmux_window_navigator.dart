@@ -61,10 +61,13 @@ class TmuxNewWindowAction extends TmuxNavigatorAction {
 /// Resume an AI tool session in a new tmux window.
 class TmuxResumeSessionAction extends TmuxNavigatorAction {
   /// Creates a new [TmuxResumeSessionAction].
-  const TmuxResumeSessionAction(this.resumeCommand);
+  const TmuxResumeSessionAction(this.resumeCommand, {this.workingDirectory});
 
   /// The full resume command to run.
   final String resumeCommand;
+
+  /// The working directory to start in.
+  final String? workingDirectory;
 }
 
 /// Close a tmux window.
@@ -224,7 +227,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   void _resumeSession(ToolSessionInfo info) {
     final command = _discovery.buildResumeCommand(info);
-    Navigator.pop(context, TmuxResumeSessionAction(command));
+    Navigator.pop(
+      context,
+      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
+    );
   }
 
   void _showNewWindowPicker() {
