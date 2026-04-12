@@ -2599,6 +2599,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    // If the host has structured tmux configuration, build the tmux command
+    // from it instead of using the custom auto-connect command.
+    final tmuxSession = host.tmuxSessionName;
+    if (tmuxSession != null && tmuxSession.isNotEmpty) {
+      final tmuxCommand = buildTmuxCommand(
+        sessionName: tmuxSession,
+        workingDirectory: host.tmuxWorkingDirectory,
+        extraFlags: host.tmuxExtraFlags,
+      );
+      shell.write(utf8.encode(formatAutoConnectCommandForShell(tmuxCommand)));
+      return;
+    }
+
     final mode = resolveAutoConnectCommandMode(
       command: host.autoConnectCommand,
       snippetId: host.autoConnectSnippetId,
@@ -2691,16 +2704,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!active) return;
 
-      final sessionName = await tmux.currentSessionName(session);
+      // Resolve session name using the best available source:
+      // 1. Host's structured tmux config (explicit session name)
+      // 2. Parsed from auto-connect command (-s flag)
+      // 3. tmux display-message / single-attached fallback
+      final host = _host;
+      var sessionName = host?.tmuxSessionName;
+      sessionName ??= parseTmuxSessionName(host?.autoConnectCommand);
+      sessionName ??= await tmux.currentSessionName(session);
       if (!mounted || _connectionId != capturedConnectionId) return;
       if (sessionName == null) return;
 
       // Get the active window's working directory for SFTP/path resolution.
-      String? tmuxCwd;
+      var tmuxCwd = host?.tmuxWorkingDirectory;
       try {
         final windows = await tmux.listWindows(session, sessionName);
         final activeWindow = windows.where((w) => w.isActive).firstOrNull;
-        tmuxCwd = activeWindow?.currentPath;
+        tmuxCwd ??= activeWindow?.currentPath;
       } on Object {
         // Non-critical — path resolution will fall back to OSC 7.
       }

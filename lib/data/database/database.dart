@@ -80,6 +80,21 @@ class Hosts extends Table {
   BoolColumn get autoConnectRequiresConfirmation =>
       boolean().withDefault(const Constant(false))();
 
+  /// tmux session name to attach/create on connect.
+  ///
+  /// When set, the app generates a `tmux new-session -A -s <name>` command
+  /// instead of using [autoConnectCommand], and knows the session name
+  /// directly for window navigation.
+  TextColumn get tmuxSessionName => text().nullable()();
+
+  /// Working directory to use when starting a tmux session.
+  ///
+  /// Passed as `-c <dir>` to `tmux new-session`.
+  TextColumn get tmuxWorkingDirectory => text().nullable()();
+
+  /// Extra tmux flags appended to the generated `tmux new-session` command.
+  TextColumn get tmuxExtraFlags => text().nullable()();
+
   /// Display order within the hosts list.
   IntColumn get sortOrder => integer().withDefault(const Constant(0))();
 }
@@ -300,7 +315,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 6;
+  int get schemaVersion => 7;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -347,6 +362,18 @@ class AppDatabase extends _$AppDatabase {
             tableName: 'snippets',
             columnName: 'sort_order',
           );
+        }
+      }
+      if (from < 7) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.tmuxSessionName.$name)) {
+          await m.addColumn(hosts, hosts.tmuxSessionName);
+        }
+        if (!hostColumnNames.contains(hosts.tmuxWorkingDirectory.$name)) {
+          await m.addColumn(hosts, hosts.tmuxWorkingDirectory);
+        }
+        if (!hostColumnNames.contains(hosts.tmuxExtraFlags.$name)) {
+          await m.addColumn(hosts, hosts.tmuxExtraFlags);
         }
       }
     },

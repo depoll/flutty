@@ -208,4 +208,78 @@ void main() {
       expect(a, isNot(equals(c)));
     });
   });
+
+  group('parseTmuxSessionName', () {
+    test('parses -s flag from new-session', () {
+      expect(
+        parseTmuxSessionName('tmux new-session -A -s myproject'),
+        'myproject',
+      );
+    });
+
+    test('parses combined -As flag', () {
+      expect(parseTmuxSessionName('tmux new -As MonkeySSH'), 'MonkeySSH');
+    });
+
+    test('parses -t flag from attach', () {
+      expect(parseTmuxSessionName('tmux attach -t dev'), 'dev');
+    });
+
+    test('parses quoted session name', () {
+      expect(
+        parseTmuxSessionName("tmux new-session -A -s 'my project'"),
+        'my project',
+      );
+    });
+
+    test('parses with cd prefix', () {
+      expect(
+        parseTmuxSessionName('cd /home/user && tmux new -As work'),
+        'work',
+      );
+    });
+
+    test('returns null for non-tmux command', () {
+      expect(parseTmuxSessionName('htop'), isNull);
+    });
+
+    test('returns null for null/empty', () {
+      expect(parseTmuxSessionName(null), isNull);
+      expect(parseTmuxSessionName(''), isNull);
+    });
+  });
+
+  group('buildTmuxCommand', () {
+    test('builds basic command', () {
+      expect(
+        buildTmuxCommand(sessionName: 'dev'),
+        "tmux new-session -A -s 'dev'",
+      );
+    });
+
+    test('includes working directory', () {
+      expect(
+        buildTmuxCommand(sessionName: 'dev', workingDirectory: '/home/user'),
+        "tmux new-session -A -s 'dev' -c '/home/user'",
+      );
+    });
+
+    test('includes extra flags', () {
+      expect(
+        buildTmuxCommand(sessionName: 'dev', extraFlags: '-x 200 -y 50'),
+        "tmux new-session -A -s 'dev' -x 200 -y 50",
+      );
+    });
+
+    test('includes all options', () {
+      expect(
+        buildTmuxCommand(
+          sessionName: 'dev',
+          workingDirectory: '/tmp',
+          extraFlags: '-n editor',
+        ),
+        "tmux new-session -A -s 'dev' -c '/tmp' -n editor",
+      );
+    });
+  });
 }

@@ -250,3 +250,70 @@ String? _nonEmpty(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
 }
+
+// ── tmux command helpers ──────────────────────────────────────────────────
+
+/// Builds a `tmux new-session` command from structured configuration.
+///
+/// Always uses `-A` (attach-or-create) so reconnecting reuses the session.
+String buildTmuxCommand({
+  required String sessionName,
+  String? workingDirectory,
+  String? extraFlags,
+}) {
+  final parts = <String>[
+    'tmux new-session -A',
+    "-s '${sessionName.replaceAll("'", "'\"'\"'")}'",
+    if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
+      "-c '${workingDirectory.trim().replaceAll("'", "'\"'\"'")}'",
+    if (extraFlags != null && extraFlags.trim().isNotEmpty) extraFlags.trim(),
+  ];
+  return parts.join(' ');
+}
+
+/// Attempts to extract the tmux session name from a command string.
+///
+/// Handles common patterns:
+/// - `tmux new-session -A -s myproject`
+/// - `tmux new -As myproject`
+/// - `tmux a -t myproject`
+/// - `tmux attach -t myproject`
+///
+/// Returns `null` if the command doesn't appear to be a tmux invocation
+/// or the session name can't be parsed.
+String? parseTmuxSessionName(String? command) {
+  if (command == null || command.isEmpty) return null;
+
+  // Normalize: strip leading cd/env/path prefixes to find 'tmux ...'
+  final tmuxIdx = command.indexOf('tmux ');
+  if (tmuxIdx < 0) return null;
+  final tmuxPart = command.substring(tmuxIdx);
+
+  // Match a shell argument: 'quoted', "quoted", or unquoted-word.
+  const argPattern = r"""(?:'([^']*)'|"([^"]*)"|(\S+))""";
+
+  // Try -s <name> (new-session / new)
+  final sFlag = RegExp('-[A-Za-z]*s\\s+$argPattern').firstMatch(tmuxPart);
+  if (sFlag != null) {
+    return sFlag.group(1) ?? sFlag.group(2) ?? sFlag.group(3);
+  }
+
+  // Try -t <name> (attach / attach-session)
+  final tFlag = RegExp('-[A-Za-z]*t\\s+$argPattern').firstMatch(tmuxPart);
+  if (tFlag != null) {
+    return tFlag.group(1) ?? tFlag.group(2) ?? tFlag.group(3);
+  }
+
+  return null;
+}
+
+/// Strips surrounding quotes from a shell argument.
+String _unquote(String value) {
+  if (value.length >= 2) {
+    if ((value.startsWith("'") && value.endsWith("'")) ||
+        (value.startsWith('"') && value.endsWith('"'))) {
+      return value.substring(1, value.length - 1);
+    }
+  }
+  return value;
+}
