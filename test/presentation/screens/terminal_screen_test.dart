@@ -270,6 +270,36 @@ void main() {
     );
 
     testWidgets(
+      'ANSI-styled prompt-like shell output reconnects the IME input client after keyboard input',
+      (tester) async {
+        await pumpScreen(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('ls', selectionOffset: 2),
+        );
+        await tester.pump();
+
+        await tester.testTextInput.receiveAction(TextInputAction.newline);
+        await tester.pump();
+
+        tester.testTextInput.log.clear();
+        shellStdoutController.add(
+          Uint8List.fromList(utf8.encode('\u001b[38;5;39m>\u001b[0m ')),
+        );
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setClient',
+          ),
+          hasLength(1),
+        );
+        await tester.pump(const Duration(milliseconds: 200));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'non-prompt shell output does not reconnect the IME input client',
       (tester) async {
         await pumpScreen(tester);
