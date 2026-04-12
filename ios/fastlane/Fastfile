@@ -3,6 +3,7 @@ default_platform(:ios)
 require 'fileutils'
 require 'shellwords'
 require 'tmpdir'
+require_relative '../../scripts/preview_release_notes'
 
 platform :ios do
   before_all do
@@ -106,6 +107,20 @@ platform :ios do
   private_lane :resolved_ipa_path do |options|
     provided_ipa_path = options[:ipa_path].to_s
     provided_ipa_path.empty? ? lane_context[SharedValues::IPA_OUTPUT_PATH] : provided_ipa_path
+  end
+
+  private_lane :testflight_release_notes do
+    preview_notes = PreviewReleaseNotes.current
+    return [nil, nil] if preview_notes.nil?
+
+    [
+      preview_notes,
+      {
+        'en-US' => {
+          whats_new: preview_notes,
+        },
+      },
+    ]
   end
 
   private_lane :resolved_profile_path do |options|
@@ -344,6 +359,7 @@ platform :ios do
     app_id = APP_IDS[scheme]
     skip_meta = options[:skip_metadata].to_s == 'true'
     provided_ipa_path = options[:ipa_path].to_s
+    changelog, localized_build_info = testflight_release_notes
 
     build_and_sign(scheme: scheme) if provided_ipa_path.empty?
 
@@ -355,6 +371,8 @@ platform :ios do
       skip_submission: false,
       distribute_external: false,
       uses_non_exempt_encryption: false,
+      changelog: changelog,
+      localized_build_info: localized_build_info,
     )
 
     sync_metadata(app_identifier: app_id) unless skip_meta

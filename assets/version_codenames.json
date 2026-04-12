@@ -1,0 +1,137 @@
+{
+  "major_version_offset": 0,
+  "codenames": [
+    {
+      "major": 0,
+      "letter": "A",
+      "name": "Allen's Swamp Monkey"
+    },
+    {
+      "major": 1,
+      "letter": "B",
+      "name": "Baboon"
+    },
+    {
+      "major": 2,
+      "letter": "C",
+      "name": "Capuchin"
+    },
+    {
+      "major": 3,
+      "letter": "D",
+      "name": "Drill"
+    },
+    {
+      "major": 4,
+      "letter": "E",
+      "name": "Emperor Tamarin"
+    },
+    {
+      "major": 5,
+      "letter": "F",
+      "name": "Francois' Langur"
+    },
+    {
+      "major": 6,
+      "letter": "G",
+      "name": "Gelada"
+    },
+    {
+      "major": 7,
+      "letter": "H",
+      "name": "Howler Monkey"
+    },
+    {
+      "major": 8,
+      "letter": "I",
+      "name": "Indri"
+    },
+    {
+      "major": 9,
+      "letter": "J",
+      "name": "Japanese Macaque"
+    },
+    {
+      "major": 10,
+      "letter": "K",
+      "name": "Kipunji"
+    },
+    {
+      "major": 11,
+      "letter": "L",
+      "name": "Langur"
+    },
+    {
+      "major": 12,
+      "letter": "M",
+      "name": "Mandrill"
+    },
+    {
+      "major": 13,
+      "letter": "N",
+      "name": "Night Monkey"
+    },
+    {
+      "major": 14,
+      "letter": "O",
+      "name": "Orangutan"
+    },
+    {
+      "major": 15,
+      "letter": "P",
+      "name": "Proboscis Monkey"
+    },
+    {
+      "major": 16,
+      "letter": "Q",
+      "name": "Quiracoatan"
+    },
+    {
+      "major": 17,
+      "letter": "R",
+      "name": "Rhesus Macaque"
+    },
+    {
+      "major": 18,
+      "letter": "S",
+      "name": "Squirrel Monkey"
+    },
+    {
+      "major": 19,
+      "letter": "T",
+      "name": "Titi Monkey"
+    },
+    {
+      "major": 20,
+      "letter": "U",
+      "name": "Uakari"
+    },
+    {
+      "major": 21,
+      "letter": "V",
+      "name": "Vervet Monkey"
+    },
+    {
+      "major": 22,
+      "letter": "W",
+      "name": "Woolly Monkey"
+    },
+    {
+      "major": 23,
+      "letter": "X",
+      "name": null,
+      "reserved": true,
+      "note": "Reserved until an X codename is chosen."
+    },
+    {
+      "major": 24,
+      "letter": "Y",
+      "name": "Yellow Baboon"
+    },
+    {
+      "major": 25,
+      "letter": "Z",
+      "name": "Zanzibar Red Colobus"
+    }
+  ]
+}

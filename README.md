@@ -143,6 +143,16 @@ lib/
 
 See [docs/deployment.md](docs/deployment.md) for setting up automated deployment to TestFlight and Google Play.
 
+## Versioning
+
+MonkeySSH keeps the store-facing app version numeric (`major.minor.patch`) so App Store Connect and Google Play accept the build, and layers a monkey codename on top of each major version.
+
+- Major `0` starts the sequence with **Allen's Swamp Monkey**
+- Each later major advances alphabetically: **Baboon**, **Capuchin**, **Drill**, and so on
+- `X` is intentionally reserved until a real X codename is chosen
+
+The canonical codename table lives in `assets/version_codenames.json`, and release workflows plus the in-app About screen both read from that scheme.
+
 ## Contributing
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.

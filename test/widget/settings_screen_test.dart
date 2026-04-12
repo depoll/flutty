@@ -209,7 +209,25 @@ void main() {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
 
-      await _pumpSettingsScreen(tester, db: db);
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            appMetadataProvider.overrideWith(
+              (ref) async => const AppMetadata(
+                appName: 'MonkeySSH',
+                version: '0.1.1',
+                buildNumber: '123',
+                versionCodename: 'Allen\'s Swamp Monkey',
+              ),
+            ),
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
 
       await tester.scrollUntilVisible(
         find.text('App version'),
@@ -219,7 +237,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('App version'), findsOneWidget);
-      expect(find.text('0.1.1 (123)'), findsOneWidget);
+      expect(find.text('0.1.1 "Allen\'s Swamp Monkey" (123)'), findsOneWidget);
       expect(find.text('GitHub'), findsOneWidget);
       expect(find.text('Licenses'), findsOneWidget);
     });
@@ -236,6 +254,7 @@ void main() {
                 appName: 'MonkeySSH',
                 version: '0.1.1',
                 buildNumber: '123',
+                versionCodename: 'Allen\'s Swamp Monkey',
                 pullRequestNumber: '175',
                 pullRequestTitle: 'Show PR metadata in settings',
               ),

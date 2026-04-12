@@ -11,6 +11,11 @@ on:
         required: true
         type: string
         description: 'Build number (integer, monotonically increasing)'
+      build-codename:
+        required: false
+        type: string
+        default: ''
+        description: 'Monkey codename for the current major version'
       pr-number:
         required: false
         type: string
@@ -425,6 +430,9 @@ jobs:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           AAB_PATH: ../build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
           ANDROID_VERSION_CODE: ${{ inputs.build-number }}
+          FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
+          FLUTTY_VERSION_CODENAME: ${{ inputs.build-codename }}
+          FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd android
@@ -633,6 +641,9 @@ jobs:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
           APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          FLUTTY_BUILD_NAME: ${{ inputs.build-name }}
+          FLUTTY_VERSION_CODENAME: ${{ inputs.build-codename }}
+          FLUTTY_SOURCE_SHA: ${{ steps.resolved-source-sha.outputs.value }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios

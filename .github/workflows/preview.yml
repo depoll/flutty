@@ -20,6 +20,8 @@ jobs:
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
+      build-codename: ${{ steps.version.outputs.build-codename }}
+      build-display: ${{ steps.version.outputs.build-display }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -31,9 +33,16 @@ jobs:
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          BUILD_CODENAME=$(python3 scripts/version_codename.py "$BASE_VERSION")
+          BUILD_DISPLAY="$BASE_VERSION"
+          if [ -n "$BUILD_CODENAME" ]; then
+            BUILD_DISPLAY="$BASE_VERSION \"$BUILD_CODENAME\""
+          fi
 
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
+          echo "build-display=${BUILD_DISPLAY}" >> "$GITHUB_OUTPUT"
 
   comment-initial:
     name: PR Comment (Queued)
@@ -54,7 +63,7 @@ jobs:
 
             | | Details |
             |---|---|
-            | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
+            | **Version** | `${{ needs.compute-version.outputs.build-display }}` (PR #${{ github.event.pull_request.number }}) |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
             | **Android Status** | ⏳ Building |
             | **iOS Status** | ⏳ Building |
@@ -71,6 +80,7 @@ jobs:
             > Build triggered by ${{ github.event.pull_request.head.sha }}
             <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
             <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-codename:${{ needs.compute-version.outputs.build-codename }} -->
             <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
             <!-- preview-build-run-id:${{ github.run_id }} -->
 
@@ -82,6 +92,7 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      build-codename: ${{ needs.compute-version.outputs.build-codename }}
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
@@ -100,6 +111,7 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      build-codename: ${{ needs.compute-version.outputs.build-codename }}
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
       flavor: private
@@ -185,7 +197,7 @@ jobs:
 
             | | Details |
             |---|---|
-            | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
+            | **Version** | `${{ needs.compute-version.outputs.build-display }}` (PR #${{ github.event.pull_request.number }}) |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
             | **Android Status** | ${{ steps.preview-status.outputs.android-status }} |
             | **iOS Status** | ${{ steps.preview-status.outputs.ios-status }} |
@@ -202,6 +214,7 @@ jobs:
             > Build triggered by ${{ github.event.pull_request.head.sha }}
             <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
             <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-codename:${{ needs.compute-version.outputs.build-codename }} -->
             <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
             <!-- preview-build-run-id:${{ github.run_id }} -->
 
@@ -280,7 +293,7 @@ jobs:
 
             | | Details |
             |---|---|
-            | **Version** | `${{ needs.compute-version.outputs.build-name }}` (PR #${{ github.event.pull_request.number }}) |
+            | **Version** | `${{ needs.compute-version.outputs.build-display }}` (PR #${{ github.event.pull_request.number }}) |
             | **Build** | `${{ needs.compute-version.outputs.build-number }}` |
             | **Android Status** | ${{ steps.preview-status.outputs.android-status }} |
             | **iOS Status** | ${{ steps.preview-status.outputs.ios-status }} |
@@ -297,5 +310,6 @@ jobs:
             > Build triggered by ${{ github.event.pull_request.head.sha }}
             <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
             <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
+            <!-- preview-build-codename:${{ needs.compute-version.outputs.build-codename }} -->
             <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
             <!-- preview-build-run-id:${{ github.run_id }} -->
