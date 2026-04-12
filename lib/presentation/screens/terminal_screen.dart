@@ -2337,6 +2337,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// checks for tmux sessions via an exec channel. If tmux is active,
   /// also queries the current session name.
   Future<void> _detectTmux(SshSession session) async {
+    // Capture the connection ID at the start so we can verify it hasn't
+    // changed after async gaps (user may have switched connections).
+    final capturedConnectionId = _connectionId;
+
     // Clear any stale tmux state from a previous connection.
     if (mounted) {
       setState(() {
@@ -2347,16 +2351,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // Give the auto-connect command (which may start tmux) time to init.
     await Future<void>.delayed(const Duration(seconds: 2));
-    if (!mounted) return;
+    if (!mounted || _connectionId != capturedConnectionId) return;
 
     final tmux = ref.read(tmuxServiceProvider);
     final active = await tmux.isTmuxActive(session);
-    if (!mounted) return;
+    if (!mounted || _connectionId != capturedConnectionId) return;
 
     if (!active) return;
 
     final sessionName = await tmux.currentSessionName(session);
-    if (!mounted || sessionName == null) return;
+    if (!mounted || _connectionId != capturedConnectionId) return;
+    if (sessionName == null) return;
 
     setState(() {
       _isTmuxActive = true;
@@ -2766,14 +2771,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
-          if (_isTmuxActive)
+          if (_isTmuxActive && connectionState == SshConnectionState.connected)
             IconButton(
               icon: const Icon(Icons.window_outlined),
-              onPressed:
-                  _connectionId == null ||
-                      connectionState != SshConnectionState.connected
-                  ? null
-                  : _openTmuxNavigator,
+              onPressed: _connectionId == null ? null : _openTmuxNavigator,
               tooltip: 'tmux windows',
             ),
           IconButton(

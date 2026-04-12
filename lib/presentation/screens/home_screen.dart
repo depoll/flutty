@@ -2305,7 +2305,11 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   Future<void> _queryTmux() async {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final session = sessionsNotifier.getSession(widget.connectionId);
-    if (session == null) return;
+    if (session == null) {
+      // Session not available yet; mark queried to avoid permanent spinner.
+      if (mounted) setState(() => _queried = true);
+      return;
+    }
 
     final tmux = ref.read(tmuxServiceProvider);
     final active = await tmux.isTmuxActive(session);

@@ -82,6 +82,12 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 }
 
 class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
+  /// Maximum number of recent sessions to show per tool.
+  static const _maxSessionsPerTool = 3;
+
+  /// Maximum total recent sessions to display.
+  static const _maxVisibleSessions = 5;
+
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   bool _isLoadingWindows = true;
@@ -130,7 +136,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       final sessions = await _discovery.discoverSessions(
         widget.session,
         workingDirectory: activeWindow?.currentPath,
-        maxPerTool: 3,
+        maxPerTool: _maxSessionsPerTool,
       );
       if (!mounted) return;
       setState(() {
@@ -308,65 +314,75 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     );
   }
 
-  Widget _buildRecentSessionsSection(ThemeData theme) => Column(
-    mainAxisSize: MainAxisSize.min,
-    children: [
-      ListTile(
-        dense: true,
-        leading: Icon(
-          _showRecentSessions ? Icons.expand_less : Icons.expand_more,
-          color: theme.colorScheme.onSurfaceVariant,
+  Widget _buildRecentSessionsSection(ThemeData theme) {
+    final visibleCount = _recentSessions == null
+        ? 0
+        : _recentSessions!.length > _maxVisibleSessions
+        ? _maxVisibleSessions
+        : _recentSessions!.length;
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          dense: true,
+          leading: Icon(
+            _showRecentSessions ? Icons.expand_less : Icons.expand_more,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          title: Row(
+            children: [
+              const Text('Recent AI Sessions'),
+              if (visibleCount > 0) ...[
+                const SizedBox(width: 6),
+                Text(
+                  '($visibleCount)',
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+              const Spacer(),
+              const PremiumBadge(),
+            ],
+          ),
+          onTap: () {
+            setState(() => _showRecentSessions = !_showRecentSessions);
+            if (_showRecentSessions) {
+              _loadRecentSessions();
+            }
+          },
         ),
-        title: Row(
-          children: [
-            const Text('Recent AI Sessions'),
-            if (_recentSessions != null && _recentSessions!.isNotEmpty) ...[
-              const SizedBox(width: 6),
-              Text(
-                '(${_recentSessions!.length})',
+        if (_showRecentSessions) ...[
+          if (_isLoadingSessions)
+            const Padding(
+              padding: EdgeInsets.all(16),
+              child: Center(
+                child: SizedBox(
+                  width: 20,
+                  height: 20,
+                  child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                ),
+              ),
+            )
+          else if (_recentSessions != null && _recentSessions!.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                'No recent AI sessions found on this host.',
                 style: theme.textTheme.bodySmall?.copyWith(
                   color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
-            ],
-            const Spacer(),
-            const PremiumBadge(),
-          ],
-        ),
-        onTap: () {
-          setState(() => _showRecentSessions = !_showRecentSessions);
-          if (_showRecentSessions) {
-            _loadRecentSessions();
-          }
-        },
-      ),
-      if (_showRecentSessions) ...[
-        if (_isLoadingSessions)
-          const Padding(
-            padding: EdgeInsets.all(16),
-            child: Center(
-              child: SizedBox(
-                width: 20,
-                height: 20,
-                child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-              ),
-            ),
-          )
-        else if (_recentSessions != null && _recentSessions!.isEmpty)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              'No recent AI sessions found on this host.',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
-          )
-        else if (_recentSessions != null)
-          ...(_recentSessions!.take(5).map(_buildSessionTile)),
+            )
+          else if (_recentSessions != null)
+            ...(_recentSessions!
+                .take(_maxVisibleSessions)
+                .map(_buildSessionTile)),
+        ],
       ],
-    ],
-  );
+    );
+  }
 
   Widget _buildSessionTile(ToolSessionInfo info) {
     final theme = Theme.of(context);

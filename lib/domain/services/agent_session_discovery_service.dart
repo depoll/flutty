@@ -18,8 +18,10 @@ class AgentSessionDiscoveryService {
   /// Discovers recent sessions across all supported tools for the given
   /// [workingDirectory] on the remote host.
   ///
-  /// Returns sessions sorted by most recent first. Limits to [maxPerTool]
-  /// sessions per tool to keep results manageable.
+  /// Each tool's sessions are discovered in most-recent-first order, then
+  /// the combined result is interleaved round-robin across tools so no
+  /// single tool dominates the list. Limits to [maxPerTool] sessions per
+  /// tool to keep results manageable.
   Future<List<ToolSessionInfo>> discoverSessions(
     SshSession session, {
     String? workingDirectory,
@@ -136,7 +138,7 @@ class AgentSessionDiscoveryService {
       final output = await _exec(
         session,
         'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
-        '2>/dev/null | xargs ls -1t 2>/dev/null | head -n $max',
+        '-exec ls -1t {} + 2>/dev/null | head -n $max',
       );
       if (output.trim().isEmpty) return const [];
 
@@ -206,7 +208,7 @@ class AgentSessionDiscoveryService {
       final output = await _exec(
         session,
         'find ~/.gemini/tmp -name "*.json" -path "*/chats/*" -type f '
-        '2>/dev/null | xargs ls -1t 2>/dev/null | head -n $max',
+        '-exec ls -1t {} + 2>/dev/null | head -n $max',
       );
       if (output.trim().isEmpty) return const [];
 
