@@ -1199,6 +1199,93 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     );
   }
 
+  String _trailingToken(String text) {
+    final graphemes = text.characters.toList(growable: false);
+    var tokenEnd = graphemes.length;
+    while (tokenEnd > 0 && _isWhitespaceGrapheme(graphemes[tokenEnd - 1])) {
+      tokenEnd--;
+    }
+    if (tokenEnd == 0) {
+      return '';
+    }
+
+    var tokenStart = tokenEnd;
+    while (tokenStart > 0 &&
+        !_isWhitespaceGrapheme(graphemes[tokenStart - 1])) {
+      tokenStart--;
+    }
+    return graphemes.sublist(tokenStart, tokenEnd).join();
+  }
+
+  ({String currentText, int? cursorOffset})? _normalizeSplitLeadingToken(
+    String currentText, {
+    int? cursorOffsetHint,
+  }) {
+    if (_lastSentText.isEmpty) {
+      return null;
+    }
+
+    final previousTrailingToken = _trailingToken(_lastSentText);
+    if (previousTrailingToken.characters.length < 2) {
+      return null;
+    }
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final tokenInfo = _leadingTokenInfo(currentGraphemes);
+    if (tokenInfo == null ||
+        tokenInfo.firstTokenGraphemes.length != 1 ||
+        tokenInfo.trailingGraphemes.isEmpty) {
+      return null;
+    }
+
+    var separatorLength = 0;
+    while (separatorLength < tokenInfo.trailingGraphemes.length &&
+        _isWhitespaceGrapheme(tokenInfo.trailingGraphemes[separatorLength])) {
+      separatorLength++;
+    }
+    if (separatorLength == 0 ||
+        separatorLength == tokenInfo.trailingGraphemes.length) {
+      return null;
+    }
+
+    var nextTokenEnd = separatorLength;
+    while (nextTokenEnd < tokenInfo.trailingGraphemes.length &&
+        !_isWhitespaceGrapheme(tokenInfo.trailingGraphemes[nextTokenEnd])) {
+      nextTokenEnd++;
+    }
+    if (nextTokenEnd == separatorLength) {
+      return null;
+    }
+
+    final mergedLeadingToken =
+        tokenInfo.firstTokenGraphemes.join() +
+        tokenInfo.trailingGraphemes
+            .sublist(separatorLength, nextTokenEnd)
+            .join();
+    final continuesPreviousTrailingToken =
+        mergedLeadingToken.startsWith(previousTrailingToken) ||
+        previousTrailingToken.startsWith(mergedLeadingToken);
+    if (!continuesPreviousTrailingToken) {
+      return null;
+    }
+
+    final separatorStart = tokenInfo.firstTokenEnd;
+    final separatorEnd = separatorStart + separatorLength;
+    final normalizedCursorOffset = cursorOffsetHint == null
+        ? null
+        : cursorOffsetHint <= separatorStart
+        ? cursorOffsetHint
+        : cursorOffsetHint <= separatorEnd
+        ? separatorStart
+        : cursorOffsetHint - separatorLength;
+    return (
+      currentText:
+          tokenInfo.firstTokenGraphemes.join() +
+          tokenInfo.trailingGraphemes.sublist(separatorLength).join(),
+      cursorOffset: normalizedCursorOffset,
+    );
+  }
+
   int _textLengthInGraphemes(String text) => text.characters.length;
 
   int _graphemeOffsetForCodeUnitOffset(String text, int codeUnitOffset) => text
@@ -1674,16 +1761,25 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         currentText,
         value,
       );
+      final normalizedSplitLeadingToken = _normalizeSplitLeadingToken(
+        currentText,
+        cursorOffsetHint: targetCursorOffset,
+      );
+      final splitNormalizedCurrentText =
+          normalizedSplitLeadingToken?.currentText ?? currentText;
+      final splitNormalizedTargetCursorOffset =
+          normalizedSplitLeadingToken?.cursorOffset ?? targetCursorOffset;
       final normalizedDeleteResetLeadingFragment =
           _normalizeDeleteResetLeadingFragment(
-            currentText,
-            cursorOffsetHint: targetCursorOffset,
+            splitNormalizedCurrentText,
+            cursorOffsetHint: splitNormalizedTargetCursorOffset,
           );
       final normalizedCurrentText =
-          normalizedDeleteResetLeadingFragment?.currentText ?? currentText;
+          normalizedDeleteResetLeadingFragment?.currentText ??
+          splitNormalizedCurrentText;
       final normalizedTargetCursorOffset =
           normalizedDeleteResetLeadingFragment?.cursorOffset ??
-          targetCursorOffset;
+          splitNormalizedTargetCursorOffset;
       if (normalizedCurrentText == _lastSentText) {
         final collapsedMoveAwayFromReplacement =
             !_lastProcessedSelectionWasCollapsed &&
@@ -1865,6 +1961,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         effectiveCurrentText,
         sourceValue:
             normalizedPendingEnter.strippedPendingEnter ||
+                normalizedSplitLeadingToken != null ||
                 normalizedDeleteResetLeadingFragment != null ||
                 effectiveCurrentText != normalizedCurrentText
             ? null

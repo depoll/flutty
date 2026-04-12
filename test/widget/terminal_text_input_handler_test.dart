@@ -7293,6 +7293,74 @@ void main() {
     );
 
     testWidgets(
+      'typing copilot after tmux Ctrl+b, c keeps the leading c when space is pressed',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+        var modifierActive = false;
+        var fakeNow = DateTime(2026);
+        debugSetModifierChordClock(() => fakeNow);
+        addTearDown(() => debugSetModifierChordClock(null));
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => '>',
+                hasActiveToolbarModifier: () => modifierActive,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        modifierActive = true;
+        tester.testTextInput.updateEditingValue(
+          _editingValue('b', selectionOffset: 1),
+        );
+        await tester.pump();
+        modifierActive = false;
+
+        fakeNow = fakeNow.add(const Duration(milliseconds: 100));
+        tester.testTextInput.updateEditingValue(
+          _editingValue('c', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+        tester.testTextInput.log.clear();
+        controller.handleExternalTerminalOutput();
+        await tester.pump();
+
+        for (var index = 1; index <= 'copilot'.length; index++) {
+          final text = 'copilot'.substring(0, index);
+          tester.testTextInput.updateEditingValue(
+            _editingValue(text, selectionOffset: index),
+          );
+          await tester.pump();
+        }
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('c opilot ', selectionOffset: 'c opilot '.length),
+        );
+        await tester.pump();
+
+        expect(_terminalTextFromEvents(terminalOutput), 'copilot ');
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'does not reset after modifier chord when follow-up arrives after timeout',
       (tester) async {
         final terminalOutput = <String>[];
