@@ -351,6 +351,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
     return ListTile(
       dense: true,
+      tileColor: isActive
+          ? theme.colorScheme.primaryContainer.withAlpha(80)
+          : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       leading: Container(
         width: 28,
         height: 28,
@@ -371,7 +375,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ),
         ),
       ),
-      title: Text(window.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+      title: Text(
+        window.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: isActive
+            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
+            : null,
+      ),
       subtitle: window.paneTitle != null
           ? Text(
               window.paneTitle!,
@@ -385,26 +396,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          if (window.hasAlert)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Icon(
-                Icons.notifications_active,
-                size: 16,
-                color: theme.colorScheme.error,
-              ),
-            )
-          else if (window.isIdle)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Text(
-                'waiting',
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.tertiary,
-                  fontStyle: FontStyle.italic,
-                ),
-              ),
-            ),
+          _windowStatusIcon(theme, window),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             visualDensity: VisualDensity.compact,
@@ -413,12 +405,46 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ),
         ],
       ),
-      selected: isActive,
       // Active window: dismiss. Other windows: switch.
       onTap: isActive
           ? () => Navigator.pop(context)
           : () => _switchToWindow(window.index),
     );
+  }
+
+  /// Returns a status icon for the window's current state.
+  Widget _windowStatusIcon(ThemeData theme, TmuxWindow window) {
+    if (window.hasAlert) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Icon(
+          Icons.notifications_active,
+          size: 16,
+          color: theme.colorScheme.error,
+        ),
+      );
+    }
+    if (window.isIdle) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Icon(
+          Icons.hourglass_bottom,
+          size: 14,
+          color: theme.colorScheme.tertiary,
+        ),
+      );
+    }
+    if (!window.isActive) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Icon(
+          Icons.play_arrow,
+          size: 16,
+          color: theme.colorScheme.primary.withAlpha(160),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
   }
 
   Widget _buildRecentSessionsSection(ThemeData theme) {

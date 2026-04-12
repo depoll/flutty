@@ -367,84 +367,115 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
     );
   }
 
-  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) => ListTile(
-    dense: true,
-    leading: Container(
-      width: 24,
-      height: 24,
-      decoration: BoxDecoration(
-        color: window.isActive
-            ? theme.colorScheme.primary
-            : theme.colorScheme.surfaceContainerHigh,
-        borderRadius: BorderRadius.circular(6),
-      ),
-      alignment: Alignment.center,
-      child: Text(
-        '${window.index}',
-        style: theme.textTheme.labelSmall?.copyWith(
-          color: window.isActive
-              ? theme.colorScheme.onPrimary
-              : theme.colorScheme.onSurfaceVariant,
-          fontWeight: FontWeight.bold,
+  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
+    final isActive = window.isActive;
+
+    return ListTile(
+      dense: true,
+      tileColor: isActive
+          ? theme.colorScheme.primaryContainer.withAlpha(80)
+          : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      leading: Container(
+        width: 24,
+        height: 24,
+        decoration: BoxDecoration(
+          color: isActive
+              ? theme.colorScheme.primary
+              : theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
         ),
-      ),
-    ),
-    title: Text(window.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-    subtitle: window.paneTitle != null
-        ? Text(
-            window.paneTitle!,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          )
-        : null,
-    trailing: Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        if (window.hasAlert)
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: Icon(
-              Icons.notifications_active,
-              size: 16,
-              color: theme.colorScheme.error,
-            ),
-          )
-        else if (window.isIdle)
-          Padding(
-            padding: const EdgeInsets.only(right: 4),
-            child: Text(
-              'waiting',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.tertiary,
-                fontStyle: FontStyle.italic,
-              ),
-            ),
+        alignment: Alignment.center,
+        child: Text(
+          '${window.index}',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: isActive
+                ? theme.colorScheme.onPrimary
+                : theme.colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.bold,
           ),
-        IconButton(
-          icon: const Icon(Icons.close, size: 16),
-          visualDensity: VisualDensity.compact,
-          tooltip: 'Close window',
-          onPressed: () {
-            widget.onAction(TmuxCloseWindowAction(window.index));
-            setState(() {
-              _windows = _windows
-                  ?.where((w) => w.index != window.index)
-                  .toList();
-            });
-          },
         ),
-      ],
-    ),
-    selected: window.isActive,
-    // Always issue the switch command — the active flag may be stale.
-    onTap: () {
-      widget.onAction(TmuxSwitchWindowAction(window.index));
-      setState(() => _expanded = false);
-    },
-  );
+      ),
+      title: Text(
+        window.name,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: isActive
+            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
+            : null,
+      ),
+      subtitle: window.paneTitle != null
+          ? Text(
+              window.paneTitle!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            )
+          : null,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _windowStatusIcon(theme, window),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            tooltip: 'Close window',
+            onPressed: () {
+              widget.onAction(TmuxCloseWindowAction(window.index));
+              setState(() {
+                _windows = _windows
+                    ?.where((w) => w.index != window.index)
+                    .toList();
+              });
+            },
+          ),
+        ],
+      ),
+      onTap: isActive
+          ? () => setState(() => _expanded = false)
+          : () {
+              widget.onAction(TmuxSwitchWindowAction(window.index));
+              setState(() => _expanded = false);
+            },
+    );
+  }
+
+  Widget _windowStatusIcon(ThemeData theme, TmuxWindow window) {
+    if (window.hasAlert) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Icon(
+          Icons.notifications_active,
+          size: 16,
+          color: theme.colorScheme.error,
+        ),
+      );
+    }
+    if (window.isIdle) {
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Icon(
+          Icons.hourglass_bottom,
+          size: 14,
+          color: theme.colorScheme.tertiary,
+        ),
+      );
+    }
+    if (!window.isActive) {
+      // Running — not idle, not alert.
+      return Padding(
+        padding: const EdgeInsets.only(right: 4),
+        child: Icon(
+          Icons.play_arrow,
+          size: 16,
+          color: theme.colorScheme.primary.withAlpha(160),
+        ),
+      );
+    }
+    return const SizedBox.shrink();
+  }
 }
 
 class _ExtraKeysToggleKeycap extends StatelessWidget {
