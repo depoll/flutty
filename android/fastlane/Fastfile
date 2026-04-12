@@ -1,5 +1,9 @@
 default_platform(:android)
 
+require 'fileutils'
+require 'tmpdir'
+require_relative '../../scripts/preview_release_notes'
+
 platform :android do
   METADATA_DIRS = {
     'xyz.depollsoft.monkeyssh.private' => File.expand_path('metadata-private/android', __dir__),
@@ -37,7 +41,7 @@ platform :android do
         track.releases = track.releases.reject { |r| r.status == 'draft' }
         client.update_track(track_name, track)
         client.commit_current_edit!
-        return
+        next
       end
     end
     client.abort_current_edit
@@ -48,7 +52,7 @@ platform :android do
     track_name = options[:track]
     version_code = options[:version_code].to_s
 
-    return false if version_code.empty?
+    next false if version_code.empty?
 
     client = play_store_client(package_name: package)
     client.begin_edit(package_name: package)
@@ -60,6 +64,25 @@ platform :android do
 
     client.abort_current_edit
     version_codes.include?(version_code)
+  end
+
+  private_lane :prepared_metadata_path do |options|
+    base_metadata_path = options[:base_metadata_path]
+    version_code = options[:version_code].to_s
+    preview_notes = PreviewReleaseNotes.current
+
+    next [base_metadata_path, false] if preview_notes.nil? || version_code.empty?
+
+    tmpdir = Dir.mktmpdir('flutty-play-metadata')
+    if base_metadata_path && File.directory?(base_metadata_path)
+      FileUtils.cp_r(File.join(base_metadata_path, '.'), tmpdir)
+    end
+
+    changelog_dir = File.join(tmpdir, 'en-US', 'changelogs')
+    FileUtils.mkdir_p(changelog_dir)
+    File.write(File.join(changelog_dir, "#{version_code}.txt"), preview_notes)
+
+    [tmpdir, true]
   end
 
   desc 'Upload flavor AAB to Play Store internal testing'
@@ -85,6 +108,12 @@ platform :android do
           "Metadata sync requires a supported package_name. Expected one of: #{allowed_packages}",
         )
       end
+    upload_metadata_path = nil
+    remove_metadata_path = false
+    upload_metadata_path, remove_metadata_path = prepared_metadata_path(
+      base_metadata_path: meta_path,
+      version_code: version_code,
+    )
 
     clear_draft_releases(package_name: package, track: 'internal')
 
@@ -98,13 +127,15 @@ platform :android do
       track: 'internal',
       aab: ENV['AAB_PATH'] || default_aab,
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
-      metadata_path: meta_path,
+      metadata_path: upload_metadata_path,
       skip_upload_metadata: skip_meta,
       skip_upload_images: skip_meta,
       skip_upload_screenshots: true,
-      skip_upload_changelogs: skip_meta,
+      skip_upload_changelogs: upload_metadata_path.nil?,
       changes_not_sent_for_review: true,
     )
+  ensure
+    FileUtils.rm_rf(upload_metadata_path) if remove_metadata_path
   end
 
   desc 'Upload production flavor AAB to Play Store production'

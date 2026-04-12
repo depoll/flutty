@@ -120,19 +120,20 @@ jobs:
     outputs:
       build-name: ${{ steps.provided-version.outputs.build-name || steps.source-version.outputs.build-name }}
       build-number: ${{ steps.provided-version.outputs.build-number || steps.source-version.outputs.build-number }}
+      build-codename: ${{ steps.version-codename.outputs.build-codename }}
+      build-display: ${{ steps.version-codename.outputs.build-display }}
     steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+          ref: ${{ needs.validate-pr.outputs.deploy-sha }}
+
       - name: Reuse requested build version
         id: provided-version
         if: inputs.preview-build-name != '' && inputs.preview-build-number != ''
         run: |
           echo "build-name=${{ inputs.preview-build-name }}" >> "$GITHUB_OUTPUT"
           echo "build-number=${{ inputs.preview-build-number }}" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
-        if: inputs.preview-build-name == '' || inputs.preview-build-number == ''
-        with:
-          persist-credentials: false
-          ref: ${{ needs.validate-pr.outputs.deploy-sha }}
 
       - name: Compute version
         id: source-version
@@ -144,6 +145,22 @@ jobs:
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
 
+      - name: Resolve codename
+        id: version-codename
+        env:
+          PROVIDED_BUILD_NAME: ${{ steps.provided-version.outputs.build-name }}
+          SOURCE_BUILD_NAME: ${{ steps.source-version.outputs.build-name }}
+        run: |
+          BUILD_NAME="${PROVIDED_BUILD_NAME:-$SOURCE_BUILD_NAME}"
+          BUILD_CODENAME=$(python3 scripts/version_codename.py "$BUILD_NAME")
+          BUILD_DISPLAY="$BUILD_NAME"
+          if [ -n "$BUILD_CODENAME" ]; then
+            BUILD_DISPLAY="$BUILD_NAME \"$BUILD_CODENAME\""
+          fi
+
+          echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
+          echo "build-display=${BUILD_DISPLAY}" >> "$GITHUB_OUTPUT"
+
   finalize-version:
     name: Finalize Deploy Version
     needs: [validate-pr, compute-version]
@@ -154,6 +171,8 @@ jobs:
     outputs:
       build-name: ${{ steps.finalize.outputs.build-name }}
       build-number: ${{ steps.finalize.outputs.build-number }}
+      build-codename: ${{ steps.finalize.outputs.build-codename }}
+      build-display: ${{ steps.finalize.outputs.build-display }}
       requested-build-name: ${{ steps.finalize.outputs.requested-build-name }}
       requested-build-number: ${{ steps.finalize.outputs.requested-build-number }}
       rebuild-required: ${{ steps.finalize.outputs.rebuild-required }}
@@ -163,12 +182,19 @@ jobs:
       - name: Keep deploy build number monotonic
         id: finalize
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          INPUT_BUILD_NAME: ${{ needs.compute-version.outputs.build-name }}
+          INPUT_BUILD_CODENAME: ${{ needs.compute-version.outputs.build-codename }}
+          INPUT_BUILD_DISPLAY: ${{ needs.compute-version.outputs.build-display }}
+          INPUT_BUILD_NUMBER: ${{ needs.compute-version.outputs.build-number }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const requestedBuildName = '${{ needs.compute-version.outputs.build-name }}'.trim();
-            const requestedBuildNumber = '${{ needs.compute-version.outputs.build-number }}'.trim();
+            const requestedBuildName = (process.env.INPUT_BUILD_NAME || '').trim();
+            const requestedBuildCodename = (process.env.INPUT_BUILD_CODENAME || '').trim();
+            const requestedBuildDisplay = (process.env.INPUT_BUILD_DISPLAY || '').trim();
+            const requestedBuildNumber = (process.env.INPUT_BUILD_NUMBER || '').trim();
             const workflowIds = ['deploy-testflight.yml', 'develop.yml'];
             const markerArtifactPattern = /^private-deploy-build-number-(\d+)$/;
             const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)$/;
@@ -290,6 +316,8 @@ jobs:
 
             core.setOutput('build-name', requestedBuildName);
             core.setOutput('build-number', buildNumber);
+            core.setOutput('build-codename', requestedBuildCodename);
+            core.setOutput('build-display', requestedBuildDisplay);
             core.setOutput('requested-build-name', requestedBuildName);
             core.setOutput('requested-build-number', requestedBuildNumber);
             core.setOutput('rebuild-required', rebuildRequired);
@@ -562,7 +590,7 @@ jobs:
               '| **Status** | 🔒 Lock acquired — deploying |',
               `| **Requested by** | ${requestDetails} |`,
               `| **Preview SHA** | \`${deploySha}\` |`,
-              `| **Version** | \`${{ needs.finalize-version.outputs.build-name }}\` |`,
+              `| **Version** | \`${{ needs.finalize-version.outputs.build-display }}\` |`,
               `| **Build** | \`${{ needs.finalize-version.outputs.build-number }}\` |`,
               '| **Android Status** | ⏳ Deploying to Play internal |',
               '| **iOS Status** | ⏳ Uploading to TestFlight |',
@@ -587,9 +615,10 @@ jobs:
                `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
                `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
                `<!-- preview-deploy-workflow-url:${runUrl} -->`,
-               `<!-- preview-deploy-source-sha:${deploySha} -->`,
-               `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
-               `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
+                `<!-- preview-deploy-source-sha:${deploySha} -->`,
+                `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
+                `<!-- preview-deploy-build-codename:${{ needs.finalize-version.outputs.build-codename }} -->`,
+                `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
                `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
                `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
             ]
@@ -624,6 +653,7 @@ jobs:
     with:
       build-name: ${{ needs.finalize-version.outputs.build-name }}
       build-number: ${{ needs.finalize-version.outputs.build-number }}
+      build-codename: ${{ needs.finalize-version.outputs.build-codename }}
       pr-number: ${{ inputs.pr-number }}
       pr-title: ${{ needs.validate-pr.outputs.pr-title }}
       flavor: private
@@ -910,7 +940,7 @@ jobs:
               `| **Requested by** | ${requestDetails} |`,
               deploySha ? `| **Preview SHA** | \`${deploySha}\` |` : null,
               '${{ needs.finalize-version.outputs.build-name }}'
-                ? `| **Version** | \`${{ needs.finalize-version.outputs.build-name }}\` |`
+                ? `| **Version** | \`${{ needs.finalize-version.outputs.build-display }}\` |`
                 : null,
               '${{ needs.finalize-version.outputs.build-number }}'
                 ? `| **Build** | \`${{ needs.finalize-version.outputs.build-number }}\` |`
@@ -938,9 +968,10 @@ jobs:
                `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
                `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
                `<!-- preview-deploy-workflow-url:${runUrl} -->`,
-               `<!-- preview-deploy-source-sha:${deploySha} -->`,
-               `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
-               `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
+                `<!-- preview-deploy-source-sha:${deploySha} -->`,
+                `<!-- preview-deploy-build-name:${{ needs.finalize-version.outputs.build-name }} -->`,
+                `<!-- preview-deploy-build-codename:${{ needs.finalize-version.outputs.build-codename }} -->`,
+                `<!-- preview-deploy-build-number:${{ needs.finalize-version.outputs.build-number }} -->`,
                `<!-- preview-deploy-requested-build-number:${{ needs.finalize-version.outputs.requested-build-number }} -->`,
                `<!-- preview-deploy-rebuild-required:${{ needs.finalize-version.outputs.rebuild-required }} -->`,
             ]

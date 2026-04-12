@@ -25,6 +25,7 @@ jobs:
     outputs:
       build-name: ${{ steps.version.outputs.build-name }}
       build-number: ${{ steps.version.outputs.build-number }}
+      build-codename: ${{ steps.version.outputs.build-codename }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -35,9 +36,11 @@ jobs:
         run: |
           BASE_VERSION=$(grep '^version:' pubspec.yaml | sed 's/version: //' | cut -d'+' -f1)
           BUILD_NUMBER=$(( $(date +%s) / 10 ))
+          BUILD_CODENAME=$(python3 scripts/version_codename.py "$BASE_VERSION")
 
           echo "build-name=${BASE_VERSION}" >> "$GITHUB_OUTPUT"
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
+          echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
 
   deploy:
     name: Build & Deploy Private
@@ -46,6 +49,7 @@ jobs:
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
+      build-codename: ${{ needs.compute-version.outputs.build-codename }}
       flavor: private
       deploy-ios-to: testflight
       deploy-android-to: internal
