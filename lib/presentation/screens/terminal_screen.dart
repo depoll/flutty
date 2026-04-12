@@ -1340,6 +1340,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  bool _showTmuxBar = true;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -2382,6 +2383,61 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  /// Builds the slim tmux handle bar at the bottom of the terminal.
+  ///
+  /// Shows the current tmux session name and a drag handle. Tapping or
+  /// swiping up opens the full tmux navigator.
+  Widget _buildTmuxHandle(ThemeData theme) => GestureDetector(
+    onTap: _openTmuxNavigator,
+    onVerticalDragEnd: (details) {
+      // Swipe up to open.
+      if (details.primaryVelocity != null && details.primaryVelocity! < -100) {
+        _openTmuxNavigator();
+      }
+    },
+    child: Container(
+      decoration: BoxDecoration(
+        color: theme.colorScheme.surfaceContainerHighest,
+        border: Border(
+          top: BorderSide(color: theme.colorScheme.outlineVariant, width: 0.5),
+        ),
+      ),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      child: Row(
+        children: [
+          Icon(
+            Icons.window_outlined,
+            size: 14,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            _tmuxSessionName ?? 'tmux',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const Spacer(),
+          // Drag handle pill.
+          Container(
+            width: 32,
+            height: 4,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const Spacer(),
+          Icon(
+            Icons.keyboard_arrow_up,
+            size: 16,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+        ],
+      ),
+    ),
+  );
+
   /// Opens the tmux window navigator bottom sheet and handles the
   /// selected action.
   Future<void> _openTmuxNavigator() async {
@@ -2410,7 +2466,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     switch (action) {
       case TmuxSwitchWindowAction(:final windowIndex):
-        await _switchTmuxWindow(session, windowIndex);
+        _switchTmuxWindow(session, windowIndex);
       case TmuxNewWindowAction(:final command, :final windowName):
         await _createTmuxWindow(session, command: command, name: windowName);
       case TmuxResumeSessionAction(:final resumeCommand):
@@ -2424,12 +2480,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// `tmux select-window` is a server operation — the tmux server
   /// notifies all attached clients of the change. Writing to the PTY
   /// would inject the command as input to whatever program is running.
-  Future<void> _switchTmuxWindow(SshSession session, int windowIndex) async {
+  void _switchTmuxWindow(SshSession session, int windowIndex) {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    final tmux = ref.read(tmuxServiceProvider);
-    await tmux.selectWindow(session, sessionName, windowIndex);
+    ref
+        .read(tmuxServiceProvider)
+        .selectWindow(session, sessionName, windowIndex);
   }
 
   /// Creates a new tmux window via exec channel, then switches to it.
@@ -2869,6 +2926,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ],
                   ),
                 ),
+              if (_isTmuxActive)
+                PopupMenuItem(
+                  value: 'toggle_tmux_bar',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _showTmuxBar
+                            ? Icons.window_outlined
+                            : Icons.window_rounded,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(_showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar'),
+                    ],
+                  ),
+                ),
               if (isMobile)
                 CheckedPopupMenuItem(
                   value: 'toggle_tap_keyboard',
@@ -2965,6 +3038,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       body: Column(
         children: [
           Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
+          if (_isTmuxActive &&
+              _showTmuxBar &&
+              connectionState == SshConnectionState.connected)
+            _buildTmuxHandle(theme),
           if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
@@ -3656,6 +3733,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
+        break;
+      case 'toggle_tmux_bar':
+        setState(() => _showTmuxBar = !_showTmuxBar);
         break;
       case 'toggle_tap_keyboard':
         final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);

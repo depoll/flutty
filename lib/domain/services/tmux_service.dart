@@ -10,9 +10,18 @@ import 'ssh_service.dart';
 ///
 /// All queries use `SshSession.execute()` to avoid interfering with the
 /// interactive shell. The results are parsed from tmux's `-F` format strings.
+///
+/// The tmux binary path is cached after first successful detection to
+/// avoid redundant profile sourcing on subsequent calls.
 class TmuxService {
   /// Creates a new [TmuxService].
   const TmuxService();
+
+  /// Cached tmux binary paths per SSH session (by connectionId).
+  static final Map<int, String> _tmuxPathCache = {};
+
+  /// Clears the cached tmux path for a connection.
+  void clearCache(int connectionId) => _tmuxPathCache.remove(connectionId);
 
   // ── Detection ──────────────────────────────────────────────────────────
 
@@ -24,6 +33,8 @@ class TmuxService {
   /// shell's environment.
   Future<bool> isTmuxActive(SshSession session) async {
     try {
+      // Cache the tmux binary path on first successful detection.
+      await _cacheTmuxPath(session);
       final output = await _exec(session, 'tmux list-sessions 2>/dev/null');
       return output.trim().isNotEmpty;
     } on Exception {
@@ -138,12 +149,11 @@ class TmuxService {
   /// This is a tmux server operation — the server notifies all attached
   /// clients of the change, so it works correctly regardless of which
   /// channel sends the command.
-  Future<void> selectWindow(
-    SshSession session,
-    String sessionName,
-    int windowIndex,
-  ) async {
-    await _exec(
+  ///
+  /// Uses fire-and-forget for instant response — the window switch is
+  /// visible immediately in the interactive terminal PTY.
+  void selectWindow(SshSession session, String sessionName, int windowIndex) {
+    _execFireAndForget(
       session,
       'tmux select-window -t ${_shellQuote(sessionName)}:$windowIndex',
     );
@@ -161,19 +171,72 @@ class TmuxService {
   /// Drains both stdout and stderr to prevent SSH channel flow-control
   /// deadlocks, and awaits channel completion.
   Future<String> _exec(SshSession session, String command) async {
-    // Source the user's shell profile to pick up PATH additions (e.g.
-    // Homebrew, linuxbrew, nix, etc.) before running the actual command.
-    final wrappedCommand =
-        '. ~/.profile 2>/dev/null; '
-        '. ~/.bash_profile 2>/dev/null; '
-        '. ~/.zprofile 2>/dev/null; '
-        '$command';
+    // If we have a cached tmux path, rewrite bare 'tmux' to the full path.
+    final cachedPath = _tmuxPathCache[session.connectionId];
+    final resolvedCommand = cachedPath != null
+        ? command.replaceFirst('tmux ', '$cachedPath ')
+        : command;
+
+    // Only source profiles if we don't have a cached path yet.
+    final wrappedCommand = cachedPath != null
+        ? resolvedCommand
+        : '. ~/.profile 2>/dev/null; '
+              '. ~/.bash_profile 2>/dev/null; '
+              '. ~/.zprofile 2>/dev/null; '
+              '$command';
     final execSession = await session.execute(wrappedCommand);
     final results = await Future.wait([
       execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
       execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
     ]);
     return results[0];
+  }
+
+  /// Fire-and-forget: sends a tmux command without waiting for output.
+  ///
+  /// Used for operations like `select-window` where the result is
+  /// visible immediately in the interactive terminal. Avoids the
+  /// latency of draining stdout/stderr.
+  void _execFireAndForget(SshSession session, String command) {
+    final cachedPath = _tmuxPathCache[session.connectionId];
+    final resolvedCommand = cachedPath != null
+        ? command.replaceFirst('tmux ', '$cachedPath ')
+        : command;
+    final wrappedCommand = cachedPath != null
+        ? resolvedCommand
+        : '. ~/.profile 2>/dev/null; '
+              '. ~/.bash_profile 2>/dev/null; '
+              '. ~/.zprofile 2>/dev/null; '
+              '$command';
+    // Launch and ignore — the exec channel self-closes on completion.
+    session.execute(wrappedCommand).then((exec) {
+      // Drain streams to prevent backpressure, but don't wait.
+      exec.stdout.drain<void>();
+      exec.stderr.drain<void>();
+    }).ignore();
+  }
+
+  /// Resolves and caches the full path to the tmux binary.
+  Future<void> _cacheTmuxPath(SshSession session) async {
+    if (_tmuxPathCache.containsKey(session.connectionId)) return;
+    try {
+      final execSession = await session.execute(
+        '. ~/.profile 2>/dev/null; '
+        '. ~/.bash_profile 2>/dev/null; '
+        '. ~/.zprofile 2>/dev/null; '
+        'command -v tmux',
+      );
+      final results = await Future.wait([
+        execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+        execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+      ]);
+      final path = results[0].trim();
+      if (path.isNotEmpty && path.startsWith('/')) {
+        _tmuxPathCache[session.connectionId] = path;
+      }
+    } on Object {
+      // Ignore — we'll fall back to profile sourcing.
+    }
   }
 
   /// Parses non-empty lines from [output] using [parser].
