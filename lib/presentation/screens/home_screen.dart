@@ -16,12 +16,14 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/models/tmux_state.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
@@ -1339,41 +1341,53 @@ class _ConnectionsPanel extends ConsumerWidget {
                               : null),
                     );
 
-                    return ListTile(
-                      leading: Icon(
-                        Icons.terminal,
-                        color: state == SshConnectionState.connected
-                            ? colorScheme.primary
-                            : colorScheme.onSurfaceVariant,
-                      ),
-                      title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: _ConnectionPreviewText(
-                        endpoint:
-                            '$endpoint  •  Connection #${connection.connectionId}',
-                        preview: preview,
-                        windowTitle: connection.windowTitle,
-                        iconName: connection.iconName,
-                        workingDirectory: connection.workingDirectory,
-                        shellStatus: connection.shellStatus,
-                        lastExitCode: connection.lastExitCode,
-                        terminalTheme: previewTheme,
-                      ),
-                      isThreeLine: preview?.trim().isNotEmpty ?? false,
-                      trailing: IconButton(
-                        icon: const Icon(Icons.close),
-                        tooltip: 'Disconnect',
-                        onPressed: () async {
-                          await ref
-                              .read(activeSessionsProvider.notifier)
-                              .disconnect(connection.connectionId);
-                        },
-                      ),
-                      onTap: () => unawaited(
-                        context.push(
-                          '/terminal/${connection.hostId}'
-                          '?connectionId=${connection.connectionId}',
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ListTile(
+                          leading: Icon(
+                            Icons.terminal,
+                            color: state == SshConnectionState.connected
+                                ? colorScheme.primary
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          title: Text(
+                            host?.label ?? 'Host ${connection.hostId}',
+                          ),
+                          subtitle: _ConnectionPreviewText(
+                            endpoint:
+                                '$endpoint  •  Connection #${connection.connectionId}',
+                            preview: preview,
+                            windowTitle: connection.windowTitle,
+                            iconName: connection.iconName,
+                            workingDirectory: connection.workingDirectory,
+                            shellStatus: connection.shellStatus,
+                            lastExitCode: connection.lastExitCode,
+                            terminalTheme: previewTheme,
+                          ),
+                          isThreeLine: preview?.trim().isNotEmpty ?? false,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.close),
+                            tooltip: 'Disconnect',
+                            onPressed: () async {
+                              await ref
+                                  .read(activeSessionsProvider.notifier)
+                                  .disconnect(connection.connectionId);
+                            },
+                          ),
+                          onTap: () => unawaited(
+                            context.push(
+                              '/terminal/${connection.hostId}'
+                              '?connectionId=${connection.connectionId}',
+                            ),
+                          ),
                         ),
-                      ),
+                        if (state == SshConnectionState.connected)
+                          _TmuxConnectionBadge(
+                            connectionId: connection.connectionId,
+                            hostId: connection.hostId,
+                          ),
+                      ],
                     );
                   },
                 ),
@@ -2253,5 +2267,117 @@ class _SnippetRow extends ConsumerWidget {
         ).showSnackBar(SnackBar(content: Text('Deleted "${snippet.name}"')));
       }
     }
+  }
+}
+
+/// Shows a compact tmux window badge below a connection tile.
+///
+/// Asynchronously queries tmux state for the given connection and displays
+/// a horizontal list of window name chips if tmux is active.
+class _TmuxConnectionBadge extends ConsumerStatefulWidget {
+  const _TmuxConnectionBadge({
+    required this.connectionId,
+    required this.hostId,
+  });
+
+  final int connectionId;
+  final int hostId;
+
+  @override
+  ConsumerState<_TmuxConnectionBadge> createState() =>
+      _TmuxConnectionBadgeState();
+}
+
+class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
+  List<TmuxWindow>? _windows;
+  bool _queried = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _queryTmux();
+  }
+
+  Future<void> _queryTmux() async {
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final session = sessionsNotifier.getSession(widget.connectionId);
+    if (session == null) return;
+
+    final tmux = ref.read(tmuxServiceProvider);
+    final active = await tmux.isTmuxActive(session);
+    if (!mounted || !active) {
+      if (mounted) setState(() => _queried = true);
+      return;
+    }
+
+    final sessionName = await tmux.currentSessionName(session);
+    if (!mounted || sessionName == null) {
+      if (mounted) setState(() => _queried = true);
+      return;
+    }
+
+    final windows = await tmux.listWindows(session, sessionName);
+    if (!mounted) return;
+    setState(() {
+      _windows = windows;
+      _queried = true;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_queried || _windows == null || _windows!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final theme = Theme.of(context);
+    final windows = _windows!;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(56, 0, 16, 8),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            Icon(
+              Icons.window_outlined,
+              size: 14,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+            const SizedBox(width: 4),
+            Text(
+              'tmux:',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(width: 6),
+            for (final window in windows) ...[
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: window.isActive
+                      ? theme.colorScheme.primaryContainer
+                      : theme.colorScheme.surfaceContainerHighest,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                child: Text(
+                  window.name,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: window.isActive
+                        ? theme.colorScheme.onPrimaryContainer
+                        : theme.colorScheme.onSurfaceVariant,
+                    fontWeight: window.isActive
+                        ? FontWeight.bold
+                        : FontWeight.normal,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 4),
+            ],
+          ],
+        ),
+      ),
+    );
   }
 }

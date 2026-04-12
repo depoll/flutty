@@ -34,6 +34,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/tmux_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
@@ -41,6 +42,7 @@ import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
+import '../widgets/tmux_window_navigator.dart';
 
 bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x20 ||
@@ -1336,6 +1338,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
+  bool _isTmuxActive = false;
+  String? _tmuxSessionName;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -2067,6 +2071,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // Start port forwards
       await _startPortForwards(session);
       await _runAutoConnectCommand();
+
+      // Detect tmux after the auto-connect command has had time to start.
+      // A small delay ensures tmux has initialized if the auto-connect
+      // command launches a tmux session.
+      unawaited(_detectTmux(session));
     } on Object catch (e) {
       if (!mounted) return;
       setState(() {
@@ -2320,6 +2329,92 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref.read(snippetRepositoryProvider).incrementUsage(resolvedSnippetId),
       );
     }
+  }
+
+  /// Detects whether the connected session is inside tmux.
+  ///
+  /// Waits briefly for the auto-connect command to initialize, then
+  /// checks the TMUX environment variable via an exec channel. If tmux
+  /// is active, also queries the current session name.
+  Future<void> _detectTmux(SshSession session) async {
+    // Give the auto-connect command (which may start tmux) time to init.
+    await Future<void>.delayed(const Duration(seconds: 2));
+    if (!mounted) return;
+
+    final tmux = ref.read(tmuxServiceProvider);
+    final active = await tmux.isTmuxActive(session);
+    if (!mounted || !active) return;
+
+    final sessionName = await tmux.currentSessionName(session);
+    if (!mounted) return;
+
+    setState(() {
+      _isTmuxActive = true;
+      _tmuxSessionName = sessionName;
+    });
+  }
+
+  /// Opens the tmux window navigator bottom sheet and handles the
+  /// selected action.
+  Future<void> _openTmuxNavigator() async {
+    final connectionId = _connectionId;
+    if (connectionId == null || _tmuxSessionName == null) return;
+
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) return;
+
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final isProUser = monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
+
+    final action = await showTmuxNavigator(
+      context: context,
+      ref: ref,
+      session: session,
+      tmuxSessionName: _tmuxSessionName!,
+      isProUser: isProUser,
+    );
+
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case TmuxSwitchWindowAction(:final windowIndex):
+        _sendTmuxSwitchCommand(windowIndex);
+      case TmuxNewWindowAction(:final command, :final windowName):
+        await _createTmuxWindow(session, command: command, name: windowName);
+      case TmuxResumeSessionAction(:final resumeCommand):
+        await _createTmuxWindow(session, command: resumeCommand);
+    }
+  }
+
+  /// Sends a tmux select-window command through the interactive shell.
+  void _sendTmuxSwitchCommand(int windowIndex) {
+    final shell = _shell;
+    final sessionName = _tmuxSessionName;
+    if (shell == null || sessionName == null) return;
+
+    final tmux = ref.read(tmuxServiceProvider);
+    final command = tmux.buildSelectWindowCommand(sessionName, windowIndex);
+    shell.write(utf8.encode('$command\n'));
+  }
+
+  /// Creates a new tmux window via exec channel, then switches to it.
+  Future<void> _createTmuxWindow(
+    SshSession session, {
+    String? command,
+    String? name,
+  }) async {
+    final sessionName = _tmuxSessionName;
+    if (sessionName == null) return;
+
+    final tmux = ref.read(tmuxServiceProvider);
+    await tmux.createWindow(session, sessionName, command: command, name: name);
+
+    // After creating a new window, tmux automatically selects it.
+    // No explicit switch needed.
   }
 
   void _handleTrackedConnectionStateChange(
@@ -2658,6 +2753,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
+          if (_isTmuxActive)
+            IconButton(
+              icon: const Icon(Icons.window_outlined),
+              onPressed:
+                  _connectionId == null ||
+                      connectionState != SshConnectionState.connected
+                  ? null
+                  : _openTmuxNavigator,
+              tooltip: 'tmux windows',
+            ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             onPressed:

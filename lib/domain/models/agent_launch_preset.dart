@@ -8,6 +8,15 @@ enum AgentLaunchTool {
 
   /// Aider.
   aider,
+
+  /// OpenAI Codex CLI.
+  codex,
+
+  /// OpenCode CLI.
+  openCode,
+
+  /// Google Gemini CLI.
+  geminiCli,
 }
 
 /// Presentation helpers for [AgentLaunchTool].
@@ -17,6 +26,9 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
     AgentLaunchTool.aider => 'Aider',
+    AgentLaunchTool.codex => 'Codex',
+    AgentLaunchTool.openCode => 'OpenCode',
+    AgentLaunchTool.geminiCli => 'Gemini CLI',
   };
 
   /// Shell command used to launch this tool.
@@ -24,6 +36,19 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.claudeCode => 'claude',
     AgentLaunchTool.copilotCli => 'copilot',
     AgentLaunchTool.aider => 'aider',
+    AgentLaunchTool.codex => 'codex',
+    AgentLaunchTool.openCode => 'opencode',
+    AgentLaunchTool.geminiCli => 'gemini',
+  };
+
+  /// Whether this tool supports session resume.
+  bool get supportsResume => switch (this) {
+    AgentLaunchTool.claudeCode => true,
+    AgentLaunchTool.copilotCli => true,
+    AgentLaunchTool.codex => true,
+    AgentLaunchTool.openCode => true,
+    AgentLaunchTool.geminiCli => true,
+    AgentLaunchTool.aider => true,
   };
 }
 
