@@ -2028,6 +2028,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isConnecting = false;
         });
         _restoreTerminalFocus();
+
+        // Detect tmux on existing sessions too (may not have been detected
+        // yet if the terminal was opened before tmux started).
+        if (!_isTmuxActive) {
+          unawaited(_detectTmux(session, skipDelay: true));
+        }
         return;
       }
 
@@ -2336,7 +2342,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Waits briefly for the auto-connect command to initialize, then
   /// checks for tmux sessions via an exec channel. If tmux is active,
   /// also queries the current session name.
-  Future<void> _detectTmux(SshSession session) async {
+  Future<void> _detectTmux(SshSession session, {bool skipDelay = false}) async {
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
@@ -2350,23 +2356,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     // Give the auto-connect command (which may start tmux) time to init.
-    await Future<void>.delayed(const Duration(seconds: 2));
-    if (!mounted || _connectionId != capturedConnectionId) return;
+    // Skip the delay when re-opening an already-connected terminal.
+    if (!skipDelay) {
+      await Future<void>.delayed(const Duration(seconds: 2));
+      if (!mounted || _connectionId != capturedConnectionId) return;
+    }
 
-    final tmux = ref.read(tmuxServiceProvider);
-    final active = await tmux.isTmuxActive(session);
-    if (!mounted || _connectionId != capturedConnectionId) return;
+    try {
+      final tmux = ref.read(tmuxServiceProvider);
+      final active = await tmux.isTmuxActive(session);
+      if (!mounted || _connectionId != capturedConnectionId) return;
 
-    if (!active) return;
+      if (!active) return;
 
-    final sessionName = await tmux.currentSessionName(session);
-    if (!mounted || _connectionId != capturedConnectionId) return;
-    if (sessionName == null) return;
+      final sessionName = await tmux.currentSessionName(session);
+      if (!mounted || _connectionId != capturedConnectionId) return;
+      if (sessionName == null) return;
 
-    setState(() {
-      _isTmuxActive = true;
-      _tmuxSessionName = sessionName;
-    });
+      setState(() {
+        _isTmuxActive = true;
+        _tmuxSessionName = sessionName;
+      });
+    } on Object {
+      // Silently ignore — tmux detection is best-effort.
+    }
   }
 
   /// Opens the tmux window navigator bottom sheet and handles the

@@ -72,12 +72,14 @@ class TmuxWindow {
     required this.isActive,
     this.currentCommand,
     this.currentPath,
+    this.flags,
+    this.paneTitle,
   });
 
   /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-windows -F`):
-  /// `index|name|active_flag|current_command|current_path`
+  /// `index|name|active_flag|command|path|flags|pane_title`
   factory TmuxWindow.fromTmuxFormat(String line) {
     final parts = line.split('|');
     if (parts.length < 3) {
@@ -89,6 +91,8 @@ class TmuxWindow {
       isActive: parts[2] == '1',
       currentCommand: parts.length > 3 ? _nonEmpty(parts[3]) : null,
       currentPath: parts.length > 4 ? _nonEmpty(parts[4]) : null,
+      flags: parts.length > 5 ? _nonEmpty(parts[5]) : null,
+      paneTitle: parts.length > 6 ? _nonEmpty(parts[6]) : null,
     );
   }
 
@@ -107,8 +111,21 @@ class TmuxWindow {
   /// The working directory of the active pane, if available.
   final String? currentPath;
 
+  /// tmux window flags (`*` active, `-` last, `#` alert/bell, etc.).
+  final String? flags;
+
+  /// The pane title set by the running application, if available.
+  final String? paneTitle;
+
+  /// Whether this window has a pending alert or bell.
+  bool get hasAlert => flags != null && flags!.contains('#');
+
+  /// A short display title — prefers paneTitle, falls back to name.
+  String get displayTitle => paneTitle ?? name;
+
   /// A human-readable status label for display.
   String get statusLabel {
+    if (hasAlert) return 'alert';
     if (isActive) return 'active';
     if (currentCommand != null) return 'running';
     return 'idle';
@@ -117,7 +134,7 @@ class TmuxWindow {
   @override
   String toString() =>
       'TmuxWindow(index: $index, name: $name, active: $isActive, '
-      'command: $currentCommand)';
+      'command: $currentCommand, title: $paneTitle)';
 
   @override
   bool operator ==(Object other) =>
@@ -127,11 +144,20 @@ class TmuxWindow {
           name == other.name &&
           isActive == other.isActive &&
           currentCommand == other.currentCommand &&
-          currentPath == other.currentPath;
+          currentPath == other.currentPath &&
+          flags == other.flags &&
+          paneTitle == other.paneTitle;
 
   @override
-  int get hashCode =>
-      Object.hash(index, name, isActive, currentCommand, currentPath);
+  int get hashCode => Object.hash(
+    index,
+    name,
+    isActive,
+    currentCommand,
+    currentPath,
+    flags,
+    paneTitle,
+  );
 }
 
 /// Metadata for a recent AI coding tool session found on a remote host.

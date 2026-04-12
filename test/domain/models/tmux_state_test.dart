@@ -50,7 +50,7 @@ void main() {
 
   group('TmuxWindow', () {
     test('parses from tmux format string with all fields', () {
-      const line = '0|vim|1|vim|/home/user/project';
+      const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 0);
@@ -58,6 +58,10 @@ void main() {
       expect(window.isActive, true);
       expect(window.currentCommand, 'vim');
       expect(window.currentPath, '/home/user/project');
+      expect(window.flags, '*');
+      expect(window.paneTitle, 'Editing main.dart');
+      expect(window.displayTitle, 'Editing main.dart');
+      expect(window.hasAlert, false);
     });
 
     test('parses with minimal fields', () {
@@ -69,6 +73,9 @@ void main() {
       expect(window.isActive, false);
       expect(window.currentCommand, isNull);
       expect(window.currentPath, isNull);
+      expect(window.flags, isNull);
+      expect(window.paneTitle, isNull);
+      expect(window.displayTitle, 'bash');
     });
 
     test('handles empty command and path', () {
@@ -77,6 +84,14 @@ void main() {
 
       expect(window.currentCommand, isNull);
       expect(window.currentPath, isNull);
+    });
+
+    test('detects alert flag', () {
+      const line = '3|build|0|make|/tmp|#|Building project';
+      final window = TmuxWindow.fromTmuxFormat(line);
+
+      expect(window.hasAlert, true);
+      expect(window.statusLabel, 'alert');
     });
 
     test('throws on too few fields', () {

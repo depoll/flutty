@@ -1388,6 +1388,12 @@ class _ConnectionsPanel extends ConsumerWidget {
                               'tmux-badge-${connection.connectionId}',
                             ),
                             connectionId: connection.connectionId,
+                            onTap: () => unawaited(
+                              context.push(
+                                '/terminal/${connection.hostId}'
+                                '?connectionId=${connection.connectionId}',
+                              ),
+                            ),
                           ),
                       ],
                     );
@@ -2277,9 +2283,16 @@ class _SnippetRow extends ConsumerWidget {
 /// Asynchronously queries tmux state for the given connection and displays
 /// a horizontal list of window name chips if tmux is active.
 class _TmuxConnectionBadge extends ConsumerStatefulWidget {
-  const _TmuxConnectionBadge({required this.connectionId, super.key});
+  const _TmuxConnectionBadge({
+    required this.connectionId,
+    required this.onTap,
+    super.key,
+  });
 
   final int connectionId;
+
+  /// Called when the user taps a window chip — opens the terminal.
+  final VoidCallback onTap;
 
   @override
   ConsumerState<_TmuxConnectionBadge> createState() =>
@@ -2289,6 +2302,7 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   bool _queried = false;
+  bool _expanded = false;
 
   @override
   void initState() {
@@ -2334,49 +2348,125 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     final theme = Theme.of(context);
     final windows = _windows!;
+    final alertCount = windows.where((w) => w.hasAlert).length;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(56, 0, 16, 8),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Collapsed summary row — tap to expand/collapse.
+          GestureDetector(
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.window_outlined,
+                  size: 14,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  'tmux · ${windows.length} windows',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                if (alertCount > 0) ...[
+                  const SizedBox(width: 4),
+                  Icon(
+                    Icons.notifications_active,
+                    size: 12,
+                    color: theme.colorScheme.error,
+                  ),
+                  const SizedBox(width: 2),
+                  Text(
+                    '$alertCount',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.error,
+                      fontWeight: FontWeight.bold,
+                    ),
+                  ),
+                ],
+                const Spacer(),
+                Icon(
+                  _expanded ? Icons.expand_less : Icons.expand_more,
+                  size: 16,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+
+          // Expanded window list.
+          if (_expanded) ...[
+            const SizedBox(height: 4),
+            for (final window in windows) _buildWindowRow(theme, window),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
+    final title = window.paneTitle ?? window.name;
+
+    return InkWell(
+      onTap: widget.onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
         child: Row(
           children: [
-            Icon(
-              Icons.window_outlined,
-              size: 14,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            const SizedBox(width: 4),
-            Text(
-              'tmux:',
-              style: theme.textTheme.labelSmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
+            // Window index badge.
+            Container(
+              width: 20,
+              height: 20,
+              decoration: BoxDecoration(
+                color: window.isActive
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                '${window.index}',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  color: window.isActive
+                      ? theme.colorScheme.onPrimary
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.bold,
+                ),
               ),
             ),
             const SizedBox(width: 6),
-            for (final window in windows) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
-                decoration: BoxDecoration(
-                  color: window.isActive
-                      ? theme.colorScheme.primaryContainer
-                      : theme.colorScheme.surfaceContainerHighest,
-                  borderRadius: BorderRadius.circular(4),
-                ),
-                child: Text(
-                  window.name,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: window.isActive
-                        ? theme.colorScheme.onPrimaryContainer
-                        : theme.colorScheme.onSurfaceVariant,
-                    fontWeight: window.isActive
-                        ? FontWeight.bold
-                        : FontWeight.normal,
-                  ),
+            // Alert icon.
+            if (window.hasAlert)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Icon(
+                  Icons.notifications_active,
+                  size: 12,
+                  color: theme.colorScheme.error,
                 ),
               ),
-              const SizedBox(width: 4),
-            ],
+            // Title — truncated.
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: window.isActive
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurface,
+                  fontWeight: window.isActive
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ),
           ],
         ),
       ),

@@ -301,13 +301,39 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         ),
       ),
       title: Text(window.name, maxLines: 1, overflow: TextOverflow.ellipsis),
-      trailing: Text(
-        window.statusLabel,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: isActive
-              ? theme.colorScheme.primary
-              : theme.colorScheme.onSurfaceVariant,
-        ),
+      subtitle: window.paneTitle != null
+          ? Text(
+              window.paneTitle!,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            )
+          : null,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (window.hasAlert)
+            Padding(
+              padding: const EdgeInsets.only(right: 4),
+              child: Icon(
+                Icons.notifications_active,
+                size: 16,
+                color: theme.colorScheme.error,
+              ),
+            ),
+          Text(
+            window.statusLabel,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: window.hasAlert
+                  ? theme.colorScheme.error
+                  : isActive
+                  ? theme.colorScheme.primary
+                  : theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
       ),
       selected: isActive,
       onTap: isActive ? null : () => _switchToWindow(window.index),

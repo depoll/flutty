@@ -104,7 +104,8 @@ class TmuxService {
         session,
         'tmux list-windows -t $quotedName -F '
         "'#{window_index}|#{window_name}|#{window_active}|"
-        "#{pane_current_command}|#{pane_current_path}'",
+        '#{pane_current_command}|#{pane_current_path}|'
+        "#{window_flags}|#{pane_title}'",
       );
       return _parseLines(output, TmuxWindow.fromTmuxFormat);
     } on Exception {
