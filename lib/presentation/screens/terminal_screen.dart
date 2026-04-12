@@ -1659,6 +1659,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   bool _showTmuxBar = true;
+  String? _tmuxWorkingDirectory;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -1735,7 +1736,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       formatTerminalWorkingDirectoryLabel(_workingDirectory);
 
   String? get _workingDirectoryPath =>
-      resolveTerminalWorkingDirectoryPath(_workingDirectory);
+      resolveTerminalWorkingDirectoryPath(_workingDirectory) ??
+      _tmuxWorkingDirectory;
 
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
@@ -2671,6 +2673,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       setState(() {
         _isTmuxActive = false;
         _tmuxSessionName = null;
+        _tmuxWorkingDirectory = null;
       });
     }
 
@@ -2692,9 +2695,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted || _connectionId != capturedConnectionId) return;
       if (sessionName == null) return;
 
+      // Get the active window's working directory for SFTP/path resolution.
+      String? tmuxCwd;
+      try {
+        final windows = await tmux.listWindows(session, sessionName);
+        final activeWindow = windows.where((w) => w.isActive).firstOrNull;
+        tmuxCwd = activeWindow?.currentPath;
+      } on Object {
+        // Non-critical — path resolution will fall back to OSC 7.
+      }
+
+      if (!mounted || _connectionId != capturedConnectionId) return;
+
       setState(() {
         _isTmuxActive = true;
         _tmuxSessionName = sessionName;
+        _tmuxWorkingDirectory = tmuxCwd;
       });
     } on Object {
       // Silently ignore — tmux detection is best-effort.
@@ -4040,10 +4056,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionId == null) {
       return;
     }
+
+    // Pass the terminal's working directory (from OSC 7) as both the
+    // initial path and the working directory for relative path resolution.
+    final cwd = _workingDirectoryPath;
     context.pushNamed(
       Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: {'connectionId': connectionId.toString()},
+      queryParameters: {
+        'connectionId': connectionId.toString(),
+        if (cwd != null) ...{'path': cwd, 'cwd': cwd},
+      },
     );
   }
 
