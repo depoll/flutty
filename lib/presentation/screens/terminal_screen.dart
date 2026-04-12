@@ -194,6 +194,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       _expanded = shouldExpand;
       _dragOffset = 0;
     });
+    // Refresh window list when expanding to get current active state.
+    if (shouldExpand) _loadWindows();
   }
 
   @override
@@ -257,24 +259,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   }
 
   Widget _buildHandleBar(ThemeData theme) => GestureDetector(
-    onTap: () => setState(() => _expanded = !_expanded),
+    onTap: () {
+      final wasExpanded = _expanded;
+      setState(() => _expanded = !_expanded);
+      // Refresh window list when expanding to get current active state.
+      if (!wasExpanded) _loadWindows();
+    },
     child: Padding(
       padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-      child: Row(
+      child: Stack(
+        alignment: Alignment.center,
         children: [
-          Icon(
-            Icons.window_outlined,
-            size: 14,
-            color: theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            widget.tmuxSessionName,
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const Spacer(),
+          // Centered drag handle pill.
           Container(
             width: 32,
             height: 4,
@@ -283,15 +279,32 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
               borderRadius: BorderRadius.circular(2),
             ),
           ),
-          const Spacer(),
-          AnimatedRotation(
-            duration: const Duration(milliseconds: 300),
-            turns: _expanded ? 0.5 : 0,
-            child: Icon(
-              Icons.keyboard_arrow_up,
-              size: 16,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
+          // Left-aligned session name, right-aligned chevron.
+          Row(
+            children: [
+              Icon(
+                Icons.window_outlined,
+                size: 14,
+                color: theme.colorScheme.primary,
+              ),
+              const SizedBox(width: 6),
+              Text(
+                widget.tmuxSessionName,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const Spacer(),
+              AnimatedRotation(
+                duration: const Duration(milliseconds: 300),
+                turns: _expanded ? 0.5 : 0,
+                child: Icon(
+                  Icons.keyboard_arrow_up,
+                  size: 16,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -423,12 +436,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       ],
     ),
     selected: window.isActive,
-    onTap: window.isActive
-        ? () => setState(() => _expanded = false)
-        : () {
-            widget.onAction(TmuxSwitchWindowAction(window.index));
-            setState(() => _expanded = false);
-          },
+    // Always issue the switch command — the active flag may be stale.
+    onTap: () {
+      widget.onAction(TmuxSwitchWindowAction(window.index));
+      setState(() => _expanded = false);
+    },
   );
 }
 
