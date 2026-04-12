@@ -436,67 +436,118 @@ class AgentSessionDiscoveryService {
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────
-  // Sessions: ~/.local/share/opencode/storage/session/
-  // CLI: opencode session list
+  // Primary store: ~/.local/share/opencode/opencode.db (SQLite)
+  // The `session` table holds id, title, directory, and timestamps.
+  // JSON files under storage/session/ are a partial export and may not
+  // reflect renames, so we prefer the database.
 
   Future<List<ToolSessionInfo>> _discoverOpenCodeSessions(
     SshSession session,
     int max,
   ) async {
     try {
-      // List session JSON files directly (more reliable than dirs).
+      // Query the SQLite database directly — it's the source of truth.
       final output = await _exec(
         session,
-        'find ~/.local/share/opencode/storage/session -name "ses_*.json" '
-        '-type f -exec ls -1t {} + 2>/dev/null | head -n $max',
+        'sqlite3 -separator "|" '
+        '~/.local/share/opencode/opencode.db '
+        "'SELECT id, title, directory, time_updated "
+        'FROM session '
+        'WHERE parent_id IS NULL '
+        'ORDER BY time_updated DESC '
+        "LIMIT $max;' 2>/dev/null",
       );
-      if (output.trim().isEmpty) return const [];
 
-      final sessions = <ToolSessionInfo>[];
-      for (final line in output.trim().split('\n')) {
-        if (line.trim().isEmpty) continue;
-        final filePath = line.trim();
-        final fileName = filePath.split('/').last.replaceAll('.json', '');
-
-        // Read the session JSON for title and directory.
-        String? summary;
-        String? workingDirectory;
-        DateTime? lastActive;
-        try {
-          final content = await _exec(
-            session,
-            'head -c 500 ${_shellQuote(filePath)} 2>/dev/null',
-          );
-          if (content.trim().isNotEmpty) {
-            // Parse partial JSON — title/directory are near the top.
-            // Full parse may fail on truncated content, so extract fields.
-            final titleMatch = RegExp(
-              r'"title"\s*:\s*"([^"]*)"',
-            ).firstMatch(content);
-            final dirMatch = RegExp(
-              r'"directory"\s*:\s*"([^"]*)"',
-            ).firstMatch(content);
-            summary = titleMatch?.group(1);
-            workingDirectory = dirMatch?.group(1);
-          }
-        } on Object {
-          // Non-critical.
-        }
-
-        sessions.add(
-          ToolSessionInfo(
-            toolName: 'OpenCode',
-            sessionId: fileName,
-            workingDirectory: workingDirectory,
-            lastActive: lastActive,
-            summary: summary ?? _truncateId(fileName),
-          ),
-        );
+      if (output.trim().isNotEmpty) {
+        return _parseOpenCodeDbOutput(output);
       }
-      return sessions;
+
+      // Fallback: read JSON files if sqlite3 is not available.
+      return _discoverOpenCodeSessionsFromFiles(session, max);
     } on Object {
       return const [];
     }
+  }
+
+  List<ToolSessionInfo> _parseOpenCodeDbOutput(String output) {
+    final sessions = <ToolSessionInfo>[];
+    for (final line in output.trim().split('\n')) {
+      if (line.trim().isEmpty) continue;
+      final parts = line.split('|');
+      if (parts.length < 3) continue;
+
+      final id = parts[0].trim();
+      final title = parts[1].trim();
+      final directory = parts[2].trim();
+      DateTime? lastActive;
+      if (parts.length >= 4) {
+        final ts = int.tryParse(parts[3].trim());
+        if (ts != null) {
+          lastActive = DateTime.fromMillisecondsSinceEpoch(ts);
+        }
+      }
+
+      sessions.add(
+        ToolSessionInfo(
+          toolName: 'OpenCode',
+          sessionId: id,
+          workingDirectory: directory.isNotEmpty ? directory : null,
+          lastActive: lastActive,
+          summary: title.isNotEmpty ? title : _truncateId(id),
+        ),
+      );
+    }
+    return sessions;
+  }
+
+  Future<List<ToolSessionInfo>> _discoverOpenCodeSessionsFromFiles(
+    SshSession session,
+    int max,
+  ) async {
+    final output = await _exec(
+      session,
+      'find ~/.local/share/opencode/storage/session -name "ses_*.json" '
+      '-type f -exec ls -1t {} + 2>/dev/null | head -n $max',
+    );
+    if (output.trim().isEmpty) return const [];
+
+    final sessions = <ToolSessionInfo>[];
+    for (final line in output.trim().split('\n')) {
+      if (line.trim().isEmpty) continue;
+      final filePath = line.trim();
+      final fileName = filePath.split('/').last.replaceAll('.json', '');
+
+      String? summary;
+      String? workingDirectory;
+      try {
+        final content = await _exec(
+          session,
+          'head -c 500 ${_shellQuote(filePath)} 2>/dev/null',
+        );
+        if (content.trim().isNotEmpty) {
+          final titleMatch = RegExp(
+            r'"title"\s*:\s*"([^"]*)"',
+          ).firstMatch(content);
+          final dirMatch = RegExp(
+            r'"directory"\s*:\s*"([^"]*)"',
+          ).firstMatch(content);
+          summary = titleMatch?.group(1);
+          workingDirectory = dirMatch?.group(1);
+        }
+      } on Object {
+        // Non-critical.
+      }
+
+      sessions.add(
+        ToolSessionInfo(
+          toolName: 'OpenCode',
+          sessionId: fileName,
+          workingDirectory: workingDirectory,
+          summary: summary ?? _truncateId(fileName),
+        ),
+      );
+    }
+    return sessions;
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
