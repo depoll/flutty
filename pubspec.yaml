@@ -91,5 +91,6 @@ flutter:
   
   assets:
     - assets/icons/
+    - assets/version_codenames.json
   #   - assets/icons/
   #   - assets/fonts/
