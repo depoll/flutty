@@ -23,9 +23,8 @@ class AgentSessionDiscoveryService {
   /// single tool dominates the list. Limits to [maxPerTool] sessions per
   /// tool to keep results manageable.
   ///
-  /// The [workingDirectory] is passed to tools that support directory-scoped
-  /// session lookup (currently Claude Code and Gemini CLI pass it through
-  /// but do not yet filter by it — reserved for future use).
+  /// When [workingDirectory] is available, sessions are filtered to that
+  /// directory whenever the tool exposes enough path information to do so.
   Future<List<ToolSessionInfo>> discoverSessions(
     SshSession session, {
     String? workingDirectory,
@@ -65,12 +64,12 @@ class AgentSessionDiscoveryService {
       final filtered = all
           .where(
             (s) =>
-                s.workingDirectory == null ||
-                s.workingDirectory == workingDirectory,
+                _matchesWorkingDirectory(workingDirectory, s.workingDirectory),
           )
           .toList();
-      // Return filtered results if any match; otherwise return all
-      // so the UI isn't empty (user can still see sessions from other dirs).
+      // Return filtered results if any match; otherwise return all so the UI
+      // still has a fallback when the remote tool doesn't persist directory
+      // metadata for its sessions.
       if (filtered.isNotEmpty) return filtered;
     }
 
@@ -138,9 +137,45 @@ class AgentSessionDiscoveryService {
             lastActive = DateTime.tryParse(rawTs);
           }
 
-          // Use display text as summary, filtering out /exit commands.
+          String? summary;
+          final sessionFile = await _exec(
+            session,
+            'find ~/.claude/projects -name ${_shellQuote('$sessionId.jsonl')} '
+            '-type f 2>/dev/null | head -1',
+          );
+          final sessionFilePath = sessionFile.trim();
+          if (sessionFilePath.isNotEmpty) {
+            final customTitle = await _exec(
+              session,
+              'grep -o \'"customTitle":"[^"]*"\' '
+              '${_shellQuote(sessionFilePath)} 2>/dev/null '
+              '| tail -1 '
+              '| sed \'s/"customTitle":"//;s/"\$//\'',
+            );
+            final agentName = await _exec(
+              session,
+              'grep -o \'"agentName":"[^"]*"\' '
+              '${_shellQuote(sessionFilePath)} 2>/dev/null '
+              '| tail -1 '
+              '| sed \'s/"agentName":"//;s/"\$//\'',
+            );
+            final lastPrompt = await _exec(
+              session,
+              'grep -o \'"lastPrompt":"[^"]*"\' '
+              '${_shellQuote(sessionFilePath)} 2>/dev/null '
+              '| tail -1 '
+              '| sed \'s/"lastPrompt":"//;s/"\$//\'',
+            );
+            summary = _firstNonEmpty([
+              customTitle.trim(),
+              agentName.trim(),
+              lastPrompt.trim(),
+            ]);
+          }
+
+          // Fall back to history index fields.
           final display = decoded['display'] as String?;
-          final summary =
+          summary ??=
               decoded['title'] as String? ??
               decoded['query'] as String? ??
               (display != null && !display.startsWith('/') ? display : null);
@@ -188,7 +223,7 @@ class AgentSessionDiscoveryService {
         final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
 
-        // Read the first line for session metadata (cwd + timestamp).
+        // Read metadata from first line and first real user prompt.
         String? summary;
         String? workingDirectory;
         DateTime? lastActive;
@@ -207,21 +242,25 @@ class AgentSessionDiscoveryService {
               if (ts != null) lastActive = DateTime.tryParse(ts);
             }
           }
+
+          // Extract first prompt: skip session_meta, ignore environment/system
+          // context, and take the first short input_text payload.
+          final promptOutput = await _exec(
+            session,
+            'sed -n \'2,20p\' ${_shellQuote(filePath)} '
+            '| grep -oE \'"text":"[^"]{1,120}"\' '
+            '| grep -v \'"text":"<\' '
+            '| grep -v \'"text":"#\' '
+            '| head -1 '
+            '| sed \'s/"text":"//;s/"\$//\'',
+          );
+          final prompt = promptOutput.trim();
+          if (prompt.isNotEmpty) summary = prompt;
         } on Object {
           // Non-critical.
         }
 
-        // Build a readable summary from date + project dir.
-        final dateMatch = RegExp(
-          r'rollout-(\d{4}-\d{2}-\d{2})',
-        ).firstMatch(fileName);
-        final dateStr = dateMatch?.group(1);
-        final projectName = workingDirectory?.split('/').last;
-        summary = <String>[
-          ?projectName,
-          ?dateStr,
-        ].join(' · ');
-        if (summary.isEmpty) summary = _truncateId(fileName);
+        summary ??= _truncateId(fileName);
 
         sessions.add(
           ToolSessionInfo(
@@ -256,24 +295,33 @@ class AgentSessionDiscoveryService {
       final sessions = <ToolSessionInfo>[];
       for (final line in output.trim().split('\n')) {
         if (line.trim().isEmpty) continue;
-        final dirName = line.trim().split('/').where((s) => s.isNotEmpty).last;
+        final dirPath = line.trim();
+        final dirName = dirPath.split('/').where((s) => s.isNotEmpty).last;
 
-        // Try to read the plan.md first line for a meaningful title.
+        // Read workspace.yaml for name, summary, and cwd.
         String? summary;
+        String? workingDirectory;
         try {
-          final planHead = await _exec(
+          final yaml = await _exec(
             session,
-            'head -5 ${_shellQuote('${line.trim()}plan.md')} 2>/dev/null',
+            'cat ${_shellQuote('${dirPath}workspace.yaml')} 2>/dev/null',
           );
-          if (planHead.trim().isNotEmpty) {
-            // Find first non-empty, non-heading line as the title.
-            for (final planLine in planHead.trim().split('\n')) {
-              final cleaned = planLine.replaceAll(RegExp(r'^#+\s*'), '').trim();
-              if (cleaned.isNotEmpty && cleaned.length > 3) {
-                summary = cleaned.length > 80
-                    ? '${cleaned.substring(0, 77)}...'
-                    : cleaned;
-                break;
+          if (yaml.trim().isNotEmpty) {
+            // Simple YAML field extraction (no dependency on yaml parser).
+            for (final yamlLine in yaml.split('\n')) {
+              final nameMatch = RegExp(r'^name:\s*(.+)').firstMatch(yamlLine);
+              if (nameMatch != null) {
+                summary = nameMatch.group(1)!.trim();
+              }
+              final summaryMatch = RegExp(
+                r'^summary:\s*(.+)',
+              ).firstMatch(yamlLine);
+              if (summaryMatch != null && summary == null) {
+                summary = summaryMatch.group(1)!.trim();
+              }
+              final cwdMatch = RegExp(r'^cwd:\s*(.+)').firstMatch(yamlLine);
+              if (cwdMatch != null) {
+                workingDirectory = cwdMatch.group(1)!.trim();
               }
             }
           }
@@ -281,10 +329,36 @@ class AgentSessionDiscoveryService {
           // Non-critical.
         }
 
+        // Fall back to plan.md first line if no name/summary.
+        if (summary == null || summary.isEmpty) {
+          try {
+            final planHead = await _exec(
+              session,
+              'head -3 ${_shellQuote('${dirPath}plan.md')} 2>/dev/null',
+            );
+            if (planHead.trim().isNotEmpty) {
+              for (final planLine in planHead.trim().split('\n')) {
+                final cleaned = planLine
+                    .replaceAll(RegExp(r'^#+\s*'), '')
+                    .trim();
+                if (cleaned.isNotEmpty && cleaned.length > 3) {
+                  summary = cleaned.length > 80
+                      ? '${cleaned.substring(0, 77)}...'
+                      : cleaned;
+                  break;
+                }
+              }
+            }
+          } on Object {
+            // Non-critical.
+          }
+        }
+
         sessions.add(
           ToolSessionInfo(
             toolName: 'Copilot CLI',
             sessionId: dirName,
+            workingDirectory: workingDirectory,
             summary: summary ?? _truncateId(dirName),
           ),
         );
@@ -317,17 +391,41 @@ class AgentSessionDiscoveryService {
         final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.json', '');
 
-        // Extract project directory name from path for a meaningful label.
+        // Extract project directory name from path.
         // Path: ~/.gemini/tmp/<project_dir>/chats/<file>.json
         final pathParts = filePath.split('/');
         final chatsIdx = pathParts.indexOf('chats');
         final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
+        final sessionWorkingDirectory =
+            projectDir != null &&
+                workingDirectory != null &&
+                _lastPathSegment(workingDirectory) == projectDir
+            ? workingDirectory
+            : null;
+
+        // Try to read the first user message as summary.
+        String? summary;
+        try {
+          final firstMsg = await _exec(
+            session,
+            'grep -o \'"text":"[^"]*"\' ${_shellQuote(filePath)} '
+            '| head -1 '
+            '| sed \'s/"text":"//;s/"\$//\'',
+          );
+          final text = firstMsg.trim();
+          if (text.isNotEmpty && text.length > 1) {
+            summary = text.length > 80 ? '${text.substring(0, 77)}...' : text;
+          }
+        } on Object {
+          // Non-critical.
+        }
 
         sessions.add(
           ToolSessionInfo(
             toolName: 'Gemini CLI',
             sessionId: fileName,
-            summary: projectDir ?? _truncateId(fileName),
+            workingDirectory: sessionWorkingDirectory,
+            summary: summary ?? projectDir ?? _truncateId(fileName),
           ),
         );
       }
@@ -414,6 +512,26 @@ class AgentSessionDiscoveryService {
 
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
+
+  static String? _firstNonEmpty(Iterable<String?> values) {
+    for (final value in values) {
+      if (value != null && value.isNotEmpty) return value;
+    }
+    return null;
+  }
+
+  static bool _matchesWorkingDirectory(
+    String expectedDirectory,
+    String? sessionDirectory,
+  ) {
+    if (sessionDirectory == null || sessionDirectory.isEmpty) return false;
+    return sessionDirectory == expectedDirectory ||
+        _lastPathSegment(sessionDirectory) ==
+            _lastPathSegment(expectedDirectory);
+  }
+
+  static String _lastPathSegment(String path) =>
+      path.split('/').where((segment) => segment.isNotEmpty).lastOrNull ?? path;
 
   static String _truncateId(String id) {
     if (id.length <= 12) return id;

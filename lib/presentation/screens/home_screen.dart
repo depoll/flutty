@@ -2303,6 +2303,7 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
+  final Set<String> _expandedSessionTools = <String>{};
   String? _sessionName;
   bool _queried = false;
   bool _expanded = false;
@@ -2464,8 +2465,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                   ),
                 )
               else if (_recentSessions != null)
-                for (final session in _recentSessions!.take(5))
-                  _buildSessionRow(theme, session),
+                ..._groupSessions(_recentSessions!).entries.map(
+                  (entry) => _buildSessionGroup(theme, entry.key, entry.value),
+                ),
             ],
           ],
         ],
@@ -2521,10 +2523,13 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     try {
       final discovery = ref.read(agentSessionDiscoveryServiceProvider);
-      final sessions = await discovery.discoverSessions(session, maxPerTool: 3);
+      final sessions = await discovery.discoverSessions(session, maxPerTool: 8);
       if (!mounted) return;
       setState(() {
         _recentSessions = sessions;
+        if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
+          _expandedSessionTools.add(sessions.first.toolName);
+        }
         _isLoadingSessions = false;
       });
     } on Exception {
@@ -2557,21 +2562,95 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .ignore();
   }
 
-  Widget _buildSessionRow(ThemeData theme, ToolSessionInfo info) {
-    final iconData = switch (info.toolName) {
-      'Claude Code' => Icons.auto_awesome,
-      'Codex' => Icons.code,
-      'Copilot CLI' => Icons.flight,
-      'Gemini CLI' => Icons.diamond_outlined,
-      'OpenCode' => Icons.terminal,
-      _ => Icons.smart_toy_outlined,
-    };
+  Map<String, List<ToolSessionInfo>> _groupSessions(
+    List<ToolSessionInfo> sessions,
+  ) {
+    final grouped = <String, List<ToolSessionInfo>>{};
+    for (final session in sessions) {
+      grouped
+          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+          .add(session);
+    }
+    return grouped;
+  }
+
+  Widget _buildSessionGroup(
+    ThemeData theme,
+    String toolName,
+    List<ToolSessionInfo> sessions,
+  ) {
+    final isExpanded = _expandedSessionTools.contains(toolName);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        InkWell(
+          onTap: () {
+            setState(() {
+              if (isExpanded) {
+                _expandedSessionTools.remove(toolName);
+              } else {
+                _expandedSessionTools.add(toolName);
+              }
+            });
+          },
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+            child: Row(
+              children: [
+                Icon(
+                  _toolIconData(toolName),
+                  size: 14,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    toolName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${sessions.length}',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                  size: 14,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (isExpanded)
+          for (final session in sessions)
+            _buildSessionRow(theme, session, indent: 20),
+      ],
+    );
+  }
+
+  Widget _buildSessionRow(
+    ThemeData theme,
+    ToolSessionInfo info, {
+    double indent = 0,
+  }) {
+    final iconData = _toolIconData(info.toolName);
 
     return InkWell(
       onTap: () => _resumeSession(info),
       borderRadius: BorderRadius.circular(6),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+        padding: EdgeInsets.fromLTRB(4 + indent, 3, 4, 3),
         child: Row(
           children: [
             Icon(iconData, size: 14, color: theme.colorScheme.primary),
@@ -2599,6 +2678,15 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       ),
     );
   }
+
+  IconData _toolIconData(String toolName) => switch (toolName) {
+    'Claude Code' => Icons.auto_awesome,
+    'Codex' => Icons.code,
+    'Copilot CLI' => Icons.flight,
+    'Gemini CLI' => Icons.diamond_outlined,
+    'OpenCode' => Icons.terminal,
+    _ => Icons.smart_toy_outlined,
+  };
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.paneTitle ?? window.name;

@@ -119,9 +119,9 @@ const _terminalFilePathVerificationExtensions = <String>[
 /// Expandable tmux bar that sits at the bottom of the terminal.
 ///
 /// Collapsed: a slim handle bar showing session name + drag pill.
-/// Expanded: smoothly grows to reveal window list + actions.
-/// The bar always takes full width and pushes the terminal up,
-/// never overlaying it.
+/// Expanded: smoothly grows upward to reveal window list + actions.
+/// When anchored in a stack, the expanded content overlays the terminal
+/// instead of shifting it upward.
 class _TmuxExpandableBar extends StatefulWidget {
   const _TmuxExpandableBar({
     required this.session,
@@ -2776,8 +2776,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// Builds a draggable tmux panel anchored to the bottom of the terminal.
   ///
   /// Collapsed, it shows a slim handle bar with the session name.
-  /// Dragging up smoothly expands it into the full navigator — like
-  /// water droplets combining. Releasing snaps to collapsed or expanded.
+  /// Dragging up smoothly expands it into the full navigator without
+  /// changing the terminal's layout.
   Widget _buildTmuxExpandableBar(ThemeData theme) {
     final connectionId = _connectionId;
     if (connectionId == null || _tmuxSessionName == null) {
@@ -3459,11 +3459,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_isTmuxActive &&
-              _showTmuxBar &&
-              connectionState == SshConnectionState.connected)
-            _buildTmuxExpandableBar(theme),
+          Expanded(
+            child: Stack(
+              children: [
+                Positioned.fill(
+                  child: _buildTerminalView(terminalTheme, isMobile),
+                ),
+                if (_isTmuxActive &&
+                    _showTmuxBar &&
+                    connectionState == SshConnectionState.connected)
+                  Positioned(
+                    left: 0,
+                    right: 0,
+                    bottom: 0,
+                    child: _buildTmuxExpandableBar(theme),
+                  ),
+              ],
+            ),
+          ),
           if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))

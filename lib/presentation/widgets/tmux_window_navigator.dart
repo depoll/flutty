@@ -98,14 +98,12 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 
 class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
-  static const _maxSessionsPerTool = 3;
-
-  /// Maximum total recent sessions to display.
-  static const _maxVisibleSessions = 5;
+  static const _maxSessionsPerTool = 8;
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   Set<AgentLaunchTool>? _installedTools;
+  final Set<String> _expandedSessionTools = <String>{};
   bool _isLoadingWindows = true;
   bool _isLoadingSessions = false;
   bool _showRecentSessions = false;
@@ -203,6 +201,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       if (!mounted) return;
       setState(() {
         _recentSessions = sessions;
+        if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
+          _expandedSessionTools.add(sessions.first.toolName);
+        }
         _isLoadingSessions = false;
       });
     } on Exception {
@@ -421,11 +422,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   Widget _buildRecentSessionsSection(ThemeData theme) {
-    final visibleCount = _recentSessions == null
-        ? 0
-        : _recentSessions!.length > _maxVisibleSessions
-        ? _maxVisibleSessions
-        : _recentSessions!.length;
+    final visibleCount = _recentSessions?.length ?? 0;
+    final groupedSessions = _groupSessions(_recentSessions);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -482,19 +480,81 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               ),
             )
           else if (_recentSessions != null)
-            ...(_recentSessions!
-                .take(_maxVisibleSessions)
-                .map(_buildSessionTile)),
+            ...groupedSessions.entries.map(
+              (entry) => _buildSessionGroup(theme, entry.key, entry.value),
+            ),
         ],
       ],
     );
   }
 
-  Widget _buildSessionTile(ToolSessionInfo info) {
+  Map<String, List<ToolSessionInfo>> _groupSessions(
+    List<ToolSessionInfo>? sessions,
+  ) {
+    final grouped = <String, List<ToolSessionInfo>>{};
+    if (sessions == null) return grouped;
+    for (final session in sessions) {
+      grouped
+          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+          .add(session);
+    }
+    return grouped;
+  }
+
+  Widget _buildSessionGroup(
+    ThemeData theme,
+    String toolName,
+    List<ToolSessionInfo> sessions,
+  ) {
+    final isExpanded = _expandedSessionTools.contains(toolName);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          dense: true,
+          leading: _toolIcon(toolName, theme),
+          title: Text(toolName),
+          subtitle: Text(
+            '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          trailing: Icon(
+            isExpanded ? Icons.expand_less : Icons.expand_more,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          onTap: () {
+            setState(() {
+              if (isExpanded) {
+                _expandedSessionTools.remove(toolName);
+              } else {
+                _expandedSessionTools.add(toolName);
+              }
+            });
+          },
+        ),
+        if (isExpanded)
+          ...sessions.map(
+            (session) => _buildSessionTile(
+              session,
+              contentPadding: const EdgeInsets.only(left: 56, right: 16),
+            ),
+          ),
+      ],
+    );
+  }
+
+  Widget _buildSessionTile(
+    ToolSessionInfo info, {
+    EdgeInsetsGeometry? contentPadding,
+  }) {
     final theme = Theme.of(context);
 
     return ListTile(
       dense: true,
+      contentPadding: contentPadding,
       leading: _toolIcon(info.toolName, theme),
       title: Text(
         info.summary ?? info.sessionId,
