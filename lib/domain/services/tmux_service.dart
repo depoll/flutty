@@ -20,8 +20,14 @@ class TmuxService {
   /// Cached tmux binary paths per SSH session (by connectionId).
   static final Map<int, String> _tmuxPathCache = {};
 
+  /// Cached profile source commands per SSH session.
+  static final Map<int, String> _profileSourceCache = {};
+
   /// Clears the cached tmux path for a connection.
-  void clearCache(int connectionId) => _tmuxPathCache.remove(connectionId);
+  void clearCache(int connectionId) {
+    _tmuxPathCache.remove(connectionId);
+    _profileSourceCache.remove(connectionId);
+  }
 
   // ── Detection ──────────────────────────────────────────────────────────
 
@@ -161,29 +167,39 @@ class TmuxService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
+  /// Returns the profile source prefix for this session's login shell.
+  ///
+  /// Only sources the profile file appropriate for the user's shell:
+  /// - zsh: `~/.zprofile`
+  /// - bash: `~/.bash_profile` (falls back to `~/.profile`)
+  /// - sh/other: `~/.profile`
+  String _profilePrefix(int connectionId) {
+    final cached = _profileSourceCache[connectionId];
+    if (cached != null) return cached;
+    // Fallback — source all common profiles until shell is detected.
+    return '. ~/.profile 2>/dev/null; '
+        '. ~/.bash_profile 2>/dev/null; '
+        '. ~/.zprofile 2>/dev/null; ';
+  }
+
+  /// Wraps [command] with profile sourcing or cached path substitution.
+  String _wrapCommand(SshSession session, String command) {
+    final cachedPath = _tmuxPathCache[session.connectionId];
+    if (cachedPath != null) {
+      return command.replaceFirst('tmux ', '$cachedPath ');
+    }
+    return '${_profilePrefix(session.connectionId)}$command';
+  }
+
   /// Runs a command via SSH exec channel and returns stdout as a string.
   ///
-  /// SSH exec channels start with a minimal PATH that may not include
-  /// user-installed tools (e.g. Homebrew on macOS). The command is
-  /// wrapped to source common shell profiles first so tmux is found
-  /// regardless of install location.
+  /// Uses the cached tmux binary path when available; otherwise sources
+  /// the user's login shell profile to resolve the PATH.
   ///
   /// Drains both stdout and stderr to prevent SSH channel flow-control
   /// deadlocks, and awaits channel completion.
   Future<String> _exec(SshSession session, String command) async {
-    // If we have a cached tmux path, rewrite bare 'tmux' to the full path.
-    final cachedPath = _tmuxPathCache[session.connectionId];
-    final resolvedCommand = cachedPath != null
-        ? command.replaceFirst('tmux ', '$cachedPath ')
-        : command;
-
-    // Only source profiles if we don't have a cached path yet.
-    final wrappedCommand = cachedPath != null
-        ? resolvedCommand
-        : '. ~/.profile 2>/dev/null; '
-              '. ~/.bash_profile 2>/dev/null; '
-              '. ~/.zprofile 2>/dev/null; '
-              '$command';
+    final wrappedCommand = _wrapCommand(session, command);
     final execSession = await session.execute(wrappedCommand);
     final results = await Future.wait([
       execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
@@ -198,16 +214,7 @@ class TmuxService {
   /// visible immediately in the interactive terminal. Avoids the
   /// latency of draining stdout/stderr.
   void _execFireAndForget(SshSession session, String command) {
-    final cachedPath = _tmuxPathCache[session.connectionId];
-    final resolvedCommand = cachedPath != null
-        ? command.replaceFirst('tmux ', '$cachedPath ')
-        : command;
-    final wrappedCommand = cachedPath != null
-        ? resolvedCommand
-        : '. ~/.profile 2>/dev/null; '
-              '. ~/.bash_profile 2>/dev/null; '
-              '. ~/.zprofile 2>/dev/null; '
-              '$command';
+    final wrappedCommand = _wrapCommand(session, command);
     // Launch and ignore — the exec channel self-closes on completion.
     session.execute(wrappedCommand).then((exec) {
       // Drain streams to prevent backpressure, but don't wait.
@@ -216,26 +223,46 @@ class TmuxService {
     }).ignore();
   }
 
-  /// Resolves and caches the full path to the tmux binary.
+  /// Detects the user's login shell and resolves the tmux binary path.
+  ///
+  /// Caches both the shell-specific profile source command and the
+  /// full tmux path for subsequent calls.
   Future<void> _cacheTmuxPath(SshSession session) async {
     if (_tmuxPathCache.containsKey(session.connectionId)) return;
     try {
+      // Detect login shell and resolve tmux path in a single exec.
       final execSession = await session.execute(
-        '. ~/.profile 2>/dev/null; '
-        '. ~/.bash_profile 2>/dev/null; '
-        '. ~/.zprofile 2>/dev/null; '
+        // Print shell name, then source appropriate profile and find tmux.
+        r'SHELL_NAME=$(basename "$SHELL" 2>/dev/null || echo sh); '
+        r'case "$SHELL_NAME" in '
+        'zsh) . ~/.zprofile 2>/dev/null;; '
+        'bash) . ~/.bash_profile 2>/dev/null || . ~/.profile 2>/dev/null;; '
+        '*) . ~/.profile 2>/dev/null;; '
+        'esac; '
+        r'echo "$SHELL_NAME"; '
         'command -v tmux',
       );
       final results = await Future.wait([
         execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
         execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
       ]);
-      final path = results[0].trim();
-      if (path.isNotEmpty && path.startsWith('/')) {
-        _tmuxPathCache[session.connectionId] = path;
+      final lines = results[0].trim().split('\n');
+      if (lines.isNotEmpty) {
+        final shellName = lines[0].trim();
+        _profileSourceCache[session.connectionId] = switch (shellName) {
+          'zsh' => '. ~/.zprofile 2>/dev/null; ',
+          'bash' => '. ~/.bash_profile 2>/dev/null; ',
+          _ => '. ~/.profile 2>/dev/null; ',
+        };
+      }
+      if (lines.length > 1) {
+        final path = lines[1].trim();
+        if (path.isNotEmpty && path.startsWith('/')) {
+          _tmuxPathCache[session.connectionId] = path;
+        }
       }
     } on Object {
-      // Ignore — we'll fall back to profile sourcing.
+      // Ignore — we'll fall back to sourcing all profiles.
     }
   }
 
