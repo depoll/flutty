@@ -292,14 +292,21 @@ String? parseTmuxSessionName(String? command) {
   // Match a shell argument: 'quoted', "quoted", or unquoted-word.
   const argPattern = r"""(?:'([^']*)'|"([^"]*)"|(\S+))""";
 
-  // Try -s <name> (new-session / new)
-  final sFlag = RegExp('-[A-Za-z]*s\\s+$argPattern').firstMatch(tmuxPart);
+  // Try -s <name> (new-session / new).
+  // Use a whitespace lookbehind so we match standalone flags like `-s`
+  // or combined flags like `-As`, but not subcommand suffixes like
+  // `list-sessions`.
+  final sFlag = RegExp(
+    '(?<=\\s)-[A-Za-z]*s\\s+$argPattern',
+  ).firstMatch(tmuxPart);
   if (sFlag != null) {
     return sFlag.group(1) ?? sFlag.group(2) ?? sFlag.group(3);
   }
 
   // Try -t <name> (attach / attach-session)
-  final tFlag = RegExp('-[A-Za-z]*t\\s+$argPattern').firstMatch(tmuxPart);
+  final tFlag = RegExp(
+    '(?<=\\s)-[A-Za-z]*t\\s+$argPattern',
+  ).firstMatch(tmuxPart);
   if (tFlag != null) {
     return tFlag.group(1) ?? tFlag.group(2) ?? tFlag.group(3);
   }

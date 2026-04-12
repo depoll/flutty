@@ -243,6 +243,14 @@ void main() {
       expect(parseTmuxSessionName('htop'), isNull);
     });
 
+    test('returns null for tmux subcommands containing flag-like suffixes', () {
+      expect(parseTmuxSessionName('tmux list-sessions'), isNull);
+      expect(
+        parseTmuxSessionName('tmux list-sessions -F #{session_name}'),
+        isNull,
+      );
+    });
+
     test('returns null for null/empty', () {
       expect(parseTmuxSessionName(null), isNull);
       expect(parseTmuxSessionName(''), isNull);

@@ -193,9 +193,10 @@ class TmuxService {
     final cached = _profileSourceCache[connectionId];
     if (cached != null) return cached;
     // Fallback — source all common profiles until shell is detected.
-    return '. ~/.profile 2>/dev/null; '
-        '. ~/.bash_profile 2>/dev/null; '
-        '. ~/.zprofile 2>/dev/null; ';
+    // Redirect stdout to avoid profile greeting/MOTD output corrupting
+    // our parsed command results.
+    return '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
+        '>/dev/null 2>&1; ';
   }
 
   /// Wraps [command] with profile sourcing or cached path substitution.
@@ -217,11 +218,15 @@ class TmuxService {
   Future<String> _exec(SshSession session, String command) async {
     final wrappedCommand = _wrapCommand(session, command);
     final execSession = await session.execute(wrappedCommand);
-    final results = await Future.wait([
-      execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-      execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-    ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
-    return results[0];
+    try {
+      final results = await Future.wait([
+        execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+        execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+      ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
+      return results[0];
+    } finally {
+      execSession.close();
+    }
   }
 
   /// Fire-and-forget: sends a tmux command without waiting for output.
@@ -247,35 +252,40 @@ class TmuxService {
     if (_tmuxPathCache.containsKey(session.connectionId)) return;
     try {
       // Detect login shell and resolve tmux path in a single exec.
+      // Redirect stdout from profile scripts to /dev/null so greetings,
+      // MOTD, or fortune output don't corrupt our parsed output.
       final execSession = await session.execute(
-        // Print shell name, then source appropriate profile and find tmux.
         r'SHELL_NAME=$(basename "$SHELL" 2>/dev/null || echo sh); '
         r'case "$SHELL_NAME" in '
-        'zsh) . ~/.zprofile 2>/dev/null;; '
-        'bash) . ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null;; '
-        '*) . ~/.profile 2>/dev/null;; '
+        'zsh) { . ~/.zprofile; } >/dev/null 2>&1;; '
+        'bash) { . ~/.bash_profile; . ~/.profile; } >/dev/null 2>&1;; '
+        '*) { . ~/.profile; } >/dev/null 2>&1;; '
         'esac; '
         r'echo "$SHELL_NAME"; '
         'command -v tmux',
       );
-      final results = await Future.wait([
-        execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-        execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-      ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
-      final lines = results[0].trim().split('\n');
-      if (lines.isNotEmpty) {
-        final shellName = lines[0].trim();
-        _profileSourceCache[session.connectionId] = switch (shellName) {
-          'zsh' => '. ~/.zprofile 2>/dev/null; ',
-          'bash' => '. ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null; ',
-          _ => '. ~/.profile 2>/dev/null; ',
-        };
-      }
-      if (lines.length > 1) {
-        final path = lines[1].trim();
-        if (path.isNotEmpty && path.startsWith('/')) {
-          _tmuxPathCache[session.connectionId] = path;
+      try {
+        final results = await Future.wait([
+          execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+          execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+        ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
+        final lines = results[0].trim().split('\n');
+        if (lines.isNotEmpty) {
+          final shellName = lines[0].trim();
+          _profileSourceCache[session.connectionId] = switch (shellName) {
+            'zsh' => '{ . ~/.zprofile; } >/dev/null 2>&1; ',
+            'bash' => '{ . ~/.bash_profile; . ~/.profile; } >/dev/null 2>&1; ',
+            _ => '{ . ~/.profile; } >/dev/null 2>&1; ',
+          };
         }
+        if (lines.length > 1) {
+          final path = lines[1].trim();
+          if (path.isNotEmpty && path.startsWith('/')) {
+            _tmuxPathCache[session.connectionId] = path;
+          }
+        }
+      } finally {
+        execSession.close();
       }
     } on Object {
       // Ignore — we'll fall back to sourcing all profiles.

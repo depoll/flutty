@@ -511,9 +511,11 @@ class AgentSessionDiscoveryService {
       }
 
       // Fallback: query the SQLite database directly.
+      // Use ASCII Unit Separator (\x1f) to avoid collision with pipes
+      // in session titles or directory paths.
       final dbOutput = await _exec(
         session,
-        'sqlite3 -separator "|" '
+        r"sqlite3 -separator $'\x1f' "
         '~/.local/share/opencode/opencode.db '
         "'SELECT id, title, directory, time_updated "
         'FROM session '
@@ -560,7 +562,7 @@ class AgentSessionDiscoveryService {
     final sessions = <ToolSessionInfo>[];
     for (final line in output.trim().split('\n')) {
       if (line.trim().isEmpty) continue;
-      final parts = line.split('|');
+      final parts = line.split('\x1f');
       if (parts.length < 3) continue;
 
       final id = parts[0].trim();
@@ -591,11 +593,15 @@ class AgentSessionDiscoveryService {
 
   Future<String> _exec(SshSession session, String command) async {
     final execSession = await session.execute(command);
-    final results = await Future.wait([
-      execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-      execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-    ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
-    return results[0];
+    try {
+      final results = await Future.wait([
+        execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+        execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+      ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
+      return results[0];
+    } finally {
+      execSession.close();
+    }
   }
 
   static String _shellQuote(String value) =>
