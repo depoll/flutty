@@ -1,6 +1,7 @@
 package xyz.depollsoft.monkeyssh
 
 import android.Manifest
+import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
@@ -22,7 +23,6 @@ class MainActivity : FlutterActivity() {
         private const val MONKEYSSH_TRANSFER_EXTENSION = ".monkeysshx"
     }
 
-    private val channel = "xyz.depollsoft.monkeyssh/ssh_service"
     private val clipboardChannel = "xyz.depollsoft.monkeyssh/clipboard_content"
     private val transferChannel = "xyz.depollsoft.monkeyssh/transfer"
     private val maxTransferPayloadBytes = 10 * 1024 * 1024
@@ -33,8 +33,14 @@ class MainActivity : FlutterActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        SshServiceChannelHandler.attachActivity(this)
         handleTransferIntent(intent)
     }
+
+    override fun provideFlutterEngine(context: Context): FlutterEngine =
+        MonkeySshApplication.from(context).ensureSharedFlutterEngine()
+
+    override fun shouldDestroyEngineWithHost(): Boolean = false
 
     override fun getInitialRoute(): String? {
         if (isTransferIntent(intent)) {
@@ -52,37 +58,6 @@ class MainActivity : FlutterActivity() {
 
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-
-        MethodChannel(flutterEngine.dartExecutor.binaryMessenger, channel)
-            .setMethodCallHandler { call, result ->
-                when (call.method) {
-                    "updateStatus" -> {
-                        val connectionCount = call.argument<Int>("connectionCount") ?: 0
-                        val connectedCount = call.argument<Int>("connectedCount") ?: 0
-                        SshConnectionService.updateStatus(
-                            context = this,
-                            status = SshConnectionService.ConnectionStatus(
-                                connectionCount = connectionCount,
-                                connectedCount = connectedCount
-                            ),
-                        )
-                        result.success(null)
-                    }
-                    "setForegroundState" -> {
-                        val isForeground = call.argument<Boolean>("isForeground") ?: true
-                        if (!isForeground && SshConnectionService.hasActiveConnections()) {
-                            ensureNotificationPermission()
-                        }
-                        SshConnectionService.setForegroundState(this, isForeground)
-                        result.success(null)
-                    }
-                    "stopService" -> {
-                        SshConnectionService.stop(this)
-                        result.success(null)
-                    }
-                    else -> result.notImplemented()
-                }
-            }
 
         clipboardMethodChannel = MethodChannel(
             flutterEngine.dartExecutor.binaryMessenger,
@@ -133,6 +108,7 @@ class MainActivity : FlutterActivity() {
     }
 
     override fun onDestroy() {
+        SshServiceChannelHandler.detachActivity(this)
         clipboardMethodChannel?.setMethodCallHandler(null)
         clipboardMethodChannel = null
         transferMethodChannel?.setMethodCallHandler(null)
@@ -154,7 +130,7 @@ class MainActivity : FlutterActivity() {
         }
     }
 
-    private fun ensureNotificationPermission() {
+    fun ensureNotificationPermission() {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) {
             return
         }

@@ -101,6 +101,7 @@ class SshConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        MonkeySshApplication.from(this).ensureSharedFlutterEngine()
         createNotificationChannel()
     }
 

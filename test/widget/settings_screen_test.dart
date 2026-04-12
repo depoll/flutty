@@ -2,17 +2,23 @@
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
+import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/settings_screen.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 
 import '../support/settings_import_test_helpers.dart';
+
+const _backgroundSshChannel = MethodChannel(
+  'xyz.depollsoft.monkeyssh/ssh_service',
+);
 
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
@@ -42,6 +48,22 @@ void main() {
         buildNumber: '123',
         buildSignature: '',
       );
+      BackgroundSshService.debugIsAndroidPlatformOverride = true;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(
+            _backgroundSshChannel,
+            (call) async => switch (call.method) {
+              'isBatteryOptimizationIgnored' => false,
+              'requestDisableBatteryOptimization' => true,
+              _ => null,
+            },
+          );
+    });
+
+    tearDown(() {
+      BackgroundSshService.debugIsAndroidPlatformOverride = null;
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+          .setMockMethodCallHandler(_backgroundSshChannel, null);
     });
 
     testWidgets('displays all sections', (tester) async {
@@ -69,6 +91,14 @@ void main() {
       );
       await tester.pumpAndSettle();
       expect(find.text('Import & Export'), findsOneWidget);
+
+      await tester.scrollUntilVisible(
+        find.text('Background SSH'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+      expect(find.text('Background SSH'), findsOneWidget);
 
       await tester.scrollUntilVisible(
         find.text('About'),
@@ -272,6 +302,32 @@ void main() {
       expect(find.text('Change PIN'), findsOneWidget);
       expect(find.text('Biometric authentication'), findsOneWidget);
       expect(find.text('Auto-lock timeout'), findsOneWidget);
+    });
+
+    testWidgets('displays Android background reliability controls', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Battery optimization'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Background SSH'), findsOneWidget);
+      expect(find.text('Battery optimization'), findsOneWidget);
+      expect(find.text('Enabled'), findsOneWidget);
+      expect(
+        find.textContaining(
+          'Foreground notifications alone are not always enough on Android.',
+        ),
+        findsOneWidget,
+      );
     });
 
     testWidgets('displays import and export actions', (tester) async {
