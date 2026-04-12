@@ -101,7 +101,6 @@ class SshConnectionService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        MonkeySshApplication.from(this).ensureSharedFlutterEngine()
         createNotificationChannel()
     }
 
@@ -159,6 +158,7 @@ class SshConnectionService : Service() {
             return
         }
 
+        MonkeySshApplication.from(this).ensureSharedFlutterEngine()
         latestStatus = status
         val manager = getSystemService(NotificationManager::class.java)
         val notification = buildNotification(status)
