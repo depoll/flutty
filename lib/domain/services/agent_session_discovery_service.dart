@@ -33,15 +33,26 @@ class AgentSessionDiscoveryService {
       _discoverOpenCodeSessions(session, maxPerTool),
     ]);
 
-    final all = results.expand((list) => list).toList()
-      ..sort((a, b) {
-        final aTime = a.lastActive;
-        final bTime = b.lastActive;
-        if (aTime == null && bTime == null) return 0;
-        if (aTime == null) return 1;
-        if (bTime == null) return -1;
-        return bTime.compareTo(aTime);
-      });
+    // Interleave results from each tool in their original (mtime) order.
+    // Each tool's list is already sorted by most-recent-first from the
+    // remote commands. Interleaving round-robin keeps the combined list
+    // balanced across tools rather than pushing tools without timestamps
+    // to the bottom.
+    final all = <ToolSessionInfo>[];
+    final iterators = results
+        .where((list) => list.isNotEmpty)
+        .map((list) => list.iterator)
+        .toList();
+    var remaining = true;
+    while (remaining) {
+      remaining = false;
+      for (final it in iterators) {
+        if (it.moveNext()) {
+          all.add(it.current);
+          remaining = true;
+        }
+      }
+    }
 
     return all;
   }
@@ -52,11 +63,11 @@ class AgentSessionDiscoveryService {
       case 'Claude Code':
         return 'claude --resume ${_shellQuote(info.sessionId)}';
       case 'Codex':
-        return 'codex resume';
+        return 'codex resume ${_shellQuote(info.sessionId)}';
       case 'Copilot CLI':
         return 'copilot --resume ${_shellQuote(info.sessionId)}';
       case 'Gemini CLI':
-        return 'gemini --resume';
+        return 'gemini --resume ${_shellQuote(info.sessionId)}';
       case 'OpenCode':
         if (info.sessionId == '_continue') {
           return 'opencode --continue';

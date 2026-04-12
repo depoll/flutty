@@ -2356,7 +2356,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!active) return;
 
     final sessionName = await tmux.currentSessionName(session);
-    if (!mounted) return;
+    if (!mounted || sessionName == null) return;
 
     setState(() {
       _isTmuxActive = true;

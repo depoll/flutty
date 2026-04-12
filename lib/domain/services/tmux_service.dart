@@ -58,16 +58,34 @@ class TmuxService {
     }
   }
 
-  /// Returns the name of the tmux session the interactive shell is
-  /// currently inside, or `null` if not in tmux.
+  /// Returns the name of the tmux session the user is most likely
+  /// interacting with, or `null` if no session can be identified.
+  ///
+  /// First tries `tmux display-message` (works when the exec shell
+  /// inherits the tmux context). If that fails, falls back to finding
+  /// the first attached session from `tmux list-sessions` — this covers
+  /// the common case where the interactive shell is inside tmux but the
+  /// exec channel is not.
   Future<String?> currentSessionName(SshSession session) async {
     try {
+      // Direct approach — works if the exec channel is inside tmux.
       final output = await _exec(
         session,
         "tmux display-message -p '#{session_name}'",
       );
       final name = output.trim();
-      return name.isEmpty ? null : name;
+      if (name.isNotEmpty) return name;
+    } on Exception {
+      // Fall through to fallback.
+    }
+
+    // Fallback — find the first attached session.
+    try {
+      final sessions = await listSessions(session);
+      final attached = sessions.where((s) => s.isAttached).toList();
+      if (attached.isNotEmpty) return attached.first.name;
+      // If no attached session, tmux is running but user isn't in it.
+      return null;
     } on Exception {
       return null;
     }
