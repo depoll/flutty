@@ -60,6 +60,20 @@ class AgentSessionDiscoveryService {
       }
     }
 
+    // Filter to sessions matching the working directory if provided.
+    if (workingDirectory != null && workingDirectory.isNotEmpty) {
+      final filtered = all
+          .where(
+            (s) =>
+                s.workingDirectory == null ||
+                s.workingDirectory == workingDirectory,
+          )
+          .toList();
+      // Return filtered results if any match; otherwise return all
+      // so the UI isn't empty (user can still see sessions from other dirs).
+      if (filtered.isNotEmpty) return filtered;
+    }
+
     return all;
   }
 
@@ -174,11 +188,48 @@ class AgentSessionDiscoveryService {
         final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
 
+        // Read the first line for session metadata (cwd + timestamp).
+        String? summary;
+        String? workingDirectory;
+        DateTime? lastActive;
+        try {
+          final meta = await _exec(
+            session,
+            'head -1 ${_shellQuote(filePath)} 2>/dev/null',
+          );
+          if (meta.trim().isNotEmpty) {
+            final decoded = jsonDecode(meta.trim());
+            if (decoded is Map<String, dynamic>) {
+              final payload =
+                  decoded['payload'] as Map<String, dynamic>? ?? decoded;
+              workingDirectory = payload['cwd'] as String?;
+              final ts = decoded['timestamp'] as String?;
+              if (ts != null) lastActive = DateTime.tryParse(ts);
+            }
+          }
+        } on Object {
+          // Non-critical.
+        }
+
+        // Build a readable summary from date + project dir.
+        final dateMatch = RegExp(
+          r'rollout-(\d{4}-\d{2}-\d{2})',
+        ).firstMatch(fileName);
+        final dateStr = dateMatch?.group(1);
+        final projectName = workingDirectory?.split('/').last;
+        summary = <String>[
+          ?projectName,
+          ?dateStr,
+        ].join(' · ');
+        if (summary.isEmpty) summary = _truncateId(fileName);
+
         sessions.add(
           ToolSessionInfo(
             toolName: 'Codex',
             sessionId: fileName,
-            summary: fileName,
+            workingDirectory: workingDirectory,
+            lastActive: lastActive,
+            summary: summary,
           ),
         );
       }
@@ -205,14 +256,36 @@ class AgentSessionDiscoveryService {
       final sessions = <ToolSessionInfo>[];
       for (final line in output.trim().split('\n')) {
         if (line.trim().isEmpty) continue;
-        // Extract session ID from directory path.
         final dirName = line.trim().split('/').where((s) => s.isNotEmpty).last;
+
+        // Try to read the plan.md first line for a meaningful title.
+        String? summary;
+        try {
+          final planHead = await _exec(
+            session,
+            'head -5 ${_shellQuote('${line.trim()}plan.md')} 2>/dev/null',
+          );
+          if (planHead.trim().isNotEmpty) {
+            // Find first non-empty, non-heading line as the title.
+            for (final planLine in planHead.trim().split('\n')) {
+              final cleaned = planLine.replaceAll(RegExp(r'^#+\s*'), '').trim();
+              if (cleaned.isNotEmpty && cleaned.length > 3) {
+                summary = cleaned.length > 80
+                    ? '${cleaned.substring(0, 77)}...'
+                    : cleaned;
+                break;
+              }
+            }
+          }
+        } on Object {
+          // Non-critical.
+        }
 
         sessions.add(
           ToolSessionInfo(
             toolName: 'Copilot CLI',
             sessionId: dirName,
-            summary: _truncateId(dirName),
+            summary: summary ?? _truncateId(dirName),
           ),
         );
       }
@@ -244,11 +317,17 @@ class AgentSessionDiscoveryService {
         final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.json', '');
 
+        // Extract project directory name from path for a meaningful label.
+        // Path: ~/.gemini/tmp/<project_dir>/chats/<file>.json
+        final pathParts = filePath.split('/');
+        final chatsIdx = pathParts.indexOf('chats');
+        final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
+
         sessions.add(
           ToolSessionInfo(
             toolName: 'Gemini CLI',
             sessionId: fileName,
-            summary: _truncateId(fileName),
+            summary: projectDir ?? _truncateId(fileName),
           ),
         );
       }
@@ -267,24 +346,52 @@ class AgentSessionDiscoveryService {
     int max,
   ) async {
     try {
-      // Try listing session directories by modification time.
+      // List session JSON files directly (more reliable than dirs).
       final output = await _exec(
         session,
-        'ls -dt ~/.local/share/opencode/storage/session/*/ 2>/dev/null '
-        '| head -n $max',
+        'find ~/.local/share/opencode/storage/session -name "ses_*.json" '
+        '-type f -exec ls -1t {} + 2>/dev/null | head -n $max',
       );
       if (output.trim().isEmpty) return const [];
 
       final sessions = <ToolSessionInfo>[];
       for (final line in output.trim().split('\n')) {
         if (line.trim().isEmpty) continue;
-        final dirName = line.trim().split('/').where((s) => s.isNotEmpty).last;
+        final filePath = line.trim();
+        final fileName = filePath.split('/').last.replaceAll('.json', '');
+
+        // Read the session JSON for title and directory.
+        String? summary;
+        String? workingDirectory;
+        DateTime? lastActive;
+        try {
+          final content = await _exec(
+            session,
+            'head -c 500 ${_shellQuote(filePath)} 2>/dev/null',
+          );
+          if (content.trim().isNotEmpty) {
+            // Parse partial JSON — title/directory are near the top.
+            // Full parse may fail on truncated content, so extract fields.
+            final titleMatch = RegExp(
+              r'"title"\s*:\s*"([^"]*)"',
+            ).firstMatch(content);
+            final dirMatch = RegExp(
+              r'"directory"\s*:\s*"([^"]*)"',
+            ).firstMatch(content);
+            summary = titleMatch?.group(1);
+            workingDirectory = dirMatch?.group(1);
+          }
+        } on Object {
+          // Non-critical.
+        }
 
         sessions.add(
           ToolSessionInfo(
             toolName: 'OpenCode',
-            sessionId: dirName,
-            summary: _truncateId(dirName),
+            sessionId: fileName,
+            workingDirectory: workingDirectory,
+            lastActive: lastActive,
+            summary: summary ?? _truncateId(fileName),
           ),
         );
       }

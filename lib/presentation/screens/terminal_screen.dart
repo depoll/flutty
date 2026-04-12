@@ -23,6 +23,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
@@ -154,6 +155,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   bool _expanded = false;
   bool _isLoading = true;
   double _dragOffset = 0;
+  Timer? _syncTimer;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -161,6 +163,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   void initState() {
     super.initState();
     _loadWindows();
+    // Continuously sync window state every 5 seconds.
+    _syncTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _loadWindows(),
+    );
+  }
+
+  @override
+  void dispose() {
+    _syncTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadWindows() async {
@@ -176,7 +189,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       });
     } on Object {
       if (!mounted) return;
-      setState(() => _isLoading = false);
+      // Only clear loading on first load failure — don't wipe existing data
+      // on periodic refresh failures.
+      if (_isLoading) setState(() => _isLoading = false);
     }
   }
 
@@ -344,24 +359,33 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
               size: 20,
             ),
             title: const Text('New Window'),
-            onTap: _openTmuxNavigator,
+            onTap: () {
+              setState(() => _expanded = false);
+              showModalBottomSheet<AgentLaunchTool?>(
+                context: context,
+                builder: (ctx) => TmuxToolPickerSheet(
+                  isProUser: widget.isProUser,
+                  onToolSelected: (tool) => Navigator.pop(ctx, tool),
+                  onEmptyWindow: () {
+                    Navigator.pop(ctx);
+                    widget.onAction(const TmuxNewWindowAction());
+                  },
+                ),
+              ).then((tool) {
+                if (tool != null) {
+                  widget.onAction(
+                    TmuxNewWindowAction(
+                      command: tool.commandName,
+                      windowName: tool.commandName,
+                    ),
+                  );
+                }
+              });
+            },
           ),
         ],
       ),
     );
-  }
-
-  Future<void> _openTmuxNavigator() async {
-    final action = await showTmuxNavigator(
-      context: context,
-      ref: widget.ref,
-      session: widget.session,
-      tmuxSessionName: widget.tmuxSessionName,
-      isProUser: widget.isProUser,
-    );
-    if (action != null) {
-      await widget.onAction(action);
-    }
   }
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) => ListTile(

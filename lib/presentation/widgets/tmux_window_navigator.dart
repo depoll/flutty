@@ -146,7 +146,11 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   Future<void> _detectInstalledTools() async {
     try {
+      // Source shell profiles so CLIs in Homebrew/nvm/etc. paths are found.
       final output = await widget.session.execute(
+        '. ~/.profile 2>/dev/null; '
+        '. ~/.bash_profile 2>/dev/null; '
+        '. ~/.zprofile 2>/dev/null; '
         'command -v claude copilot codex gemini opencode 2>/dev/null'
         ' || true',
       );
@@ -236,7 +240,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   void _showNewWindowPicker() {
     showModalBottomSheet<void>(
       context: context,
-      builder: (context) => _ToolPickerSheet(
+      builder: (context) => TmuxToolPickerSheet(
         isProUser: widget.isProUser,
         installedTools: _installedTools,
         onToolSelected: (tool) {
@@ -526,17 +530,28 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 }
 
-class _ToolPickerSheet extends StatelessWidget {
-  const _ToolPickerSheet({
+/// Bottom sheet for picking an AI coding tool to launch in a new tmux window.
+class TmuxToolPickerSheet extends StatelessWidget {
+  /// Creates a new [TmuxToolPickerSheet].
+  const TmuxToolPickerSheet({
     required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
     this.installedTools,
+    super.key,
   });
 
+  /// Whether the user has Pro access.
   final bool isProUser;
+
+  /// Tools detected as installed on the remote host, or `null` if not yet
+  /// detected (shows all tools).
   final Set<AgentLaunchTool>? installedTools;
+
+  /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
+
+  /// Called when the user selects an empty window.
   final VoidCallback onEmptyWindow;
 
   /// All tools that can be shown in the picker.
@@ -568,7 +583,7 @@ class _ToolPickerSheet extends StatelessWidget {
             ),
             for (final tool in tools)
               ListTile(
-                leading: _ToolPickerSheet._iconForTool(tool, theme),
+                leading: TmuxToolPickerSheet._iconForTool(tool, theme),
                 title: Text(tool.label),
                 trailing: !isProUser ? const PremiumBadge() : null,
                 enabled: isProUser,
