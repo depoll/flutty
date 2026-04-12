@@ -15,6 +15,7 @@ import 'terminal_key_input.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
+final _splitLeadingTokenCandidatePattern = RegExp(r'^\s*\S\s+\S');
 const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 
 bool _isAsciiLetterOrDigitCodeUnit(int codeUnit) =>
@@ -1230,7 +1231,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     String currentText, {
     int? cursorOffsetHint,
   }) {
-    if (!_allowSplitLeadingTokenNormalization || _lastSentText.isEmpty) {
+    if (!_allowSplitLeadingTokenNormalization ||
+        _lastSentText.isEmpty ||
+        !_splitLeadingTokenCandidatePattern.hasMatch(currentText)) {
       return null;
     }
 
@@ -1288,6 +1291,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _allowSplitLeadingTokenNormalization = false;
     final separatorStart = tokenInfo.firstTokenEnd;
     final separatorEnd = separatorStart + separatorLength;
+    final leadingPrefix = currentGraphemes
+        .sublist(0, tokenInfo.firstTokenStart)
+        .join();
     final normalizedCursorOffset = cursorOffsetHint <= separatorStart
         ? cursorOffsetHint
         : cursorOffsetHint <= separatorEnd
@@ -1295,6 +1301,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         : cursorOffsetHint - separatorLength;
     return (
       currentText:
+          leadingPrefix +
           tokenInfo.firstTokenGraphemes.join() +
           tokenInfo.trailingGraphemes.sublist(separatorLength).join(),
       cursorOffset: normalizedCursorOffset,

@@ -7415,6 +7415,79 @@ void main() {
     );
 
     testWidgets(
+      'preserves leading indentation when a split token is normalized',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+        var modifierActive = false;
+        var fakeNow = DateTime(2026);
+        debugSetModifierChordClock(() => fakeNow);
+        addTearDown(() => debugSetModifierChordClock(null));
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => '>',
+                hasActiveToolbarModifier: () => modifierActive,
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        modifierActive = true;
+        tester.testTextInput.updateEditingValue(
+          _editingValue('b', selectionOffset: 1),
+        );
+        await tester.pump();
+        modifierActive = false;
+
+        fakeNow = fakeNow.add(const Duration(milliseconds: 100));
+        tester.testTextInput.updateEditingValue(
+          _editingValue('c', selectionOffset: 1),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+        controller.handleExternalTerminalOutput();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('  copilot', selectionOffset: '  copilot'.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('  c opilot ', selectionOffset: '  c opilot '.length),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: '  copilot',
+            initialCursorOffset: '  copilot'.length,
+          ),
+          (text: '  copilot ', cursorOffset: '  copilot '.length),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'does not reset after modifier chord when follow-up arrives after timeout',
       (tester) async {
         final terminalOutput = <String>[];
