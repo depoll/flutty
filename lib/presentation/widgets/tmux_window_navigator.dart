@@ -150,8 +150,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       final stdout = await output.stdout
           .cast<List<int>>()
           .transform(utf8.decoder)
-          .join();
-      await output.stderr.cast<List<int>>().transform(utf8.decoder).join();
+          .join()
+          .timeout(const Duration(seconds: 5), onTimeout: () => '');
+      await output.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .join()
+          .timeout(const Duration(seconds: 5), onTimeout: () => '');
       if (!mounted) return;
 
       final paths = stdout.trim().split('\n').where((l) => l.isNotEmpty);

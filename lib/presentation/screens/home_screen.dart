@@ -2373,7 +2373,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 ),
                 const SizedBox(width: 4),
                 Text(
-                  'tmux · ${windows.length} windows',
+                  _sessionName != null
+                      ? '$_sessionName · ${windows.length} windows'
+                      : 'tmux · ${windows.length} windows',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),

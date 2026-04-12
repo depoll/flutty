@@ -102,33 +102,50 @@ class AgentSessionDiscoveryService {
       if (output.trim().isEmpty) return const [];
 
       final sessions = <ToolSessionInfo>[];
+      final seenIds = <String>{};
       for (final line in output.trim().split('\n').reversed) {
         if (line.trim().isEmpty) continue;
         try {
           final decoded = jsonDecode(line);
           if (decoded is! Map<String, dynamic>) continue;
           final sessionId = decoded['sessionId'] as String? ?? '';
-          if (sessionId.isEmpty) continue;
+          if (sessionId.isEmpty || seenIds.contains(sessionId)) continue;
+          seenIds.add(sessionId);
+
+          // timestamp may be int (epoch ms) or String (ISO 8601).
+          DateTime? lastActive;
+          final rawTs = decoded['timestamp'];
+          if (rawTs is int) {
+            lastActive = DateTime.fromMillisecondsSinceEpoch(rawTs);
+          } else if (rawTs is String) {
+            lastActive = DateTime.tryParse(rawTs);
+          }
+
+          // Use display text as summary, filtering out /exit commands.
+          final display = decoded['display'] as String?;
+          final summary =
+              decoded['title'] as String? ??
+              decoded['query'] as String? ??
+              (display != null && !display.startsWith('/') ? display : null);
 
           sessions.add(
             ToolSessionInfo(
               toolName: 'Claude Code',
               sessionId: sessionId,
-              workingDirectory: decoded['directory'] as String?,
-              lastActive: decoded['timestamp'] != null
-                  ? DateTime.tryParse(decoded['timestamp'] as String)
-                  : null,
-              summary:
-                  decoded['title'] as String? ?? decoded['query'] as String?,
+              workingDirectory:
+                  decoded['directory'] as String? ??
+                  decoded['project'] as String?,
+              lastActive: lastActive,
+              summary: summary,
             ),
           );
           if (sessions.length >= max) break;
-        } on Exception {
+        } on Object {
           continue;
         }
       }
       return sessions;
-    } on Exception {
+    } on Object {
       return const [];
     }
   }
@@ -163,7 +180,7 @@ class AgentSessionDiscoveryService {
         );
       }
       return sessions;
-    } on Exception {
+    } on Object {
       return const [];
     }
   }
@@ -197,7 +214,7 @@ class AgentSessionDiscoveryService {
         );
       }
       return sessions;
-    } on Exception {
+    } on Object {
       return const [];
     }
   }
@@ -233,7 +250,7 @@ class AgentSessionDiscoveryService {
         );
       }
       return sessions;
-    } on Exception {
+    } on Object {
       return const [];
     }
   }
@@ -269,7 +286,7 @@ class AgentSessionDiscoveryService {
         );
       }
       return sessions;
-    } on Exception {
+    } on Object {
       return const [];
     }
   }
@@ -281,7 +298,7 @@ class AgentSessionDiscoveryService {
     final results = await Future.wait([
       execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
       execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-    ]);
+    ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
     return results[0];
   }
 
