@@ -2559,6 +2559,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .getSession(widget.connectionId);
     if (session == null || _sessionName == null) return;
 
+    // Check if a window is already running this tool — switch to it
+    // instead of opening a duplicate.
+    final toolCmd = info.toolName.toLowerCase().split(' ').first;
+    final existingWindow = _windows?.where((w) {
+      final cmd = w.currentCommand?.toLowerCase() ?? '';
+      final winName = w.name.toLowerCase();
+      return cmd == toolCmd || winName == toolCmd;
+    }).firstOrNull;
+
+    if (existingWindow != null) {
+      _switchAndOpenWindow(existingWindow.index);
+      return;
+    }
+
     final discovery = ref.read(agentSessionDiscoveryServiceProvider);
     final command = discovery.buildResumeCommand(info);
     final tmux = ref.read(tmuxServiceProvider);
