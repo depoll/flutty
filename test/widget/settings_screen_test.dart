@@ -386,14 +386,22 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Loading...'), findsOneWidget);
+      final batteryOptimizationTile = find.widgetWithText(
+        ListTile,
+        'Battery optimization',
+      );
+      expect(
+        find.descendant(
+          of: batteryOptimizationTile,
+          matching: find.text('Loading...'),
+        ),
+        findsOneWidget,
+      );
       expect(
         find.text('Checking Android battery optimization status...'),
         findsOneWidget,
       );
-      final tile = tester.widget<ListTile>(
-        find.widgetWithText(ListTile, 'Battery optimization'),
-      );
+      final tile = tester.widget<ListTile>(batteryOptimizationTile);
       expect(tile.onTap, isNull);
 
       completer.complete(false);
