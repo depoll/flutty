@@ -182,14 +182,19 @@ jobs:
       - name: Keep deploy build number monotonic
         id: finalize
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          INPUT_BUILD_NAME: ${{ needs.compute-version.outputs.build-name }}
+          INPUT_BUILD_CODENAME: ${{ needs.compute-version.outputs.build-codename }}
+          INPUT_BUILD_DISPLAY: ${{ needs.compute-version.outputs.build-display }}
+          INPUT_BUILD_NUMBER: ${{ needs.compute-version.outputs.build-number }}
         with:
           script: |
             const owner = context.repo.owner;
             const repo = context.repo.repo;
-            const requestedBuildName = '${{ needs.compute-version.outputs.build-name }}'.trim();
-            const requestedBuildCodename = '${{ needs.compute-version.outputs.build-codename }}'.trim();
-            const requestedBuildDisplay = '${{ needs.compute-version.outputs.build-display }}'.trim();
-            const requestedBuildNumber = '${{ needs.compute-version.outputs.build-number }}'.trim();
+            const requestedBuildName = (process.env.INPUT_BUILD_NAME || '').trim();
+            const requestedBuildCodename = (process.env.INPUT_BUILD_CODENAME || '').trim();
+            const requestedBuildDisplay = (process.env.INPUT_BUILD_DISPLAY || '').trim();
+            const requestedBuildNumber = (process.env.INPUT_BUILD_NUMBER || '').trim();
             const workflowIds = ['deploy-testflight.yml', 'develop.yml'];
             const markerArtifactPattern = /^private-deploy-build-number-(\d+)$/;
             const legacyArtifactPattern = /^(?:android|ios)-private-.+-(\d+)$/;

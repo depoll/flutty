@@ -111,7 +111,7 @@ platform :ios do
 
   private_lane :testflight_release_notes do
     preview_notes = PreviewReleaseNotes.current
-    return [nil, nil] if preview_notes.nil?
+    next [nil, nil] if preview_notes.nil?
 
     [
       preview_notes,
