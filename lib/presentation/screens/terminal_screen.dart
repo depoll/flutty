@@ -53,6 +53,18 @@ bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
     (codeUnit >= 0x61 && codeUnit <= 0x7A);
 
+final _oscEscapeSequencePattern = RegExp(
+  '\x1B\\][^\x07\x1B]*(?:\x07|\x1B\\\\)',
+  dotAll: true,
+);
+final _csiEscapeSequencePattern = RegExp('\x1B\\[[0-?]*[ -/]*[@-~]');
+final _singleCharEscapeSequencePattern = RegExp('\x1B[@-_]');
+
+String _stripTerminalPromptEscapeSequences(String text) => text
+    .replaceAll(_oscEscapeSequencePattern, '')
+    .replaceAll(_csiEscapeSequencePattern, '')
+    .replaceAll(_singleCharEscapeSequencePattern, '');
+
 const _minTerminalFontSize = 8.0;
 const _maxTerminalFontSize = 32.0;
 const _terminalFollowOutputTolerance = 1.0;
@@ -2128,13 +2140,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   bool _shellOutputLooksLikePromptReturn(String data) {
-    if (data.isEmpty) {
+    final sanitizedData = _stripTerminalPromptEscapeSequences(data);
+    if (sanitizedData.isEmpty) {
       return false;
     }
 
-    var index = data.length - 1;
+    var index = sanitizedData.length - 1;
     while (index >= 0) {
-      final codeUnit = data.codeUnitAt(index);
+      final codeUnit = sanitizedData.codeUnitAt(index);
       if (codeUnit == 0x0A || codeUnit == 0x0D) {
         return false;
       }
@@ -2150,7 +2163,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var visibleCodeUnitCount = 0;
     while (index >= 0) {
-      final codeUnit = data.codeUnitAt(index);
+      final codeUnit = sanitizedData.codeUnitAt(index);
       if (codeUnit == 0x0A || codeUnit == 0x0D) {
         break;
       }

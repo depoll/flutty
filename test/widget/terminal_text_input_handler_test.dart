@@ -7361,6 +7361,60 @@ void main() {
     );
 
     testWidgets(
+      'preserves an intentional space inserted inside the first token',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final controller = TerminalTextInputHandlerController();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                controller: controller,
+                deleteDetection: true,
+                resolveTextBeforeCursor: () => '>',
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        controller.handleExternalTerminalOutput();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('copilot', selectionOffset: 'copilot'.length),
+        );
+        await tester.pump();
+
+        terminalOutput.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('c opilot', selectionOffset: 2),
+        );
+        await tester.pump();
+
+        expect(
+          _terminalStateFromEvents(
+            terminalOutput,
+            initialText: 'copilot',
+            initialCursorOffset: 'copilot'.length,
+          ),
+          (text: 'c opilot', cursorOffset: 2),
+        );
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'does not reset after modifier chord when follow-up arrives after timeout',
       (tester) async {
         final terminalOutput = <String>[];

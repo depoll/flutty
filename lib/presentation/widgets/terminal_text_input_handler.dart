@@ -236,6 +236,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
+  bool _allowSplitLeadingTokenNormalization = false;
   bool _clearImeAfterNextTouchCursorMove = false;
   bool _hasPendingPromptOutputImeReset = false;
   DateTime? _modifierChordResetTime;
@@ -481,6 +482,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   void _clearImeBufferForFreshInput({
     bool armModifierChordWindow = false,
+    bool armSplitLeadingTokenNormalization = false,
     String? deleteResetBaselineText,
     int? deleteResetBaselineCursorOffset,
     String? deleteResetDeletedSuffixText,
@@ -506,6 +508,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _trimLeadingSuggestionSpaceAfterDelete = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _allowSplitLeadingTokenNormalization = armSplitLeadingTokenNormalization;
     _modifierChordResetTime = armModifierChordWindow
         ? _readModifierChordClock()
         : null;
@@ -529,7 +532,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         !_currentLineLooksLikePromptPrefix(textBeforeCursor)) {
       return;
     }
-    _clearImeBufferForFreshInput(flushPlatformContext: true);
+    _clearImeBufferForFreshInput(
+      flushPlatformContext: true,
+      armSplitLeadingTokenNormalization: true,
+    );
   }
 
   // -- Focus handling --
@@ -590,6 +596,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
+      _allowSplitLeadingTokenNormalization = false;
       _hasPendingPromptOutputImeReset = false;
       _modifierChordResetTime = null;
       _clearPendingDeleteResetBaseline();
@@ -613,6 +620,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _allowSplitLeadingTokenNormalization = false;
     _hasPendingPromptOutputImeReset = false;
     _modifierChordResetTime = null;
     _clearPendingDeleteResetBaseline();
@@ -900,6 +908,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _clearImeAfterNextTouchCursorMove = false;
+    _allowSplitLeadingTokenNormalization = false;
     _modifierChordResetTime = null;
     if (clearPendingDeleteResetBaseline) {
       _clearPendingDeleteResetBaseline();
@@ -1221,7 +1230,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     String currentText, {
     int? cursorOffsetHint,
   }) {
-    if (_lastSentText.isEmpty) {
+    if (!_allowSplitLeadingTokenNormalization || _lastSentText.isEmpty) {
       return null;
     }
 
@@ -1231,6 +1240,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     final currentGraphemes = currentText.characters.toList(growable: false);
+    final currentTextLength = currentGraphemes.length;
+    final previousTextLength = _textLengthInGraphemes(_lastSentText);
+    if (_lastSentCursorOffset != previousTextLength ||
+        cursorOffsetHint == null ||
+        cursorOffsetHint != currentTextLength) {
+      return null;
+    }
     final tokenInfo = _leadingTokenInfo(currentGraphemes);
     if (tokenInfo == null ||
         tokenInfo.firstTokenGraphemes.length != 1 ||
@@ -1269,11 +1285,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return null;
     }
 
+    _allowSplitLeadingTokenNormalization = false;
     final separatorStart = tokenInfo.firstTokenEnd;
     final separatorEnd = separatorStart + separatorLength;
-    final normalizedCursorOffset = cursorOffsetHint == null
-        ? null
-        : cursorOffsetHint <= separatorStart
+    final normalizedCursorOffset = cursorOffsetHint <= separatorStart
         ? cursorOffsetHint
         : cursorOffsetHint <= separatorEnd
         ? separatorStart
@@ -1917,6 +1932,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         // shell's response to a control code is unpredictable.
         _clearImeBufferForFreshInput(
           armModifierChordWindow: wasModifiedSingleChar,
+          armSplitLeadingTokenNormalization: true,
         );
         _sawImeComposition = false;
         return;
@@ -2022,6 +2038,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _allowSplitLeadingTokenNormalization = false;
     _modifierChordResetTime = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
