@@ -22,10 +22,10 @@ class MonkeySshApplication : Application() {
 
         val engine = FlutterEngine(this)
         GeneratedPluginRegistrant.registerWith(engine)
+        SshServiceChannelHandler.attachToEngine(engine, applicationContext)
         engine.dartExecutor.executeDartEntrypoint(
             DartExecutor.DartEntrypoint.createDefault()
         )
-        SshServiceChannelHandler.attachToEngine(engine, applicationContext)
         sharedFlutterEngine = engine
         return engine
     }

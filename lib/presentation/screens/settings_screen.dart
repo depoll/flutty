@@ -22,7 +22,7 @@ import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
 /// Settings screen with appearance, security, terminal, import/export,
-/// background, and about sections.
+/// background and about sections.
 class SettingsScreen extends ConsumerWidget {
   /// Creates a new [SettingsScreen].
   const SettingsScreen({super.key});
