@@ -143,16 +143,27 @@ class TmuxService {
     String? name,
     String? workingDirectory,
   }) async {
+    // Create the window without a command — it gets a normal interactive
+    // login shell with full PATH, aliases, and profile scripts loaded.
     final parts = <String>[
       'tmux new-window -t ${_shellQuote(sessionName)}',
       if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
         '-c ${_shellQuote(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
         '-n ${_shellQuote(name.trim())}',
-      if (command != null && command.trim().isNotEmpty)
-        _shellQuote(command.trim()),
     ];
     await _exec(session, parts.join(' '));
+
+    // If a command was requested, type it into the new window's shell.
+    // This ensures the command runs inside the login shell environment
+    // where CLI tools installed via Homebrew/nvm/etc. are available.
+    if (command != null && command.trim().isNotEmpty) {
+      _execFireAndForget(
+        session,
+        'tmux send-keys -t ${_shellQuote(sessionName)} '
+        '${_shellQuote(command.trim())} Enter',
+      );
+    }
   }
 
   /// Switches to window [windowIndex] in [sessionName] via exec channel.
