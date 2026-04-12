@@ -110,10 +110,12 @@ class AgentSessionDiscoveryService {
     int max,
   ) async {
     try {
-      // Try to read the global history index first.
+      // Read more lines than needed to account for duplicate sessionIds
+      // (e.g. multiple history entries for the same active session).
+      final tailCount = max * 5;
       final output = await _exec(
         session,
-        'tail -n $max ~/.claude/history.jsonl 2>/dev/null',
+        'tail -n $tailCount ~/.claude/history.jsonl 2>/dev/null',
       );
       if (output.trim().isEmpty) return const [];
 

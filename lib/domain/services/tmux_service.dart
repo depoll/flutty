@@ -252,7 +252,7 @@ class TmuxService {
         r'SHELL_NAME=$(basename "$SHELL" 2>/dev/null || echo sh); '
         r'case "$SHELL_NAME" in '
         'zsh) . ~/.zprofile 2>/dev/null;; '
-        'bash) . ~/.bash_profile 2>/dev/null || . ~/.profile 2>/dev/null;; '
+        'bash) . ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null;; '
         '*) . ~/.profile 2>/dev/null;; '
         'esac; '
         r'echo "$SHELL_NAME"; '
@@ -267,7 +267,7 @@ class TmuxService {
         final shellName = lines[0].trim();
         _profileSourceCache[session.connectionId] = switch (shellName) {
           'zsh' => '. ~/.zprofile 2>/dev/null; ',
-          'bash' => '. ~/.bash_profile 2>/dev/null; ',
+          'bash' => '. ~/.bash_profile 2>/dev/null; . ~/.profile 2>/dev/null; ',
           _ => '. ~/.profile 2>/dev/null; ',
         };
       }

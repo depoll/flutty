@@ -2316,11 +2316,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _queryTmux();
   }
 
-  Future<void> _queryTmux() async {
+  Future<void> _queryTmux({int retries = 3}) async {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final session = sessionsNotifier.getSession(widget.connectionId);
     if (session == null) {
-      // Session not available yet; mark queried to avoid permanent spinner.
+      // Session not available yet — retry after a delay so the badge
+      // still appears for connections that finish establishing shortly.
+      if (retries > 0 && mounted) {
+        await Future<void>.delayed(const Duration(seconds: 2));
+        if (mounted) return _queryTmux(retries: retries - 1);
+      }
       if (mounted) setState(() => _queried = true);
       return;
     }
@@ -2523,7 +2528,14 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     try {
       final discovery = ref.read(agentSessionDiscoveryServiceProvider);
-      final sessions = await discovery.discoverSessions(session, maxPerTool: 8);
+      // Scope sessions to the active tmux window's working directory
+      // so results match the current project context.
+      final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final sessions = await discovery.discoverSessions(
+        session,
+        workingDirectory: activeWindow?.currentPath,
+        maxPerTool: 8,
+      );
       if (!mounted) return;
       setState(() {
         _recentSessions = sessions;
