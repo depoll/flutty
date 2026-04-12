@@ -20,14 +20,15 @@ class TmuxSession {
     if (parts.length < 3) {
       throw FormatException('Invalid tmux session format: $line');
     }
+    final activityEpoch = parts.length > 3 && parts[3].isNotEmpty
+        ? int.tryParse(parts[3])
+        : null;
     return TmuxSession(
       name: parts[0],
       windowCount: int.tryParse(parts[1]) ?? 0,
       isAttached: parts[2] == '1',
-      lastActivity: parts.length > 3
-          ? DateTime.fromMillisecondsSinceEpoch(
-              (int.tryParse(parts[3]) ?? 0) * 1000,
-            )
+      lastActivity: activityEpoch != null && activityEpoch > 0
+          ? DateTime.fromMillisecondsSinceEpoch(activityEpoch * 1000)
           : null,
     );
   }
@@ -73,7 +74,7 @@ class TmuxWindow {
     this.currentPath,
   });
 
-  /// Parses a [TmuxWindow] from a tab-delimited tmux format string.
+  /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-windows -F`):
   /// `index|name|active_flag|current_command|current_path`

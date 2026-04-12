@@ -163,9 +163,9 @@ class TmuxService {
     // Source the user's shell profile to pick up PATH additions (e.g.
     // Homebrew, linuxbrew, nix, etc.) before running the actual command.
     final wrappedCommand =
-        'source ~/.profile 2>/dev/null; '
-        'source ~/.bash_profile 2>/dev/null; '
-        'source ~/.zprofile 2>/dev/null; '
+        '. ~/.profile 2>/dev/null; '
+        '. ~/.bash_profile 2>/dev/null; '
+        '. ~/.zprofile 2>/dev/null; '
         '$command';
     final execSession = await session.execute(wrappedCommand);
     final results = await Future.wait([

@@ -22,6 +22,10 @@ class AgentSessionDiscoveryService {
   /// the combined result is interleaved round-robin across tools so no
   /// single tool dominates the list. Limits to [maxPerTool] sessions per
   /// tool to keep results manageable.
+  ///
+  /// The [workingDirectory] is passed to tools that support directory-scoped
+  /// session lookup (currently Claude Code and Gemini CLI pass it through
+  /// but do not yet filter by it — reserved for future use).
   Future<List<ToolSessionInfo>> discoverSessions(
     SshSession session, {
     String? workingDirectory,
@@ -101,23 +105,25 @@ class AgentSessionDiscoveryService {
       for (final line in output.trim().split('\n').reversed) {
         if (line.trim().isEmpty) continue;
         try {
-          final json = jsonDecode(line) as Map<String, dynamic>;
-          final sessionId = json['sessionId'] as String? ?? '';
+          final decoded = jsonDecode(line);
+          if (decoded is! Map<String, dynamic>) continue;
+          final sessionId = decoded['sessionId'] as String? ?? '';
           if (sessionId.isEmpty) continue;
 
           sessions.add(
             ToolSessionInfo(
               toolName: 'Claude Code',
               sessionId: sessionId,
-              workingDirectory: json['directory'] as String?,
-              lastActive: json['timestamp'] != null
-                  ? DateTime.tryParse(json['timestamp'] as String)
+              workingDirectory: decoded['directory'] as String?,
+              lastActive: decoded['timestamp'] != null
+                  ? DateTime.tryParse(decoded['timestamp'] as String)
                   : null,
-              summary: json['title'] as String? ?? json['query'] as String?,
+              summary:
+                  decoded['title'] as String? ?? decoded['query'] as String?,
             ),
           );
           if (sessions.length >= max) break;
-        } on FormatException {
+        } on Exception {
           continue;
         }
       }

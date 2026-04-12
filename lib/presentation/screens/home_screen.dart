@@ -1388,7 +1388,6 @@ class _ConnectionsPanel extends ConsumerWidget {
                               'tmux-badge-${connection.connectionId}',
                             ),
                             connectionId: connection.connectionId,
-                            hostId: connection.hostId,
                           ),
                       ],
                     );
@@ -2278,14 +2277,9 @@ class _SnippetRow extends ConsumerWidget {
 /// Asynchronously queries tmux state for the given connection and displays
 /// a horizontal list of window name chips if tmux is active.
 class _TmuxConnectionBadge extends ConsumerStatefulWidget {
-  const _TmuxConnectionBadge({
-    required this.connectionId,
-    required this.hostId,
-    super.key,
-  });
+  const _TmuxConnectionBadge({required this.connectionId, super.key});
 
   final int connectionId;
-  final int hostId;
 
   @override
   ConsumerState<_TmuxConnectionBadge> createState() =>

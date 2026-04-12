@@ -396,7 +396,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-        '${info.toolName} · ${info.timeAgoLabel}',
+        info.timeAgoLabel.isNotEmpty
+            ? '${info.toolName} · ${info.timeAgoLabel}'
+            : info.toolName,
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,
         ),
