@@ -431,33 +431,35 @@ class _ToolPickerSheet extends StatelessWidget {
     final theme = Theme.of(context);
 
     return SafeArea(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-            child: Text('New Window', style: theme.textTheme.titleMedium),
-          ),
-          for (final tool in _navigatorTools)
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+              child: Text('New Window', style: theme.textTheme.titleMedium),
+            ),
+            for (final tool in _navigatorTools)
+              ListTile(
+                leading: _ToolPickerSheet._iconForTool(tool, theme),
+                title: Text(tool.label),
+                trailing: !isProUser ? const PremiumBadge() : null,
+                enabled: isProUser,
+                onTap: () => onToolSelected(tool),
+              ),
+            const Divider(height: 1),
             ListTile(
-              leading: _ToolPickerSheet._iconForTool(tool, theme),
-              title: Text(tool.label),
-              trailing: !isProUser ? const PremiumBadge() : null,
-              enabled: isProUser,
-              onTap: () => onToolSelected(tool),
+              leading: Icon(
+                Icons.terminal,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+              title: const Text('Empty window'),
+              onTap: onEmptyWindow,
             ),
-          const Divider(height: 1),
-          ListTile(
-            leading: Icon(
-              Icons.terminal,
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-            title: const Text('Empty window'),
-            onTap: onEmptyWindow,
-          ),
-          const SizedBox(height: 8),
-        ],
+            const SizedBox(height: 8),
+          ],
+        ),
       ),
     );
   }
