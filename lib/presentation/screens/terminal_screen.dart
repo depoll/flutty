@@ -27,6 +27,7 @@ import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/models/tmux_state.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
@@ -113,6 +114,309 @@ const _terminalFilePathVerificationExtensions = <String>[
   'h',
   'm',
 ];
+
+/// Expandable tmux bar that sits at the bottom of the terminal.
+///
+/// Collapsed: a slim handle bar showing session name + drag pill.
+/// Expanded: smoothly grows to reveal window list + actions.
+/// The bar always takes full width and pushes the terminal up,
+/// never overlaying it.
+class _TmuxExpandableBar extends StatefulWidget {
+  const _TmuxExpandableBar({
+    required this.session,
+    required this.tmuxSessionName,
+    required this.isProUser,
+    required this.ref,
+    required this.onAction,
+  });
+
+  /// The active SSH session.
+  final SshSession session;
+
+  /// The tmux session name.
+  final String tmuxSessionName;
+
+  /// Whether the user has Pro access.
+  final bool isProUser;
+
+  /// Riverpod ref.
+  final WidgetRef ref;
+
+  /// Callback for navigator actions.
+  final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  @override
+  State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
+}
+
+class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
+  List<TmuxWindow>? _windows;
+  bool _expanded = false;
+  bool _isLoading = true;
+  double _dragOffset = 0;
+
+  TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
+
+  @override
+  void initState() {
+    super.initState();
+    _loadWindows();
+  }
+
+  Future<void> _loadWindows() async {
+    try {
+      final windows = await _tmux.listWindows(
+        widget.session,
+        widget.tmuxSessionName,
+      );
+      if (!mounted) return;
+      setState(() {
+        _windows = windows;
+        _isLoading = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() => _isLoading = false);
+    }
+  }
+
+  void _onVerticalDragUpdate(DragUpdateDetails details) {
+    setState(() {
+      _dragOffset -= details.delta.dy;
+      _dragOffset = _dragOffset.clamp(0.0, 300.0);
+    });
+  }
+
+  void _onVerticalDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    final shouldExpand = velocity < -200 || (!_expanded && _dragOffset > 60);
+    setState(() {
+      _expanded = shouldExpand;
+      _dragOffset = 0;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    // Compute extra height from drag for smooth tracking.
+    final dragExpansion = _dragOffset > 0 && !_expanded ? _dragOffset : 0.0;
+
+    return GestureDetector(
+      onVerticalDragUpdate: _onVerticalDragUpdate,
+      onVerticalDragEnd: _onVerticalDragEnd,
+      child: AnimatedContainer(
+        duration: _dragOffset > 0
+            ? Duration.zero
+            : const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
+        decoration: BoxDecoration(
+          color: theme.colorScheme.surfaceContainerHighest,
+          border: Border(
+            top: BorderSide(
+              color: theme.colorScheme.outlineVariant,
+              width: 0.5,
+            ),
+          ),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            // Handle bar — always visible.
+            _buildHandleBar(theme),
+            // Drag preview: show partial content during drag.
+            if (dragExpansion > 0)
+              SizedBox(
+                height: dragExpansion,
+                child: ClipRect(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: _buildWindowList(theme),
+                  ),
+                ),
+              ),
+            // Expanded content.
+            AnimatedCrossFade(
+              duration: const Duration(milliseconds: 300),
+              sizeCurve: Curves.easeOutCubic,
+              crossFadeState: _expanded
+                  ? CrossFadeState.showSecond
+                  : CrossFadeState.showFirst,
+              firstChild: const SizedBox.shrink(),
+              secondChild: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.4,
+                ),
+                child: _buildWindowList(theme),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHandleBar(ThemeData theme) => GestureDetector(
+    onTap: () => setState(() => _expanded = !_expanded),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+      child: Row(
+        children: [
+          Icon(
+            Icons.window_outlined,
+            size: 14,
+            color: theme.colorScheme.primary,
+          ),
+          const SizedBox(width: 6),
+          Text(
+            widget.tmuxSessionName,
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const Spacer(),
+          Container(
+            width: 32,
+            height: 4,
+            decoration: BoxDecoration(
+              color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const Spacer(),
+          AnimatedRotation(
+            duration: const Duration(milliseconds: 300),
+            turns: _expanded ? 0.5 : 0,
+            child: Icon(
+              Icons.keyboard_arrow_up,
+              size: 16,
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _buildWindowList(ThemeData theme) {
+    if (_isLoading) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    if (_windows == null || _windows!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Divider(height: 1),
+          for (final window in _windows!) _buildWindowTile(theme, window),
+          const Divider(height: 1),
+          ListTile(
+            dense: true,
+            leading: Icon(
+              Icons.add_circle_outline,
+              color: theme.colorScheme.primary,
+              size: 20,
+            ),
+            title: const Text('New Window'),
+            onTap: _openTmuxNavigator,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _openTmuxNavigator() async {
+    final action = await showTmuxNavigator(
+      context: context,
+      ref: widget.ref,
+      session: widget.session,
+      tmuxSessionName: widget.tmuxSessionName,
+      isProUser: widget.isProUser,
+    );
+    if (action != null) {
+      await widget.onAction(action);
+    }
+  }
+
+  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) => ListTile(
+    dense: true,
+    leading: Container(
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        color: window.isActive
+            ? theme.colorScheme.primary
+            : theme.colorScheme.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(6),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        '${window.index}',
+        style: theme.textTheme.labelSmall?.copyWith(
+          color: window.isActive
+              ? theme.colorScheme.onPrimary
+              : theme.colorScheme.onSurfaceVariant,
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+    ),
+    title: Text(window.name, maxLines: 1, overflow: TextOverflow.ellipsis),
+    subtitle: window.paneTitle != null
+        ? Text(
+            window.paneTitle!,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          )
+        : null,
+    trailing: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (window.hasAlert)
+          Icon(
+            Icons.notifications_active,
+            size: 16,
+            color: theme.colorScheme.error,
+          ),
+        IconButton(
+          icon: const Icon(Icons.close, size: 16),
+          visualDensity: VisualDensity.compact,
+          tooltip: 'Close window',
+          onPressed: () {
+            widget.onAction(TmuxCloseWindowAction(window.index));
+            setState(() {
+              _windows = _windows
+                  ?.where((w) => w.index != window.index)
+                  .toList();
+            });
+          },
+        ),
+      ],
+    ),
+    selected: window.isActive,
+    onTap: window.isActive
+        ? () => setState(() => _expanded = false)
+        : () {
+            widget.onAction(TmuxSwitchWindowAction(window.index));
+            setState(() => _expanded = false);
+          },
+  );
+}
 
 class _ExtraKeysToggleKeycap extends StatelessWidget {
   const _ExtraKeysToggleKeycap({required this.isActive, super.key});
@@ -2383,60 +2687,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  /// Builds the slim tmux handle bar at the bottom of the terminal.
+  /// Builds a draggable tmux panel anchored to the bottom of the terminal.
   ///
-  /// Shows the current tmux session name and a drag handle. Tapping or
-  /// swiping up opens the full tmux navigator.
-  Widget _buildTmuxHandle(ThemeData theme) => GestureDetector(
-    onTap: _openTmuxNavigator,
-    onVerticalDragEnd: (details) {
-      // Swipe up to open.
-      if (details.primaryVelocity != null && details.primaryVelocity! < -100) {
-        _openTmuxNavigator();
-      }
-    },
-    child: Container(
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        border: Border(
-          top: BorderSide(color: theme.colorScheme.outlineVariant, width: 0.5),
-        ),
-      ),
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      child: Row(
-        children: [
-          Icon(
-            Icons.window_outlined,
-            size: 14,
-            color: theme.colorScheme.primary,
-          ),
-          const SizedBox(width: 6),
-          Text(
-            _tmuxSessionName ?? 'tmux',
-            style: theme.textTheme.labelSmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          const Spacer(),
-          // Drag handle pill.
-          Container(
-            width: 32,
-            height: 4,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
-              borderRadius: BorderRadius.circular(2),
-            ),
-          ),
-          const Spacer(),
-          Icon(
-            Icons.keyboard_arrow_up,
-            size: 16,
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-        ],
-      ),
-    ),
-  );
+  /// Collapsed, it shows a slim handle bar with the session name.
+  /// Dragging up smoothly expands it into the full navigator — like
+  /// water droplets combining. Releasing snaps to collapsed or expanded.
+  Widget _buildTmuxExpandableBar(ThemeData theme) {
+    final connectionId = _connectionId;
+    if (connectionId == null || _tmuxSessionName == null) {
+      return const SizedBox.shrink();
+    }
+
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) return const SizedBox.shrink();
+
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final isProUser = monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
+
+    return _TmuxExpandableBar(
+      session: session,
+      tmuxSessionName: _tmuxSessionName!,
+      isProUser: isProUser,
+      ref: ref,
+      onAction: _handleTmuxAction,
+    );
+  }
+
+  /// Handles an action from the draggable tmux panel.
+  Future<void> _handleTmuxAction(TmuxNavigatorAction action) async {
+    final connectionId = _connectionId;
+    if (connectionId == null) return;
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) return;
+
+    switch (action) {
+      case TmuxSwitchWindowAction(:final windowIndex):
+        _switchTmuxWindow(session, windowIndex);
+      case TmuxNewWindowAction(:final command, :final windowName):
+        await _createTmuxWindow(session, command: command, name: windowName);
+      case TmuxResumeSessionAction(:final resumeCommand):
+        await _createTmuxWindow(session, command: resumeCommand);
+      case TmuxCloseWindowAction(:final windowIndex):
+        _closeTmuxWindow(session, windowIndex);
+    }
+  }
 
   /// Opens the tmux window navigator bottom sheet and handles the
   /// selected action.
@@ -3053,7 +3351,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (_isTmuxActive &&
               _showTmuxBar &&
               connectionState == SshConnectionState.connected)
-            _buildTmuxHandle(theme),
+            _buildTmuxExpandableBar(theme),
           if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
