@@ -370,7 +370,10 @@ class AgentSessionDiscoveryService {
   }
 
   // ── Gemini CLI ─────────────────────────────────────────────────────────
-  // Sessions: ~/.gemini/tmp/<project_hash>/chats/*.json
+  // `gemini --list-sessions` outputs a human-readable list scoped to
+  // the current project. Each line looks like:
+  //   1. Title text (time ago) [session-uuid]
+  // Falls back to scanning chat JSON files if the CLI is unavailable.
 
   Future<List<ToolSessionInfo>> _discoverGeminiSessions(
     SshSession session,
@@ -378,76 +381,135 @@ class AgentSessionDiscoveryService {
     int max,
   ) async {
     try {
-      final output = await _exec(
+      // Preferred: use the CLI's own session list.
+      final cdPrefix = workingDirectory != null && workingDirectory.isNotEmpty
+          ? 'cd ${_shellQuote(workingDirectory)} && '
+          : '';
+      final cliOutput = await _exec(
         session,
-        'find ~/.gemini/tmp -name "*.json" -path "*/chats/*" -type f '
-        '-exec ls -1t {} + 2>/dev/null | head -n $max',
+        '${cdPrefix}gemini --list-sessions 2>/dev/null',
       );
-      if (output.trim().isEmpty) return const [];
-
-      final sessions = <ToolSessionInfo>[];
-      for (final line in output.trim().split('\n')) {
-        if (line.trim().isEmpty) continue;
-        final filePath = line.trim();
-        final fileName = filePath.split('/').last.replaceAll('.json', '');
-
-        // Extract project directory name from path.
-        // Path: ~/.gemini/tmp/<project_dir>/chats/<file>.json
-        final pathParts = filePath.split('/');
-        final chatsIdx = pathParts.indexOf('chats');
-        final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
-        final sessionWorkingDirectory =
-            projectDir != null &&
-                workingDirectory != null &&
-                _lastPathSegment(workingDirectory) == projectDir
-            ? workingDirectory
-            : null;
-
-        // Try to read the first user message as summary.
-        String? summary;
-        try {
-          final firstMsg = await _exec(
-            session,
-            'grep -o \'"text":"[^"]*"\' ${_shellQuote(filePath)} '
-            '| head -1 '
-            '| sed \'s/"text":"//;s/"\$//\'',
-          );
-          final text = firstMsg.trim();
-          if (text.isNotEmpty && text.length > 1) {
-            summary = text.length > 80 ? '${text.substring(0, 77)}...' : text;
-          }
-        } on Object {
-          // Non-critical.
-        }
-
-        sessions.add(
-          ToolSessionInfo(
-            toolName: 'Gemini CLI',
-            sessionId: fileName,
-            workingDirectory: sessionWorkingDirectory,
-            summary: summary ?? projectDir ?? _truncateId(fileName),
-          ),
-        );
+      if (cliOutput.contains('[') && cliOutput.contains(']')) {
+        final parsed = _parseGeminiCliOutput(cliOutput, workingDirectory);
+        if (parsed.isNotEmpty) return parsed.take(max).toList();
       }
-      return sessions;
+
+      // Fallback: scan chat JSON files directly.
+      return _discoverGeminiSessionsFromFiles(session, workingDirectory, max);
     } on Object {
       return const [];
     }
   }
 
+  /// Parses Gemini CLI `--list-sessions` text output.
+  ///
+  /// Each session line matches:
+  ///   `N. Title text (time ago) [session-uuid]`
+  static final _geminiSessionLinePattern = RegExp(
+    r'^\s*\d+\.\s+(.+?)\s+\([^)]+\)\s+\[([0-9a-f-]+)\]\s*$',
+  );
+
+  List<ToolSessionInfo> _parseGeminiCliOutput(
+    String output,
+    String? workingDirectory,
+  ) {
+    final sessions = <ToolSessionInfo>[];
+    for (final line in output.split('\n')) {
+      final match = _geminiSessionLinePattern.firstMatch(line);
+      if (match == null) continue;
+
+      final title = match.group(1)!.trim();
+      final id = match.group(2)!.trim();
+
+      sessions.add(
+        ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: id,
+          workingDirectory: workingDirectory,
+          summary: title.length > 80 ? '${title.substring(0, 77)}...' : title,
+        ),
+      );
+    }
+    return sessions;
+  }
+
+  Future<List<ToolSessionInfo>> _discoverGeminiSessionsFromFiles(
+    SshSession session,
+    String? workingDirectory,
+    int max,
+  ) async {
+    final output = await _exec(
+      session,
+      'find ~/.gemini/tmp -name "*.json" -path "*/chats/*" -type f '
+      '-exec ls -1t {} + 2>/dev/null | head -n $max',
+    );
+    if (output.trim().isEmpty) return const [];
+
+    final sessions = <ToolSessionInfo>[];
+    for (final line in output.trim().split('\n')) {
+      if (line.trim().isEmpty) continue;
+      final filePath = line.trim();
+      final fileName = filePath.split('/').last.replaceAll('.json', '');
+
+      final pathParts = filePath.split('/');
+      final chatsIdx = pathParts.indexOf('chats');
+      final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
+      final sessionWorkingDirectory =
+          projectDir != null &&
+              workingDirectory != null &&
+              _lastPathSegment(workingDirectory) == projectDir
+          ? workingDirectory
+          : null;
+
+      String? summary;
+      try {
+        final firstMsg = await _exec(
+          session,
+          'grep -o \'"text":"[^"]*"\' ${_shellQuote(filePath)} '
+          '| head -1 '
+          '| sed \'s/"text":"//;s/"\$//\'',
+        );
+        final text = firstMsg.trim();
+        if (text.isNotEmpty && text.length > 1) {
+          summary = text.length > 80 ? '${text.substring(0, 77)}...' : text;
+        }
+      } on Object {
+        // Non-critical.
+      }
+
+      sessions.add(
+        ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: fileName,
+          workingDirectory: sessionWorkingDirectory,
+          summary: summary ?? projectDir ?? _truncateId(fileName),
+        ),
+      );
+    }
+    return sessions;
+  }
+
   // ── OpenCode ───────────────────────────────────────────────────────────
-  // Primary store: ~/.local/share/opencode/opencode.db (SQLite)
-  // The `session` table holds id, title, directory, and timestamps.
-  // JSON files under storage/session/ are a partial export and may not
-  // reflect renames, so we prefer the database.
+  // `opencode session list --format json` is the cleanest source of truth.
+  // It returns renamed titles, directory, and timestamps. Falls back to
+  // the SQLite database or JSON files if the CLI is unavailable.
 
   Future<List<ToolSessionInfo>> _discoverOpenCodeSessions(
     SshSession session,
     int max,
   ) async {
     try {
-      // Query the SQLite database directly — it's the source of truth.
-      final output = await _exec(
+      // Preferred: use the CLI's own JSON output.
+      final cliOutput = await _exec(
+        session,
+        'opencode session list --format json -n $max 2>/dev/null',
+      );
+      if (cliOutput.trim().startsWith('[')) {
+        return _parseOpenCodeCliJson(cliOutput);
+      }
+
+      // Fallback: query the SQLite database directly.
+      final dbOutput = await _exec(
         session,
         'sqlite3 -separator "|" '
         '~/.local/share/opencode/opencode.db '
@@ -457,16 +519,39 @@ class AgentSessionDiscoveryService {
         'ORDER BY time_updated DESC '
         "LIMIT $max;' 2>/dev/null",
       );
-
-      if (output.trim().isNotEmpty) {
-        return _parseOpenCodeDbOutput(output);
+      if (dbOutput.trim().isNotEmpty) {
+        return _parseOpenCodeDbOutput(dbOutput);
       }
 
-      // Fallback: read JSON files if sqlite3 is not available.
-      return _discoverOpenCodeSessionsFromFiles(session, max);
+      return const [];
     } on Object {
       return const [];
     }
+  }
+
+  List<ToolSessionInfo> _parseOpenCodeCliJson(String raw) {
+    final decoded = jsonDecode(raw.trim());
+    if (decoded is! List) return const [];
+
+    return decoded.whereType<Map<String, dynamic>>().map((entry) {
+      final id = entry['id'] as String? ?? '';
+      final title = entry['title'] as String? ?? '';
+      final directory = entry['directory'] as String?;
+
+      DateTime? lastActive;
+      final updated = entry['updated'];
+      if (updated is int) {
+        lastActive = DateTime.fromMillisecondsSinceEpoch(updated);
+      }
+
+      return ToolSessionInfo(
+        toolName: 'OpenCode',
+        sessionId: id,
+        workingDirectory: directory,
+        lastActive: lastActive,
+        summary: title.isNotEmpty ? title : _truncateId(id),
+      );
+    }).toList();
   }
 
   List<ToolSessionInfo> _parseOpenCodeDbOutput(String output) {
@@ -494,56 +579,6 @@ class AgentSessionDiscoveryService {
           workingDirectory: directory.isNotEmpty ? directory : null,
           lastActive: lastActive,
           summary: title.isNotEmpty ? title : _truncateId(id),
-        ),
-      );
-    }
-    return sessions;
-  }
-
-  Future<List<ToolSessionInfo>> _discoverOpenCodeSessionsFromFiles(
-    SshSession session,
-    int max,
-  ) async {
-    final output = await _exec(
-      session,
-      'find ~/.local/share/opencode/storage/session -name "ses_*.json" '
-      '-type f -exec ls -1t {} + 2>/dev/null | head -n $max',
-    );
-    if (output.trim().isEmpty) return const [];
-
-    final sessions = <ToolSessionInfo>[];
-    for (final line in output.trim().split('\n')) {
-      if (line.trim().isEmpty) continue;
-      final filePath = line.trim();
-      final fileName = filePath.split('/').last.replaceAll('.json', '');
-
-      String? summary;
-      String? workingDirectory;
-      try {
-        final content = await _exec(
-          session,
-          'head -c 500 ${_shellQuote(filePath)} 2>/dev/null',
-        );
-        if (content.trim().isNotEmpty) {
-          final titleMatch = RegExp(
-            r'"title"\s*:\s*"([^"]*)"',
-          ).firstMatch(content);
-          final dirMatch = RegExp(
-            r'"directory"\s*:\s*"([^"]*)"',
-          ).firstMatch(content);
-          summary = titleMatch?.group(1);
-          workingDirectory = dirMatch?.group(1);
-        }
-      } on Object {
-        // Non-critical.
-      }
-
-      sessions.add(
-        ToolSessionInfo(
-          toolName: 'OpenCode',
-          sessionId: fileName,
-          workingDirectory: workingDirectory,
-          summary: summary ?? _truncateId(fileName),
         ),
       );
     }
