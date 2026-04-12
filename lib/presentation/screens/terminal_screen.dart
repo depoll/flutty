@@ -2851,7 +2851,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
-          if (_isTmuxActive && connectionState == SshConnectionState.connected)
+          if (_isTmuxActive &&
+              !_showTmuxBar &&
+              connectionState == SshConnectionState.connected)
             IconButton(
               icon: const Icon(Icons.window_outlined),
               onPressed: _connectionId == null ? null : _openTmuxNavigator,
