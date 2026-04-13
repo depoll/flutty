@@ -29,6 +29,7 @@ import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
@@ -156,8 +157,12 @@ class _TmuxExpandableBar extends StatefulWidget {
 
 class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   List<TmuxWindow>? _windows;
+  List<ToolSessionInfo>? _recentSessions;
+  final Set<String> _expandedSessionTools = <String>{};
   bool _expanded = false;
   bool _isLoading = true;
+  bool _isLoadingSessions = false;
+  bool _showSessions = false;
   double _dragOffset = 0;
   Timer? _syncTimer;
 
@@ -194,6 +199,43 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       if (!mounted) return;
       if (_isLoading) setState(() => _isLoading = false);
     }
+  }
+
+  Future<void> _loadRecentSessions() async {
+    if (_isLoadingSessions || _recentSessions != null) return;
+    setState(() => _isLoadingSessions = true);
+
+    try {
+      final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
+      final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final sessions = await discovery.discoverSessions(
+        widget.session,
+        workingDirectory: activeWindow?.currentPath,
+      );
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = sessions;
+        if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
+          _expandedSessionTools.add(sessions.first.toolName);
+        }
+        _isLoadingSessions = false;
+      });
+    } on Exception {
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = const [];
+        _isLoadingSessions = false;
+      });
+    }
+  }
+
+  void _resumeSession(ToolSessionInfo info) {
+    final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
+    final command = discovery.buildResumeCommand(info);
+    setState(() => _expanded = false);
+    widget.onAction(
+      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
+    );
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
@@ -366,8 +408,145 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
               });
             },
           ),
+          if (widget.isProUser) ...[
+            const Divider(height: 1),
+            _buildSessionsSection(theme),
+          ],
         ],
       ),
+    );
+  }
+
+  Widget _buildSessionsSection(ThemeData theme) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ListTile(
+        dense: true,
+        leading: Icon(
+          Icons.smart_toy_outlined,
+          size: 18,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        title: const Text('AI Sessions'),
+        trailing: Icon(
+          _showSessions ? Icons.expand_less : Icons.expand_more,
+          size: 18,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        onTap: () {
+          setState(() => _showSessions = !_showSessions);
+          if (_showSessions) _loadRecentSessions();
+        },
+      ),
+      if (_showSessions) ...[
+        if (_isLoadingSessions)
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Center(
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+              ),
+            ),
+          )
+        else if (_recentSessions != null && _recentSessions!.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              'No recent sessions found',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          )
+        else if (_recentSessions != null)
+          ..._groupSessions(_recentSessions!).entries.map(
+            (entry) => _buildSessionGroup(theme, entry.key, entry.value),
+          ),
+      ],
+    ],
+  );
+
+  Map<String, List<ToolSessionInfo>> _groupSessions(
+    List<ToolSessionInfo> sessions,
+  ) {
+    final grouped = <String, List<ToolSessionInfo>>{};
+    for (final session in sessions) {
+      grouped
+          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+          .add(session);
+    }
+    return grouped;
+  }
+
+  Widget _buildSessionGroup(
+    ThemeData theme,
+    String toolName,
+    List<ToolSessionInfo> sessions,
+  ) {
+    final isExpanded = _expandedSessionTools.contains(toolName);
+    final iconData = switch (toolName) {
+      'Claude Code' => Icons.auto_awesome,
+      'Codex' => Icons.code,
+      'Copilot CLI' => Icons.flight,
+      'Gemini CLI' => Icons.diamond_outlined,
+      'OpenCode' => Icons.terminal,
+      _ => Icons.smart_toy_outlined,
+    };
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          dense: true,
+          contentPadding: const EdgeInsets.only(left: 56, right: 16),
+          leading: Icon(iconData, size: 18, color: theme.colorScheme.primary),
+          title: Text(toolName),
+          subtitle: Text(
+            '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          trailing: Icon(
+            isExpanded ? Icons.expand_less : Icons.expand_more,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          onTap: () {
+            setState(() {
+              if (isExpanded) {
+                _expandedSessionTools.remove(toolName);
+              } else {
+                _expandedSessionTools.add(toolName);
+              }
+            });
+          },
+        ),
+        if (isExpanded)
+          for (final session in sessions)
+            ListTile(
+              dense: true,
+              contentPadding: const EdgeInsets.only(left: 72, right: 16),
+              title: Text(
+                session.summary ?? session.sessionId,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: session.timeAgoLabel.isNotEmpty
+                  ? Text(
+                      session.timeAgoLabel,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    )
+                  : null,
+              trailing: TextButton(
+                onPressed: () => _resumeSession(session),
+                child: const Text('Resume'),
+              ),
+            ),
+      ],
     );
   }
 
