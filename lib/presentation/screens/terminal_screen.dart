@@ -315,8 +315,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final dragExpansion = _dragOffset > 0 && !_expanded ? _dragOffset : 0.0;
-    final maxExpandedHeight = MediaQuery.sizeOf(context).height * 0.4;
-    final contentHeight = _expanded ? maxExpandedHeight : dragExpansion;
 
     return AnimatedBuilder(
       animation: _bounceAnimation,
@@ -327,34 +325,47 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       child: GestureDetector(
         onVerticalDragUpdate: _onVerticalDragUpdate,
         onVerticalDragEnd: _onVerticalDragEnd,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: theme.colorScheme.surfaceContainerHighest,
-            border: Border(
-              top: BorderSide(
-                color: theme.colorScheme.outlineVariant,
-                width: 0.5,
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            // Cap expanded height to available space minus the handle,
+            // so the popup doesn't overflow past the top of the terminal
+            // when the keyboard and toolbar are visible.
+            final availableHeight = constraints.maxHeight.isFinite
+                ? constraints.maxHeight - _TmuxExpandableBar.handleHeight
+                : MediaQuery.sizeOf(context).height * 0.4;
+            final maxContentHeight = availableHeight.clamp(0.0, 999.0);
+            final contentHeight = _expanded
+                ? maxContentHeight
+                : dragExpansion.clamp(0.0, maxContentHeight);
+
+            return DecoratedBox(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest,
+                border: Border(
+                  top: BorderSide(
+                    color: theme.colorScheme.outlineVariant,
+                    width: 0.5,
+                  ),
+                ),
               ),
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              _buildHandleBar(theme),
-              // Use AnimatedContainer only for expand/collapse snap animation.
-              // During drag, height tracks the finger directly (duration: zero).
-              AnimatedContainer(
-                duration: _dragOffset > 0
-                    ? Duration.zero
-                    : const Duration(milliseconds: 300),
-                curve: Curves.easeOutCubic,
-                height: contentHeight,
-                child: contentHeight > 0
-                    ? ClipRect(child: _buildWindowList(theme))
-                    : const SizedBox.shrink(),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _buildHandleBar(theme),
+                  AnimatedContainer(
+                    duration: _dragOffset > 0
+                        ? Duration.zero
+                        : const Duration(milliseconds: 300),
+                    curve: Curves.easeOutCubic,
+                    height: contentHeight,
+                    child: contentHeight > 0
+                        ? ClipRect(child: _buildWindowList(theme))
+                        : const SizedBox.shrink(),
+                  ),
+                ],
               ),
-            ],
-          ),
+            );
+          },
         ),
       ),
     );
