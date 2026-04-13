@@ -58,6 +58,24 @@ bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
     (codeUnit >= 0x61 && codeUnit <= 0x7A);
 
+/// Resolves how much vertical space the tmux bar can safely expand into.
+@visibleForTesting
+double resolveTmuxBarMaxContentHeight(
+  double availableHeight, {
+  double handleHeight = 22,
+  double reservedPadding = 8,
+  double fallbackAvailableHeight = 0,
+}) {
+  final minimumExpandableHeight = handleHeight + reservedPadding;
+  final effectiveAvailableHeight = availableHeight > minimumExpandableHeight
+      ? availableHeight
+      : fallbackAvailableHeight;
+  return max(
+    0,
+    effectiveAvailableHeight - handleHeight - reservedPadding,
+  ).toDouble();
+}
+
 final _oscEscapeSequencePattern = RegExp(
   '\x1B\\][^\x07\x1B]*(?:\x07|\x1B\\\\)',
   dotAll: true,
@@ -139,6 +157,7 @@ class _TmuxExpandableBar extends StatefulWidget {
   const _TmuxExpandableBar({
     required this.session,
     required this.tmuxSessionName,
+    required this.availableHeight,
     required this.isProUser,
     required this.ref,
     required this.onAction,
@@ -149,6 +168,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// The tmux session name.
   final String tmuxSessionName;
+
+  /// The available terminal height the bar can expand into.
+  final double availableHeight;
 
   /// Whether the user has Pro access.
   final bool isProUser;
@@ -315,15 +337,20 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final dragExpansion = _dragOffset > 0 && !_expanded ? _dragOffset : 0.0;
-    // Cap popup to available terminal area so it doesn't overflow.
-    final parentBox = context.findAncestorRenderObjectOfType<RenderBox>();
-    final terminalHeight =
-        parentBox?.size.height ?? MediaQuery.sizeOf(context).height * 0.5;
-    final maxContentHeight =
-        (terminalHeight - _TmuxExpandableBar.handleHeight - 8).clamp(
-          0.0,
-          999.0,
-        );
+    final availableHeight = widget.availableHeight.isFinite
+        ? widget.availableHeight
+        : MediaQuery.sizeOf(context).height * 0.5;
+    final mediaQuery = MediaQuery.of(context);
+    final visibleViewportHeight = max(
+      0,
+      mediaQuery.size.height -
+          mediaQuery.viewPadding.vertical -
+          mediaQuery.viewInsets.bottom,
+    );
+    final maxContentHeight = resolveTmuxBarMaxContentHeight(
+      availableHeight,
+      fallbackAvailableHeight: visibleViewportHeight * 0.5,
+    );
     final contentHeight = _expanded
         ? maxContentHeight
         : dragExpansion.clamp(0.0, maxContentHeight);
@@ -369,6 +396,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   Widget _buildHandleBar(ThemeData theme) => GestureDetector(
+    key: const ValueKey('tmux-handle-bar'),
     onTap: () {
       final wasExpanded = _expanded;
       setState(() => _expanded = !_expanded);
@@ -2875,13 +2903,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    // Structured tmux attach is a first-class connection mode, not a generic
+    // automation command. Run it even when Pro-only auto-connect automation is
+    // unavailable so tmux-native navigation remains accessible.
+    final tmuxSession = host.tmuxSessionName;
+    if (tmuxSession != null && tmuxSession.isNotEmpty) {
+      final tmuxCommand = buildTmuxCommand(
+        sessionName: tmuxSession,
+        workingDirectory: host.tmuxWorkingDirectory,
+        extraFlags: host.tmuxExtraFlags,
+      );
+      shell.write(utf8.encode(formatAutoConnectCommandForShell(tmuxCommand)));
+      return;
+    }
+
     final hasAccess = await ref
         .read(monetizationServiceProvider)
         .canUseFeature(MonetizationFeature.autoConnectAutomation);
     if (!hasAccess) {
       if (mounted) {
+        const keyboardToolbarHeight = 96.0;
+        final bottomMargin =
+            MediaQuery.paddingOf(context).bottom +
+            (_showKeyboardToolbar ? keyboardToolbarHeight : 0) +
+            (_isTmuxActive && _showTmuxBar
+                ? _TmuxExpandableBar.handleHeight + 16
+                : 16);
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
+            behavior: SnackBarBehavior.floating,
+            margin: EdgeInsets.fromLTRB(16, 0, 16, bottomMargin),
             content: const Text(
               'MonkeySSH Pro unlocks auto-connect commands and snippets.',
             ),
@@ -2897,19 +2948,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
-      return;
-    }
-
-    // If the host has structured tmux configuration, build the tmux command
-    // from it instead of using the custom auto-connect command.
-    final tmuxSession = host.tmuxSessionName;
-    if (tmuxSession != null && tmuxSession.isNotEmpty) {
-      final tmuxCommand = buildTmuxCommand(
-        sessionName: tmuxSession,
-        workingDirectory: host.tmuxWorkingDirectory,
-        extraFlags: host.tmuxExtraFlags,
-      );
-      shell.write(utf8.encode(formatAutoConnectCommandForShell(tmuxCommand)));
       return;
     }
 
@@ -3055,38 +3093,40 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _showTmuxBar &&
         connectionState == SshConnectionState.connected;
 
-    return Stack(
-      children: [
-        // Terminal with animated bottom padding that grows/shrinks
-        // smoothly when the tmux handle appears/disappears.
-        Positioned.fill(
-          child: AnimatedPadding(
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOutCubic,
-            padding: EdgeInsets.only(
-              bottom: showTmux ? _TmuxExpandableBar.handleHeight : 0,
+    return LayoutBuilder(
+      builder: (context, constraints) => Stack(
+        children: [
+          // Terminal with animated bottom padding that grows/shrinks
+          // smoothly when the tmux handle appears/disappears.
+          Positioned.fill(
+            child: AnimatedPadding(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              padding: EdgeInsets.only(
+                bottom: showTmux ? _TmuxExpandableBar.handleHeight : 0,
+              ),
+              child: _buildTerminalView(terminalTheme, isMobile),
             ),
-            child: _buildTerminalView(terminalTheme, isMobile),
           ),
-        ),
-        // Handle bar slides up from below via AnimatedPositioned.
-        Positioned(
-          left: 0,
-          right: 0,
-          bottom: showTmux ? 0 : -_TmuxExpandableBar.handleHeight,
-          child: AnimatedOpacity(
-            duration: const Duration(milliseconds: 300),
-            curve: Curves.easeOutCubic,
-            opacity: showTmux ? 1 : 0,
-            child: _buildTmuxExpandableBar(theme),
+          // Handle bar slides up from below via AnimatedPositioned.
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: showTmux ? 0 : -_TmuxExpandableBar.handleHeight,
+            child: AnimatedOpacity(
+              duration: const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              opacity: showTmux ? 1 : 0,
+              child: _buildTmuxExpandableBar(theme, constraints.maxHeight),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
   /// Builds the tmux expandable bar overlaid at the bottom of the terminal.
-  Widget _buildTmuxExpandableBar(ThemeData theme) {
+  Widget _buildTmuxExpandableBar(ThemeData theme, double availableHeight) {
     final connectionId = _connectionId;
     if (connectionId == null || _tmuxSessionName == null) {
       return const SizedBox.shrink();
@@ -3105,6 +3145,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return _TmuxExpandableBar(
       session: session,
       tmuxSessionName: _tmuxSessionName!,
+      availableHeight: availableHeight,
       isProUser: isProUser,
       ref: ref,
       onAction: _handleTmuxAction,
