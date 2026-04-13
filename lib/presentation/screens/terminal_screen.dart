@@ -30,6 +30,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
@@ -191,6 +192,13 @@ class _TmuxExpandableBar extends StatefulWidget {
 
 class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     with SingleTickerProviderStateMixin {
+  static const _denseTileVisualDensity = VisualDensity(vertical: -2);
+  static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
+  static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
+  static const _sessionTilePadding = EdgeInsets.only(left: 68, right: 12);
+  static const _initialSessionFetchLimit = 12;
+  static const _sessionFetchStep = 12;
+
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
@@ -198,8 +206,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _expanded = false;
   bool _isLoading = true;
   bool _isLoadingSessions = false;
+  bool _canLoadMoreSessions = false;
   bool _showSessions = false;
   double _dragOffset = 0;
+  int _sessionFetchLimit = _initialSessionFetchLimit;
   Timer? _syncTimer;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
@@ -232,6 +242,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void dispose() {
     _syncTimer?.cancel();
+    for (final windowIndex in _seenAlertWindows) {
+      _clearAlertNotification(windowIndex);
+    }
     _bounceController.dispose();
     super.dispose();
   }
@@ -257,10 +270,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         }
       }
 
-      // Clear seen alerts for windows that no longer have alerts.
-      _seenAlertWindows.removeWhere(
-        (idx) => !windows.any((w) => w.index == idx && w.hasAlert),
-      );
+      final activeAlerts = _seenAlertWindows
+          .where(
+            (idx) =>
+                windows.any((w) => w.index == idx && w.hasAlert && w.isActive),
+          )
+          .toList(growable: false);
+      for (final windowIndex in activeAlerts) {
+        _clearAlertNotification(windowIndex);
+      }
+
+      final clearedAlerts = _seenAlertWindows
+          .where((idx) => !windows.any((w) => w.index == idx && w.hasAlert))
+          .toList(growable: false);
+      for (final windowIndex in clearedAlerts) {
+        _seenAlertWindows.remove(windowIndex);
+        _clearAlertNotification(windowIndex);
+      }
 
       setState(() {
         _windows = windows;
@@ -272,8 +298,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
-  Future<void> _loadRecentSessions() async {
-    if (_isLoadingSessions || _recentSessions != null) return;
+  Future<void> _loadRecentSessions({bool forceReload = false}) async {
+    if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
+    final previousCount = _recentSessions?.length ?? 0;
     setState(() => _isLoadingSessions = true);
 
     try {
@@ -282,6 +309,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       final sessions = await discovery.discoverSessions(
         widget.session,
         workingDirectory: activeWindow?.currentPath,
+        maxPerTool: _sessionFetchLimit,
       );
       if (!mounted) return;
       setState(() {
@@ -289,15 +317,37 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
           _expandedSessionTools.add(sessions.first.toolName);
         }
+        _canLoadMoreSessions =
+            sessions.length > previousCount &&
+            _hasSessionGroupAtLimit(sessions);
         _isLoadingSessions = false;
       });
     } on Exception {
       if (!mounted) return;
       setState(() {
         _recentSessions = const [];
+        _canLoadMoreSessions = false;
         _isLoadingSessions = false;
       });
     }
+  }
+
+  void _loadMoreSessions() {
+    if (_isLoadingSessions) return;
+    setState(() => _sessionFetchLimit += _sessionFetchStep);
+    _loadRecentSessions(forceReload: true);
+  }
+
+  bool _hasSessionGroupAtLimit(List<ToolSessionInfo> sessions) {
+    final countsByTool = <String, int>{};
+    for (final session in sessions) {
+      countsByTool.update(
+        session.toolName,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    return countsByTool.values.any((count) => count >= _sessionFetchLimit);
   }
 
   void _resumeSession(ToolSessionInfo info) {
@@ -309,25 +359,50 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
+  int _tmuxAlertNotificationId(int windowIndex) =>
+      Object.hash(widget.tmuxSessionName, windowIndex) & 0x7fffffff;
+
   void _sendAlertNotification(TmuxWindow window) {
-    // Haptic feedback on mobile.
     HapticFeedback.mediumImpact();
-    // TODO(tmux): Add local push notification via flutter_local_notifications
-    // so alerts are visible when the app is backgrounded.
+    final title = 'tmux alert · ${widget.tmuxSessionName}';
+    final name = window.displayTitle.trim();
+    final body = name.isEmpty ? 'Window ${window.index} needs attention' : name;
+    unawaited(
+      widget.ref
+          .read(localNotificationServiceProvider)
+          .showTmuxAlert(
+            notificationId: _tmuxAlertNotificationId(window.index),
+            title: title,
+            body: body,
+          ),
+    );
+  }
+
+  void _clearAlertNotification(int windowIndex) {
+    unawaited(
+      widget.ref
+          .read(localNotificationServiceProvider)
+          .clearTmuxAlert(_tmuxAlertNotificationId(windowIndex)),
+    );
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
     setState(() {
-      _dragOffset -= details.delta.dy;
+      _dragOffset += _expanded ? details.delta.dy : -details.delta.dy;
       _dragOffset = _dragOffset.clamp(0.0, 300.0);
     });
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
     final velocity = details.primaryVelocity ?? 0;
-    final shouldExpand = velocity < -200 || (!_expanded && _dragOffset > 60);
+    final shouldExpand = !_expanded && (velocity < -200 || _dragOffset > 60);
+    final shouldCollapse = _expanded && (velocity > 200 || _dragOffset > 60);
     setState(() {
-      _expanded = shouldExpand;
+      if (shouldExpand) {
+        _expanded = true;
+      } else if (shouldCollapse) {
+        _expanded = false;
+      }
       _dragOffset = 0;
     });
     if (shouldExpand) _loadWindows();
@@ -336,7 +411,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final dragExpansion = _dragOffset > 0 && !_expanded ? _dragOffset : 0.0;
     final availableHeight = widget.availableHeight.isFinite
         ? widget.availableHeight
         : MediaQuery.sizeOf(context).height * 0.5;
@@ -351,9 +425,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       availableHeight,
       fallbackAvailableHeight: visibleViewportHeight * 0.5,
     );
+    final dragDistance = _dragOffset.clamp(0.0, maxContentHeight);
     final contentHeight = _expanded
-        ? maxContentHeight
-        : dragExpansion.clamp(0.0, maxContentHeight);
+        ? (maxContentHeight - dragDistance).clamp(0.0, maxContentHeight)
+        : dragDistance;
 
     return AnimatedBuilder(
       animation: _bounceAnimation,
@@ -477,10 +552,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           const Divider(height: 1),
           ListTile(
             dense: true,
+            visualDensity: _denseTileVisualDensity,
+            minTileHeight: 42,
+            contentPadding: _denseTilePadding,
+            horizontalTitleGap: 12,
+            minLeadingWidth: 20,
             leading: Icon(
               Icons.add_circle_outline,
               color: theme.colorScheme.primary,
-              size: 20,
+              size: 18,
             ),
             title: const Text('New Window'),
             onTap: () {
@@ -521,15 +601,20 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     children: [
       ListTile(
         dense: true,
+        visualDensity: _denseTileVisualDensity,
+        minTileHeight: 42,
+        contentPadding: _denseTilePadding,
+        horizontalTitleGap: 12,
+        minLeadingWidth: 18,
         leading: Icon(
           Icons.smart_toy_outlined,
-          size: 18,
+          size: 16,
           color: theme.colorScheme.onSurfaceVariant,
         ),
         title: const Text('AI Sessions'),
         trailing: Icon(
           _showSessions ? Icons.expand_less : Icons.expand_more,
-          size: 18,
+          size: 16,
           color: theme.colorScheme.onSurfaceVariant,
         ),
         onTap: () {
@@ -538,7 +623,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         },
       ),
       if (_showSessions) ...[
-        if (_isLoadingSessions)
+        if (_isLoadingSessions &&
+            (_recentSessions == null || _recentSessions!.isEmpty))
           const Padding(
             padding: EdgeInsets.symmetric(vertical: 8),
             child: Center(
@@ -559,10 +645,30 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               ),
             ),
           )
-        else if (_recentSessions != null)
+        else if (_recentSessions != null) ...[
           ..._groupSessions(_recentSessions!).entries.map(
             (entry) => _buildSessionGroup(theme, entry.key, entry.value),
           ),
+          if (_isLoadingSessions)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                ),
+              ),
+            ),
+          if (_canLoadMoreSessions)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: TextButton(
+                onPressed: _loadMoreSessions,
+                child: const Text('Load more'),
+              ),
+            ),
+        ],
       ],
     ],
   );
@@ -599,8 +705,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       children: [
         ListTile(
           dense: true,
-          contentPadding: const EdgeInsets.only(left: 56, right: 16),
-          leading: Icon(iconData, size: 18, color: theme.colorScheme.primary),
+          visualDensity: _denseTileVisualDensity,
+          minVerticalPadding: 2,
+          contentPadding: _groupTilePadding,
+          horizontalTitleGap: 12,
+          minLeadingWidth: 18,
+          leading: Icon(iconData, size: 16, color: theme.colorScheme.primary),
           title: Text(toolName),
           subtitle: Text(
             '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
@@ -626,15 +736,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           for (final session in sessions)
             ListTile(
               dense: true,
-              contentPadding: const EdgeInsets.only(left: 72, right: 16),
+              visualDensity: _denseTileVisualDensity,
+              minVerticalPadding: 2,
+              contentPadding: _sessionTilePadding,
+              horizontalTitleGap: 12,
+              minLeadingWidth: 18,
               title: Text(
                 session.summary ?? session.sessionId,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
               ),
-              subtitle: session.timeAgoLabel.isNotEmpty
+              subtitle: session.lastUpdatedLabel.isNotEmpty
                   ? Text(
-                      session.timeAgoLabel,
+                      session.lastUpdatedLabel,
                       style: theme.textTheme.bodySmall?.copyWith(
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
@@ -642,6 +756,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                   : null,
               trailing: TextButton(
                 onPressed: () => _resumeSession(session),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
                 child: const Text('Resume'),
               ),
             ),
@@ -651,16 +770,24 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
+    final secondaryTitle = window.displayTitle != window.name
+        ? window.name
+        : null;
 
     return ListTile(
       dense: true,
+      visualDensity: _denseTileVisualDensity,
+      minVerticalPadding: 2,
+      contentPadding: const EdgeInsets.only(left: 12, right: 4),
+      horizontalTitleGap: 10,
+      minLeadingWidth: 24,
       tileColor: isActive
           ? theme.colorScheme.primaryContainer.withAlpha(80)
           : null,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       leading: Container(
-        width: 24,
-        height: 24,
+        width: 22,
+        height: 22,
         decoration: BoxDecoration(
           color: isActive
               ? theme.colorScheme.primary
@@ -679,16 +806,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ),
       ),
       title: Text(
-        window.name,
+        window.displayTitle,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: isActive
             ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
             : null,
       ),
-      subtitle: window.paneTitle != null
+      subtitle: secondaryTitle != null
           ? Text(
-              window.paneTitle!,
+              secondaryTitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall?.copyWith(
@@ -703,6 +830,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            padding: EdgeInsets.zero,
             tooltip: 'Close window',
             onPressed: () {
               widget.onAction(TmuxCloseWindowAction(window.index));
@@ -1987,6 +2116,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   bool _showTmuxBar = true;
+  String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
@@ -3025,6 +3155,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       setState(() {
         _isTmuxActive = false;
         _tmuxSessionName = null;
+        _tmuxLaunchWorkingDirectory = null;
         _tmuxWorkingDirectory = null;
       });
     }
@@ -3055,10 +3186,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (sessionName == null) return;
 
       // Get the active window's working directory for SFTP/path resolution.
+      var tmuxLaunchCwd = host?.tmuxWorkingDirectory;
       var tmuxCwd = host?.tmuxWorkingDirectory;
       try {
         final windows = await tmux.listWindows(session, sessionName);
         final activeWindow = windows.where((w) => w.isActive).firstOrNull;
+        tmuxLaunchCwd ??= activeWindow?.currentPath;
         tmuxCwd ??= activeWindow?.currentPath;
       } on Object {
         // Non-critical — path resolution will fall back to OSC 7.
@@ -3069,6 +3202,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       setState(() {
         _isTmuxActive = true;
         _tmuxSessionName = sessionName;
+        _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
         _tmuxWorkingDirectory = tmuxCwd;
       });
     } on Object {
@@ -3258,12 +3392,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) return;
 
     final tmux = ref.read(tmuxServiceProvider);
+    final resolvedWorkingDirectory =
+        workingDirectory ??
+        (command != null && command.trim().isNotEmpty
+            ? (_tmuxLaunchWorkingDirectory ?? _host?.tmuxWorkingDirectory)
+            : null);
     await tmux.createWindow(
       session,
       sessionName,
       command: command,
       name: name,
-      workingDirectory: workingDirectory,
+      workingDirectory: resolvedWorkingDirectory,
     );
   }
 

@@ -411,20 +411,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildContent() {
-    switch (_selectedIndex) {
-      case 0:
-        return const HostsPanel();
-      case 1:
-        return const _ConnectionsPanel();
-      case 2:
-        return const _KeysPanel();
-      case 3:
-        return const SnippetsPanel();
-      default:
-        return const HostsPanel();
-    }
-  }
+  Widget _buildContent() => switch (_selectedIndex) {
+    0 => const HostsPanel(),
+    1 => const _ConnectionsPanel(),
+    2 => const _KeysPanel(),
+    3 => const SnippetsPanel(),
+    _ => const HostsPanel(),
+  };
 }
 
 class _NavItem extends StatelessWidget {
@@ -1250,6 +1243,9 @@ class _ConnectionSelectionTile extends StatelessWidget {
         ? endpoint
         : '$endpoint\nOpened ${_formatTime(createdAt!)}';
     return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      minTileHeight: 64,
+      minVerticalPadding: 10,
       leading: const Icon(Icons.terminal),
       title: Text('Connection #$connectionId'),
       subtitle: _ConnectionPreviewText(
@@ -2319,6 +2315,9 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 }
 
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
+  static const _initialSessionFetchLimit = 12;
+  static const _sessionFetchStep = 12;
+
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
@@ -2327,11 +2326,60 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _expanded = false;
   bool _showSessions = false;
   bool _isLoadingSessions = false;
+  bool _canLoadMoreSessions = false;
+  int _sessionFetchLimit = _initialSessionFetchLimit;
+  bool _restoredUiState = false;
 
   @override
   void initState() {
     super.initState();
     _queryTmux();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_restoredUiState) return;
+    _restoredUiState = true;
+
+    final storedState = PageStorage.maybeOf(
+      context,
+    )?.readState(context, identifier: _pageStorageIdentifier);
+    if (storedState is! Map<Object?, Object?>) return;
+
+    _expanded = storedState['expanded'] as bool? ?? _expanded;
+    _showSessions = storedState['showSessions'] as bool? ?? _showSessions;
+    _sessionFetchLimit =
+        storedState['sessionFetchLimit'] as int? ?? _sessionFetchLimit;
+
+    final expandedSessionTools = storedState['expandedSessionTools'];
+    if (expandedSessionTools is List<Object?>) {
+      _expandedSessionTools
+        ..clear()
+        ..addAll(
+          expandedSessionTools.whereType<String>().where(
+            (toolName) => toolName.isNotEmpty,
+          ),
+        );
+    }
+
+    if (_showSessions) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadRecentSessions();
+      });
+    }
+  }
+
+  String get _pageStorageIdentifier =>
+      'tmux-badge-state-${widget.connectionId}';
+
+  void _persistUiState() {
+    PageStorage.maybeOf(context)?.writeState(context, <String, Object>{
+      'expanded': _expanded,
+      'showSessions': _showSessions,
+      'sessionFetchLimit': _sessionFetchLimit,
+      'expandedSessionTools': _expandedSessionTools.toList(growable: false),
+    }, identifier: _pageStorageIdentifier);
   }
 
   Future<void> _queryTmux({int retries = 3}) async {
@@ -2387,46 +2435,53 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         children: [
           // Collapsed summary row — tap to expand/collapse.
           GestureDetector(
-            onTap: () => setState(() => _expanded = !_expanded),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.window_outlined,
-                  size: 14,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-                const SizedBox(width: 4),
-                Text(
-                  _sessionName != null
-                      ? '$_sessionName · ${windows.length} windows'
-                      : 'tmux · ${windows.length} windows',
-                  style: theme.textTheme.labelSmall?.copyWith(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              setState(() => _expanded = !_expanded);
+              _persistUiState();
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.window_outlined,
+                    size: 14,
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
-                ),
-                if (alertCount > 0) ...[
                   const SizedBox(width: 4),
-                  Icon(
-                    Icons.notifications_active,
-                    size: 12,
-                    color: theme.colorScheme.error,
-                  ),
-                  const SizedBox(width: 2),
                   Text(
-                    '$alertCount',
+                    _sessionName != null
+                        ? '$_sessionName · ${windows.length} windows'
+                        : 'tmux · ${windows.length} windows',
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.error,
-                      fontWeight: FontWeight.bold,
+                      color: theme.colorScheme.onSurfaceVariant,
                     ),
                   ),
+                  if (alertCount > 0) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.notifications_active,
+                      size: 12,
+                      color: theme.colorScheme.error,
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      '$alertCount',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                  const Spacer(),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 16,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ],
-                const Spacer(),
-                Icon(
-                  _expanded ? Icons.expand_less : Icons.expand_more,
-                  size: 16,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ],
+              ),
             ),
           ),
 
@@ -2438,35 +2493,41 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             // Recent AI Sessions subsection.
             const SizedBox(height: 4),
             GestureDetector(
+              behavior: HitTestBehavior.opaque,
               onTap: () {
                 setState(() => _showSessions = !_showSessions);
+                _persistUiState();
                 if (_showSessions) _loadRecentSessions();
               },
-              child: Row(
-                children: [
-                  Icon(
-                    Icons.smart_toy_outlined,
-                    size: 12,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 4),
-                  Text(
-                    'AI Sessions',
-                    style: theme.textTheme.labelSmall?.copyWith(
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.smart_toy_outlined,
+                      size: 12,
                       color: theme.colorScheme.onSurfaceVariant,
                     ),
-                  ),
-                  const Spacer(),
-                  Icon(
-                    _showSessions ? Icons.expand_less : Icons.expand_more,
-                    size: 14,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ],
+                    const SizedBox(width: 4),
+                    Text(
+                      'AI Sessions',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const Spacer(),
+                    Icon(
+                      _showSessions ? Icons.expand_less : Icons.expand_more,
+                      size: 14,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ],
+                ),
               ),
             ),
             if (_showSessions) ...[
-              if (_isLoadingSessions)
+              if (_isLoadingSessions &&
+                  (_recentSessions == null || _recentSessions!.isEmpty))
                 const Padding(
                   padding: EdgeInsets.symmetric(vertical: 8),
                   child: Center(
@@ -2487,10 +2548,32 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     ),
                   ),
                 )
-              else if (_recentSessions != null)
+              else if (_recentSessions != null) ...[
                 ..._groupSessions(_recentSessions!).entries.map(
                   (entry) => _buildSessionGroup(theme, entry.key, entry.value),
                 ),
+                if (_isLoadingSessions)
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Center(
+                      child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator.adaptive(
+                          strokeWidth: 2,
+                        ),
+                      ),
+                    ),
+                  ),
+                if (_canLoadMoreSessions)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: TextButton(
+                      onPressed: _loadMoreSessions,
+                      child: const Text('Load more'),
+                    ),
+                  ),
+              ],
             ],
           ],
         ],
@@ -2527,8 +2610,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     widget.onTap();
   }
 
-  Future<void> _loadRecentSessions() async {
-    if (_isLoadingSessions || _recentSessions != null) return;
+  Future<void> _loadRecentSessions({bool forceReload = false}) async {
+    if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
+    final previousCount = _recentSessions?.length ?? 0;
     setState(() => _isLoadingSessions = true);
 
     final session = ref
@@ -2538,6 +2622,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       if (mounted) {
         setState(() {
           _recentSessions = const [];
+          _canLoadMoreSessions = false;
           _isLoadingSessions = false;
         });
       }
@@ -2552,7 +2637,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       final sessions = await discovery.discoverSessions(
         session,
         workingDirectory: activeWindow?.currentPath,
-        maxPerTool: 8,
+        maxPerTool: _sessionFetchLimit,
       );
       if (!mounted) return;
       setState(() {
@@ -2560,15 +2645,40 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
           _expandedSessionTools.add(sessions.first.toolName);
         }
+        _canLoadMoreSessions =
+            sessions.length > previousCount &&
+            _hasSessionGroupAtLimit(sessions);
         _isLoadingSessions = false;
       });
+      _persistUiState();
     } on Exception {
       if (!mounted) return;
       setState(() {
         _recentSessions = const [];
+        _canLoadMoreSessions = false;
         _isLoadingSessions = false;
       });
+      _persistUiState();
     }
+  }
+
+  void _loadMoreSessions() {
+    if (_isLoadingSessions) return;
+    setState(() => _sessionFetchLimit += _sessionFetchStep);
+    _persistUiState();
+    _loadRecentSessions(forceReload: true);
+  }
+
+  bool _hasSessionGroupAtLimit(List<ToolSessionInfo> sessions) {
+    final countsByTool = <String, int>{};
+    for (final session in sessions) {
+      countsByTool.update(
+        session.toolName,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    return countsByTool.values.any((count) => count >= _sessionFetchLimit);
   }
 
   void _resumeSession(ToolSessionInfo info) {
@@ -2623,10 +2733,11 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 _expandedSessionTools.add(toolName);
               }
             });
+            _persistUiState();
           },
           borderRadius: BorderRadius.circular(6),
           child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 4, horizontal: 4),
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
             child: Row(
               children: [
                 Icon(
@@ -2680,7 +2791,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       onTap: () => _resumeSession(info),
       borderRadius: BorderRadius.circular(6),
       child: Padding(
-        padding: EdgeInsets.fromLTRB(4 + indent, 3, 4, 3),
+        padding: EdgeInsets.fromLTRB(6 + indent, 6, 6, 6),
         child: Row(
           children: [
             Icon(iconData, size: 14, color: theme.colorScheme.primary),
@@ -2695,9 +2806,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 ),
               ),
             ),
-            if (info.timeAgoLabel.isNotEmpty)
+            if (info.lastUpdatedLabel.isNotEmpty)
               Text(
-                info.timeAgoLabel,
+                info.lastUpdatedLabel,
                 style: theme.textTheme.labelSmall?.copyWith(
                   fontSize: 10,
                   color: theme.colorScheme.onSurfaceVariant,
@@ -2719,19 +2830,19 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   };
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
-    final title = window.paneTitle ?? window.name;
+    final title = window.displayTitle;
 
     return InkWell(
       onTap: () => _switchAndOpenWindow(window.index),
       borderRadius: BorderRadius.circular(6),
       child: Padding(
-        padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 4),
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
         child: Row(
           children: [
             // Window index badge.
             Container(
-              width: 20,
-              height: 20,
+              width: 22,
+              height: 22,
               decoration: BoxDecoration(
                 color: window.isActive
                     ? theme.colorScheme.primary

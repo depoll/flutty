@@ -1,9 +1,104 @@
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tmux_state.dart';
 import 'ssh_service.dart';
+
+const _genericSessionSummaries = <String>{
+  'untitled',
+  'unnamed',
+  'untitled session',
+  'new session',
+  'empty session',
+  'session',
+};
+
+/// Filters noisy discovered sessions and fills in a better display summary
+/// when the tool only exposes a working directory.
+@visibleForTesting
+ToolSessionInfo? normalizeDiscoveredSessionInfo(ToolSessionInfo info) {
+  final normalizedSummary = _normalizeDiscoveredSessionSummary(info);
+  if (normalizedSummary == null) return null;
+  return ToolSessionInfo(
+    toolName: info.toolName,
+    sessionId: info.sessionId,
+    workingDirectory: info.workingDirectory,
+    lastActive: info.lastActive,
+    summary: normalizedSummary,
+  );
+}
+
+/// Orders sessions from most to least recently updated, leaving untimestamped
+/// items at the end.
+@visibleForTesting
+int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
+  final aTime = a.lastActive;
+  final bTime = b.lastActive;
+  if (aTime != null && bTime != null) {
+    final compare = bTime.compareTo(aTime);
+    if (compare != 0) return compare;
+  } else if (aTime != null) {
+    return -1;
+  } else if (bTime != null) {
+    return 1;
+  }
+
+  final toolCompare = a.toolName.compareTo(b.toolName);
+  if (toolCompare != 0) return toolCompare;
+  return (a.summary ?? '').compareTo(b.summary ?? '');
+}
+
+String? _normalizeDiscoveredSessionSummary(ToolSessionInfo info) {
+  final normalizedSummary = _sanitizeSessionSummary(
+    info.summary,
+    sessionId: info.sessionId,
+  );
+  if (normalizedSummary != null) return normalizedSummary;
+  return _directorySummaryFallback(info.workingDirectory);
+}
+
+String? _sanitizeSessionSummary(String? value, {required String sessionId}) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+
+  final unquoted = trimmed
+      .replaceAll(RegExp(r"""^["'`]+|["'`]+$"""), '')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  if (unquoted.isEmpty) return null;
+
+  final lowered = unquoted.toLowerCase();
+  if (_genericSessionSummaries.contains(lowered) ||
+      lowered == sessionId.toLowerCase() ||
+      lowered == _truncateSessionIdValue(sessionId).toLowerCase()) {
+    return null;
+  }
+
+  final strippedSeparators = unquoted.replaceAll(
+    RegExp(r'[\s\-_./\\[\](){}:;,*"`~]+'),
+    '',
+  );
+  if (strippedSeparators.isEmpty) return null;
+  return unquoted;
+}
+
+String? _directorySummaryFallback(String? workingDirectory) {
+  final trimmed = workingDirectory?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+  final segment = _pathLastSegment(trimmed);
+  if (segment.isEmpty || segment == '.' || segment == '~') return null;
+  return segment;
+}
+
+String _pathLastSegment(String path) =>
+    path.split('/').where((segment) => segment.isNotEmpty).lastOrNull ?? path;
+
+String _truncateSessionIdValue(String id) {
+  if (id.length <= 12) return id;
+  return '${id.substring(0, 8)}…';
+}
 
 /// Discovers recent AI coding tool sessions on remote hosts by scanning
 /// known session storage locations.
@@ -18,17 +113,16 @@ class AgentSessionDiscoveryService {
   /// Discovers recent sessions across all supported tools for the given
   /// [workingDirectory] on the remote host.
   ///
-  /// Each tool's sessions are discovered in most-recent-first order, then
-  /// the combined result is interleaved round-robin across tools so no
-  /// single tool dominates the list. Limits to [maxPerTool] sessions per
-  /// tool to keep results manageable.
+  /// Each tool's sessions are discovered separately, normalized to drop
+  /// noisy placeholder entries, and then sorted globally by recency.
+  /// Limits to [maxPerTool] sessions per tool to keep results manageable.
   ///
   /// When [workingDirectory] is available, sessions are filtered to that
   /// directory whenever the tool exposes enough path information to do so.
   Future<List<ToolSessionInfo>> discoverSessions(
     SshSession session, {
     String? workingDirectory,
-    int maxPerTool = 5,
+    int maxPerTool = 12,
   }) async {
     final results = await Future.wait([
       _discoverClaudeSessions(session, workingDirectory, maxPerTool),
@@ -38,26 +132,13 @@ class AgentSessionDiscoveryService {
       _discoverOpenCodeSessions(session, maxPerTool),
     ]);
 
-    // Interleave results from each tool in their original (mtime) order.
-    // Each tool's list is already sorted by most-recent-first from the
-    // remote commands. Interleaving round-robin keeps the combined list
-    // balanced across tools rather than pushing tools without timestamps
-    // to the bottom.
-    final all = <ToolSessionInfo>[];
-    final iterators = results
-        .where((list) => list.isNotEmpty)
-        .map((list) => list.iterator)
-        .toList();
-    var remaining = true;
-    while (remaining) {
-      remaining = false;
-      for (final it in iterators) {
-        if (it.moveNext()) {
-          all.add(it.current);
-          remaining = true;
-        }
-      }
-    }
+    final all =
+        results
+            .expand((list) => list)
+            .map(normalizeDiscoveredSessionInfo)
+            .whereType<ToolSessionInfo>()
+            .toList()
+          ..sort(compareDiscoveredSessionsByRecency);
 
     // Filter to sessions matching the working directory if provided.
     if (workingDirectory != null && workingDirectory.isNotEmpty) {
@@ -147,6 +228,10 @@ class AgentSessionDiscoveryService {
           );
           final sessionFilePath = sessionFile.trim();
           if (sessionFilePath.isNotEmpty) {
+            lastActive ??= await _readModificationTime(
+              session,
+              sessionFilePath,
+            );
             final customTitle = await _exec(
               session,
               'grep -o \'"customTitle":"[^"]*"\' '
@@ -244,6 +329,7 @@ class AgentSessionDiscoveryService {
               if (ts != null) lastActive = DateTime.tryParse(ts);
             }
           }
+          lastActive ??= await _readModificationTime(session, filePath);
 
           // Extract first prompt: skip session_meta, ignore environment/system
           // context, and take the first short input_text payload.
@@ -294,78 +380,80 @@ class AgentSessionDiscoveryService {
       );
       if (output.trim().isEmpty) return const [];
 
-      final sessions = <ToolSessionInfo>[];
-      for (final line in output.trim().split('\n')) {
-        if (line.trim().isEmpty) continue;
-        final dirPath = line.trim();
-        final dirName = dirPath.split('/').where((s) => s.isNotEmpty).last;
+      final sessionPaths = output
+          .trim()
+          .split('\n')
+          .map((line) => line.trim())
+          .where((line) => line.isNotEmpty)
+          .toList(growable: false);
 
-        // Read workspace.yaml for name, summary, and cwd.
-        String? summary;
-        String? workingDirectory;
-        try {
-          final yaml = await _exec(
-            session,
-            'cat ${_shellQuote('${dirPath}workspace.yaml')} 2>/dev/null',
-          );
-          if (yaml.trim().isNotEmpty) {
-            // Simple YAML field extraction (no dependency on yaml parser).
-            for (final yamlLine in yaml.split('\n')) {
-              final nameMatch = RegExp(r'^name:\s*(.+)').firstMatch(yamlLine);
-              if (nameMatch != null) {
-                summary = nameMatch.group(1)!.trim();
-              }
-              final summaryMatch = RegExp(
-                r'^summary:\s*(.+)',
-              ).firstMatch(yamlLine);
-              if (summaryMatch != null && summary == null) {
-                summary = summaryMatch.group(1)!.trim();
-              }
-              final cwdMatch = RegExp(r'^cwd:\s*(.+)').firstMatch(yamlLine);
-              if (cwdMatch != null) {
-                workingDirectory = cwdMatch.group(1)!.trim();
-              }
-            }
-          }
-        } on Object {
-          // Non-critical.
-        }
+      return Future.wait(
+        sessionPaths.map((dirPath) async {
+          final dirName = dirPath.split('/').where((s) => s.isNotEmpty).last;
+          final lastActive = await _readModificationTime(session, dirPath);
 
-        // Fall back to plan.md first line if no name/summary.
-        if (summary == null || summary.isEmpty) {
+          String? summary;
+          String? workingDirectory;
           try {
-            final planHead = await _exec(
+            final yaml = await _exec(
               session,
-              'head -3 ${_shellQuote('${dirPath}plan.md')} 2>/dev/null',
+              'cat ${_shellQuote('${dirPath}workspace.yaml')} 2>/dev/null',
             );
-            if (planHead.trim().isNotEmpty) {
-              for (final planLine in planHead.trim().split('\n')) {
-                final cleaned = planLine
-                    .replaceAll(RegExp(r'^#+\s*'), '')
-                    .trim();
-                if (cleaned.isNotEmpty && cleaned.length > 3) {
-                  summary = cleaned.length > 80
-                      ? '${cleaned.substring(0, 77)}...'
-                      : cleaned;
-                  break;
+            if (yaml.trim().isNotEmpty) {
+              for (final yamlLine in yaml.split('\n')) {
+                final nameMatch = RegExp(r'^name:\s*(.+)').firstMatch(yamlLine);
+                if (nameMatch != null) {
+                  summary = nameMatch.group(1)!.trim();
+                }
+                final summaryMatch = RegExp(
+                  r'^summary:\s*(.+)',
+                ).firstMatch(yamlLine);
+                if (summaryMatch != null && summary == null) {
+                  summary = summaryMatch.group(1)!.trim();
+                }
+                final cwdMatch = RegExp(r'^cwd:\s*(.+)').firstMatch(yamlLine);
+                if (cwdMatch != null) {
+                  workingDirectory = cwdMatch.group(1)!.trim();
                 }
               }
             }
           } on Object {
             // Non-critical.
           }
-        }
 
-        sessions.add(
-          ToolSessionInfo(
+          if (summary == null || summary.isEmpty) {
+            try {
+              final planHead = await _exec(
+                session,
+                'head -3 ${_shellQuote('${dirPath}plan.md')} 2>/dev/null',
+              );
+              if (planHead.trim().isNotEmpty) {
+                for (final planLine in planHead.trim().split('\n')) {
+                  final cleaned = planLine
+                      .replaceAll(RegExp(r'^#+\s*'), '')
+                      .trim();
+                  if (cleaned.isNotEmpty && cleaned.length > 3) {
+                    summary = cleaned.length > 80
+                        ? '${cleaned.substring(0, 77)}...'
+                        : cleaned;
+                    break;
+                  }
+                }
+              }
+            } on Object {
+              // Non-critical.
+            }
+          }
+
+          return ToolSessionInfo(
             toolName: 'Copilot CLI',
             sessionId: dirName,
             workingDirectory: workingDirectory,
+            lastActive: lastActive,
             summary: summary ?? _truncateId(dirName),
-          ),
-        );
-      }
-      return sessions;
+          );
+        }),
+      );
     } on Object {
       return const [];
     }
@@ -447,48 +535,53 @@ class AgentSessionDiscoveryService {
     );
     if (output.trim().isEmpty) return const [];
 
-    final sessions = <ToolSessionInfo>[];
-    for (final line in output.trim().split('\n')) {
-      if (line.trim().isEmpty) continue;
-      final filePath = line.trim();
-      final fileName = filePath.split('/').last.replaceAll('.json', '');
+    final sessionPaths = output
+        .trim()
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .toList(growable: false);
 
-      final pathParts = filePath.split('/');
-      final chatsIdx = pathParts.indexOf('chats');
-      final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
-      final sessionWorkingDirectory =
-          projectDir != null &&
-              workingDirectory != null &&
-              _lastPathSegment(workingDirectory) == projectDir
-          ? workingDirectory
-          : null;
+    return Future.wait(
+      sessionPaths.map((filePath) async {
+        final fileName = filePath.split('/').last.replaceAll('.json', '');
+        final lastActive = await _readModificationTime(session, filePath);
 
-      String? summary;
-      try {
-        final firstMsg = await _exec(
-          session,
-          'grep -o \'"text":"[^"]*"\' ${_shellQuote(filePath)} '
-          '| head -1 '
-          '| sed \'s/"text":"//;s/"\$//\'',
-        );
-        final text = firstMsg.trim();
-        if (text.isNotEmpty && text.length > 1) {
-          summary = text.length > 80 ? '${text.substring(0, 77)}...' : text;
+        final pathParts = filePath.split('/');
+        final chatsIdx = pathParts.indexOf('chats');
+        final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
+        final sessionWorkingDirectory =
+            projectDir != null &&
+                workingDirectory != null &&
+                _pathLastSegment(workingDirectory) == projectDir
+            ? workingDirectory
+            : null;
+
+        String? summary;
+        try {
+          final firstMsg = await _exec(
+            session,
+            'grep -o \'"text":"[^"]*"\' ${_shellQuote(filePath)} '
+            '| head -1 '
+            '| sed \'s/"text":"//;s/"\$//\'',
+          );
+          final text = firstMsg.trim();
+          if (text.isNotEmpty && text.length > 1) {
+            summary = text.length > 80 ? '${text.substring(0, 77)}...' : text;
+          }
+        } on Object {
+          // Non-critical.
         }
-      } on Object {
-        // Non-critical.
-      }
 
-      sessions.add(
-        ToolSessionInfo(
+        return ToolSessionInfo(
           toolName: 'Gemini CLI',
           sessionId: fileName,
           workingDirectory: sessionWorkingDirectory,
+          lastActive: lastActive,
           summary: summary ?? projectDir ?? _truncateId(fileName),
-        ),
-      );
-    }
-    return sessions;
+        );
+      }),
+    );
   }
 
   // ── OpenCode ───────────────────────────────────────────────────────────
@@ -545,7 +638,9 @@ class AgentSessionDiscoveryService {
       DateTime? lastActive;
       final updated = entry['updated'];
       if (updated is int) {
-        lastActive = DateTime.fromMillisecondsSinceEpoch(updated);
+        lastActive = _dateTimeFromEpoch(updated);
+      } else if (updated is String) {
+        lastActive = DateTime.tryParse(updated);
       }
 
       return ToolSessionInfo(
@@ -572,7 +667,7 @@ class AgentSessionDiscoveryService {
       if (parts.length >= 4) {
         final ts = int.tryParse(parts[3].trim());
         if (ts != null) {
-          lastActive = DateTime.fromMillisecondsSinceEpoch(ts);
+          lastActive = _dateTimeFromEpoch(ts);
         }
       }
 
@@ -604,6 +699,28 @@ class AgentSessionDiscoveryService {
     }
   }
 
+  Future<DateTime?> _readModificationTime(
+    SshSession session,
+    String path,
+  ) async {
+    try {
+      final output = await _exec(
+        session,
+        '(stat -c %Y ${_shellQuote(path)} 2>/dev/null || '
+        'stat -f %m ${_shellQuote(path)} 2>/dev/null) | head -1',
+      );
+      final epoch = int.tryParse(output.trim());
+      if (epoch == null || epoch <= 0) return null;
+      return _dateTimeFromEpoch(epoch);
+    } on Object {
+      return null;
+    }
+  }
+
+  DateTime _dateTimeFromEpoch(int epoch) => DateTime.fromMillisecondsSinceEpoch(
+    epoch > 9999999999 ? epoch : epoch * 1000,
+  );
+
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
 
@@ -620,17 +737,11 @@ class AgentSessionDiscoveryService {
   ) {
     if (sessionDirectory == null || sessionDirectory.isEmpty) return false;
     return sessionDirectory == expectedDirectory ||
-        _lastPathSegment(sessionDirectory) ==
-            _lastPathSegment(expectedDirectory);
+        _pathLastSegment(sessionDirectory) ==
+            _pathLastSegment(expectedDirectory);
   }
 
-  static String _lastPathSegment(String path) =>
-      path.split('/').where((segment) => segment.isNotEmpty).lastOrNull ?? path;
-
-  static String _truncateId(String id) {
-    if (id.length <= 12) return id;
-    return '${id.substring(0, 8)}…';
-  }
+  static String _truncateId(String id) => _truncateSessionIdValue(id);
 }
 
 /// Provider for [AgentSessionDiscoveryService].

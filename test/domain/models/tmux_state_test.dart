@@ -191,6 +191,32 @@ void main() {
       expect(info.timeAgoLabel, '');
     });
 
+    test('lastUpdatedLabel includes date and relative time', () {
+      final now = DateTime.now();
+      final lastActive = now.subtract(const Duration(hours: 5));
+      final info = ToolSessionInfo(
+        toolName: 'Claude Code',
+        sessionId: '6',
+        lastActive: lastActive,
+      );
+
+      final month = const [
+        'Jan',
+        'Feb',
+        'Mar',
+        'Apr',
+        'May',
+        'Jun',
+        'Jul',
+        'Aug',
+        'Sep',
+        'Oct',
+        'Nov',
+        'Dec',
+      ][lastActive.month - 1];
+      expect(info.lastUpdatedLabel, '$month ${lastActive.day} | 5h ago');
+    });
+
     test('equality uses toolName and sessionId', () {
       const a = ToolSessionInfo(
         toolName: 'Claude Code',

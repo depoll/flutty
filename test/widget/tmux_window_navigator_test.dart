@@ -13,6 +13,7 @@ void main() {
         isActive: true,
         currentCommand: 'vim',
         currentPath: '/home/user/project',
+        paneTitle: '✨ Editing main.dart',
       ),
       const TmuxWindow(
         index: 1,
@@ -37,7 +38,7 @@ void main() {
         ),
       );
 
-      expect(find.text('vim'), findsOneWidget);
+      expect(find.text('✨ Editing main.dart'), findsOneWidget);
       expect(find.text('claude'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
       expect(find.text('htop'), findsOneWidget);
@@ -57,7 +58,7 @@ void main() {
       );
 
       expect(find.text('tmux:'), findsOneWidget);
-      expect(find.text('vim'), findsOneWidget);
+      expect(find.text('✨ Editing main.dart'), findsOneWidget);
       expect(find.text('claude'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
     });
@@ -124,7 +125,7 @@ class _MockWindowList extends StatelessWidget {
                   ),
                 ),
               ),
-              title: Text(w.name),
+              title: Text(w.displayTitle),
               trailing: Text(w.statusLabel),
               selected: w.isActive,
             ),
@@ -170,7 +171,7 @@ class _MockTmuxBadge extends StatelessWidget {
                   borderRadius: BorderRadius.circular(4),
                 ),
                 child: Text(
-                  window.name,
+                  window.displayTitle,
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: window.isActive
                         ? theme.colorScheme.onPrimaryContainer

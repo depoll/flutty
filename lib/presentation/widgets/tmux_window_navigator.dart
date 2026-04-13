@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -10,6 +11,15 @@ import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../widgets/premium_badge.dart';
+
+const _tmuxNavigatorDenseVisualDensity = VisualDensity(vertical: -2);
+const _tmuxNavigatorTilePadding = EdgeInsets.symmetric(horizontal: 16);
+const _tmuxNavigatorGroupTilePadding = EdgeInsets.only(left: 16, right: 16);
+const _tmuxNavigatorSessionTilePadding = EdgeInsets.only(left: 56, right: 12);
+const _tmuxNavigatorMaxHeightFactor = 0.56;
+const _tmuxNavigatorMaxHeightCap = 520.0;
+const _tmuxToolPickerMaxHeightFactor = 0.42;
+const _tmuxToolPickerMaxHeightCap = 360.0;
 
 /// Shows the tmux window navigator bottom sheet.
 ///
@@ -259,12 +269,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final maxSheetHeight = math.min(
+      screenHeight * _tmuxNavigatorMaxHeightFactor,
+      _tmuxNavigatorMaxHeightCap,
+    );
 
     return SafeArea(
       child: ConstrainedBox(
-        constraints: BoxConstraints(
-          maxHeight: MediaQuery.sizeOf(context).height * 0.7,
-        ),
+        constraints: BoxConstraints(maxHeight: maxSheetHeight),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
@@ -323,9 +336,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
             // New Window button
             ListTile(
+              visualDensity: _tmuxNavigatorDenseVisualDensity,
+              minTileHeight: 42,
+              contentPadding: _tmuxNavigatorTilePadding,
+              horizontalTitleGap: 12,
+              minLeadingWidth: 20,
               leading: Icon(
                 Icons.add_circle_outline,
                 color: theme.colorScheme.primary,
+                size: 18,
               ),
               title: const Text('New Window'),
               dense: true,
@@ -348,16 +367,24 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   Widget _buildWindowTile(TmuxWindow window) {
     final theme = Theme.of(context);
     final isActive = window.isActive;
+    final secondaryTitle = window.displayTitle != window.name
+        ? window.name
+        : null;
 
     return ListTile(
       dense: true,
+      visualDensity: _tmuxNavigatorDenseVisualDensity,
+      minVerticalPadding: 2,
+      contentPadding: const EdgeInsets.only(left: 16, right: 4),
+      horizontalTitleGap: 10,
+      minLeadingWidth: 28,
       tileColor: isActive
           ? theme.colorScheme.primaryContainer.withAlpha(80)
           : null,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
       leading: Container(
-        width: 28,
-        height: 28,
+        width: 24,
+        height: 24,
         decoration: BoxDecoration(
           color: isActive
               ? theme.colorScheme.primary
@@ -376,16 +403,16 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         ),
       ),
       title: Text(
-        window.name,
+        window.displayTitle,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         style: isActive
             ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
             : null,
       ),
-      subtitle: window.paneTitle != null
+      subtitle: secondaryTitle != null
           ? Text(
-              window.paneTitle!,
+              secondaryTitle,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: theme.textTheme.bodySmall?.copyWith(
@@ -400,6 +427,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            padding: EdgeInsets.zero,
             tooltip: 'Close window',
             onPressed: () => _closeWindow(window.index),
           ),
@@ -456,8 +485,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       children: [
         ListTile(
           dense: true,
+          visualDensity: _tmuxNavigatorDenseVisualDensity,
+          minTileHeight: 42,
+          contentPadding: _tmuxNavigatorTilePadding,
+          horizontalTitleGap: 12,
+          minLeadingWidth: 18,
           leading: Icon(
             _showRecentSessions ? Icons.expand_less : Icons.expand_more,
+            size: 18,
             color: theme.colorScheme.onSurfaceVariant,
           ),
           title: Row(
@@ -539,6 +574,11 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       children: [
         ListTile(
           dense: true,
+          visualDensity: _tmuxNavigatorDenseVisualDensity,
+          minVerticalPadding: 2,
+          contentPadding: _tmuxNavigatorGroupTilePadding,
+          horizontalTitleGap: 12,
+          minLeadingWidth: 20,
           leading: _toolIcon(toolName, theme),
           title: Text(toolName),
           subtitle: Text(
@@ -565,7 +605,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ...sessions.map(
             (session) => _buildSessionTile(
               session,
-              contentPadding: const EdgeInsets.only(left: 56, right: 16),
+              contentPadding: _tmuxNavigatorSessionTilePadding,
             ),
           ),
       ],
@@ -580,8 +620,12 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
     return ListTile(
       dense: true,
+      visualDensity: _tmuxNavigatorDenseVisualDensity,
+      minVerticalPadding: 2,
       contentPadding: contentPadding,
       leading: _toolIcon(info.toolName, theme),
+      horizontalTitleGap: 12,
+      minLeadingWidth: 20,
       title: Text(
         info.summary ?? info.sessionId,
         maxLines: 1,
@@ -597,6 +641,11 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       ),
       trailing: TextButton(
         onPressed: () => _resumeSession(info),
+        style: TextButton.styleFrom(
+          visualDensity: VisualDensity.compact,
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+        ),
         child: const Text('Resume'),
       ),
     );
@@ -652,40 +701,59 @@ class TmuxToolPickerSheet extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final screenHeight = MediaQuery.sizeOf(context).height;
+    final maxSheetHeight = math.min(
+      screenHeight * _tmuxToolPickerMaxHeightFactor,
+      _tmuxToolPickerMaxHeightCap,
+    );
     // Show only installed tools, or all if detection hasn't completed.
     final tools = installedTools != null
         ? _allTools.where((t) => installedTools!.contains(t)).toList()
         : _allTools;
 
     return SafeArea(
-      child: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-              child: Text('New Window', style: theme.textTheme.titleMedium),
-            ),
-            for (final tool in tools)
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: maxSheetHeight),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
+                child: Text('New Window', style: theme.textTheme.titleMedium),
+              ),
+              for (final tool in tools)
+                ListTile(
+                  visualDensity: _tmuxNavigatorDenseVisualDensity,
+                  minTileHeight: 42,
+                  contentPadding: _tmuxNavigatorTilePadding,
+                  horizontalTitleGap: 12,
+                  minLeadingWidth: 20,
+                  leading: TmuxToolPickerSheet._iconForTool(tool, theme),
+                  title: Text(tool.label),
+                  trailing: !isProUser ? const PremiumBadge() : null,
+                  enabled: isProUser,
+                  onTap: () => onToolSelected(tool),
+                ),
+              const Divider(height: 1),
               ListTile(
-                leading: TmuxToolPickerSheet._iconForTool(tool, theme),
-                title: Text(tool.label),
-                trailing: !isProUser ? const PremiumBadge() : null,
-                enabled: isProUser,
-                onTap: () => onToolSelected(tool),
+                visualDensity: _tmuxNavigatorDenseVisualDensity,
+                minTileHeight: 42,
+                contentPadding: _tmuxNavigatorTilePadding,
+                horizontalTitleGap: 12,
+                minLeadingWidth: 20,
+                leading: Icon(
+                  Icons.terminal,
+                  color: theme.colorScheme.onSurfaceVariant,
+                  size: 18,
+                ),
+                title: const Text('Empty window'),
+                onTap: onEmptyWindow,
               ),
-            const Divider(height: 1),
-            ListTile(
-              leading: Icon(
-                Icons.terminal,
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-              title: const Text('Empty window'),
-              onTap: onEmptyWindow,
-            ),
-            const SizedBox(height: 8),
-          ],
+              const SizedBox(height: 8),
+            ],
+          ),
         ),
       ),
     );

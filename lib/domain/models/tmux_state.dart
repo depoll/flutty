@@ -231,6 +231,18 @@ class ToolSessionInfo {
     return '${diff.inDays ~/ 7}w ago';
   }
 
+  /// A compact absolute + relative timestamp label for session lists.
+  String get lastUpdatedLabel {
+    if (lastActive == null) return '';
+    final localTime = lastActive!.toLocal();
+    final now = DateTime.now();
+    final month = _monthAbbreviations[localTime.month - 1];
+    final dateLabel = localTime.year == now.year
+        ? '$month ${localTime.day}'
+        : '$month ${localTime.day}, ${localTime.year}';
+    return '$dateLabel | $timeAgoLabel';
+  }
+
   @override
   String toString() =>
       'ToolSessionInfo(tool: $toolName, id: $sessionId, '
@@ -246,6 +258,21 @@ class ToolSessionInfo {
   @override
   int get hashCode => Object.hash(toolName, sessionId);
 }
+
+const _monthAbbreviations = <String>[
+  'Jan',
+  'Feb',
+  'Mar',
+  'Apr',
+  'May',
+  'Jun',
+  'Jul',
+  'Aug',
+  'Sep',
+  'Oct',
+  'Nov',
+  'Dec',
+];
 
 String? _nonEmpty(String value) {
   final trimmed = value.trim();
