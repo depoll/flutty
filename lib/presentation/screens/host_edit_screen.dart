@@ -489,7 +489,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           contentPadding: EdgeInsets.zero,
                           title: const Text('Use agent launch preset'),
                           subtitle: const Text(
-                            'Build a repeatable startup flow for Claude Code, Copilot CLI, or Aider.',
+                            'Build a repeatable startup flow for Claude Code, Copilot CLI, Codex, and more.',
                           ),
                           value: _useAgentLaunchPreset,
                           onChanged: hasAgentPresetAccess

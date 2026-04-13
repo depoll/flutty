@@ -20,7 +20,7 @@ void main() {
 
     test('builds a tmux command with quoted values', () {
       const preset = AgentLaunchPreset(
-        tool: AgentLaunchTool.aider,
+        tool: AgentLaunchTool.codex,
         workingDirectory: '~/src/app',
         tmuxSessionName: 'nightly review',
         additionalArguments: '--yes-always',
@@ -29,7 +29,7 @@ void main() {
       expect(
         buildAgentLaunchCommand(preset),
         'tmux new-session -A -s \'nightly review\' -c '
-        '"\$HOME/src/app" \'aider --yes-always\'',
+        '"\$HOME/src/app" \'codex --yes-always\'',
       );
     });
 

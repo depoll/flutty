@@ -39,7 +39,7 @@ void main() {
   });
 
   test('deletes a stored host preset', () async {
-    const preset = AgentLaunchPreset(tool: AgentLaunchTool.aider);
+    const preset = AgentLaunchPreset(tool: AgentLaunchTool.codex);
 
     await service.setPresetForHost(7, preset);
     await service.deletePresetForHost(7);

@@ -6,9 +6,6 @@ enum AgentLaunchTool {
   /// GitHub Copilot CLI.
   copilotCli,
 
-  /// Aider.
-  aider,
-
   /// OpenAI Codex CLI.
   codex,
 
@@ -25,7 +22,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get label => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => 'Aider',
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
@@ -35,7 +31,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get commandName => switch (this) {
     AgentLaunchTool.claudeCode => 'claude',
     AgentLaunchTool.copilotCli => 'copilot',
-    AgentLaunchTool.aider => 'aider',
     AgentLaunchTool.codex => 'codex',
     AgentLaunchTool.openCode => 'opencode',
     AgentLaunchTool.geminiCli => 'gemini',
@@ -48,7 +43,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.codex => true,
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
-    AgentLaunchTool.aider => true,
   };
 }
 

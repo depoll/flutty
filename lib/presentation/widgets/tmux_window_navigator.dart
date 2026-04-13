@@ -698,7 +698,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
       AgentLaunchTool.codex => Icons.code,
       AgentLaunchTool.geminiCli => Icons.diamond_outlined,
       AgentLaunchTool.openCode => Icons.terminal,
-      AgentLaunchTool.aider => Icons.smart_toy_outlined,
     };
 
     return Icon(iconData, color: theme.colorScheme.primary);
