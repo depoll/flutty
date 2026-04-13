@@ -69,7 +69,7 @@ platform :android do
   private_lane :prepared_metadata_path do |options|
     base_metadata_path = options[:base_metadata_path]
     version_code = options[:version_code].to_s
-    preview_notes = PreviewReleaseNotes.current
+    preview_notes = PreviewReleaseNotes.current(max_length: 500)
 
     next [base_metadata_path, false] if preview_notes.nil? || version_code.empty?
 

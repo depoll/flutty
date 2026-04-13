@@ -173,6 +173,8 @@ on:
 permissions:
   actions: read
   contents: read
+  issues: write
+  pull-requests: write
 
 jobs:
   build-android:
@@ -406,6 +408,53 @@ jobs:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk
 
+      - name: Fetch PR commits
+        if: inputs.pr-number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          python3 << 'SCRIPT'
+          import json, os, sys, uuid, urllib.request
+
+          try:
+              token = os.environ['GH_TOKEN']
+              repo = os.environ['GITHUB_REPOSITORY']
+              pr = os.environ['PR_NUMBER']
+              base_url = f'https://api.github.com/repos/{repo}/pulls/{pr}/commits'
+              headers = {
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+              }
+              commits = []
+              page = 1
+              max_commits = 100
+              while True:
+                  url = f'{base_url}?per_page=100&page={page}'
+                  req = urllib.request.Request(url, headers=headers)
+                  data = json.loads(urllib.request.urlopen(req).read())
+                  if not data:
+                      break
+                  commits.extend(data)
+                  if len(data) < 100 or len(commits) >= max_commits:
+                      break
+                  page += 1
+              commits = commits[:max_commits]
+              lines = []
+              for c in reversed(commits):
+                  sha = c['sha'][:7]
+                  msg = c['commit']['message'].split('\n')[0]
+                  lines.append(f'{sha} {msg}')
+              delim = f'FLUTTY_EOF_{uuid.uuid4().hex}'
+              with open(os.environ['GITHUB_ENV'], 'a') as f:
+                  f.write(f'FLUTTY_PR_COMMITS<<{delim}\n')
+                  f.write('\n'.join(lines))
+                  f.write(f'\n{delim}\n')
+          except Exception as e:
+              print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
+          SCRIPT
+
       - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         uses: ruby/setup-ruby@3ff19f5e2baf30647122352b96108b1fbe250c64 # v1.299.0
@@ -631,6 +680,53 @@ jobs:
           run-id: ${{ inputs.ios-reuse-run-id }}
           name: ${{ inputs.ios-reuse-ipa-artifact-name }}
           path: build/ios/ipa
+
+      - name: Fetch PR commits
+        if: inputs.pr-number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr-number }}
+        run: |
+          python3 << 'SCRIPT'
+          import json, os, sys, uuid, urllib.request
+
+          try:
+              token = os.environ['GH_TOKEN']
+              repo = os.environ['GITHUB_REPOSITORY']
+              pr = os.environ['PR_NUMBER']
+              base_url = f'https://api.github.com/repos/{repo}/pulls/{pr}/commits'
+              headers = {
+                  'Authorization': f'Bearer {token}',
+                  'Accept': 'application/vnd.github+json',
+              }
+              commits = []
+              page = 1
+              max_commits = 100
+              while True:
+                  url = f'{base_url}?per_page=100&page={page}'
+                  req = urllib.request.Request(url, headers=headers)
+                  data = json.loads(urllib.request.urlopen(req).read())
+                  if not data:
+                      break
+                  commits.extend(data)
+                  if len(data) < 100 or len(commits) >= max_commits:
+                      break
+                  page += 1
+              commits = commits[:max_commits]
+              lines = []
+              for c in reversed(commits):
+                  sha = c['sha'][:7]
+                  msg = c['commit']['message'].split('\n')[0]
+                  lines.append(f'{sha} {msg}')
+              delim = f'FLUTTY_EOF_{uuid.uuid4().hex}'
+              with open(os.environ['GITHUB_ENV'], 'a') as f:
+                  f.write(f'FLUTTY_PR_COMMITS<<{delim}\n')
+                  f.write('\n'.join(lines))
+                  f.write(f'\n{delim}\n')
+          except Exception as e:
+              print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
+          SCRIPT
 
       - name: Archive, sign & deploy via Fastlane
         if: inputs.deploy-ios-to != 'none'
