@@ -116,11 +116,12 @@ const _terminalFilePathVerificationExtensions = <String>[
   'm',
 ];
 
-/// Expandable tmux bar that sits at the bottom of the terminal.
+/// Expandable tmux bar overlaid at the bottom of the terminal.
 ///
-/// Collapsed: a slim handle bar showing session name + drag pill.
-/// Expanded: grows upward, pushing the terminal content up via padding.
-/// The entire bar (handle + expanded content) is a single Column child.
+/// Collapsed: a slim handle bar sitting over bottom padding in the terminal.
+/// Expanded: slides up over the terminal content.
+/// The handle height matches the terminal's bottom padding so it never
+/// covers actual terminal content when collapsed.
 class _TmuxExpandableBar extends StatefulWidget {
   const _TmuxExpandableBar({
     required this.session,
@@ -144,6 +145,10 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  /// Height of the collapsed handle bar. The terminal adds this as
+  /// bottom padding so the handle sits over empty space.
+  static const handleHeight = 28.0;
 
   @override
   State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
@@ -2796,7 +2801,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  /// Builds the tmux expandable bar as a Column child below the terminal.
+  /// Wraps the terminal view in a Stack with the tmux bar overlaid.
+  ///
+  /// When tmux is active, the terminal gets bottom padding equal to the
+  /// handle bar height so the collapsed handle sits over empty space.
+  /// When expanded, the bar slides up over the terminal content.
+  /// When tmux is not active, the terminal fills the entire space.
+  Widget _buildTerminalWithTmuxBar(
+    TerminalThemeData terminalTheme,
+    bool isMobile,
+    ThemeData theme,
+    SshConnectionState connectionState,
+  ) {
+    final showTmux =
+        _isTmuxActive &&
+        _showTmuxBar &&
+        connectionState == SshConnectionState.connected;
+
+    return Stack(
+      children: [
+        Positioned.fill(
+          child: Padding(
+            padding: EdgeInsets.only(
+              bottom: showTmux ? _TmuxExpandableBar.handleHeight : 0,
+            ),
+            child: _buildTerminalView(terminalTheme, isMobile),
+          ),
+        ),
+        if (showTmux)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _buildTmuxExpandableBar(theme),
+          ),
+      ],
+    );
+  }
+
+  /// Builds the tmux expandable bar overlaid at the bottom of the terminal.
   Widget _buildTmuxExpandableBar(ThemeData theme) {
     final connectionId = _connectionId;
     if (connectionId == null || _tmuxSessionName == null) {
@@ -3482,11 +3525,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
-          if (_isTmuxActive &&
-              _showTmuxBar &&
-              connectionState == SshConnectionState.connected)
-            _buildTmuxExpandableBar(theme),
+          Expanded(
+            child: _buildTerminalWithTmuxBar(
+              terminalTheme,
+              isMobile,
+              theme,
+              connectionState,
+            ),
+          ),
           if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
