@@ -19,11 +19,11 @@ void main() {
     });
 
     test('tmux bar expansion uses the available terminal height', () {
-      expect(resolveTmuxBarMaxContentHeight(320), 290);
+      expect(resolveTmuxBarMaxContentHeight(320), closeTo(217.6, 0.01));
       expect(resolveTmuxBarMaxContentHeight(24), 0);
       expect(
         resolveTmuxBarMaxContentHeight(0, fallbackAvailableHeight: 320),
-        290,
+        closeTo(217.6, 0.01),
       );
     });
   });

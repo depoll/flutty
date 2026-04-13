@@ -16,10 +16,10 @@ const _tmuxNavigatorDenseVisualDensity = VisualDensity(vertical: -2);
 const _tmuxNavigatorTilePadding = EdgeInsets.symmetric(horizontal: 16);
 const _tmuxNavigatorGroupTilePadding = EdgeInsets.only(left: 16, right: 16);
 const _tmuxNavigatorSessionTilePadding = EdgeInsets.only(left: 56, right: 12);
-const _tmuxNavigatorMaxHeightFactor = 0.56;
-const _tmuxNavigatorMaxHeightCap = 520.0;
-const _tmuxToolPickerMaxHeightFactor = 0.42;
-const _tmuxToolPickerMaxHeightCap = 360.0;
+const _tmuxNavigatorMaxHeightFactor = 0.48;
+const _tmuxNavigatorMaxHeightCap = 440.0;
+const _tmuxToolPickerMaxHeightFactor = 0.36;
+const _tmuxToolPickerMaxHeightCap = 320.0;
 
 /// Shows the tmux window navigator bottom sheet.
 ///
@@ -367,9 +367,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   Widget _buildWindowTile(TmuxWindow window) {
     final theme = Theme.of(context);
     final isActive = window.isActive;
-    final secondaryTitle = window.displayTitle != window.name
-        ? window.name
-        : null;
+    final secondaryTitle = window.secondaryTitle;
 
     return ListTile(
       dense: true,
@@ -632,8 +630,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         overflow: TextOverflow.ellipsis,
       ),
       subtitle: Text(
-        info.timeAgoLabel.isNotEmpty
-            ? '${info.toolName} · ${info.timeAgoLabel}'
+        info.lastUpdatedLabel.isNotEmpty
+            ? info.lastUpdatedLabel
             : info.toolName,
         style: theme.textTheme.bodySmall?.copyWith(
           color: theme.colorScheme.onSurfaceVariant,

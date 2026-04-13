@@ -78,6 +78,29 @@ void main() {
       expect(window.displayTitle, 'bash');
     });
 
+    test('strips placeholder underscores from emoji-mangled window names', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: '__ test-emoji',
+        isActive: false,
+      );
+
+      expect(window.displayTitle, 'test-emoji');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('exposes secondaryTitle when pane title differs from window name', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'claude',
+        isActive: false,
+        paneTitle: '✨ Editing main.dart',
+      );
+
+      expect(window.displayTitle, '✨ Editing main.dart');
+      expect(window.secondaryTitle, 'claude');
+    });
+
     test('handles empty command and path', () {
       const line = '1|shell|0||';
       final window = TmuxWindow.fromTmuxFormat(line);

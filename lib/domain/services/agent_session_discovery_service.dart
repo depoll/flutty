@@ -18,8 +18,14 @@ const _genericSessionSummaries = <String>{
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
 @visibleForTesting
-ToolSessionInfo? normalizeDiscoveredSessionInfo(ToolSessionInfo info) {
-  final normalizedSummary = _normalizeDiscoveredSessionSummary(info);
+ToolSessionInfo? normalizeDiscoveredSessionInfo(
+  ToolSessionInfo info, {
+  String? activeWorkingDirectory,
+}) {
+  final normalizedSummary = _normalizeDiscoveredSessionSummary(
+    info,
+    activeWorkingDirectory: activeWorkingDirectory,
+  );
   if (normalizedSummary == null) return null;
   return ToolSessionInfo(
     toolName: info.toolName,
@@ -50,16 +56,27 @@ int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
   return (a.summary ?? '').compareTo(b.summary ?? '');
 }
 
-String? _normalizeDiscoveredSessionSummary(ToolSessionInfo info) {
+String? _normalizeDiscoveredSessionSummary(
+  ToolSessionInfo info, {
+  String? activeWorkingDirectory,
+}) {
   final normalizedSummary = _sanitizeSessionSummary(
     info.summary,
     sessionId: info.sessionId,
+    workingDirectory: info.workingDirectory,
   );
   if (normalizedSummary != null) return normalizedSummary;
-  return _directorySummaryFallback(info.workingDirectory);
+  return _directorySummaryFallback(
+    info.workingDirectory,
+    activeWorkingDirectory: activeWorkingDirectory,
+  );
 }
 
-String? _sanitizeSessionSummary(String? value, {required String sessionId}) {
+String? _sanitizeSessionSummary(
+  String? value, {
+  required String sessionId,
+  String? workingDirectory,
+}) {
   final trimmed = value?.trim();
   if (trimmed == null || trimmed.isEmpty) return null;
 
@@ -76,6 +93,12 @@ String? _sanitizeSessionSummary(String? value, {required String sessionId}) {
     return null;
   }
 
+  final workingDirectorySummary = _directorySummaryFallback(workingDirectory);
+  if (workingDirectorySummary != null &&
+      lowered == workingDirectorySummary.toLowerCase()) {
+    return null;
+  }
+
   final strippedSeparators = unquoted.replaceAll(
     RegExp(r'[\s\-_./\\[\](){}:;,*"`~]+'),
     '',
@@ -84,9 +107,20 @@ String? _sanitizeSessionSummary(String? value, {required String sessionId}) {
   return unquoted;
 }
 
-String? _directorySummaryFallback(String? workingDirectory) {
+String? _directorySummaryFallback(
+  String? workingDirectory, {
+  String? activeWorkingDirectory,
+}) {
   final trimmed = workingDirectory?.trim();
   if (trimmed == null || trimmed.isEmpty) return null;
+  if (activeWorkingDirectory != null &&
+      activeWorkingDirectory.isNotEmpty &&
+      AgentSessionDiscoveryService._matchesWorkingDirectory(
+        activeWorkingDirectory,
+        trimmed,
+      )) {
+    return null;
+  }
   final segment = _pathLastSegment(trimmed);
   if (segment.isEmpty || segment == '.' || segment == '~') return null;
   return segment;
@@ -135,7 +169,12 @@ class AgentSessionDiscoveryService {
     final all =
         results
             .expand((list) => list)
-            .map(normalizeDiscoveredSessionInfo)
+            .map(
+              (info) => normalizeDiscoveredSessionInfo(
+                info,
+                activeWorkingDirectory: workingDirectory,
+              ),
+            )
             .whereType<ToolSessionInfo>()
             .toList()
           ..sort(compareDiscoveredSessionsByRecency);

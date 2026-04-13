@@ -67,14 +67,20 @@ double resolveTmuxBarMaxContentHeight(
   double reservedPadding = 8,
   double fallbackAvailableHeight = 0,
 }) {
+  const maxHeightFactor = 0.68;
+  const maxHeightCap = 400.0;
   final minimumExpandableHeight = handleHeight + reservedPadding;
   final effectiveAvailableHeight = availableHeight > minimumExpandableHeight
       ? availableHeight
       : fallbackAvailableHeight;
-  return max(
+  final rawHeight = max(
     0,
     effectiveAvailableHeight - handleHeight - reservedPadding,
   ).toDouble();
+  return min(
+    rawHeight,
+    min(effectiveAvailableHeight * maxHeightFactor, maxHeightCap),
+  );
 }
 
 final _oscEscapeSequencePattern = RegExp(
@@ -770,9 +776,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
-    final secondaryTitle = window.displayTitle != window.name
-        ? window.name
-        : null;
+    final secondaryTitle = window.secondaryTitle;
 
     return ListTile(
       dense: true,

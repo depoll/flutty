@@ -150,7 +150,26 @@ class TmuxWindow {
       idleSeconds != null && idleSeconds! > _idleThreshold && !isActive;
 
   /// A short display title — prefers paneTitle, falls back to name.
-  String get displayTitle => paneTitle ?? name;
+  String get displayTitle =>
+      _normalizedTmuxTitle(paneTitle) ??
+      _normalizedTmuxTitle(name, stripPlaceholderPrefix: true) ??
+      name;
+
+  /// Secondary context for the window title when both pane and window names
+  /// are useful and distinct.
+  String? get secondaryTitle {
+    final normalizedPaneTitle = _normalizedTmuxTitle(paneTitle);
+    final normalizedName = _normalizedTmuxTitle(
+      name,
+      stripPlaceholderPrefix: true,
+    );
+    if (normalizedPaneTitle == null ||
+        normalizedName == null ||
+        normalizedName == normalizedPaneTitle) {
+      return null;
+    }
+    return normalizedName;
+  }
 
   /// A human-readable status label for display.
   ///
@@ -277,6 +296,22 @@ const _monthAbbreviations = <String>[
 String? _nonEmpty(String value) {
   final trimmed = value.trim();
   return trimmed.isEmpty ? null : trimmed;
+}
+
+String? _normalizedTmuxTitle(
+  String? value, {
+  bool stripPlaceholderPrefix = false,
+}) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+
+  var normalized = trimmed;
+  if (stripPlaceholderPrefix) {
+    normalized = normalized.replaceFirst(RegExp(r'^_+\s*'), '').trimLeft();
+    normalized = normalized.replaceAll(RegExp(r'\s_+\s'), ' ').trim();
+  }
+
+  return normalized.isEmpty ? null : normalized;
 }
 
 // ── tmux command helpers ──────────────────────────────────────────────────

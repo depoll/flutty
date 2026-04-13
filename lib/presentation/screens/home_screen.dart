@@ -2793,27 +2793,39 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       child: Padding(
         padding: EdgeInsets.fromLTRB(6 + indent, 6, 6, 6),
         child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
           children: [
             Icon(iconData, size: 14, color: theme.colorScheme.primary),
             const SizedBox(width: 6),
             Expanded(
-              child: Text(
-                info.summary ?? info.sessionId,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurface,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    info.summary ?? info.sessionId,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  if (info.lastUpdatedLabel.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        info.lastUpdatedLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontSize: 10,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
               ),
             ),
-            if (info.lastUpdatedLabel.isNotEmpty)
-              Text(
-                info.lastUpdatedLabel,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
           ],
         ),
       ),

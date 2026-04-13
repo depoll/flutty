@@ -25,6 +25,45 @@ void main() {
       expect(normalized, isNotNull);
       expect(normalized!.summary, 'flutty');
     });
+
+    test(
+      'drops project-name-only summaries in current working directory view',
+      () {
+        const info = ToolSessionInfo(
+          toolName: 'Copilot CLI',
+          sessionId: '12345678-1234-1234-1234-1234567890ab',
+          workingDirectory: '/Users/depoll/Code/flutty',
+          summary: 'flutty',
+        );
+
+        expect(
+          normalizeDiscoveredSessionInfo(
+            info,
+            activeWorkingDirectory: '/Users/depoll/Code/flutty',
+          ),
+          isNull,
+        );
+      },
+    );
+
+    test(
+      'drops directory fallback when the active working directory already matches',
+      () {
+        const info = ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: 'abcdef',
+          workingDirectory: '/Users/depoll/Code/flutty',
+        );
+
+        expect(
+          normalizeDiscoveredSessionInfo(
+            info,
+            activeWorkingDirectory: '/Users/depoll/Code/flutty',
+          ),
+          isNull,
+        );
+      },
+    );
   });
 
   group('compareDiscoveredSessionsByRecency', () {

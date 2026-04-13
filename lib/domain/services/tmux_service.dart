@@ -214,10 +214,12 @@ class TmuxService {
   /// Wraps [command] with profile sourcing or cached path substitution.
   String _wrapCommand(SshSession session, String command) {
     final cachedPath = _tmuxPathCache[session.connectionId];
-    if (cachedPath != null) {
-      return command.replaceFirst('tmux ', '$cachedPath ');
-    }
-    return '${_profilePrefix(session.connectionId)}$command';
+    final prefixedCommand = cachedPath != null
+        ? command.replaceFirst('tmux ', '$cachedPath ')
+        : command;
+    // Always source the login-shell profile so locale- and PATH-related tmux
+    // settings stay consistent even after the binary path is cached.
+    return '${_profilePrefix(session.connectionId)}$prefixedCommand';
   }
 
   /// Runs a command via SSH exec channel and returns stdout as a string.
