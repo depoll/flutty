@@ -63,11 +63,12 @@ class TmuxService {
   /// Lists all tmux sessions on the remote host.
   Future<List<TmuxSession>> listSessions(SshSession session) async {
     try {
+      const fs = '\x1f'; // ASCII Unit Separator
       final output = await _exec(
         session,
         'tmux list-sessions -F '
-        "'#{session_name}|#{session_windows}|"
-        "#{session_attached}|#{session_activity}'",
+        "'#{session_name}$fs#{session_windows}$fs"
+        "#{session_attached}$fs#{session_activity}'",
       );
       return _parseLines(output, TmuxSession.fromTmuxFormat);
     } on Exception {
@@ -119,12 +120,16 @@ class TmuxService {
   ) async {
     try {
       final quotedName = _shellQuote(sessionName);
+      // Use ASCII Unit Separator (\x1f) as field delimiter so pipes,
+      // symbols, and emoji in window names / pane titles don't break
+      // parsing. The \x1f character is embedded literally via Dart.
+      const fs = '\x1f'; // ASCII Unit Separator
       final output = await _exec(
         session,
         'tmux list-windows -t $quotedName -F '
-        "'#{window_index}|#{window_name}|#{window_active}|"
-        '#{pane_current_command}|#{pane_current_path}|'
-        "#{window_flags}|#{pane_title}|#{window_activity}'",
+        "'#{window_index}$fs#{window_name}$fs#{window_active}$fs"
+        '#{pane_current_command}$fs#{pane_current_path}$fs'
+        "#{window_flags}$fs#{pane_title}$fs#{window_activity}'",
       );
       return _parseLines(output, TmuxWindow.fromTmuxFormat);
     } on Exception {

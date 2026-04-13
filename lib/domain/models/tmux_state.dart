@@ -11,22 +11,25 @@ class TmuxSession {
     this.lastActivity,
   });
 
-  /// Parses a [TmuxSession] from a pipe-delimited tmux format string.
+  /// Parses a [TmuxSession] from a unit-separator-delimited tmux format
+  /// string.
   ///
   /// Expected format (from `tmux list-sessions -F`):
-  /// `session_name|window_count|attached_flag|activity_epoch`
+  /// `session_name\x1fwindow_count\x1fattached_flag\x1factivity_epoch`
   factory TmuxSession.fromTmuxFormat(String line) {
-    final parts = line.split('|');
-    if (parts.length < 3) {
+    final parts = line.split('\x1f');
+    // Fall back to pipe delimiter for compatibility with older callers.
+    final fields = parts.length >= 3 ? parts : line.split('|');
+    if (fields.length < 3) {
       throw FormatException('Invalid tmux session format: $line');
     }
-    final activityEpoch = parts.length > 3 && parts[3].isNotEmpty
-        ? int.tryParse(parts[3])
+    final activityEpoch = fields.length > 3 && fields[3].isNotEmpty
+        ? int.tryParse(fields[3])
         : null;
     return TmuxSession(
-      name: parts[0],
-      windowCount: int.tryParse(parts[1]) ?? 0,
-      isAttached: parts[2] == '1',
+      name: fields[0],
+      windowCount: int.tryParse(fields[1]) ?? 0,
+      isAttached: fields[2] == '1',
       lastActivity: activityEpoch != null && activityEpoch > 0
           ? DateTime.fromMillisecondsSinceEpoch(activityEpoch * 1000)
           : null,
@@ -77,20 +80,23 @@ class TmuxWindow {
     this.idleSeconds,
   });
 
-  /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
+  /// Parses a [TmuxWindow] from a unit-separator-delimited tmux format
+  /// string.
   ///
   /// Expected format (from `tmux list-windows -F`):
-  /// `index|name|active_flag|command|path|flags|pane_title|activity_epoch`
+  /// `index\x1fname\x1factive_flag\x1fcommand\x1fpath\x1fflags\x1fpane_title\x1factivity_epoch`
   factory TmuxWindow.fromTmuxFormat(String line) {
-    final parts = line.split('|');
-    if (parts.length < 3) {
+    final parts = line.split('\x1f');
+    // Fall back to pipe delimiter for compatibility with older callers.
+    final fields = parts.length >= 3 ? parts : line.split('|');
+    if (fields.length < 3) {
       throw FormatException('Invalid tmux window format: $line');
     }
 
     // Compute idle seconds from window_activity epoch if available.
     int? idleSeconds;
-    if (parts.length > 7) {
-      final activityEpoch = int.tryParse(parts[7]);
+    if (fields.length > 7) {
+      final activityEpoch = int.tryParse(fields[7]);
       if (activityEpoch != null && activityEpoch > 0) {
         final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
         idleSeconds = now - activityEpoch;
@@ -99,13 +105,13 @@ class TmuxWindow {
     }
 
     return TmuxWindow(
-      index: int.tryParse(parts[0]) ?? 0,
-      name: parts[1],
-      isActive: parts[2] == '1',
-      currentCommand: parts.length > 3 ? _nonEmpty(parts[3]) : null,
-      currentPath: parts.length > 4 ? _nonEmpty(parts[4]) : null,
-      flags: parts.length > 5 ? _nonEmpty(parts[5]) : null,
-      paneTitle: parts.length > 6 ? _nonEmpty(parts[6]) : null,
+      index: int.tryParse(fields[0]) ?? 0,
+      name: fields[1],
+      isActive: fields[2] == '1',
+      currentCommand: fields.length > 3 ? _nonEmpty(fields[3]) : null,
+      currentPath: fields.length > 4 ? _nonEmpty(fields[4]) : null,
+      flags: fields.length > 5 ? _nonEmpty(fields[5]) : null,
+      paneTitle: fields.length > 6 ? _nonEmpty(fields[6]) : null,
       idleSeconds: idleSeconds,
     );
   }
