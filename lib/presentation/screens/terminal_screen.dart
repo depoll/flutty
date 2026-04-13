@@ -217,15 +217,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final dragExpansion = _dragOffset > 0 && !_expanded ? _dragOffset : 0.0;
+    final maxExpandedHeight = MediaQuery.sizeOf(context).height * 0.4;
+    final contentHeight = _expanded ? maxExpandedHeight : dragExpansion;
 
     return GestureDetector(
       onVerticalDragUpdate: _onVerticalDragUpdate,
       onVerticalDragEnd: _onVerticalDragEnd,
-      child: AnimatedContainer(
-        duration: _dragOffset > 0
-            ? Duration.zero
-            : const Duration(milliseconds: 300),
-        curve: Curves.easeOutCubic,
+      child: DecoratedBox(
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerHighest,
           border: Border(
@@ -239,29 +237,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
           mainAxisSize: MainAxisSize.min,
           children: [
             _buildHandleBar(theme),
-            if (dragExpansion > 0)
-              SizedBox(
-                height: dragExpansion,
-                child: ClipRect(
-                  child: Align(
-                    alignment: Alignment.topCenter,
-                    child: _buildWindowList(theme),
-                  ),
-                ),
-              ),
-            AnimatedCrossFade(
-              duration: const Duration(milliseconds: 300),
-              sizeCurve: Curves.easeOutCubic,
-              crossFadeState: _expanded
-                  ? CrossFadeState.showSecond
-                  : CrossFadeState.showFirst,
-              firstChild: const SizedBox.shrink(),
-              secondChild: ConstrainedBox(
-                constraints: BoxConstraints(
-                  maxHeight: MediaQuery.sizeOf(context).height * 0.4,
-                ),
-                child: _buildWindowList(theme),
-              ),
+            // Use AnimatedContainer only for expand/collapse snap animation.
+            // During drag, height tracks the finger directly (duration: zero).
+            AnimatedContainer(
+              duration: _dragOffset > 0
+                  ? Duration.zero
+                  : const Duration(milliseconds: 300),
+              curve: Curves.easeOutCubic,
+              height: contentHeight,
+              child: contentHeight > 0
+                  ? ClipRect(child: _buildWindowList(theme))
+                  : const SizedBox.shrink(),
             ),
           ],
         ),
@@ -2820,21 +2806,30 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     return Stack(
       children: [
+        // Terminal with animated bottom padding that grows/shrinks
+        // smoothly when the tmux handle appears/disappears.
         Positioned.fill(
-          child: Padding(
+          child: AnimatedPadding(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutCubic,
             padding: EdgeInsets.only(
               bottom: showTmux ? _TmuxExpandableBar.handleHeight : 0,
             ),
             child: _buildTerminalView(terminalTheme, isMobile),
           ),
         ),
-        if (showTmux)
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: 0,
+        // Handle bar slides up from below via AnimatedPositioned.
+        Positioned(
+          left: 0,
+          right: 0,
+          bottom: showTmux ? 0 : -_TmuxExpandableBar.handleHeight,
+          child: AnimatedOpacity(
+            duration: const Duration(milliseconds: 300),
+            curve: Curves.easeOutCubic,
+            opacity: showTmux ? 1 : 0,
             child: _buildTmuxExpandableBar(theme),
           ),
+        ),
       ],
     );
   }
