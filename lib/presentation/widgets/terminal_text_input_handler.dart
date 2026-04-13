@@ -15,6 +15,7 @@ import 'terminal_key_input.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 final _leadingSwipeNewlineArtifactPattern = RegExp(r'^[\r\n]+ ?(?=\S)');
+final _splitLeadingTokenCandidatePattern = RegExp(r'^\s*\S\s+\S');
 const _enterCommitNewlineSequences = <String>['\r\n', '\n', '\r'];
 
 bool _isAsciiLetterOrDigitCodeUnit(int codeUnit) =>
@@ -236,6 +237,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _lastProcessedSelectionWasCollapsed = true;
   bool _trimLeadingSuggestionSpaceAfterDelete = false;
   bool _trimLeadingSwipeSpaceAfterBufferClear = false;
+  bool _allowSplitLeadingTokenNormalization = false;
   bool _clearImeAfterNextTouchCursorMove = false;
   bool _hasPendingPromptOutputImeReset = false;
   DateTime? _modifierChordResetTime;
@@ -481,6 +483,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   void _clearImeBufferForFreshInput({
     bool armModifierChordWindow = false,
+    bool armSplitLeadingTokenNormalization = false,
     String? deleteResetBaselineText,
     int? deleteResetBaselineCursorOffset,
     String? deleteResetDeletedSuffixText,
@@ -507,6 +510,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _trimLeadingSuggestionSpaceAfterDelete = true;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _allowSplitLeadingTokenNormalization = armSplitLeadingTokenNormalization;
     _modifierChordResetTime = armModifierChordWindow
         ? _readModifierChordClock()
         : null;
@@ -530,7 +534,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         !_currentLineLooksLikePromptPrefix(textBeforeCursor)) {
       return;
     }
-    _clearImeBufferForFreshInput(flushPlatformContext: true);
+    _clearImeBufferForFreshInput(
+      flushPlatformContext: true,
+      armSplitLeadingTokenNormalization: true,
+    );
   }
 
   // -- Focus handling --
@@ -591,6 +598,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _lastProcessedSelectionWasCollapsed = true;
       _trimLeadingSuggestionSpaceAfterDelete = false;
       _trimLeadingSwipeSpaceAfterBufferClear = false;
+      _allowSplitLeadingTokenNormalization = false;
       _hasPendingPromptOutputImeReset = false;
       _modifierChordResetTime = null;
       _clearPendingDeleteResetBaseline();
@@ -614,6 +622,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _allowSplitLeadingTokenNormalization = false;
     _hasPendingPromptOutputImeReset = false;
     _modifierChordResetTime = null;
     _clearPendingDeleteResetBaseline();
@@ -901,6 +910,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
     _clearImeAfterNextTouchCursorMove = false;
+    _allowSplitLeadingTokenNormalization = false;
     _modifierChordResetTime = null;
     if (clearPendingDeleteResetBaseline) {
       _clearPendingDeleteResetBaseline();
@@ -1197,6 +1207,105 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       currentText: currentText,
       strippedPendingEnter: false,
       ignored: false,
+    );
+  }
+
+  String _trailingToken(String text) {
+    final graphemes = text.characters.toList(growable: false);
+    var tokenEnd = graphemes.length;
+    while (tokenEnd > 0 && _isWhitespaceGrapheme(graphemes[tokenEnd - 1])) {
+      tokenEnd--;
+    }
+    if (tokenEnd == 0) {
+      return '';
+    }
+
+    var tokenStart = tokenEnd;
+    while (tokenStart > 0 &&
+        !_isWhitespaceGrapheme(graphemes[tokenStart - 1])) {
+      tokenStart--;
+    }
+    return graphemes.sublist(tokenStart, tokenEnd).join();
+  }
+
+  ({String currentText, int? cursorOffset})? _normalizeSplitLeadingToken(
+    String currentText, {
+    int? cursorOffsetHint,
+  }) {
+    if (!_allowSplitLeadingTokenNormalization ||
+        _lastSentText.isEmpty ||
+        !_splitLeadingTokenCandidatePattern.hasMatch(currentText)) {
+      return null;
+    }
+
+    final previousTrailingToken = _trailingToken(_lastSentText);
+    if (previousTrailingToken.characters.length < 2) {
+      return null;
+    }
+
+    final currentGraphemes = currentText.characters.toList(growable: false);
+    final currentTextLength = currentGraphemes.length;
+    final previousTextLength = _textLengthInGraphemes(_lastSentText);
+    if (_lastSentCursorOffset != previousTextLength ||
+        cursorOffsetHint == null ||
+        cursorOffsetHint != currentTextLength) {
+      return null;
+    }
+    final tokenInfo = _leadingTokenInfo(currentGraphemes);
+    if (tokenInfo == null ||
+        tokenInfo.firstTokenGraphemes.length != 1 ||
+        tokenInfo.trailingGraphemes.isEmpty) {
+      return null;
+    }
+
+    var separatorLength = 0;
+    while (separatorLength < tokenInfo.trailingGraphemes.length &&
+        _isWhitespaceGrapheme(tokenInfo.trailingGraphemes[separatorLength])) {
+      separatorLength++;
+    }
+    if (separatorLength == 0 ||
+        separatorLength == tokenInfo.trailingGraphemes.length) {
+      return null;
+    }
+
+    var nextTokenEnd = separatorLength;
+    while (nextTokenEnd < tokenInfo.trailingGraphemes.length &&
+        !_isWhitespaceGrapheme(tokenInfo.trailingGraphemes[nextTokenEnd])) {
+      nextTokenEnd++;
+    }
+    if (nextTokenEnd == separatorLength) {
+      return null;
+    }
+
+    final mergedLeadingToken =
+        tokenInfo.firstTokenGraphemes.join() +
+        tokenInfo.trailingGraphemes
+            .sublist(separatorLength, nextTokenEnd)
+            .join();
+    final continuesPreviousTrailingToken =
+        mergedLeadingToken.startsWith(previousTrailingToken) ||
+        previousTrailingToken.startsWith(mergedLeadingToken);
+    if (!continuesPreviousTrailingToken) {
+      return null;
+    }
+
+    _allowSplitLeadingTokenNormalization = false;
+    final separatorStart = tokenInfo.firstTokenEnd;
+    final separatorEnd = separatorStart + separatorLength;
+    final leadingPrefix = currentGraphemes
+        .sublist(0, tokenInfo.firstTokenStart)
+        .join();
+    final normalizedCursorOffset = cursorOffsetHint <= separatorStart
+        ? cursorOffsetHint
+        : cursorOffsetHint <= separatorEnd
+        ? separatorStart
+        : cursorOffsetHint - separatorLength;
+    return (
+      currentText:
+          leadingPrefix +
+          tokenInfo.firstTokenGraphemes.join() +
+          tokenInfo.trailingGraphemes.sublist(separatorLength).join(),
+      cursorOffset: normalizedCursorOffset,
     );
   }
 
@@ -1675,16 +1784,25 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         currentText,
         value,
       );
+      final normalizedSplitLeadingToken = _normalizeSplitLeadingToken(
+        currentText,
+        cursorOffsetHint: targetCursorOffset,
+      );
+      final splitNormalizedCurrentText =
+          normalizedSplitLeadingToken?.currentText ?? currentText;
+      final splitNormalizedTargetCursorOffset =
+          normalizedSplitLeadingToken?.cursorOffset ?? targetCursorOffset;
       final normalizedDeleteResetLeadingFragment =
           _normalizeDeleteResetLeadingFragment(
-            currentText,
-            cursorOffsetHint: targetCursorOffset,
+            splitNormalizedCurrentText,
+            cursorOffsetHint: splitNormalizedTargetCursorOffset,
           );
       final normalizedCurrentText =
-          normalizedDeleteResetLeadingFragment?.currentText ?? currentText;
+          normalizedDeleteResetLeadingFragment?.currentText ??
+          splitNormalizedCurrentText;
       final normalizedTargetCursorOffset =
           normalizedDeleteResetLeadingFragment?.cursorOffset ??
-          targetCursorOffset;
+          splitNormalizedTargetCursorOffset;
       if (normalizedCurrentText == _lastSentText) {
         final collapsedMoveAwayFromReplacement =
             !_lastProcessedSelectionWasCollapsed &&
@@ -1822,6 +1940,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         // shell's response to a control code is unpredictable.
         _clearImeBufferForFreshInput(
           armModifierChordWindow: wasModifiedSingleChar,
+          armSplitLeadingTokenNormalization: true,
         );
         _sawImeComposition = false;
         return;
@@ -1866,6 +1985,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         effectiveCurrentText,
         sourceValue:
             normalizedPendingEnter.strippedPendingEnter ||
+                normalizedSplitLeadingToken != null ||
                 normalizedDeleteResetLeadingFragment != null ||
                 effectiveCurrentText != normalizedCurrentText
             ? null
@@ -1926,6 +2046,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     _lastProcessedSelectionWasCollapsed = true;
     _trimLeadingSuggestionSpaceAfterDelete = false;
     _trimLeadingSwipeSpaceAfterBufferClear = false;
+    _allowSplitLeadingTokenNormalization = false;
     _modifierChordResetTime = null;
     _pendingEnterActionSuppressions = 0;
     _currentEditingState = _initEditingState.copyWith();
