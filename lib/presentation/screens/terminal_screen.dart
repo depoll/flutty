@@ -3181,6 +3181,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Creates a new tmux window via exec channel, then switches to it.
+  ///
+  /// Only passes `-c` when an explicit [workingDirectory] is provided
+  /// (e.g. resuming an AI session). Otherwise tmux uses its own
+  /// `default-directory` (where the session was started), matching
+  /// native `Ctrl+b, c` behavior.
   Future<void> _createTmuxWindow(
     SshSession session, {
     String? command,
@@ -3190,21 +3195,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    // Fall back to the known tmux working directory so new windows
-    // open in the project folder, not the session start directory.
-    final cwd = workingDirectory ?? _tmuxWorkingDirectory;
-
     final tmux = ref.read(tmuxServiceProvider);
     await tmux.createWindow(
       session,
       sessionName,
       command: command,
       name: name,
-      workingDirectory: cwd,
+      workingDirectory: workingDirectory,
     );
-
-    // Update cached working directory to the new window's directory.
-    if (cwd != null) _tmuxWorkingDirectory = cwd;
   }
 
   /// Closes a tmux window via exec channel.
