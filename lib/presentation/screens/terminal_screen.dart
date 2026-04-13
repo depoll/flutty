@@ -155,22 +155,39 @@ class _TmuxExpandableBar extends StatefulWidget {
   State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
 }
 
-class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
+class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
+    with SingleTickerProviderStateMixin {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
+  final Set<int> _seenAlertWindows = <int>{};
   bool _expanded = false;
   bool _isLoading = true;
   bool _isLoadingSessions = false;
   bool _showSessions = false;
   double _dragOffset = 0;
   Timer? _syncTimer;
+  late AnimationController _bounceController;
+  late Animation<double> _bounceAnimation;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
   @override
   void initState() {
     super.initState();
+    _bounceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+    _bounceAnimation =
+        TweenSequence<double>([
+          TweenSequenceItem(tween: Tween(begin: 0, end: -6), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: -6, end: 0), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: 0, end: -3), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: -3, end: 0), weight: 1),
+        ]).animate(
+          CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
+        );
     _loadWindows();
     _syncTimer = Timer.periodic(
       const Duration(seconds: 5),
@@ -181,6 +198,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   @override
   void dispose() {
     _syncTimer?.cancel();
+    _bounceController.dispose();
     super.dispose();
   }
 
@@ -191,6 +209,25 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
         widget.tmuxSessionName,
       );
       if (!mounted) return;
+
+      // Detect new alerts that weren't in the previous window list.
+      final newAlerts = windows.where(
+        (w) =>
+            w.hasAlert && !w.isActive && !_seenAlertWindows.contains(w.index),
+      );
+      if (newAlerts.isNotEmpty) {
+        unawaited(_bounceController.forward(from: 0));
+        for (final w in newAlerts) {
+          _seenAlertWindows.add(w.index);
+          _sendAlertNotification(w);
+        }
+      }
+
+      // Clear seen alerts for windows that no longer have alerts.
+      _seenAlertWindows.removeWhere(
+        (idx) => !windows.any((w) => w.index == idx && w.hasAlert),
+      );
+
       setState(() {
         _windows = windows;
         _isLoading = false;
@@ -238,6 +275,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
     );
   }
 
+  void _sendAlertNotification(TmuxWindow window) {
+    // Haptic feedback on mobile.
+    HapticFeedback.mediumImpact();
+    // TODO(tmux): Add local push notification via flutter_local_notifications
+    // so alerts are visible when the app is backgrounded.
+  }
+
   void _onVerticalDragUpdate(DragUpdateDetails details) {
     setState(() {
       _dragOffset -= details.delta.dy;
@@ -262,36 +306,43 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
     final maxExpandedHeight = MediaQuery.sizeOf(context).height * 0.4;
     final contentHeight = _expanded ? maxExpandedHeight : dragExpansion;
 
-    return GestureDetector(
-      onVerticalDragUpdate: _onVerticalDragUpdate,
-      onVerticalDragEnd: _onVerticalDragEnd,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: theme.colorScheme.surfaceContainerHighest,
-          border: Border(
-            top: BorderSide(
-              color: theme.colorScheme.outlineVariant,
-              width: 0.5,
+    return AnimatedBuilder(
+      animation: _bounceAnimation,
+      builder: (context, child) => Transform.translate(
+        offset: Offset(0, _bounceAnimation.value),
+        child: child,
+      ),
+      child: GestureDetector(
+        onVerticalDragUpdate: _onVerticalDragUpdate,
+        onVerticalDragEnd: _onVerticalDragEnd,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            border: Border(
+              top: BorderSide(
+                color: theme.colorScheme.outlineVariant,
+                width: 0.5,
+              ),
             ),
           ),
-        ),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            _buildHandleBar(theme),
-            // Use AnimatedContainer only for expand/collapse snap animation.
-            // During drag, height tracks the finger directly (duration: zero).
-            AnimatedContainer(
-              duration: _dragOffset > 0
-                  ? Duration.zero
-                  : const Duration(milliseconds: 300),
-              curve: Curves.easeOutCubic,
-              height: contentHeight,
-              child: contentHeight > 0
-                  ? ClipRect(child: _buildWindowList(theme))
-                  : const SizedBox.shrink(),
-            ),
-          ],
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildHandleBar(theme),
+              // Use AnimatedContainer only for expand/collapse snap animation.
+              // During drag, height tracks the finger directly (duration: zero).
+              AnimatedContainer(
+                duration: _dragOffset > 0
+                    ? Duration.zero
+                    : const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+                height: contentHeight,
+                child: contentHeight > 0
+                    ? ClipRect(child: _buildWindowList(theme))
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ),
         ),
       ),
     );

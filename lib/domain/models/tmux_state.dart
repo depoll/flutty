@@ -137,8 +137,9 @@ class TmuxWindow {
   /// Idle threshold (seconds) above which a window is considered "waiting".
   static const _idleThreshold = 15;
 
-  /// Whether this window has a pending alert or bell.
-  bool get hasAlert => flags != null && flags!.contains('#');
+  /// Whether this window has a pending alert, bell, or activity notification.
+  bool get hasAlert =>
+      flags != null && (flags!.contains('#') || flags!.contains('!'));
 
   /// Whether the window appears to be idle (no output for a while).
   ///
