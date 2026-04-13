@@ -12,6 +12,7 @@ concurrency:
 permissions:
   actions: read
   contents: read
+  pull-requests: read
 
 jobs:
   compute-version:
@@ -22,6 +23,7 @@ jobs:
       build-number: ${{ steps.version.outputs.build-number }}
       build-codename: ${{ steps.version.outputs.build-codename }}
       build-display: ${{ steps.version.outputs.build-display }}
+      commits-list: ${{ steps.commits.outputs.list }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
         with:
@@ -43,6 +45,28 @@ jobs:
           echo "build-number=${BUILD_NUMBER}" >> "$GITHUB_OUTPUT"
           echo "build-codename=${BUILD_CODENAME}" >> "$GITHUB_OUTPUT"
           echo "build-display=${BUILD_DISPLAY}" >> "$GITHUB_OUTPUT"
+
+      - name: List PR commits
+        id: commits
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const commits = await github.paginate(github.rest.pulls.listCommits, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: ${{ github.event.pull_request.number }},
+              per_page: 100,
+            });
+            commits.reverse();
+            const lines = commits.map(c => {
+              const sha = c.sha.substring(0, 7);
+              const msg = c.commit.message.split('\n')[0];
+              return `- \`${sha}\` ${msg}`;
+            });
+            const count = commits.length;
+            const summary = `${count} commit${count !== 1 ? 's' : ''} (newest first)`;
+            const body = lines.join('\n');
+            core.setOutput('list', `### Commits\n\n<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`);
 
   comment-initial:
     name: PR Comment (Queued)
@@ -76,6 +100,8 @@ jobs:
 
             ### Promote
             Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow reuses these unsigned preview intermediates when their build number is still deployable; otherwise it rebuilds with a newer build number before uploading.
+
+            ${{ needs.compute-version.outputs.commits-list }}
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
             <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
@@ -211,6 +237,8 @@ jobs:
             ### Promote
             Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow reuses these unsigned preview intermediates when their build number is still deployable; otherwise it rebuilds with a newer build number before uploading.
 
+            ${{ needs.compute-version.outputs.commits-list }}
+
             > Build triggered by ${{ github.event.pull_request.head.sha }}
             <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
             <!-- preview-build-name:${{ needs.compute-version.outputs.build-name }} -->
@@ -306,6 +334,8 @@ jobs:
 
             ### Promote
             Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow reuses these unsigned preview intermediates when their build number is still deployable; otherwise it rebuilds with a newer build number before uploading.
+
+            ${{ needs.compute-version.outputs.commits-list }}
 
             > Build triggered by ${{ github.event.pull_request.head.sha }}
             <!-- preview-build-source-sha:${{ github.event.pull_request.head.sha }} -->
