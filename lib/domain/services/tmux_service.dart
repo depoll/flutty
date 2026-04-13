@@ -213,13 +213,22 @@ class TmuxService {
 
   /// Wraps [command] with profile sourcing or cached path substitution.
   String _wrapCommand(SshSession session, String command) {
+    final utf8Command = _forceUtf8TmuxCommand(command);
     final cachedPath = _tmuxPathCache[session.connectionId];
     final prefixedCommand = cachedPath != null
-        ? command.replaceFirst('tmux ', '$cachedPath ')
-        : command;
+        ? utf8Command.replaceFirst('tmux -u ', '$cachedPath -u ')
+        : utf8Command;
     // Always source the login-shell profile so locale- and PATH-related tmux
     // settings stay consistent even after the binary path is cached.
-    return '${_profilePrefix(session.connectionId)}$prefixedCommand';
+    return '${_profilePrefix(session.connectionId)}'
+        'export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; '
+        '$prefixedCommand';
+  }
+
+  String _forceUtf8TmuxCommand(String command) {
+    final trimmed = command.trimLeft();
+    if (!trimmed.startsWith('tmux ')) return command;
+    return command.replaceFirst('tmux ', 'tmux -u ');
   }
 
   /// Runs a command via SSH exec channel and returns stdout as a string.

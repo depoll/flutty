@@ -149,20 +149,39 @@ class TmuxWindow {
   bool get isIdle =>
       idleSeconds != null && idleSeconds! > _idleThreshold && !isActive;
 
-  /// A short display title — prefers paneTitle, falls back to name.
-  String get displayTitle =>
-      _normalizedTmuxTitle(paneTitle) ??
-      _normalizedTmuxTitle(name, stripPlaceholderPrefix: true) ??
-      name;
-
-  /// Secondary context for the window title when both pane and window names
-  /// are useful and distinct.
-  String? get secondaryTitle {
-    final normalizedPaneTitle = _normalizedTmuxTitle(paneTitle);
+  /// A short display title — prefers the richest usable tmux title.
+  String get displayTitle {
+    final normalizedPaneTitle = _normalizedTmuxTitle(
+      paneTitle,
+      stripPlaceholderPrefix: true,
+    );
     final normalizedName = _normalizedTmuxTitle(
       name,
       stripPlaceholderPrefix: true,
     );
+    if (normalizedPaneTitle == null) return normalizedName ?? name;
+    if (normalizedName == null) return normalizedPaneTitle;
+    if (_hasPlaceholderPrefix(name)) return normalizedPaneTitle;
+    if (_isDecoratedVariantOfTitle(name, normalizedPaneTitle)) {
+      return name.trim();
+    }
+    return normalizedPaneTitle;
+  }
+
+  /// Secondary context for the window title when both pane and window names
+  /// are useful and distinct.
+  String? get secondaryTitle {
+    final normalizedPaneTitle = _normalizedTmuxTitle(
+      paneTitle,
+      stripPlaceholderPrefix: true,
+    );
+    final normalizedName = _normalizedTmuxTitle(
+      name,
+      stripPlaceholderPrefix: true,
+    );
+    if (_isDecoratedVariantOfTitle(name, normalizedPaneTitle)) {
+      return null;
+    }
     if (normalizedPaneTitle == null ||
         normalizedName == null ||
         normalizedName == normalizedPaneTitle) {
@@ -313,6 +332,32 @@ String? _normalizedTmuxTitle(
 
   return normalized.isEmpty ? null : normalized;
 }
+
+bool _hasPlaceholderPrefix(String value) => value.trimLeft().startsWith('_');
+
+bool _isDecoratedVariantOfTitle(String rawTitle, String? plainTitle) {
+  if (plainTitle == null || plainTitle.isEmpty) return false;
+  final trimmed = rawTitle.trim();
+  if (trimmed.isEmpty || _hasPlaceholderPrefix(trimmed)) return false;
+  final stripped = _stripLeadingDecorativePrefix(trimmed);
+  return stripped.isNotEmpty && stripped == plainTitle && trimmed != plainTitle;
+}
+
+String _stripLeadingDecorativePrefix(String value) {
+  final characters = value.runes.toList(growable: false);
+  var startIndex = 0;
+  while (startIndex < characters.length &&
+      !_isAsciiLetterOrDigit(characters[startIndex])) {
+    startIndex++;
+  }
+  if (startIndex == 0 || startIndex >= characters.length) return value;
+  return String.fromCharCodes(characters.sublist(startIndex)).trimLeft();
+}
+
+bool _isAsciiLetterOrDigit(int rune) =>
+    (rune >= 0x30 && rune <= 0x39) ||
+    (rune >= 0x41 && rune <= 0x5A) ||
+    (rune >= 0x61 && rune <= 0x7A);
 
 // ── tmux command helpers ──────────────────────────────────────────────────
 

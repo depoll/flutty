@@ -101,6 +101,32 @@ void main() {
       expect(window.secondaryTitle, 'claude');
     });
 
+    test(
+      'prefers decorated window name when pane title is the plain version',
+      () {
+        const window = TmuxWindow(
+          index: 1,
+          name: '🔥 test-emoji',
+          isActive: false,
+          paneTitle: 'test-emoji',
+        );
+
+        expect(window.displayTitle, '🔥 test-emoji');
+        expect(window.secondaryTitle, isNull);
+      },
+    );
+
+    test('drops placeholder underscore pane title in favor of plain title', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'test-session-setup',
+        isActive: false,
+        paneTitle: '_ Test session setup',
+      );
+
+      expect(window.displayTitle, 'Test session setup');
+    });
+
     test('handles empty command and path', () {
       const line = '1|shell|0||';
       final window = TmuxWindow.fromTmuxFormat(line);
