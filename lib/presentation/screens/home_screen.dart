@@ -226,6 +226,18 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    // When returning from a terminal session, auto-switch to the
+    // Connections tab if there are active connections so the user
+    // can immediately see and manage windows/sessions.
+    final connectionStates = ref.watch(activeSessionsProvider);
+    if (_selectedIndex == 0 && connectionStates.isNotEmpty) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && _selectedIndex == 0) {
+          setState(() => _selectedIndex = 1);
+        }
+      });
+    }
+
     final screenWidth = MediaQuery.of(context).size.width;
     final isWide = screenWidth >= _mobileBreakpoint;
 
