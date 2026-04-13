@@ -48,9 +48,17 @@ jobs:
 
       - name: List PR commits
         id: commits
+        continue-on-error: true
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           script: |
+            const MAX_DISPLAY = 25;
+            const sanitize = (s) => s
+              .replace(/&/g, '&amp;')
+              .replace(/</g, '&lt;')
+              .replace(/>/g, '&gt;')
+              .replace(/@/g, '@\u200b');
+
             const commits = await github.paginate(github.rest.pulls.listCommits, {
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -58,11 +66,15 @@ jobs:
               per_page: 100,
             });
             commits.reverse();
-            const lines = commits.map(c => {
+            const displayed = commits.slice(0, MAX_DISPLAY);
+            const lines = displayed.map(c => {
               const sha = c.sha.substring(0, 7);
-              const msg = c.commit.message.split('\n')[0];
+              const msg = sanitize(c.commit.message.split('\n')[0]);
               return `- \`${sha}\` ${msg}`;
             });
+            if (commits.length > MAX_DISPLAY) {
+              lines.push(`- *... and ${commits.length - MAX_DISPLAY} more*`);
+            }
             const count = commits.length;
             const summary = `${count} commit${count !== 1 ? 's' : ''} (newest first)`;
             const body = lines.join('\n');
