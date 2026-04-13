@@ -27,7 +27,8 @@ module PreviewReleaseNotes
 
     header = lines.join("\n")
 
-    append_commits(header, pr_commits, max_length: max_length)
+    result = append_commits(header, pr_commits, max_length: max_length)
+    enforce_limit(result, max_length)
   end
 
   def headline(pr_number:, pr_title:)
@@ -75,6 +76,14 @@ module PreviewReleaseNotes
     end
 
     result
+  end
+
+  def enforce_limit(text, max_length)
+    return text if max_length.nil? || text.length <= max_length
+
+    truncated = text[0, max_length]
+    last_newline = truncated.rindex("\n")
+    last_newline ? truncated[0, last_newline] : truncated
   end
 
   def normalize(value)

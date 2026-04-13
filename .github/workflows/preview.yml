@@ -59,23 +59,25 @@ jobs:
               .replace(/>/g, '&gt;')
               .replace(/@/g, '@\u200b');
 
-            const commits = await github.paginate(github.rest.pulls.listCommits, {
+            const count = ${{ github.event.pull_request.commits }};
+            const lastPage = Math.max(1, Math.ceil(count / 100));
+            const { data: page } = await github.rest.pulls.listCommits({
               owner: context.repo.owner,
               repo: context.repo.repo,
               pull_number: ${{ github.event.pull_request.number }},
               per_page: 100,
+              page: lastPage,
             });
-            commits.reverse();
-            const displayed = commits.slice(0, MAX_DISPLAY);
+            page.reverse();
+            const displayed = page.slice(0, MAX_DISPLAY);
             const lines = displayed.map(c => {
               const sha = c.sha.substring(0, 7);
               const msg = sanitize(c.commit.message.split('\n')[0]);
               return `- \`${sha}\` ${msg}`;
             });
-            if (commits.length > MAX_DISPLAY) {
-              lines.push(`- *... and ${commits.length - MAX_DISPLAY} more*`);
+            if (count > displayed.length) {
+              lines.push(`- *... and ${count - displayed.length} more*`);
             }
-            const count = commits.length;
             const summary = `${count} commit${count !== 1 ? 's' : ''} (newest first)`;
             const body = lines.join('\n');
             core.setOutput('list', `### Commits\n\n<details>\n<summary>${summary}</summary>\n\n${body}\n\n</details>`);

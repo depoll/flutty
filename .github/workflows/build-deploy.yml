@@ -428,6 +428,7 @@ jobs:
               }
               commits = []
               page = 1
+              max_commits = 100
               while True:
                   url = f'{base_url}?per_page=100&page={page}'
                   req = urllib.request.Request(url, headers=headers)
@@ -435,9 +436,10 @@ jobs:
                   if not data:
                       break
                   commits.extend(data)
-                  if len(data) < 100:
+                  if len(data) < 100 or len(commits) >= max_commits:
                       break
                   page += 1
+              commits = commits[:max_commits]
               lines = []
               for c in reversed(commits):
                   sha = c['sha'][:7]
@@ -699,6 +701,7 @@ jobs:
               }
               commits = []
               page = 1
+              max_commits = 100
               while True:
                   url = f'{base_url}?per_page=100&page={page}'
                   req = urllib.request.Request(url, headers=headers)
@@ -706,9 +709,10 @@ jobs:
                   if not data:
                       break
                   commits.extend(data)
-                  if len(data) < 100:
+                  if len(data) < 100 or len(commits) >= max_commits:
                       break
                   page += 1
+              commits = commits[:max_commits]
               lines = []
               for c in reversed(commits):
                   sha = c['sha'][:7]
