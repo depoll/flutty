@@ -65,7 +65,7 @@ class TmuxService {
     try {
       final output = await _exec(
         session,
-        'SEP=\$(printf \'\\x1f\'); '
+        'SEP=\$(printf \'\\037\'); '
         'tmux list-sessions -F '
         r'"#{session_name}${SEP}#{session_windows}${SEP}'
         r'#{session_attached}${SEP}#{session_activity}"',
@@ -126,7 +126,7 @@ class TmuxService {
       // in the command string.
       final output = await _exec(
         session,
-        'SEP=\$(printf \'\\x1f\'); '
+        'SEP=\$(printf \'\\037\'); '
         'tmux list-windows -t $quotedName -F '
         r'"#{window_index}${SEP}#{window_name}${SEP}#{window_active}${SEP}'
         r'#{pane_current_command}${SEP}#{pane_current_path}${SEP}'
