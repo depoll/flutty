@@ -46,7 +46,13 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _selectedIndex = 0;
-  bool _hasAutoSwitchedToConnections = false;
+
+  /// Switches to the Connections tab so the user lands there when
+  /// returning from the terminal.
+  void switchToConnectionsTab() {
+    if (_selectedIndex != 1) setState(() => _selectedIndex = 1);
+  }
+
   StreamSubscription<String>? _incomingTransferSubscription;
   final Queue<String> _incomingTransferQueue = Queue<String>();
   String? _activeIncomingTransferPayload;
@@ -227,24 +233,6 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    // Auto-switch to Connections tab once when first connection appears,
-    // so the user lands on Connections after connecting from Hosts.
-    // Does not repeat so the user can freely switch back to Hosts.
-    final connectionStates = ref.watch(activeSessionsProvider);
-    if (!_hasAutoSwitchedToConnections &&
-        _selectedIndex == 0 &&
-        connectionStates.isNotEmpty) {
-      _hasAutoSwitchedToConnections = true;
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted && _selectedIndex == 0) {
-          setState(() => _selectedIndex = 1);
-        }
-      });
-    }
-    if (connectionStates.isEmpty) {
-      _hasAutoSwitchedToConnections = false;
-    }
-
     final screenWidth = MediaQuery.of(context).size.width;
     final isWide = screenWidth >= _mobileBreakpoint;
 
@@ -900,6 +888,9 @@ class _HostRow extends ConsumerWidget {
 
     if (connectionIds.length == 1) {
       if (context.mounted) {
+        context
+            .findAncestorStateOfType<_HomeScreenState>()
+            ?.switchToConnectionsTab();
         unawaited(
           context.push(
             '/terminal/${host.id}?connectionId=${connectionIds.first}',
@@ -982,6 +973,9 @@ class _HostRow extends ConsumerWidget {
 
     final selectedId = int.tryParse(selection.replaceFirst('connection:', ''));
     if (selectedId != null) {
+      context
+          .findAncestorStateOfType<_HomeScreenState>()
+          ?.switchToConnectionsTab();
       unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
     }
   }
@@ -1015,6 +1009,11 @@ class _HostRow extends ConsumerWidget {
     unawaited(
       context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
     );
+    if (context.mounted) {
+      context
+          .findAncestorStateOfType<_HomeScreenState>()
+          ?.switchToConnectionsTab();
+    }
   }
 
   Future<void> _showContextMenu(
