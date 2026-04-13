@@ -118,9 +118,9 @@ const _terminalFilePathVerificationExtensions = <String>[
 
 /// Expandable tmux bar that sits at the bottom of the terminal.
 ///
-/// The handle bar is a normal Column child below the terminal so it
-/// doesn't cover content. When expanded, the window list overlays
-/// the terminal via a sibling [_TmuxExpandableOverlay] in a Stack.
+/// Collapsed: a slim handle bar showing session name + drag pill.
+/// Expanded: grows upward, pushing the terminal content up via padding.
+/// The entire bar (handle + expanded content) is a single Column child.
 class _TmuxExpandableBar extends StatefulWidget {
   const _TmuxExpandableBar({
     required this.session,
@@ -128,8 +128,6 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.isProUser,
     required this.ref,
     required this.onAction,
-    required this.onOverlayChanged,
-    super.key,
   });
 
   /// The active SSH session.
@@ -146,9 +144,6 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
-
-  /// Called when the overlay visibility changes (expand/collapse/drag).
-  final VoidCallback onOverlayChanged;
 
   @override
   State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
@@ -167,7 +162,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
   void initState() {
     super.initState();
     _loadWindows();
-    // Continuously sync window state every 5 seconds.
     _syncTimer = Timer.periodic(
       const Duration(seconds: 5),
       (_) => _loadWindows(),
@@ -193,8 +187,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       });
     } on Object {
       if (!mounted) return;
-      // Only clear loading on first load failure — don't wipe existing data
-      // on periodic refresh failures.
       if (_isLoading) setState(() => _isLoading = false);
     }
   }
@@ -204,8 +196,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       _dragOffset -= details.delta.dy;
       _dragOffset = _dragOffset.clamp(0.0, 300.0);
     });
-    // Update overlay visibility via notifier (no parent rebuild needed).
-    _syncOverlayNotifier();
   }
 
   void _onVerticalDragEnd(DragEndDetails details) {
@@ -215,24 +205,22 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
       _expanded = shouldExpand;
       _dragOffset = 0;
     });
-    _syncOverlayNotifier();
-    // Refresh window list when expanding to get current active state.
     if (shouldExpand) _loadWindows();
   }
-
-  void _syncOverlayNotifier() => widget.onOverlayChanged();
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final dragExpansion = _dragOffset > 0 && !_expanded ? _dragOffset : 0.0;
 
-    // The handle bar sits in the normal layout flow (Column child).
-    // The expanded overlay is rendered by _TmuxExpandableOverlay in the
-    // parent Stack, reading state from this widget via a GlobalKey.
     return GestureDetector(
       onVerticalDragUpdate: _onVerticalDragUpdate,
       onVerticalDragEnd: _onVerticalDragEnd,
-      child: DecoratedBox(
+      child: AnimatedContainer(
+        duration: _dragOffset > 0
+            ? Duration.zero
+            : const Duration(milliseconds: 300),
+        curve: Curves.easeOutCubic,
         decoration: BoxDecoration(
           color: theme.colorScheme.surfaceContainerHighest,
           border: Border(
@@ -242,19 +230,44 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
             ),
           ),
         ),
-        child: _buildHandleBar(theme),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _buildHandleBar(theme),
+            if (dragExpansion > 0)
+              SizedBox(
+                height: dragExpansion,
+                child: ClipRect(
+                  child: Align(
+                    alignment: Alignment.topCenter,
+                    child: _buildWindowList(theme),
+                  ),
+                ),
+              ),
+            AnimatedCrossFade(
+              duration: const Duration(milliseconds: 300),
+              sizeCurve: Curves.easeOutCubic,
+              crossFadeState: _expanded
+                  ? CrossFadeState.showSecond
+                  : CrossFadeState.showFirst,
+              firstChild: const SizedBox.shrink(),
+              secondChild: ConstrainedBox(
+                constraints: BoxConstraints(
+                  maxHeight: MediaQuery.sizeOf(context).height * 0.4,
+                ),
+                child: _buildWindowList(theme),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
-
-  /// Whether the overlay should be visible (expanded or being dragged).
-  bool get showOverlay => _expanded || _dragOffset > 0;
 
   Widget _buildHandleBar(ThemeData theme) => GestureDetector(
     onTap: () {
       final wasExpanded = _expanded;
       setState(() => _expanded = !_expanded);
-      _syncOverlayNotifier();
       // Refresh window list when expanding to get current active state.
       if (!wasExpanded) _loadWindows();
     },
@@ -340,7 +353,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar> {
             title: const Text('New Window'),
             onTap: () {
               setState(() => _expanded = false);
-              _syncOverlayNotifier();
               showModalBottomSheet<AgentLaunchTool?>(
                 context: context,
                 builder: (ctx) => TmuxToolPickerSheet(
@@ -1706,9 +1718,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
   bool _showTmuxBar = true;
-  final _tmuxOverlayNotifier = ValueNotifier<bool>(false);
   String? _tmuxWorkingDirectory;
-  final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -2786,70 +2796,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  /// Builds the expanded tmux overlay that floats above the terminal.
-  ///
-  /// Reads state from the [_TmuxExpandableBarState] via [_tmuxBarKey].
-  Widget _buildTmuxOverlay(ThemeData theme) {
-    final barState = _tmuxBarKey.currentState;
-    if (barState == null) return const SizedBox.shrink();
-
-    final dragExpansion = barState._dragOffset > 0 && !barState._expanded
-        ? barState._dragOffset
-        : 0.0;
-
-    return AnimatedContainer(
-      duration: barState._dragOffset > 0
-          ? Duration.zero
-          : const Duration(milliseconds: 300),
-      curve: Curves.easeOutCubic,
-      decoration: BoxDecoration(
-        color: theme.colorScheme.surfaceContainerHighest,
-        borderRadius: const BorderRadius.vertical(top: Radius.circular(12)),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withAlpha(40),
-            blurRadius: 8,
-            offset: const Offset(0, -2),
-          ),
-        ],
-      ),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (dragExpansion > 0)
-            SizedBox(
-              height: dragExpansion,
-              child: ClipRect(
-                child: Align(
-                  alignment: Alignment.topCenter,
-                  child: barState._buildWindowList(theme),
-                ),
-              ),
-            ),
-          AnimatedCrossFade(
-            duration: const Duration(milliseconds: 300),
-            sizeCurve: Curves.easeOutCubic,
-            crossFadeState: barState._expanded
-                ? CrossFadeState.showSecond
-                : CrossFadeState.showFirst,
-            firstChild: const SizedBox.shrink(),
-            secondChild: ConstrainedBox(
-              constraints: BoxConstraints(
-                maxHeight: MediaQuery.sizeOf(context).height * 0.4,
-              ),
-              child: barState._buildWindowList(theme),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  /// Builds a draggable tmux panel anchored to the bottom of the terminal.
-  ///
-  /// Collapsed, it shows a slim handle bar with the session name.
-  /// Dragging up smoothly expands it into the full navigator without
-  /// changing the terminal's layout.
+  /// Builds the tmux expandable bar as a Column child below the terminal.
   Widget _buildTmuxExpandableBar(ThemeData theme) {
     final connectionId = _connectionId;
     if (connectionId == null || _tmuxSessionName == null) {
@@ -2867,16 +2814,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     return _TmuxExpandableBar(
-      key: _tmuxBarKey,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
       isProUser: isProUser,
       ref: ref,
       onAction: _handleTmuxAction,
-      onOverlayChanged: () {
-        _tmuxOverlayNotifier.value =
-            _tmuxBarKey.currentState?.showOverlay ?? false;
-      },
     );
   }
 
@@ -3154,7 +3096,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
     _toolbarController.dispose();
-    _tmuxOverlayNotifier.dispose();
     super.dispose();
   }
 
@@ -3541,34 +3482,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       body: Column(
         children: [
-          Expanded(
-            child: Stack(
-              children: [
-                Positioned.fill(
-                  child: _buildTerminalView(terminalTheme, isMobile),
-                ),
-                // Overlay: expanded window list floats above the terminal.
-                // Uses ValueListenableBuilder so the parent doesn't rebuild
-                // on drag updates — that would kill the gesture recognizer.
-                if (_isTmuxActive &&
-                    _showTmuxBar &&
-                    connectionState == SshConnectionState.connected)
-                  ValueListenableBuilder<bool>(
-                    valueListenable: _tmuxOverlayNotifier,
-                    builder: (context, visible, _) {
-                      if (!visible) return const SizedBox.shrink();
-                      return Positioned(
-                        left: 0,
-                        right: 0,
-                        bottom: 0,
-                        child: _buildTmuxOverlay(theme),
-                      );
-                    },
-                  ),
-              ],
-            ),
-          ),
-          // Handle bar: sits below the terminal in normal layout flow.
+          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
           if (_isTmuxActive &&
               _showTmuxBar &&
               connectionState == SshConnectionState.connected)
