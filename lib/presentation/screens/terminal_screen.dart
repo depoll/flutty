@@ -149,7 +149,7 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Height of the collapsed handle bar. The terminal adds this as
   /// bottom padding so the handle sits over empty space.
-  static const handleHeight = 28.0;
+  static const handleHeight = 22.0;
 
   @override
   State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
