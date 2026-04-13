@@ -69,7 +69,7 @@ jobs:
     steps:
       - name: Validate PR is safe to deploy
         id: validate
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const owner = context.repo.owner;
@@ -181,7 +181,7 @@ jobs:
     steps:
       - name: Keep deploy build number monotonic
         id: finalize
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           INPUT_BUILD_NAME: ${{ needs.compute-version.outputs.build-name }}
           INPUT_BUILD_CODENAME: ${{ needs.compute-version.outputs.build-codename }}
@@ -341,7 +341,7 @@ jobs:
     steps:
       - name: Find or start reusable artifact build
         id: resolve
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const owner = context.repo.owner;
@@ -490,7 +490,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Mark deploy as running
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const owner = context.repo.owner;
@@ -731,7 +731,7 @@ jobs:
       pull-requests: write
     steps:
       - name: Mark deploy as complete
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
             const owner = context.repo.owner;
