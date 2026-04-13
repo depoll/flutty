@@ -65,10 +65,9 @@ class TmuxService {
     try {
       final output = await _exec(
         session,
-        'SEP=\$(printf \'\\037\'); '
         'tmux list-sessions -F '
-        r'"#{session_name}${SEP}#{session_windows}${SEP}'
-        r'#{session_attached}${SEP}#{session_activity}"',
+        "'#{session_name}|#{session_windows}|"
+        "#{session_attached}|#{session_activity}'",
       );
       return _parseLines(output, TmuxSession.fromTmuxFormat);
     } on Exception {
@@ -120,17 +119,12 @@ class TmuxService {
   ) async {
     try {
       final quotedName = _shellQuote(sessionName);
-      // Use ASCII Unit Separator as field delimiter so pipes, symbols,
-      // and emoji in window names / pane titles don't break parsing.
-      // Generate the separator via printf to avoid raw control chars
-      // in the command string.
       final output = await _exec(
         session,
-        'SEP=\$(printf \'\\037\'); '
         'tmux list-windows -t $quotedName -F '
-        r'"#{window_index}${SEP}#{window_name}${SEP}#{window_active}${SEP}'
-        r'#{pane_current_command}${SEP}#{pane_current_path}${SEP}'
-        r'#{window_flags}${SEP}#{pane_title}${SEP}#{window_activity}"',
+        "'#{window_index}|#{window_name}|#{window_active}|"
+        '#{pane_current_command}|#{pane_current_path}|'
+        "#{window_flags}|#{pane_title}|#{window_activity}'",
       );
       return _parseLines(output, TmuxWindow.fromTmuxFormat);
     } on Exception {

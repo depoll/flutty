@@ -11,15 +11,12 @@ class TmuxSession {
     this.lastActivity,
   });
 
-  /// Parses a [TmuxSession] from a unit-separator-delimited tmux format
-  /// string.
+  /// Parses a [TmuxSession] from a pipe-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-sessions -F`):
-  /// `session_name\x1fwindow_count\x1fattached_flag\x1factivity_epoch`
+  /// `session_name|window_count|attached_flag|activity_epoch`
   factory TmuxSession.fromTmuxFormat(String line) {
-    final parts = line.split('\x1f');
-    // Fall back to pipe delimiter for compatibility with older callers.
-    final fields = parts.length >= 3 ? parts : line.split('|');
+    final fields = line.split('|');
     if (fields.length < 3) {
       throw FormatException('Invalid tmux session format: $line');
     }
@@ -80,15 +77,12 @@ class TmuxWindow {
     this.idleSeconds,
   });
 
-  /// Parses a [TmuxWindow] from a unit-separator-delimited tmux format
-  /// string.
+  /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
   ///
   /// Expected format (from `tmux list-windows -F`):
-  /// `index\x1fname\x1factive_flag\x1fcommand\x1fpath\x1fflags\x1fpane_title\x1factivity_epoch`
+  /// `index|name|active_flag|command|path|flags|pane_title|activity_epoch`
   factory TmuxWindow.fromTmuxFormat(String line) {
-    final parts = line.split('\x1f');
-    // Fall back to pipe delimiter for compatibility with older callers.
-    final fields = parts.length >= 3 ? parts : line.split('|');
+    final fields = line.split('|');
     if (fields.length < 3) {
       throw FormatException('Invalid tmux window format: $line');
     }

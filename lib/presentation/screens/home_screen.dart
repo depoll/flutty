@@ -46,6 +46,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _selectedIndex = 0;
+  bool _hasAutoSwitchedToConnections = false;
   StreamSubscription<String>? _incomingTransferSubscription;
   final Queue<String> _incomingTransferQueue = Queue<String>();
   String? _activeIncomingTransferPayload;
@@ -226,16 +227,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
-    // When returning from a terminal session, auto-switch to the
-    // Connections tab if there are active connections so the user
-    // can immediately see and manage windows/sessions.
+    // Auto-switch to Connections tab once when first connection appears,
+    // so the user lands on Connections after connecting from Hosts.
+    // Does not repeat so the user can freely switch back to Hosts.
     final connectionStates = ref.watch(activeSessionsProvider);
-    if (_selectedIndex == 0 && connectionStates.isNotEmpty) {
+    if (!_hasAutoSwitchedToConnections &&
+        _selectedIndex == 0 &&
+        connectionStates.isNotEmpty) {
+      _hasAutoSwitchedToConnections = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted && _selectedIndex == 0) {
           setState(() => _selectedIndex = 1);
         }
       });
+    }
+    if (connectionStates.isEmpty) {
+      _hasAutoSwitchedToConnections = false;
     }
 
     final screenWidth = MediaQuery.of(context).size.width;
