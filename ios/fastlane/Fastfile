@@ -110,7 +110,7 @@ platform :ios do
   end
 
   private_lane :testflight_release_notes do
-    preview_notes = PreviewReleaseNotes.current
+    preview_notes = PreviewReleaseNotes.current(max_length: 4000)
     next [nil, nil] if preview_notes.nil?
 
     [
