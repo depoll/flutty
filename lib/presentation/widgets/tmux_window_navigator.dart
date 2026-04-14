@@ -114,10 +114,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   List<ToolSessionInfo>? _recentSessions;
   Set<AgentLaunchTool>? _installedTools;
   final Set<String> _expandedSessionTools = <String>{};
+  StreamSubscription<void>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   bool _isLoadingSessions = false;
   bool _showRecentSessions = false;
   String? _error;
+  bool _loadingWindows = false;
+  bool _pendingWindowReload = false;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -127,10 +130,27 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   @override
   void initState() {
     super.initState();
+    _windowChangeSubscription = _tmux
+        .watchWindowChanges(widget.session, widget.tmuxSessionName)
+        .listen((_) {
+          if (!mounted) return;
+          _loadWindows();
+        });
     _loadWindows();
   }
 
+  @override
+  void dispose() {
+    _windowChangeSubscription?.cancel();
+    super.dispose();
+  }
+
   Future<void> _loadWindows() async {
+    if (_loadingWindows) {
+      _pendingWindowReload = true;
+      return;
+    }
+    _loadingWindows = true;
     try {
       final windows = await _tmux.listWindows(
         widget.session,
@@ -149,6 +169,12 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         _error = e.toString();
         _isLoadingWindows = false;
       });
+    } finally {
+      _loadingWindows = false;
+      if (_pendingWindowReload) {
+        _pendingWindowReload = false;
+        unawaited(_loadWindows());
+      }
     }
   }
 

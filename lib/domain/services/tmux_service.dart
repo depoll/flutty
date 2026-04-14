@@ -1,5 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
+import 'package:dartssh2/dartssh2.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tmux_state.dart';
@@ -23,10 +26,19 @@ class TmuxService {
   /// Cached profile source commands per SSH session.
   static final Map<int, String> _profileSourceCache = {};
 
+  static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
+  _windowObservers = {};
+
   /// Clears the cached tmux path for a connection.
   void clearCache(int connectionId) {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
+    final observerKeys = _windowObservers.keys
+        .where((key) => key.connectionId == connectionId)
+        .toList(growable: false);
+    for (final key in observerKeys) {
+      unawaited(_windowObservers.remove(key)?.dispose());
+    }
   }
 
   // ── Detection ──────────────────────────────────────────────────────────
@@ -110,6 +122,19 @@ class TmuxService {
     }
   }
 
+  /// Returns `true` if [sessionName] exists on the remote tmux server.
+  Future<bool> hasSession(SshSession session, String sessionName) async {
+    try {
+      final output = await _exec(
+        session,
+        'tmux has-session -t ${_shellQuote(sessionName)} 2>/dev/null && printf 1',
+      );
+      return output.trim() == '1';
+    } on Exception {
+      return false;
+    }
+  }
+
   // ── Window queries ─────────────────────────────────────────────────────
 
   /// Lists all windows in the given tmux [sessionName].
@@ -130,6 +155,25 @@ class TmuxService {
     } on Exception {
       return const [];
     }
+  }
+
+  /// Watches tmux control-mode notifications that indicate window state
+  /// has changed for [sessionName].
+  Stream<void> watchWindowChanges(SshSession session, String sessionName) {
+    final key = _TmuxWindowWatchKey(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+    );
+    final observer = _windowObservers.putIfAbsent(
+      key,
+      () => _TmuxWindowChangeObserver(
+        service: this,
+        session: session,
+        sessionName: sessionName,
+        onDispose: () => _windowObservers.remove(key),
+      ),
+    );
+    return observer.stream;
   }
 
   // ── Window mutations ───────────────────────────────────────────────────
@@ -333,6 +377,232 @@ class TmuxService {
   /// Single-quotes a value for safe use in shell commands.
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
+}
+
+const _tmuxWindowSubscriptionFormat =
+    '#{window_index}|#{window_name}|#{window_active}|'
+    '#{pane_current_command}|#{pane_current_path}|'
+    '#{window_flags}|#{pane_title}|#{window_activity}';
+
+const _tmuxControlModeClientFlags = 'read-only,ignore-size,no-output,wait-exit';
+
+/// Builds the tmux control-mode attach command used for live window updates.
+@visibleForTesting
+String buildTmuxControlModeAttachCommand(String sessionName) =>
+    'tmux -CC attach-session -f $_tmuxControlModeClientFlags '
+    '-t ${TmuxService._shellQuote(sessionName)}';
+
+/// Builds the tmux control-mode subscription command for window snapshots.
+@visibleForTesting
+String buildTmuxWindowSubscriptionCommand(String subscriptionName) =>
+    "refresh-client -B '$subscriptionName:@*:$_tmuxWindowSubscriptionFormat'";
+
+/// Returns whether a control-mode output [line] should trigger a window
+/// snapshot refresh for the observer using [subscriptionName].
+@visibleForTesting
+bool shouldReloadTmuxWindowsFromControlLine(
+  String line, {
+  required String subscriptionName,
+}) {
+  final trimmed = line.trim();
+  if (trimmed.isEmpty) return false;
+  if (trimmed.startsWith('%subscription-changed $subscriptionName ')) {
+    return true;
+  }
+
+  const notificationPrefixes = <String>[
+    '%session-changed ',
+    '%session-renamed ',
+    '%session-window-changed ',
+    '%sessions-changed',
+    '%unlinked-window-add ',
+    '%unlinked-window-close ',
+    '%unlinked-window-renamed ',
+    '%window-add ',
+    '%window-close ',
+    '%window-pane-changed ',
+    '%window-renamed ',
+  ];
+  return notificationPrefixes.any(trimmed.startsWith);
+}
+
+@immutable
+class _TmuxWindowWatchKey {
+  const _TmuxWindowWatchKey({
+    required this.connectionId,
+    required this.sessionName,
+  });
+
+  final int connectionId;
+  final String sessionName;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _TmuxWindowWatchKey &&
+          connectionId == other.connectionId &&
+          sessionName == other.sessionName;
+
+  @override
+  int get hashCode => Object.hash(connectionId, sessionName);
+}
+
+class _TmuxWindowChangeObserver {
+  _TmuxWindowChangeObserver({
+    required this.service,
+    required this.session,
+    required this.sessionName,
+    required this.onDispose,
+  }) : _controller = StreamController<void>.broadcast() {
+    _controller
+      ..onListen = _ensureStarted
+      ..onCancel = () => unawaited(dispose());
+  }
+
+  static const _eventDebounce = Duration(milliseconds: 150);
+
+  final TmuxService service;
+  final SshSession session;
+  final String sessionName;
+  final VoidCallback onDispose;
+  final StreamController<void> _controller;
+
+  StreamSubscription<String>? _stdoutSubscription;
+  StreamSubscription<String>? _stderrSubscription;
+  StreamSubscription<void>? _doneSubscription;
+  Timer? _debounceTimer;
+  Timer? _restartTimer;
+  SSHSession? _controlSession;
+  bool _starting = false;
+  bool _disposed = false;
+  int _restartAttempts = 0;
+
+  String get _subscriptionName =>
+      'flutty-${session.connectionId}-${sessionName.hashCode.abs()}';
+
+  Stream<void> get stream => _controller.stream;
+
+  Future<void> _ensureStarted() async {
+    if (_disposed || _starting || _controlSession != null) return;
+    _starting = true;
+    try {
+      await service._cacheTmuxPath(session);
+      final execSession = await session.execute(
+        service._wrapCommand(
+          session,
+          buildTmuxControlModeAttachCommand(sessionName),
+        ),
+      );
+      if (_disposed) {
+        execSession.close();
+        return;
+      }
+
+      _controlSession = execSession;
+      _stdoutSubscription = execSession.stdout
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(_handleStdoutLine, onError: _handleControlFailure);
+      _stderrSubscription = execSession.stderr
+          .cast<List<int>>()
+          .transform(utf8.decoder)
+          .transform(const LineSplitter())
+          .listen(_handleStderrLine, onError: _handleControlFailure);
+      _doneSubscription = execSession.done.asStream().listen(
+        (_) => _handleControlClosed(),
+        onError: _handleControlFailure,
+      );
+      _configureControlSession();
+      _restartAttempts = 0;
+    } on Object catch (error, stackTrace) {
+      _handleControlFailure(error, stackTrace);
+    } finally {
+      _starting = false;
+    }
+  }
+
+  void _configureControlSession() {
+    final controlSession = _controlSession;
+    if (controlSession == null) return;
+    controlSession.write(
+      utf8.encode('${buildTmuxWindowSubscriptionCommand(_subscriptionName)}\n'),
+    );
+  }
+
+  void _handleStdoutLine(String line) {
+    if (_disposed) return;
+    final trimmed = line.trim();
+    if (trimmed.startsWith('%exit')) {
+      _handleControlClosed();
+      return;
+    }
+    if (!shouldReloadTmuxWindowsFromControlLine(
+      trimmed,
+      subscriptionName: _subscriptionName,
+    )) {
+      return;
+    }
+    _scheduleEvent();
+  }
+
+  void _handleStderrLine(String line) {
+    if (_disposed || line.trim().isEmpty) return;
+    _scheduleRestart();
+  }
+
+  void _scheduleEvent() {
+    if (_disposed) return;
+    _debounceTimer?.cancel();
+    _debounceTimer = Timer(_eventDebounce, () {
+      if (!_disposed && !_controller.isClosed) {
+        _controller.add(null);
+      }
+    });
+  }
+
+  void _handleControlFailure(Object error, StackTrace stackTrace) {
+    _scheduleRestart();
+  }
+
+  void _handleControlClosed() {
+    _cleanupControlSession();
+    _scheduleRestart();
+  }
+
+  void _scheduleRestart() {
+    if (_disposed || !_controller.hasListener) return;
+    _restartTimer?.cancel();
+    final cappedAttempt = _restartAttempts.clamp(0, 4);
+    final delay = Duration(seconds: 1 << cappedAttempt);
+    _restartAttempts += 1;
+    _restartTimer = Timer(delay, () => unawaited(_ensureStarted()));
+  }
+
+  void _cleanupControlSession() {
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    unawaited(_stdoutSubscription?.cancel());
+    unawaited(_stderrSubscription?.cancel());
+    unawaited(_doneSubscription?.cancel());
+    _stdoutSubscription = null;
+    _stderrSubscription = null;
+    _doneSubscription = null;
+    _controlSession?.close();
+    _controlSession = null;
+  }
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    _restartTimer?.cancel();
+    _restartTimer = null;
+    _cleanupControlSession();
+    if (!_controller.isClosed) {
+      await _controller.close();
+    }
+    onDispose();
+  }
 }
 
 /// Provider for [TmuxService].

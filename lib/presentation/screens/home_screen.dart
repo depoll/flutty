@@ -53,6 +53,11 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     if (_selectedIndex != 1) setState(() => _selectedIndex = 1);
   }
 
+  /// Switches back to the Hosts tab.
+  void switchToHostsTab() {
+    if (_selectedIndex != 0) setState(() => _selectedIndex = 0);
+  }
+
   StreamSubscription<String>? _incomingTransferSubscription;
   final Queue<String> _incomingTransferQueue = Queue<String>();
   String? _activeIncomingTransferPayload;
@@ -233,6 +238,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<Map<int, SshConnectionState>>(activeSessionsProvider, (
+      previous,
+      next,
+    ) {
+      final hadConnections = previous?.isNotEmpty ?? false;
+      if (!hadConnections || next.isNotEmpty || _selectedIndex != 1) {
+        return;
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _selectedIndex != 1) {
+          return;
+        }
+        switchToHostsTab();
+      });
+    });
+
     final screenWidth = MediaQuery.of(context).size.width;
     final isWide = screenWidth >= _mobileBreakpoint;
 
@@ -2329,11 +2350,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _canLoadMoreSessions = false;
   int _sessionFetchLimit = _initialSessionFetchLimit;
   bool _restoredUiState = false;
+  StreamSubscription<void>? _windowChangeSubscription;
+  bool _loadingWindows = false;
+  bool _pendingWindowReload = false;
 
   @override
   void initState() {
     super.initState();
     _queryTmux();
+  }
+
+  @override
+  void dispose() {
+    unawaited(_windowChangeSubscription?.cancel());
+    super.dispose();
   }
 
   @override
@@ -2409,13 +2439,47 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
 
-    final windows = await tmux.listWindows(session, sessionName);
-    if (!mounted) return;
-    setState(() {
-      _windows = windows;
-      _sessionName = sessionName;
-      _queried = true;
-    });
+    await _windowChangeSubscription?.cancel();
+    _windowChangeSubscription = tmux
+        .watchWindowChanges(session, sessionName)
+        .listen((_) {
+          if (!mounted) return;
+          _refreshTmuxWindows(session, sessionName);
+        });
+    await _refreshTmuxWindows(session, sessionName);
+  }
+
+  Future<void> _refreshTmuxWindows(
+    SshSession session,
+    String sessionName,
+  ) async {
+    if (_loadingWindows) {
+      _pendingWindowReload = true;
+      return;
+    }
+    _loadingWindows = true;
+    try {
+      final windows = await ref
+          .read(tmuxServiceProvider)
+          .listWindows(session, sessionName);
+      if (!mounted) return;
+      setState(() {
+        _windows = windows;
+        _sessionName = sessionName;
+        _queried = true;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _queried = true;
+      });
+    } finally {
+      _loadingWindows = false;
+      if (_pendingWindowReload) {
+        _pendingWindowReload = false;
+        unawaited(_refreshTmuxWindows(session, sessionName));
+      }
+    }
   }
 
   @override

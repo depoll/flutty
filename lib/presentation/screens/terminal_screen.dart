@@ -83,6 +83,47 @@ double resolveTmuxBarMaxContentHeight(
   );
 }
 
+const _tmuxBarRevealDuration = Duration(milliseconds: 300);
+const _tmuxDetectionRetrySchedule = <Duration>[
+  Duration.zero,
+  Duration(milliseconds: 150),
+  Duration(milliseconds: 350),
+  Duration(milliseconds: 700),
+  Duration(milliseconds: 1400),
+];
+
+/// Resolves the retry schedule used for tmux detection after connect.
+@visibleForTesting
+List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
+    skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
+
+/// Resolves the tmux session name we can infer before remote verification.
+@visibleForTesting
+String? resolvePreferredTmuxSessionName({
+  String? structuredSessionName,
+  String? autoConnectCommand,
+}) => structuredSessionName ?? parseTmuxSessionName(autoConnectCommand);
+
+/// Resolves the tmux bar's vertical offset from the animated bottom padding.
+@visibleForTesting
+double resolveTmuxBarRevealBottomOffset(
+  double terminalBottomPadding, {
+  double handleHeight = 22,
+}) => terminalBottomPadding - handleHeight;
+
+/// Resolves the tmux bar's reveal opacity from the animated bottom padding.
+@visibleForTesting
+double resolveTmuxBarRevealOpacity(
+  double terminalBottomPadding, {
+  double handleHeight = 22,
+}) {
+  if (handleHeight <= 0) {
+    return terminalBottomPadding > 0 ? 1 : 0;
+  }
+
+  return (terminalBottomPadding / handleHeight).clamp(0.0, 1.0);
+}
+
 final _oscEscapeSequencePattern = RegExp(
   '\x1B\\][^\x07\x1B]*(?:\x07|\x1B\\\\)',
   dotAll: true,
@@ -216,9 +257,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _showSessions = false;
   double _dragOffset = 0;
   int _sessionFetchLimit = _initialSessionFetchLimit;
-  Timer? _syncTimer;
+  StreamSubscription<void>? _windowChangeSubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
+  bool _loadingWindows = false;
+  bool _pendingWindowReload = false;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -239,15 +282,24 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
     _loadWindows();
-    _syncTimer = Timer.periodic(
-      const Duration(seconds: 5),
-      (_) => _loadWindows(),
-    );
+    _subscribeToWindowChanges();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TmuxExpandableBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.connectionId == widget.session.connectionId &&
+        oldWidget.tmuxSessionName == widget.tmuxSessionName) {
+      return;
+    }
+    _windowChangeSubscription?.cancel();
+    _subscribeToWindowChanges();
+    _loadWindows();
   }
 
   @override
   void dispose() {
-    _syncTimer?.cancel();
+    _windowChangeSubscription?.cancel();
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
     }
@@ -255,7 +307,21 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     super.dispose();
   }
 
+  void _subscribeToWindowChanges() {
+    _windowChangeSubscription = _tmux
+        .watchWindowChanges(widget.session, widget.tmuxSessionName)
+        .listen((_) {
+          if (!mounted) return;
+          _loadWindows();
+        });
+  }
+
   Future<void> _loadWindows() async {
+    if (_loadingWindows) {
+      _pendingWindowReload = true;
+      return;
+    }
+    _loadingWindows = true;
     try {
       final windows = await _tmux.listWindows(
         widget.session,
@@ -301,6 +367,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     } on Object {
       if (!mounted) return;
       if (_isLoading) setState(() => _isLoading = false);
+    } finally {
+      _loadingWindows = false;
+      if (_pendingWindowReload) {
+        _pendingWindowReload = false;
+        unawaited(_loadWindows());
+      }
     }
   }
 
@@ -2122,6 +2194,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showTmuxBar = true;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
+  int _tmuxDetectionGeneration = 0;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -2856,6 +2929,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       });
       _restoreTerminalFocus();
+      _primeTmuxStateFromHost();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -3144,70 +3218,127 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
+  void _primeTmuxStateFromHost() {
+    final host = _host;
+    final preferredSessionName = resolvePreferredTmuxSessionName(
+      structuredSessionName: host?.tmuxSessionName,
+      autoConnectCommand: host?.autoConnectCommand,
+    );
+    if (!mounted || preferredSessionName == null) {
+      return;
+    }
+
+    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
+    setState(() {
+      _isTmuxActive = true;
+      _tmuxSessionName = preferredSessionName;
+      _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+      _tmuxWorkingDirectory = preferredWorkingDirectory;
+    });
+  }
+
   /// Detects whether the connected session is inside tmux.
   ///
-  /// Waits briefly for the auto-connect command to initialize, then
-  /// checks for tmux sessions via an exec channel. If tmux is active,
-  /// also queries the current session name.
+  /// Starts with any structured tmux configuration immediately, then retries
+  /// discovery until the shell-side attach command has settled.
   Future<void> _detectTmux(SshSession session, {bool skipDelay = false}) async {
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
+    final detectionGeneration = ++_tmuxDetectionGeneration;
+    final host = _host;
+    final preferredSessionName = resolvePreferredTmuxSessionName(
+      structuredSessionName: host?.tmuxSessionName,
+      autoConnectCommand: host?.autoConnectCommand,
+    );
+    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
 
-    // Clear any stale tmux state from a previous connection.
     if (mounted) {
+      setState(() {
+        _isTmuxActive = preferredSessionName != null;
+        _tmuxSessionName = preferredSessionName;
+        _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+        _tmuxWorkingDirectory = preferredWorkingDirectory;
+      });
+    }
+
+    try {
+      final tmux = ref.read(tmuxServiceProvider);
+      final retrySchedule = resolveTmuxDetectionRetrySchedule(
+        skipDelay: skipDelay,
+      );
+
+      for (final delay in retrySchedule) {
+        if (delay > Duration.zero) {
+          await Future<void>.delayed(delay);
+          if (!mounted ||
+              _connectionId != capturedConnectionId ||
+              detectionGeneration != _tmuxDetectionGeneration) {
+            return;
+          }
+        }
+
+        final active = preferredSessionName != null
+            ? await tmux.hasSession(session, preferredSessionName)
+            : await tmux.isTmuxActive(session);
+        if (!mounted ||
+            _connectionId != capturedConnectionId ||
+            detectionGeneration != _tmuxDetectionGeneration) {
+          return;
+        }
+        if (!active) {
+          continue;
+        }
+
+        var sessionName = preferredSessionName;
+        sessionName ??= await tmux.currentSessionName(session);
+        if (!mounted ||
+            _connectionId != capturedConnectionId ||
+            detectionGeneration != _tmuxDetectionGeneration) {
+          return;
+        }
+        if (sessionName == null) {
+          continue;
+        }
+
+        // Get the active window's working directory for SFTP/path resolution.
+        var tmuxLaunchCwd = preferredWorkingDirectory;
+        var tmuxCwd = preferredWorkingDirectory;
+        try {
+          final windows = await tmux.listWindows(session, sessionName);
+          final activeWindow = windows.where((w) => w.isActive).firstOrNull;
+          tmuxLaunchCwd ??= activeWindow?.currentPath;
+          tmuxCwd ??= activeWindow?.currentPath;
+        } on Object {
+          // Non-critical — path resolution will fall back to OSC 7.
+        }
+
+        if (!mounted ||
+            _connectionId != capturedConnectionId ||
+            detectionGeneration != _tmuxDetectionGeneration) {
+          return;
+        }
+
+        setState(() {
+          _isTmuxActive = true;
+          _tmuxSessionName = sessionName;
+          _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
+          _tmuxWorkingDirectory = tmuxCwd;
+        });
+        return;
+      }
+
+      if (!mounted ||
+          _connectionId != capturedConnectionId ||
+          detectionGeneration != _tmuxDetectionGeneration) {
+        return;
+      }
+
       setState(() {
         _isTmuxActive = false;
         _tmuxSessionName = null;
         _tmuxLaunchWorkingDirectory = null;
         _tmuxWorkingDirectory = null;
-      });
-    }
-
-    // Give the auto-connect command (which may start tmux) time to init.
-    // Skip the delay when re-opening an already-connected terminal.
-    if (!skipDelay) {
-      await Future<void>.delayed(const Duration(seconds: 2));
-      if (!mounted || _connectionId != capturedConnectionId) return;
-    }
-
-    try {
-      final tmux = ref.read(tmuxServiceProvider);
-      final active = await tmux.isTmuxActive(session);
-      if (!mounted || _connectionId != capturedConnectionId) return;
-
-      if (!active) return;
-
-      // Resolve session name using the best available source:
-      // 1. Host's structured tmux config (explicit session name)
-      // 2. Parsed from auto-connect command (-s flag)
-      // 3. tmux display-message / single-attached fallback
-      final host = _host;
-      var sessionName = host?.tmuxSessionName;
-      sessionName ??= parseTmuxSessionName(host?.autoConnectCommand);
-      sessionName ??= await tmux.currentSessionName(session);
-      if (!mounted || _connectionId != capturedConnectionId) return;
-      if (sessionName == null) return;
-
-      // Get the active window's working directory for SFTP/path resolution.
-      var tmuxLaunchCwd = host?.tmuxWorkingDirectory;
-      var tmuxCwd = host?.tmuxWorkingDirectory;
-      try {
-        final windows = await tmux.listWindows(session, sessionName);
-        final activeWindow = windows.where((w) => w.isActive).firstOrNull;
-        tmuxLaunchCwd ??= activeWindow?.currentPath;
-        tmuxCwd ??= activeWindow?.currentPath;
-      } on Object {
-        // Non-critical — path resolution will fall back to OSC 7.
-      }
-
-      if (!mounted || _connectionId != capturedConnectionId) return;
-
-      setState(() {
-        _isTmuxActive = true;
-        _tmuxSessionName = sessionName;
-        _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
-        _tmuxWorkingDirectory = tmuxCwd;
       });
     } on Object {
       // Silently ignore — tmux detection is best-effort.
@@ -3230,35 +3361,47 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isTmuxActive &&
         _showTmuxBar &&
         connectionState == SshConnectionState.connected;
+    final targetBottomPadding = showTmux
+        ? _TmuxExpandableBar.handleHeight
+        : 0.0;
 
     return LayoutBuilder(
-      builder: (context, constraints) => Stack(
-        children: [
-          // Terminal with animated bottom padding that grows/shrinks
-          // smoothly when the tmux handle appears/disappears.
-          Positioned.fill(
-            child: AnimatedPadding(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOutCubic,
-              padding: EdgeInsets.only(
-                bottom: showTmux ? _TmuxExpandableBar.handleHeight : 0,
+      builder: (context, constraints) => TweenAnimationBuilder<double>(
+        tween: Tween<double>(end: targetBottomPadding),
+        duration: _tmuxBarRevealDuration,
+        curve: Curves.easeOutCubic,
+        child: _buildTmuxExpandableBar(theme, constraints.maxHeight),
+        builder: (context, animatedBottomPadding, child) {
+          final barOpacity = resolveTmuxBarRevealOpacity(animatedBottomPadding);
+
+          return Stack(
+            children: [
+              // Drive the terminal inset and the handle reveal from the same
+              // animated value so the bar stays visually locked to the padding.
+              Positioned.fill(
+                child: Padding(
+                  padding: EdgeInsets.only(bottom: animatedBottomPadding),
+                  child: _buildTerminalView(terminalTheme, isMobile),
+                ),
               ),
-              child: _buildTerminalView(terminalTheme, isMobile),
-            ),
-          ),
-          // Handle bar slides up from below via AnimatedPositioned.
-          Positioned(
-            left: 0,
-            right: 0,
-            bottom: showTmux ? 0 : -_TmuxExpandableBar.handleHeight,
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 300),
-              curve: Curves.easeOutCubic,
-              opacity: showTmux ? 1 : 0,
-              child: _buildTmuxExpandableBar(theme, constraints.maxHeight),
-            ),
-          ),
-        ],
+              if (showTmux || animatedBottomPadding > 0)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: resolveTmuxBarRevealBottomOffset(
+                    animatedBottomPadding,
+                  ),
+                  child: IgnorePointer(
+                    ignoring: barOpacity == 0,
+                    child: Opacity(
+                      opacity: barOpacity,
+                      child: child ?? const SizedBox.shrink(),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
       ),
     );
   }
