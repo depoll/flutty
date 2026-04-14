@@ -25,6 +25,9 @@ Host _testHost({
   required bool autoConnectRequiresConfirmation,
   String? autoConnectCommand,
   int? autoConnectSnippetId,
+  String? tmuxSessionName,
+  String? tmuxWorkingDirectory,
+  String? tmuxExtraFlags,
 }) => Host(
   id: id,
   label: label,
@@ -37,6 +40,9 @@ Host _testHost({
   autoConnectCommand: autoConnectCommand,
   autoConnectSnippetId: autoConnectSnippetId,
   autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+  tmuxSessionName: tmuxSessionName,
+  tmuxWorkingDirectory: tmuxWorkingDirectory,
+  tmuxExtraFlags: tmuxExtraFlags,
   sortOrder: 0,
 );
 
@@ -148,6 +154,8 @@ void main() {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         final encryptionService = SecretEncryptionService.forTesting();
         addTearDown(database.close);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.binding.setSurfaceSize(const Size(420, 900));
 
         final hostRepository = _FakeHostRepository(
           host: _testHost(
@@ -224,11 +232,16 @@ void main() {
 
         final formScroll = find.byType(Scrollable).first;
         await tester.scrollUntilVisible(
-          find.text('Save Changes'),
+          find.byKey(const Key('host-save-button')),
           200,
           scrollable: formScroll,
         );
-        await tester.tap(find.text('Save Changes'));
+        final saveButton = find.byKey(
+          const Key('host-save-button'),
+          skipOffstage: false,
+        );
+        await tester.ensureVisible(saveButton);
+        await tester.tap(saveButton, warnIfMissed: false);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
@@ -242,6 +255,98 @@ void main() {
         );
       },
     );
+
+    testWidgets('saves tmux startup without a custom command', (tester) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      final hostRepository = _FakeHostRepository(
+        host: _testHost(
+          id: 1,
+          label: 'Imported Host',
+          autoConnectRequiresConfirmation: false,
+          tmuxSessionName: 'old-workspace',
+        ),
+        database: database,
+        encryptionService: encryptionService,
+      );
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const Scaffold(body: SizedBox.shrink()),
+          ),
+          GoRoute(
+            path: '/edit',
+            builder: (context, state) => const HostEditScreen(hostId: 1),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+
+      unawaited(router.push('/edit'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-session-field')),
+        'workspace',
+      );
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-working-directory-field')),
+        '~/src/app',
+      );
+      await tester.enterText(
+        find.byKey(const Key('host-tmux-extra-flags-field')),
+        '-f ~/.tmux.conf',
+      );
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('host-save-button')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('host-save-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(hostRepository.updatedHost, isNotNull);
+      expect(hostRepository.updatedHost!.autoConnectCommand, isNull);
+      expect(hostRepository.updatedHost!.autoConnectSnippetId, isNull);
+      expect(
+        hostRepository.updatedHost!.autoConnectRequiresConfirmation,
+        isFalse,
+      );
+      expect(hostRepository.updatedHost!.tmuxSessionName, 'workspace');
+      expect(hostRepository.updatedHost!.tmuxWorkingDirectory, '~/src/app');
+      expect(hostRepository.updatedHost!.tmuxExtraFlags, '-f ~/.tmux.conf');
+    });
 
     testWidgets(
       'clears imported auto-connect review after replacing the command',
@@ -387,22 +492,10 @@ void main() {
 
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('host-advanced-tile')),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.ensureVisible(find.byKey(const Key('host-advanced-tile')));
-      await tester.tap(
-        find.byKey(const Key('host-advanced-tile')),
-        warnIfMissed: false,
-      );
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
 
       expect(
         find.text(
-          'MonkeySSH Pro unlocks auto-run commands, saved snippets, and guided agent launch presets.',
+          'Free hosts can still open tmux automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
         ),
         findsOneWidget,
       );
@@ -450,18 +543,6 @@ void main() {
         ),
       );
 
-      await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
-      await tester.scrollUntilVisible(
-        find.byKey(const Key('host-advanced-tile')),
-        200,
-        scrollable: find.byType(Scrollable).first,
-      );
-      await tester.ensureVisible(find.byKey(const Key('host-advanced-tile')));
-      await tester.tap(
-        find.byKey(const Key('host-advanced-tile')),
-        warnIfMissed: false,
-      );
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
       await tester.scrollUntilVisible(
