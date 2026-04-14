@@ -42,7 +42,7 @@ void main() {
       expect(find.text('claude'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
       expect(find.text('htop'), findsOneWidget);
-      // Only "waiting" shows as a status — active/running are silent.
+      expect(find.text('running'), findsNWidgets(3));
       expect(find.text('waiting'), findsOneWidget);
     });
 

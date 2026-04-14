@@ -32,6 +32,7 @@ import '../widgets/connection_preview_snippet.dart';
 import '../widgets/file_picker_helpers.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
+import '../widgets/tmux_window_status_badge.dart';
 import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -2342,6 +2343,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
+  String? _sessionLoadError;
   String? _sessionName;
   bool _queried = false;
   bool _expanded = false;
@@ -2602,6 +2604,18 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     ),
                   ),
                 )
+              else if (_sessionLoadError != null &&
+                  _recentSessions != null &&
+                  _recentSessions!.isEmpty)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 4),
+                  child: Text(
+                    _sessionLoadError!,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.error,
+                    ),
+                  ),
+                )
               else if (_recentSessions != null && _recentSessions!.isEmpty)
                 Padding(
                   padding: const EdgeInsets.symmetric(vertical: 4),
@@ -2613,6 +2627,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                   ),
                 )
               else if (_recentSessions != null) ...[
+                if (_sessionLoadError != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      _sessionLoadError!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  ),
                 ..._groupSessions(_recentSessions!).entries.map(
                   (entry) => _buildSessionGroup(theme, entry.key, entry.value),
                 ),
@@ -2677,7 +2701,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   Future<void> _loadRecentSessions({bool forceReload = false}) async {
     if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
     final previousCount = _recentSessions?.length ?? 0;
-    setState(() => _isLoadingSessions = true);
+    setState(() {
+      _isLoadingSessions = true;
+      _sessionLoadError = null;
+    });
 
     final session = ref
         .read(activeSessionsProvider.notifier)
@@ -2698,20 +2725,21 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       // Scope sessions to the active tmux window's working directory
       // so results match the current project context.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final sessions = await discovery.discoverSessions(
+      final result = await discovery.discoverSessions(
         session,
         workingDirectory: activeWindow?.currentPath,
         maxPerTool: _sessionFetchLimit,
       );
       if (!mounted) return;
       setState(() {
-        _recentSessions = sessions;
-        if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
-          _expandedSessionTools.add(sessions.first.toolName);
+        _recentSessions = result.sessions;
+        _sessionLoadError = result.failureMessage;
+        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
+          _expandedSessionTools.add(result.sessions.first.toolName);
         }
         _canLoadMoreSessions =
-            sessions.length > previousCount &&
-            _hasSessionGroupAtLimit(sessions);
+            result.sessions.length > previousCount &&
+            _hasSessionGroupAtLimit(result.sessions);
         _isLoadingSessions = false;
       });
       _persistUiState();
@@ -2719,6 +2747,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       if (!mounted) return;
       setState(() {
         _recentSessions = const [];
+        _sessionLoadError = 'Could not load recent AI sessions.';
         _canLoadMoreSessions = false;
         _isLoadingSessions = false;
       });
@@ -2963,6 +2992,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                       : FontWeight.normal,
                 ),
               ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 6, right: 6),
+              child: TmuxWindowStatusBadge(window: window),
             ),
             // Close button.
             GestureDetector(

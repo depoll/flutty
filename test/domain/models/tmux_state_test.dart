@@ -163,12 +163,21 @@ void main() {
         currentCommand: 'claude',
         idleSeconds: 120,
       );
+      const activeWaiting = TmuxWindow(
+        index: 4,
+        name: 'codex',
+        isActive: true,
+        currentCommand: 'codex',
+        idleSeconds: 120,
+      );
 
-      expect(active.statusLabel, '');
-      expect(running.statusLabel, '');
-      expect(idle.statusLabel, '');
+      expect(active.statusLabel, 'running');
+      expect(running.statusLabel, 'running');
+      expect(idle.statusLabel, 'running');
       expect(waiting.statusLabel, 'waiting');
       expect(waiting.isIdle, true);
+      expect(activeWaiting.statusLabel, 'waiting');
+      expect(activeWaiting.isIdle, true);
     });
 
     test('equality works correctly', () {

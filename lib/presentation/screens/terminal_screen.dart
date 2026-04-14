@@ -47,6 +47,7 @@ import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
+import '../widgets/tmux_window_status_badge.dart';
 
 bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x20 ||
@@ -250,6 +251,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
   final Set<int> _seenAlertWindows = <int>{};
+  String? _sessionLoadError;
   bool _expanded = false;
   bool _isLoading = true;
   bool _isLoadingSessions = false;
@@ -379,31 +381,36 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Future<void> _loadRecentSessions({bool forceReload = false}) async {
     if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
     final previousCount = _recentSessions?.length ?? 0;
-    setState(() => _isLoadingSessions = true);
+    setState(() {
+      _isLoadingSessions = true;
+      _sessionLoadError = null;
+    });
 
     try {
       final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final sessions = await discovery.discoverSessions(
+      final result = await discovery.discoverSessions(
         widget.session,
         workingDirectory: activeWindow?.currentPath,
         maxPerTool: _sessionFetchLimit,
       );
       if (!mounted) return;
       setState(() {
-        _recentSessions = sessions;
-        if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
-          _expandedSessionTools.add(sessions.first.toolName);
+        _recentSessions = result.sessions;
+        _sessionLoadError = result.failureMessage;
+        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
+          _expandedSessionTools.add(result.sessions.first.toolName);
         }
         _canLoadMoreSessions =
-            sessions.length > previousCount &&
-            _hasSessionGroupAtLimit(sessions);
+            result.sessions.length > previousCount &&
+            _hasSessionGroupAtLimit(result.sessions);
         _isLoadingSessions = false;
       });
     } on Exception {
       if (!mounted) return;
       setState(() {
         _recentSessions = const [];
+        _sessionLoadError = 'Could not load recent AI sessions.';
         _canLoadMoreSessions = false;
         _isLoadingSessions = false;
       });
@@ -713,6 +720,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               ),
             ),
           )
+        else if (_sessionLoadError != null &&
+            _recentSessions != null &&
+            _recentSessions!.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              _sessionLoadError!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          )
         else if (_recentSessions != null && _recentSessions!.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -724,6 +743,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             ),
           )
         else if (_recentSessions != null) ...[
+          if (_sessionLoadError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                _sessionLoadError!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
           ..._groupSessions(_recentSessions!).entries.map(
             (entry) => _buildSessionGroup(theme, entry.key, entry.value),
           ),
@@ -902,7 +931,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _windowStatusIcon(theme, window),
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: TmuxWindowStatusBadge(window: window),
+          ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             visualDensity: VisualDensity.compact,
@@ -927,41 +959,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               setState(() => _expanded = false);
             },
     );
-  }
-
-  Widget _windowStatusIcon(ThemeData theme, TmuxWindow window) {
-    if (window.hasAlert) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(
-          Icons.notifications_active,
-          size: 16,
-          color: theme.colorScheme.error,
-        ),
-      );
-    }
-    if (window.isIdle) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(
-          Icons.hourglass_bottom,
-          size: 14,
-          color: theme.colorScheme.tertiary,
-        ),
-      );
-    }
-    if (!window.isActive) {
-      // Running — not idle, not alert.
-      return Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(
-          Icons.play_arrow,
-          size: 16,
-          color: theme.colorScheme.primary.withAlpha(160),
-        ),
-      );
-    }
-    return const SizedBox.shrink();
   }
 }
 
@@ -3379,9 +3376,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               // Drive the terminal inset and the handle reveal from the same
               // animated value so the bar stays visually locked to the padding.
               Positioned.fill(
-                child: Padding(
-                  padding: EdgeInsets.only(bottom: animatedBottomPadding),
-                  child: _buildTerminalView(terminalTheme, isMobile),
+                child: ColoredBox(
+                  color: terminalTheme.background,
+                  child: Padding(
+                    padding: EdgeInsets.only(bottom: animatedBottomPadding),
+                    child: _buildTerminalView(terminalTheme, isMobile),
+                  ),
                 ),
               ),
               if (showTmux || animatedBottomPadding > 0)

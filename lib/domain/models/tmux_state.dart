@@ -145,9 +145,11 @@ class TmuxWindow {
   ///
   /// A CLI that has finished working and is waiting for the user to
   /// return will have a high idle time while still showing as the
-  /// `currentCommand`.
-  bool get isIdle =>
-      idleSeconds != null && idleSeconds! > _idleThreshold && !isActive;
+  /// `currentCommand`, including when it is the currently selected window.
+  bool get isIdle => idleSeconds != null && idleSeconds! > _idleThreshold;
+
+  /// Whether the window appears to be actively running work.
+  bool get isRunning => !hasAlert && !isIdle;
 
   /// A short display title — prefers the richest usable tmux title.
   String get displayTitle {
@@ -192,12 +194,10 @@ class TmuxWindow {
 
   /// A human-readable status label for display.
   ///
-  /// Only returns a label for noteworthy states — the active window
-  /// is already visually highlighted via the index badge.
   String get statusLabel {
     if (hasAlert) return 'alert';
     if (isIdle) return 'waiting';
-    return '';
+    return 'running';
   }
 
   @override

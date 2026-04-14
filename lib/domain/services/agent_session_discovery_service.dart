@@ -56,6 +56,36 @@ int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
   return (a.summary ?? '').compareTo(b.summary ?? '');
 }
 
+/// Discovered session results plus any tool histories that could not be read.
+class DiscoveredSessionsResult {
+  /// Creates a new [DiscoveredSessionsResult].
+  DiscoveredSessionsResult({
+    required Iterable<ToolSessionInfo> sessions,
+    Iterable<String> failedTools = const <String>[],
+  }) : sessions = List<ToolSessionInfo>.unmodifiable(sessions),
+       failedTools = Set<String>.unmodifiable(failedTools);
+
+  /// The sessions that were discovered successfully.
+  final List<ToolSessionInfo> sessions;
+
+  /// Tool names whose session history could not be loaded.
+  final Set<String> failedTools;
+
+  /// Whether any tool histories failed to load.
+  bool get hasFailures => failedTools.isNotEmpty;
+
+  /// A human-readable failure message for the UI.
+  String? get failureMessage {
+    if (failedTools.isEmpty) return null;
+    final orderedTools = failedTools.toList()..sort();
+    if (orderedTools.length == 1) {
+      return 'Could not load ${orderedTools.first} sessions.';
+    }
+    final lastTool = orderedTools.removeLast();
+    return 'Could not load ${orderedTools.join(', ')} and $lastTool sessions.';
+  }
+}
+
 String? _normalizeDiscoveredSessionSummary(
   ToolSessionInfo info, {
   String? activeWorkingDirectory,
@@ -134,6 +164,176 @@ String _truncateSessionIdValue(String id) {
   return '${id.substring(0, 8)}…';
 }
 
+String _summarizeSessionText(String value, {int maxLength = 80}) {
+  final firstMeaningfulLine = value
+      .split('\n')
+      .map((line) => line.trim())
+      .firstWhere((line) => line.isNotEmpty, orElse: () => value.trim());
+  final collapsed = firstMeaningfulLine.replaceAll(RegExp(r'\s+'), ' ').trim();
+  if (collapsed.length <= maxLength) return collapsed;
+  return '${collapsed.substring(0, maxLength - 3)}...';
+}
+
+/// Parses Copilot CLI workspace metadata from `workspace.yaml`.
+@visibleForTesting
+({String? summary, String? workingDirectory, DateTime? updatedAt})
+parseCopilotWorkspaceYamlMetadata(String raw) {
+  final lines = const LineSplitter().convert(raw);
+  String? summary;
+  String? workingDirectory;
+  DateTime? updatedAt;
+
+  for (var index = 0; index < lines.length; index++) {
+    final line = lines[index];
+
+    if (workingDirectory == null) {
+      final cwdMatch = RegExp(r'^cwd:\s*(.+)\s*$').firstMatch(line);
+      if (cwdMatch != null) {
+        workingDirectory = cwdMatch.group(1)!.trim();
+      }
+    }
+
+    if (updatedAt == null) {
+      final updatedAtMatch = RegExp(
+        r'^updated_at:\s*(.+)\s*$',
+      ).firstMatch(line);
+      if (updatedAtMatch != null) {
+        updatedAt = DateTime.tryParse(updatedAtMatch.group(1)!.trim());
+      }
+    }
+
+    if (summary != null) continue;
+    final summaryMatch = RegExp(r'^summary:\s*(.*)$').firstMatch(line);
+    if (summaryMatch == null) continue;
+
+    final inlineValue = summaryMatch.group(1)!.trimRight();
+    if (inlineValue.isEmpty) continue;
+    if (inlineValue == '|' ||
+        inlineValue == '|-' ||
+        inlineValue == '>' ||
+        inlineValue == '>-') {
+      final blockLines = <String>[];
+      while (index + 1 < lines.length) {
+        final nextLine = lines[index + 1];
+        if (!nextLine.startsWith('  ')) break;
+        index += 1;
+        blockLines.add(nextLine.substring(2));
+      }
+      final blockValue = blockLines.join('\n').trim();
+      if (blockValue.isNotEmpty) {
+        summary = _summarizeSessionText(blockValue);
+      }
+      continue;
+    }
+
+    final normalizedInlineValue = inlineValue.trim();
+    if (normalizedInlineValue.isNotEmpty) {
+      summary = _summarizeSessionText(normalizedInlineValue);
+    }
+  }
+
+  return (
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+  );
+}
+
+/// Parses Codex rollout metadata from the head of a rollout JSONL file.
+@visibleForTesting
+({
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool parsedAny,
+})
+parseCodexRolloutMetadata(String raw) {
+  String? summary;
+  String? workingDirectory;
+  DateTime? updatedAt;
+  var parsedAny = false;
+
+  for (final line in const LineSplitter().convert(raw)) {
+    final decoded = _tryDecodeJsonObject(line);
+    if (decoded == null) continue;
+    parsedAny = true;
+
+    final payload = _readMapField(decoded, 'payload');
+    workingDirectory ??=
+        _readStringField(payload, 'cwd') ?? _readStringField(decoded, 'cwd');
+    updatedAt ??= _parseDateTimeValue(decoded['timestamp']);
+
+    if (summary != null) continue;
+    if (_readStringField(decoded, 'type') != 'event_msg' ||
+        _readStringField(payload, 'type') != 'user_message') {
+      continue;
+    }
+
+    final message = _readStringField(payload, 'message');
+    if (message != null && message.trim().isNotEmpty) {
+      summary = _summarizeSessionText(message);
+    }
+  }
+
+  return (
+    summary: summary,
+    workingDirectory: workingDirectory,
+    updatedAt: updatedAt,
+    parsedAny: parsedAny,
+  );
+}
+
+/// Parses Gemini session metadata from a saved chat JSON file.
+@visibleForTesting
+({
+  String? sessionId,
+  String? summary,
+  String? workingDirectory,
+  DateTime? updatedAt,
+  bool isSubagent,
+  bool parsedAny,
+})
+parseGeminiSessionMetadata(
+  String raw, {
+  String? activeWorkingDirectory,
+  String? fallbackWorkingDirectory,
+}) {
+  final decoded = _decodeJsonOrJsonlObject(raw);
+  if (decoded == null) {
+    return (
+      sessionId: null,
+      summary: null,
+      workingDirectory: fallbackWorkingDirectory,
+      updatedAt: null,
+      isSubagent: false,
+      parsedAny: false,
+    );
+  }
+
+  final storedSummary = _readStringField(decoded, 'summary');
+  final summary = (storedSummary?.trim().isNotEmpty ?? false)
+      ? _summarizeSessionText(storedSummary!)
+      : _extractGeminiUserSummary(_readListField(decoded, 'messages'));
+  final directories = _readListField(decoded, 'directories');
+  final resolvedWorkingDirectory =
+      _resolveGeminiWorkingDirectory(
+        directories,
+        activeWorkingDirectory: activeWorkingDirectory,
+      ) ??
+      fallbackWorkingDirectory;
+
+  return (
+    sessionId: _readStringField(decoded, 'sessionId'),
+    summary: summary,
+    workingDirectory: resolvedWorkingDirectory,
+    updatedAt:
+        _parseDateTimeValue(decoded['lastUpdated']) ??
+        _parseDateTimeValue(decoded['startTime']),
+    isSubagent: _readStringField(decoded, 'kind') == 'subagent',
+    parsedAny: true,
+  );
+}
+
 /// Discovers recent AI coding tool sessions on remote hosts by scanning
 /// known session storage locations.
 ///
@@ -151,9 +351,13 @@ class AgentSessionDiscoveryService {
   /// noisy placeholder entries, and then sorted globally by recency.
   /// Limits to [maxPerTool] sessions per tool to keep results manageable.
   ///
+  /// Returns both the successfully parsed sessions and any tool histories that
+  /// could not be loaded, so the UI can distinguish parse failures from an
+  /// actually empty history.
+  ///
   /// When [workingDirectory] is available, sessions are filtered to that
   /// directory whenever the tool exposes enough path information to do so.
-  Future<List<ToolSessionInfo>> discoverSessions(
+  Future<DiscoveredSessionsResult> discoverSessions(
     SshSession session, {
     String? workingDirectory,
     int maxPerTool = 12,
@@ -166,34 +370,45 @@ class AgentSessionDiscoveryService {
       _discoverOpenCodeSessions(session, maxPerTool),
     ]);
 
-    final all =
-        results
-            .expand((list) => list)
-            .map(
-              (info) => normalizeDiscoveredSessionInfo(
-                info,
-                activeWorkingDirectory: workingDirectory,
-              ),
-            )
-            .whereType<ToolSessionInfo>()
-            .toList()
-          ..sort(compareDiscoveredSessionsByRecency);
+    final all = results
+        .expand((result) => result.sessions)
+        .map(
+          (info) => normalizeDiscoveredSessionInfo(
+            info,
+            activeWorkingDirectory: workingDirectory,
+          ),
+        )
+        .whereType<ToolSessionInfo>()
+        .toList();
 
     // Filter to sessions matching the working directory if provided.
     if (workingDirectory != null && workingDirectory.isNotEmpty) {
-      final filtered = all
-          .where(
-            (s) =>
-                _matchesWorkingDirectory(workingDirectory, s.workingDirectory),
-          )
-          .toList();
+      final filtered = _limitDiscoveredSessionsPerTool(
+        all
+            .where(
+              (s) => _matchesWorkingDirectory(
+                workingDirectory,
+                s.workingDirectory,
+              ),
+            )
+            .toList(),
+        maxPerTool,
+      );
       // Return filtered results if any match; otherwise return all so the UI
       // still has a fallback when the remote tool doesn't persist directory
       // metadata for its sessions.
-      if (filtered.isNotEmpty) return filtered;
+      if (filtered.isNotEmpty) {
+        return DiscoveredSessionsResult(
+          sessions: filtered,
+          failedTools: results.where((r) => r.hadError).map((r) => r.toolName),
+        );
+      }
     }
 
-    return all;
+    return DiscoveredSessionsResult(
+      sessions: _limitDiscoveredSessionsPerTool(all, maxPerTool),
+      failedTools: results.where((r) => r.hadError).map((r) => r.toolName),
+    );
   }
 
   /// Builds the shell command to resume a specific session.
@@ -224,7 +439,7 @@ class AgentSessionDiscoveryService {
   // Sessions: ~/.claude/projects/<path-hash>/*.jsonl
   // Index:    ~/.claude/history.jsonl
 
-  Future<List<ToolSessionInfo>> _discoverClaudeSessions(
+  Future<_ToolDiscoveryResult> _discoverClaudeSessions(
     SshSession session,
     String? workingDirectory,
     int max,
@@ -237,7 +452,9 @@ class AgentSessionDiscoveryService {
         session,
         'tail -n $tailCount ~/.claude/history.jsonl 2>/dev/null',
       );
-      if (output.trim().isEmpty) return const [];
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Claude Code', []);
+      }
 
       final sessions = <ToolSessionInfo>[];
       final seenIds = <String>{};
@@ -322,72 +539,64 @@ class AgentSessionDiscoveryService {
           continue;
         }
       }
-      return sessions;
+      return _ToolDiscoveryResult.success('Claude Code', sessions);
     } on Object {
-      return const [];
+      return const _ToolDiscoveryResult.failure('Claude Code');
     }
   }
 
   // ── Codex CLI ──────────────────────────────────────────────────────────
   // Sessions: ~/.codex/sessions/YYYY/MM/DD/rollout-*.jsonl
 
-  Future<List<ToolSessionInfo>> _discoverCodexSessions(
+  Future<_ToolDiscoveryResult> _discoverCodexSessions(
     SshSession session,
     int max,
   ) async {
     try {
+      final scanLimit = max * 5;
       final output = await _exec(
         session,
         'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
-        '-exec ls -1t {} + 2>/dev/null | head -n $max',
+        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
       );
-      if (output.trim().isEmpty) return const [];
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Codex', []);
+      }
 
+      final sessionIndex = await _readCodexSessionIndex(session, scanLimit);
       final sessions = <ToolSessionInfo>[];
+      var hadError = sessionIndex.hadError;
+
       for (final line in output.trim().split('\n')) {
         if (line.trim().isEmpty) continue;
         final filePath = line.trim();
         final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
+        final threadId = _extractCodexThreadId(fileName);
+        final threadInfo = threadId != null
+            ? sessionIndex.entries[threadId]
+            : null;
 
-        // Read metadata from first line and first real user prompt.
-        String? summary;
+        var summary = threadInfo?.threadName;
         String? workingDirectory;
-        DateTime? lastActive;
-        try {
-          final meta = await _exec(
-            session,
-            'head -1 ${_shellQuote(filePath)} 2>/dev/null',
-          );
-          if (meta.trim().isNotEmpty) {
-            final decoded = jsonDecode(meta.trim());
-            if (decoded is Map<String, dynamic>) {
-              final payload =
-                  decoded['payload'] as Map<String, dynamic>? ?? decoded;
-              workingDirectory = payload['cwd'] as String?;
-              final ts = decoded['timestamp'] as String?;
-              if (ts != null) lastActive = DateTime.tryParse(ts);
-            }
-          }
-          lastActive ??= await _readModificationTime(session, filePath);
+        var lastActive = threadInfo?.updatedAt;
 
-          // Extract first prompt: skip session_meta, ignore environment/system
-          // context, and take the first short input_text payload.
-          final promptOutput = await _exec(
+        try {
+          final rolloutHead = await _exec(
             session,
-            'sed -n \'2,20p\' ${_shellQuote(filePath)} '
-            '| grep -oE \'"text":"[^"]{1,120}"\' '
-            '| grep -v \'"text":"<\' '
-            '| grep -v \'"text":"#\' '
-            '| head -1 '
-            '| sed \'s/"text":"//;s/"\$//\'',
+            'sed -n \'1,80p\' ${_shellQuote(filePath)} 2>/dev/null',
           );
-          final prompt = promptOutput.trim();
-          if (prompt.isNotEmpty) summary = prompt;
+          final metadata = parseCodexRolloutMetadata(rolloutHead);
+          if (rolloutHead.trim().isNotEmpty && !metadata.parsedAny) {
+            hadError = true;
+          }
+          summary ??= metadata.summary;
+          workingDirectory = metadata.workingDirectory;
+          lastActive ??= metadata.updatedAt;
         } on Object {
-          // Non-critical.
+          hadError = true;
         }
 
-        summary ??= _truncateId(fileName);
+        lastActive ??= await _readModificationTime(session, filePath);
 
         sessions.add(
           ToolSessionInfo(
@@ -395,70 +604,109 @@ class AgentSessionDiscoveryService {
             sessionId: fileName,
             workingDirectory: workingDirectory,
             lastActive: lastActive,
-            summary: summary,
+            summary: summary ?? _truncateId(fileName),
           ),
         );
       }
-      return sessions;
+      return _ToolDiscoveryResult.success(
+        'Codex',
+        sessions,
+        hadError: hadError,
+      );
     } on Object {
-      return const [];
+      return const _ToolDiscoveryResult.failure('Codex');
+    }
+  }
+
+  Future<_CodexSessionIndexResult> _readCodexSessionIndex(
+    SshSession session,
+    int scanLimit,
+  ) async {
+    try {
+      final output = await _exec(
+        session,
+        'tail -n ${scanLimit * 5} ~/.codex/session_index.jsonl 2>/dev/null',
+      );
+      if (output.trim().isEmpty) {
+        return const _CodexSessionIndexResult(entries: {});
+      }
+
+      final entries = <String, _CodexSessionIndexEntry>{};
+      var hadError = false;
+      for (final line in output.trim().split('\n').reversed) {
+        if (line.trim().isEmpty) continue;
+        final decoded = _tryDecodeJsonObject(line);
+        if (decoded == null) {
+          hadError = true;
+          continue;
+        }
+        final id = _readStringField(decoded, 'id');
+        if (id == null || id.isEmpty || entries.containsKey(id)) continue;
+        entries[id] = _CodexSessionIndexEntry(
+          threadName: _readStringField(decoded, 'thread_name'),
+          updatedAt: _parseDateTimeValue(decoded['updated_at']),
+        );
+      }
+      return _CodexSessionIndexResult(entries: entries, hadError: hadError);
+    } on Object {
+      return const _CodexSessionIndexResult(entries: {}, hadError: true);
     }
   }
 
   // ── Copilot CLI ────────────────────────────────────────────────────────
   // Sessions: ~/.copilot/session-state/<session-id>/
 
-  Future<List<ToolSessionInfo>> _discoverCopilotSessions(
+  Future<_ToolDiscoveryResult> _discoverCopilotSessions(
     SshSession session,
     int max,
   ) async {
     try {
+      final scanLimit = max * 5;
       final output = await _exec(
         session,
-        'ls -dt ~/.copilot/session-state/*/ 2>/dev/null | head -n $max',
+        'find ~/.copilot/session-state -mindepth 2 -maxdepth 2 '
+        '-name workspace.yaml -type f '
+        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
       );
-      if (output.trim().isEmpty) return const [];
+      if (output.trim().isEmpty) {
+        return const _ToolDiscoveryResult.success('Copilot CLI', []);
+      }
 
-      final sessionPaths = output
+      final workspacePaths = output
           .trim()
           .split('\n')
           .map((line) => line.trim())
           .where((line) => line.isNotEmpty)
           .toList(growable: false);
 
-      return Future.wait(
-        sessionPaths.map((dirPath) async {
+      var hadError = false;
+      final sessions = await Future.wait(
+        workspacePaths.map((workspacePath) async {
+          final dirPath = workspacePath.replaceFirst(
+            RegExp(r'/workspace\.yaml$'),
+            '/',
+          );
           final dirName = dirPath.split('/').where((s) => s.isNotEmpty).last;
-          final lastActive = await _readModificationTime(session, dirPath);
+          DateTime? lastActive;
 
           String? summary;
           String? workingDirectory;
           try {
             final yaml = await _exec(
               session,
-              'cat ${_shellQuote('${dirPath}workspace.yaml')} 2>/dev/null',
+              'cat ${_shellQuote(workspacePath)} 2>/dev/null',
             );
             if (yaml.trim().isNotEmpty) {
-              for (final yamlLine in yaml.split('\n')) {
-                final nameMatch = RegExp(r'^name:\s*(.+)').firstMatch(yamlLine);
-                if (nameMatch != null) {
-                  summary = nameMatch.group(1)!.trim();
-                }
-                final summaryMatch = RegExp(
-                  r'^summary:\s*(.+)',
-                ).firstMatch(yamlLine);
-                if (summaryMatch != null && summary == null) {
-                  summary = summaryMatch.group(1)!.trim();
-                }
-                final cwdMatch = RegExp(r'^cwd:\s*(.+)').firstMatch(yamlLine);
-                if (cwdMatch != null) {
-                  workingDirectory = cwdMatch.group(1)!.trim();
-                }
-              }
+              final metadata = parseCopilotWorkspaceYamlMetadata(yaml);
+              summary = metadata.summary;
+              workingDirectory = metadata.workingDirectory;
+              lastActive = metadata.updatedAt;
             }
           } on Object {
-            // Non-critical.
+            hadError = true;
           }
+
+          lastActive ??= await _readModificationTime(session, workspacePath);
 
           if (summary == null || summary.isEmpty) {
             try {
@@ -472,15 +720,13 @@ class AgentSessionDiscoveryService {
                       .replaceAll(RegExp(r'^#+\s*'), '')
                       .trim();
                   if (cleaned.isNotEmpty && cleaned.length > 3) {
-                    summary = cleaned.length > 80
-                        ? '${cleaned.substring(0, 77)}...'
-                        : cleaned;
+                    summary = _summarizeSessionText(cleaned);
                     break;
                   }
                 }
               }
             } on Object {
-              // Non-critical.
+              hadError = true;
             }
           }
 
@@ -493,8 +739,13 @@ class AgentSessionDiscoveryService {
           );
         }),
       );
+      return _ToolDiscoveryResult.success(
+        'Copilot CLI',
+        sessions,
+        hadError: hadError,
+      );
     } on Object {
-      return const [];
+      return const _ToolDiscoveryResult.failure('Copilot CLI');
     }
   }
 
@@ -504,7 +755,7 @@ class AgentSessionDiscoveryService {
   //   1. Title text (time ago) [session-uuid]
   // Falls back to scanning chat JSON files if the CLI is unavailable.
 
-  Future<List<ToolSessionInfo>> _discoverGeminiSessions(
+  Future<_ToolDiscoveryResult> _discoverGeminiSessions(
     SshSession session,
     String? workingDirectory,
     int max,
@@ -520,13 +771,18 @@ class AgentSessionDiscoveryService {
       );
       if (cliOutput.contains('[') && cliOutput.contains(']')) {
         final parsed = _parseGeminiCliOutput(cliOutput, workingDirectory);
-        if (parsed.isNotEmpty) return parsed.take(max).toList();
+        if (parsed.isNotEmpty) {
+          return _ToolDiscoveryResult.success(
+            'Gemini CLI',
+            parsed.take(max * 5).toList(),
+          );
+        }
       }
 
       // Fallback: scan chat JSON files directly.
       return _discoverGeminiSessionsFromFiles(session, workingDirectory, max);
     } on Object {
-      return const [];
+      return const _ToolDiscoveryResult.failure('Gemini CLI');
     }
   }
 
@@ -562,17 +818,21 @@ class AgentSessionDiscoveryService {
     return sessions;
   }
 
-  Future<List<ToolSessionInfo>> _discoverGeminiSessionsFromFiles(
+  Future<_ToolDiscoveryResult> _discoverGeminiSessionsFromFiles(
     SshSession session,
     String? workingDirectory,
     int max,
   ) async {
+    final scanLimit = max * 5;
     final output = await _exec(
       session,
-      'find ~/.gemini/tmp -name "*.json" -path "*/chats/*" -type f '
-      '-exec ls -1t {} + 2>/dev/null | head -n $max',
+      r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
+      '-path "*/chats/*" -type f '
+      '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
     );
-    if (output.trim().isEmpty) return const [];
+    if (output.trim().isEmpty) {
+      return const _ToolDiscoveryResult.success('Gemini CLI', []);
+    }
 
     final sessionPaths = output
         .trim()
@@ -581,15 +841,19 @@ class AgentSessionDiscoveryService {
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
 
-    return Future.wait(
+    var hadError = false;
+    final sessions = await Future.wait(
       sessionPaths.map((filePath) async {
-        final fileName = filePath.split('/').last.replaceAll('.json', '');
-        final lastActive = await _readModificationTime(session, filePath);
+        final fileName = filePath
+            .split('/')
+            .last
+            .replaceAll('.jsonl', '')
+            .replaceAll('.json', '');
 
         final pathParts = filePath.split('/');
         final chatsIdx = pathParts.indexOf('chats');
         final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
-        final sessionWorkingDirectory =
+        final fallbackWorkingDirectory =
             projectDir != null &&
                 workingDirectory != null &&
                 _pathLastSegment(workingDirectory) == projectDir
@@ -597,29 +861,51 @@ class AgentSessionDiscoveryService {
             : null;
 
         String? summary;
+        var sessionWorkingDirectory = fallbackWorkingDirectory;
+        DateTime? lastActive;
+        String? sessionId = fileName;
         try {
-          final firstMsg = await _exec(
+          final sessionRecord = await _exec(
             session,
-            'grep -o \'"text":"[^"]*"\' ${_shellQuote(filePath)} '
-            '| head -1 '
-            '| sed \'s/"text":"//;s/"\$//\'',
+            'cat ${_shellQuote(filePath)} 2>/dev/null',
           );
-          final text = firstMsg.trim();
-          if (text.isNotEmpty && text.length > 1) {
-            summary = text.length > 80 ? '${text.substring(0, 77)}...' : text;
+          final metadata = parseGeminiSessionMetadata(
+            sessionRecord,
+            activeWorkingDirectory: workingDirectory,
+            fallbackWorkingDirectory: fallbackWorkingDirectory,
+          );
+          if (sessionRecord.trim().isNotEmpty && !metadata.parsedAny) {
+            hadError = true;
+            return null;
+          }
+          if (metadata.isSubagent) return null;
+          summary = metadata.summary;
+          sessionWorkingDirectory = metadata.workingDirectory;
+          lastActive = metadata.updatedAt;
+          final discoveredSessionId = metadata.sessionId;
+          if (discoveredSessionId != null && discoveredSessionId.isNotEmpty) {
+            sessionId = discoveredSessionId;
           }
         } on Object {
-          // Non-critical.
+          hadError = true;
+          return null;
         }
+
+        lastActive ??= await _readModificationTime(session, filePath);
 
         return ToolSessionInfo(
           toolName: 'Gemini CLI',
-          sessionId: fileName,
+          sessionId: sessionId,
           workingDirectory: sessionWorkingDirectory,
           lastActive: lastActive,
           summary: summary ?? projectDir ?? _truncateId(fileName),
         );
       }),
+    );
+    return _ToolDiscoveryResult.success(
+      'Gemini CLI',
+      sessions.whereType<ToolSessionInfo>().toList(growable: false),
+      hadError: hadError,
     );
   }
 
@@ -628,18 +914,28 @@ class AgentSessionDiscoveryService {
   // It returns renamed titles, directory, and timestamps. Falls back to
   // the SQLite database or JSON files if the CLI is unavailable.
 
-  Future<List<ToolSessionInfo>> _discoverOpenCodeSessions(
+  Future<_ToolDiscoveryResult> _discoverOpenCodeSessions(
     SshSession session,
     int max,
   ) async {
     try {
+      final scanLimit = max * 5;
+      var hadError = false;
       // Preferred: use the CLI's own JSON output.
       final cliOutput = await _exec(
         session,
-        'opencode session list --format json -n $max 2>/dev/null',
+        'opencode session list --format json -n $scanLimit 2>/dev/null',
       );
       if (cliOutput.trim().startsWith('[')) {
-        return _parseOpenCodeCliJson(cliOutput);
+        try {
+          return _ToolDiscoveryResult.success(
+            'OpenCode',
+            _parseOpenCodeCliJson(cliOutput),
+          );
+        } on Object {
+          hadError = true;
+          // Fall through to the SQLite fallback.
+        }
       }
 
       // Fallback: query the SQLite database directly.
@@ -652,16 +948,21 @@ class AgentSessionDiscoveryService {
         "'SELECT id, title, directory, time_updated "
         'FROM session '
         'WHERE parent_id IS NULL '
+        'AND time_archived IS NULL '
         'ORDER BY time_updated DESC '
-        "LIMIT $max;' 2>/dev/null",
+        "LIMIT $scanLimit;' 2>/dev/null",
       );
       if (dbOutput.trim().isNotEmpty) {
-        return _parseOpenCodeDbOutput(dbOutput);
+        return _ToolDiscoveryResult.success(
+          'OpenCode',
+          _parseOpenCodeDbOutput(dbOutput),
+          hadError: hadError,
+        );
       }
 
-      return const [];
+      return _ToolDiscoveryResult.success('OpenCode', [], hadError: hadError);
     } on Object {
-      return const [];
+      return const _ToolDiscoveryResult.failure('OpenCode');
     }
   }
 
@@ -763,6 +1064,26 @@ class AgentSessionDiscoveryService {
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
 
+  List<ToolSessionInfo> _limitDiscoveredSessionsPerTool(
+    List<ToolSessionInfo> sessions,
+    int maxPerTool,
+  ) {
+    final groupedSessions = <String, List<ToolSessionInfo>>{};
+    for (final session in sessions) {
+      groupedSessions
+          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+          .add(session);
+    }
+
+    final limited = <ToolSessionInfo>[];
+    for (final toolSessions in groupedSessions.values) {
+      toolSessions.sort(compareDiscoveredSessionsByRecency);
+      limited.addAll(toolSessions.take(maxPerTool));
+    }
+    limited.sort(compareDiscoveredSessionsByRecency);
+    return limited;
+  }
+
   static String? _firstNonEmpty(Iterable<String?> values) {
     for (final value in values) {
       if (value != null && value.isNotEmpty) return value;
@@ -781,6 +1102,148 @@ class AgentSessionDiscoveryService {
   }
 
   static String _truncateId(String id) => _truncateSessionIdValue(id);
+}
+
+class _ToolDiscoveryResult {
+  const _ToolDiscoveryResult.success(
+    this.toolName,
+    this.sessions, {
+    this.hadError = false,
+  });
+
+  const _ToolDiscoveryResult.failure(this.toolName)
+    : sessions = const <ToolSessionInfo>[],
+      hadError = true;
+
+  final String toolName;
+  final List<ToolSessionInfo> sessions;
+  final bool hadError;
+}
+
+class _CodexSessionIndexResult {
+  const _CodexSessionIndexResult({
+    required this.entries,
+    this.hadError = false,
+  });
+
+  final Map<String, _CodexSessionIndexEntry> entries;
+  final bool hadError;
+}
+
+class _CodexSessionIndexEntry {
+  const _CodexSessionIndexEntry({this.threadName, this.updatedAt});
+
+  final String? threadName;
+  final DateTime? updatedAt;
+}
+
+Map<String, dynamic>? _tryDecodeJsonObject(String raw) {
+  try {
+    final decoded = jsonDecode(raw);
+    if (decoded is Map<String, dynamic>) return decoded;
+  } on FormatException {
+    return null;
+  }
+  return null;
+}
+
+Map<String, dynamic>? _decodeJsonOrJsonlObject(String raw) {
+  final direct = _tryDecodeJsonObject(raw.trim());
+  if (direct != null) return direct;
+
+  Map<String, dynamic>? lastObject;
+  for (final line in const LineSplitter().convert(raw)) {
+    final decoded = _tryDecodeJsonObject(line.trim());
+    if (decoded == null) continue;
+    lastObject = decoded;
+    if (decoded.containsKey('sessionId') || decoded.containsKey('messages')) {
+      return decoded;
+    }
+  }
+  return lastObject;
+}
+
+Map<String, dynamic>? _readMapField(Map<String, dynamic>? map, String key) {
+  final value = map?[key];
+  if (value is Map<String, dynamic>) return value;
+  if (value is Map) {
+    return value.map(
+      (innerKey, innerValue) => MapEntry('$innerKey', innerValue),
+    );
+  }
+  return null;
+}
+
+List<dynamic>? _readListField(Map<String, dynamic>? map, String key) {
+  final value = map?[key];
+  return value is List ? value : null;
+}
+
+String? _readStringField(Map<String, dynamic>? map, String key) {
+  final value = map?[key];
+  return value is String ? value : null;
+}
+
+DateTime? _parseDateTimeValue(Object? value) {
+  if (value is String) return DateTime.tryParse(value);
+  if (value is int) return DateTime.fromMillisecondsSinceEpoch(value);
+  return null;
+}
+
+String? _extractCodexThreadId(String fileName) {
+  final match = RegExp(
+    r'([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$',
+  ).firstMatch(fileName);
+  return match?.group(1);
+}
+
+String? _extractGeminiUserSummary(List<dynamic>? messages) {
+  if (messages == null) return null;
+  for (final message in messages.whereType<Map>()) {
+    final messageMap = message.map((key, value) => MapEntry('$key', value));
+    if (_readStringField(messageMap, 'type') != 'user') continue;
+
+    final content = _readListField(messageMap, 'content');
+    if (content != null) {
+      for (final part in content.whereType<Map>()) {
+        final partMap = part.map((key, value) => MapEntry('$key', value));
+        final text = _readStringField(partMap, 'text');
+        if (text != null && text.trim().isNotEmpty) {
+          return _summarizeSessionText(text);
+        }
+      }
+    }
+
+    final displayContent = _readStringField(messageMap, 'displayContent');
+    if (displayContent != null && displayContent.trim().isNotEmpty) {
+      return _summarizeSessionText(displayContent);
+    }
+  }
+  return null;
+}
+
+String? _resolveGeminiWorkingDirectory(
+  List<dynamic>? directories, {
+  String? activeWorkingDirectory,
+}) {
+  final values = directories
+      ?.whereType<String>()
+      .map((value) => value.trim())
+      .where((value) => value.isNotEmpty)
+      .toList(growable: false);
+  if (values == null || values.isEmpty) return null;
+
+  if (activeWorkingDirectory != null && activeWorkingDirectory.isNotEmpty) {
+    for (final value in values) {
+      if (value == activeWorkingDirectory ||
+          _pathLastSegment(value) == _pathLastSegment(activeWorkingDirectory)) {
+        return value;
+      }
+    }
+  }
+
+  if (values.length == 1) return values.first;
+  return null;
 }
 
 /// Provider for [AgentSessionDiscoveryService].

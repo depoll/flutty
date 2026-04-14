@@ -11,6 +11,7 @@ import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../widgets/premium_badge.dart';
+import 'tmux_window_status_badge.dart';
 
 const _tmuxNavigatorDenseVisualDensity = VisualDensity(vertical: -2);
 const _tmuxNavigatorTilePadding = EdgeInsets.symmetric(horizontal: 16);
@@ -108,7 +109,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
 
 class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
-  static const _maxSessionsPerTool = 8;
+  static const _maxSessionsPerTool = 16;
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
@@ -118,6 +119,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   bool _isLoadingWindows = true;
   bool _isLoadingSessions = false;
   bool _showRecentSessions = false;
+  String? _sessionLoadError;
   String? _error;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
@@ -224,21 +226,25 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   Future<void> _loadRecentSessions() async {
     if (_isLoadingSessions || _recentSessions != null) return;
-    setState(() => _isLoadingSessions = true);
+    setState(() {
+      _isLoadingSessions = true;
+      _sessionLoadError = null;
+    });
 
     try {
       // Get working directory from the active window if available.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final sessions = await _discovery.discoverSessions(
+      final result = await _discovery.discoverSessions(
         widget.session,
         workingDirectory: activeWindow?.currentPath,
         maxPerTool: _maxSessionsPerTool,
       );
       if (!mounted) return;
       setState(() {
-        _recentSessions = sessions;
-        if (_expandedSessionTools.isEmpty && sessions.isNotEmpty) {
-          _expandedSessionTools.add(sessions.first.toolName);
+        _recentSessions = result.sessions;
+        _sessionLoadError = result.failureMessage;
+        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
+          _expandedSessionTools.add(result.sessions.first.toolName);
         }
         _isLoadingSessions = false;
       });
@@ -246,6 +252,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       if (!mounted) return;
       setState(() {
         _recentSessions = const [];
+        _sessionLoadError = 'Could not load recent AI sessions.';
         _isLoadingSessions = false;
       });
     }
@@ -447,7 +454,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       trailing: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          _windowStatusIcon(theme, window),
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: TmuxWindowStatusBadge(window: window),
+          ),
           IconButton(
             icon: const Icon(Icons.close, size: 16),
             visualDensity: VisualDensity.compact,
@@ -463,41 +473,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ? () => Navigator.pop(context)
           : () => _switchToWindow(window.index),
     );
-  }
-
-  /// Returns a status icon for the window's current state.
-  Widget _windowStatusIcon(ThemeData theme, TmuxWindow window) {
-    if (window.hasAlert) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(
-          Icons.notifications_active,
-          size: 16,
-          color: theme.colorScheme.error,
-        ),
-      );
-    }
-    if (window.isIdle) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(
-          Icons.hourglass_bottom,
-          size: 14,
-          color: theme.colorScheme.tertiary,
-        ),
-      );
-    }
-    if (!window.isActive) {
-      return Padding(
-        padding: const EdgeInsets.only(right: 4),
-        child: Icon(
-          Icons.play_arrow,
-          size: 16,
-          color: theme.colorScheme.primary.withAlpha(160),
-        ),
-      );
-    }
-    return const SizedBox.shrink();
   }
 
   Widget _buildRecentSessionsSection(ThemeData theme) {
@@ -554,6 +529,18 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                 ),
               ),
             )
+          else if (_sessionLoadError != null &&
+              _recentSessions != null &&
+              _recentSessions!.isEmpty)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                _sessionLoadError!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            )
           else if (_recentSessions != null && _recentSessions!.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
@@ -564,10 +551,24 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                 ),
               ),
             )
-          else if (_recentSessions != null)
+          else if (_recentSessions != null) ...[
+            if (_sessionLoadError != null)
+              Padding(
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 8,
+                ),
+                child: Text(
+                  _sessionLoadError!,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: theme.colorScheme.error,
+                  ),
+                ),
+              ),
             ...groupedSessions.entries.map(
               (entry) => _buildSessionGroup(theme, entry.key, entry.value),
             ),
+          ],
         ],
       ],
     );
