@@ -6,27 +6,35 @@ import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 
 void main() {
   group('resolveTerminalRenderPadding', () {
-    test('drops only the bottom safe-area inset', () {
+    test('keeps portrait terminal rendering edge-to-edge', () {
       const mediaQuery = MediaQueryData(
+        size: Size(390, 844),
         padding: EdgeInsets.fromLTRB(12, 18, 16, 34),
       );
 
-      expect(
-        resolveTerminalRenderPadding(mediaQuery),
-        const EdgeInsets.fromLTRB(12, 18, 16, 0),
-      );
+      expect(resolveTerminalRenderPadding(mediaQuery), EdgeInsets.zero);
     });
 
-    test('keeps keyboard-open bottom inset cleared', () {
+    test('stays edge-to-edge in portrait when the keyboard is visible', () {
       const mediaQuery = MediaQueryData(
+        size: Size(390, 844),
         padding: EdgeInsets.fromLTRB(12, 18, 16, 0),
         viewPadding: EdgeInsets.fromLTRB(12, 18, 16, 34),
         viewInsets: EdgeInsets.fromLTRB(0, 0, 0, 320),
       );
 
+      expect(resolveTerminalRenderPadding(mediaQuery), EdgeInsets.zero);
+    });
+
+    test('keeps horizontal cutout padding in landscape', () {
+      const mediaQuery = MediaQueryData(
+        size: Size(844, 390),
+        padding: EdgeInsets.fromLTRB(44, 0, 34, 21),
+      );
+
       expect(
         resolveTerminalRenderPadding(mediaQuery),
-        const EdgeInsets.fromLTRB(12, 18, 16, 0),
+        const EdgeInsets.only(left: 44, right: 34),
       );
     });
   });

@@ -23,5 +23,5 @@ The script generates a temporary SSH key, authorizes it for localhost, and creat
 ### Key gotchas for tmux over SSH exec channels
 
 - **PATH**: SSH exec channels use a minimal PATH that excludes Homebrew. The tmux service sources `~/.profile`, `~/.bash_profile`, and `~/.zprofile` before running commands.
-- **Format strings**: tmux's `-F` option does **not** interpret `\t` as tab. Use `|` pipe delimiters instead.
+- **Format strings**: tmux's `-F` option does **not** interpret `\t` as tab. Use ASCII Unit Separator (`\x1f`) delimiters instead so window names and titles can still contain `|`.
 - **Environment variables**: Exec channels don't share the interactive shell's environment. Use `tmux list-sessions` / `tmux display-message` instead of `echo $TMUX`.

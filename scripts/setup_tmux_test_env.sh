@@ -29,6 +29,16 @@ TMUX_SESSION="monkeyssh-test"
 AUTH_KEYS="$HOME/.ssh/authorized_keys"
 MARKER="# monkeyssh-tmux-test"
 
+restore_auth_keys_permissions() {
+    local mode
+    mode="$(stat -f '%Lp' "$AUTH_KEYS" 2>/dev/null || true)"
+    if [ -n "$mode" ]; then
+        chmod "$mode" "$AUTH_KEYS"
+    else
+        chmod 600 "$AUTH_KEYS"
+    fi
+}
+
 teardown() {
     echo "🧹 Tearing down tmux test environment..."
 
@@ -42,6 +52,7 @@ teardown() {
     if [ -f "$AUTH_KEYS" ] && grep -q "$MARKER" "$AUTH_KEYS"; then
         grep -v "$MARKER" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp"
         mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
+        restore_auth_keys_permissions
         echo "   Removed test key from authorized_keys"
     fi
 
@@ -67,8 +78,7 @@ if ! command -v tmux &>/dev/null; then
     exit 1
 fi
 
-if ! ssh -o BatchMode=yes -o ConnectTimeout=2 localhost "echo ok" &>/dev/null && \
-   ! sudo systemsetup -getremotelogin 2>/dev/null | grep -q "On"; then
+if ! ssh -o BatchMode=yes -o ConnectTimeout=2 localhost "echo ok" &>/dev/null; then
     echo "❌ Remote Login (SSH) is not enabled or not accessible."
     echo "   Enable via: System Settings → General → Sharing → Remote Login"
     exit 1
@@ -92,6 +102,7 @@ chmod 700 "$HOME/.ssh"
 if [ -f "$AUTH_KEYS" ] && grep -q "$MARKER" "$AUTH_KEYS"; then
     grep -v "$MARKER" "$AUTH_KEYS" > "${AUTH_KEYS}.tmp"
     mv "${AUTH_KEYS}.tmp" "$AUTH_KEYS"
+    restore_auth_keys_permissions
 fi
 
 # Add new key with marker comment

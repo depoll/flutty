@@ -448,7 +448,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       Object.hash(widget.tmuxSessionName, windowIndex) & 0x7fffffff;
 
   void _sendAlertNotification(TmuxWindow window) {
-    HapticFeedback.mediumImpact();
+    unawaited(HapticFeedback.mediumImpact());
     final title = 'tmux alert · ${widget.tmuxSessionName}';
     final name = window.displayTitle.trim();
     final body = name.isEmpty ? 'Window ${window.index} needs attention' : name;
@@ -563,49 +563,52 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       // Refresh window list when expanding to get current active state.
       if (!wasExpanded) _loadWindows();
     },
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-      child: Stack(
-        alignment: Alignment.center,
-        children: [
-          // Centered drag handle pill.
-          Container(
-            width: 28,
-            height: 3,
-            decoration: BoxDecoration(
-              color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
-              borderRadius: BorderRadius.circular(2),
+    child: SizedBox(
+      height: _TmuxExpandableBar.handleHeight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Centered drag handle pill.
+            Container(
+              width: 28,
+              height: 3,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
+                borderRadius: BorderRadius.circular(2),
+              ),
             ),
-          ),
-          // Left-aligned session name, right-aligned chevron.
-          Row(
-            children: [
-              Icon(
-                Icons.window_outlined,
-                size: 12,
-                color: theme.colorScheme.primary,
-              ),
-              const SizedBox(width: 4),
-              Text(
-                widget.tmuxSessionName,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  fontSize: 10,
-                  color: theme.colorScheme.onSurfaceVariant,
+            // Left-aligned session name, right-aligned chevron.
+            Row(
+              children: [
+                Icon(
+                  Icons.window_outlined,
+                  size: 12,
+                  color: theme.colorScheme.primary,
                 ),
-              ),
-              const Spacer(),
-              AnimatedRotation(
-                duration: const Duration(milliseconds: 300),
-                turns: _expanded ? 0.5 : 0,
-                child: Icon(
-                  Icons.keyboard_arrow_up,
-                  size: 14,
-                  color: theme.colorScheme.onSurfaceVariant,
+                const SizedBox(width: 4),
+                Text(
+                  widget.tmuxSessionName,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ],
+                const Spacer(),
+                AnimatedRotation(
+                  duration: const Duration(milliseconds: 300),
+                  turns: _expanded ? 0.5 : 0,
+                  child: Icon(
+                    Icons.keyboard_arrow_up,
+                    size: 14,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     ),
   );
@@ -661,14 +664,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                   },
                 ),
               ).then((tool) {
-                if (tool != null) {
-                  widget.onAction(
-                    TmuxNewWindowAction(
-                      command: tool.commandName,
-                      windowName: tool.commandName,
-                    ),
-                  );
+                if (!mounted || tool == null) {
+                  return;
                 }
+                widget.onAction(
+                  TmuxNewWindowAction(
+                    command: tool.commandName,
+                    windowName: tool.commandName,
+                  ),
+                );
               });
             },
           ),
@@ -3130,6 +3134,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         workingDirectory: host.tmuxWorkingDirectory,
         extraFlags: host.tmuxExtraFlags,
       );
+      final review = assessAutoConnectCommandExecution(
+        tmuxCommand,
+        importedNeedsReview: host.autoConnectRequiresConfirmation,
+      );
+      if (review.requiresReview) {
+        final decision = await _reviewImportedAutoConnectCommand(review);
+        if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+          return;
+        }
+        if (decision == _AutoConnectReviewDecision.trustAndRun) {
+          final updatedHost = host.copyWith(
+            autoConnectRequiresConfirmation: false,
+          );
+          await ref.read(hostRepositoryProvider).update(updatedHost);
+          _host = updatedHost;
+        }
+      }
       shell.write(utf8.encode(formatAutoConnectCommandForShell(tmuxCommand)));
       return;
     }
@@ -3383,7 +3404,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return Stack(
             children: [
               // Reserve actual layout space for the collapsed handle so the
-              // terminal viewport extends cleanly down to the bar boundary.
+              // terminal viewport ends exactly at the handle boundary.
               Positioned.fill(
                 child: ColoredBox(
                   color: terminalTheme.background,

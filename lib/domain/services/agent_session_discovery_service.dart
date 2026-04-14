@@ -15,6 +15,10 @@ const _genericSessionSummaries = <String>{
   'session',
 };
 
+const _profileSourcingPrefix =
+    '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
+    '>/dev/null 2>&1; ';
+
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
 @visibleForTesting
@@ -481,7 +485,7 @@ class AgentSessionDiscoveryService {
         return const _ToolDiscoveryResult.success('Claude Code', []);
       }
 
-      final sessions = <ToolSessionInfo>[];
+      final historyEntries = <Map<String, dynamic>>[];
       final seenIds = <String>{};
       for (final line in output.trim().split('\n').reversed) {
         if (line.trim().isEmpty) continue;
@@ -491,6 +495,18 @@ class AgentSessionDiscoveryService {
           final sessionId = decoded['sessionId'] as String? ?? '';
           if (sessionId.isEmpty || seenIds.contains(sessionId)) continue;
           seenIds.add(sessionId);
+          historyEntries.add(decoded);
+        } on Object {
+          // Ignore malformed lines.
+        }
+      }
+
+      final sessionFilesById = await _findClaudeSessionFiles(session, seenIds);
+      final sessions = <ToolSessionInfo>[];
+      for (final decoded in historyEntries) {
+        try {
+          final sessionId = decoded['sessionId'] as String? ?? '';
+          if (sessionId.isEmpty) continue;
 
           // timestamp may be int (epoch ms) or String (ISO 8601).
           DateTime? lastActive;
@@ -502,12 +518,7 @@ class AgentSessionDiscoveryService {
           }
 
           String? summary;
-          final sessionFile = await _exec(
-            session,
-            'find ~/.claude/projects -name ${_shellQuote('$sessionId.jsonl')} '
-            '-type f 2>/dev/null | head -1',
-          );
-          final sessionFilePath = sessionFile.trim();
+          final sessionFilePath = sessionFilesById[sessionId] ?? '';
           if (sessionFilePath.isNotEmpty) {
             lastActive ??= await _readModificationTime(
               session,
@@ -968,7 +979,7 @@ class AgentSessionDiscoveryService {
       // in session titles or directory paths.
       final dbOutput = await _exec(
         session,
-        r"sqlite3 -separator $'\x1f' "
+        r'SEP=$(printf "\037"); sqlite3 -separator "$SEP" '
         '~/.local/share/opencode/opencode.db '
         "'SELECT id, title, directory, time_updated "
         'FROM session '
@@ -1052,7 +1063,9 @@ class AgentSessionDiscoveryService {
   // ── Helpers ────────────────────────────────────────────────────────────
 
   Future<String> _exec(SshSession session, String command) async {
-    final execSession = await session.execute(command);
+    final execSession = await session.execute(
+      '$_profileSourcingPrefix$command',
+    );
     try {
       final results = await Future.wait([
         execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
@@ -1062,6 +1075,41 @@ class AgentSessionDiscoveryService {
     } finally {
       execSession.close();
     }
+  }
+
+  Future<Map<String, String>> _findClaudeSessionFiles(
+    SshSession session,
+    Iterable<String> sessionIds,
+  ) async {
+    final uniqueSessionIds = sessionIds
+        .where((id) => id.isNotEmpty)
+        .toSet()
+        .toList(growable: false);
+    if (uniqueSessionIds.isEmpty) {
+      return const <String, String>{};
+    }
+
+    final nameFilters = uniqueSessionIds
+        .map((id) => '-name ${_shellQuote('$id.jsonl')}')
+        .join(' -o ');
+    final output = await _exec(
+      session,
+      'find ~/.claude/projects -type f \\( $nameFilters \\) -print 2>/dev/null',
+    );
+
+    final filesById = <String, String>{};
+    for (final rawLine in output.split('\n')) {
+      final path = rawLine.trim();
+      if (path.isEmpty) continue;
+      final fileName = path.split('/').last;
+      if (!fileName.endsWith('.jsonl')) continue;
+      final sessionId = fileName.substring(
+        0,
+        fileName.length - '.jsonl'.length,
+      );
+      filesById.putIfAbsent(sessionId, () => path);
+    }
+    return filesById;
   }
 
   Future<DateTime?> _readModificationTime(

@@ -182,40 +182,45 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   Future<void> _detectInstalledTools() async {
     try {
-      // Source shell profiles so CLIs in Homebrew/nvm/etc. paths are found.
-      final output = await widget.session.execute(
-        '. ~/.profile 2>/dev/null; '
-        '. ~/.bash_profile 2>/dev/null; '
-        '. ~/.zprofile 2>/dev/null; '
-        'command -v claude copilot codex gemini opencode 2>/dev/null'
+      // Source shell profiles so CLIs in Homebrew/nvm/etc. paths are found,
+      // while silencing profile output so only `command -v` results are parsed.
+      final execSession = await widget.session.execute(
+        '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
+        '>/dev/null 2>&1; '
+        'command -v aider claude copilot codex gemini opencode 2>/dev/null'
         ' || true',
       );
-      final stdout = await output.stdout
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .join()
-          .timeout(const Duration(seconds: 5), onTimeout: () => '');
-      await output.stderr
-          .cast<List<int>>()
-          .transform(utf8.decoder)
-          .join()
-          .timeout(const Duration(seconds: 5), onTimeout: () => '');
-      if (!mounted) return;
+      try {
+        final stdout = await execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(seconds: 5), onTimeout: () => '');
+        await execSession.stderr
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .join()
+            .timeout(const Duration(seconds: 5), onTimeout: () => '');
+        if (!mounted) return;
 
-      final paths = stdout.trim().split('\n').where((l) => l.isNotEmpty);
-      final installed = <AgentLaunchTool>{};
-      for (final path in paths) {
-        final bin = path.split('/').last;
-        final tool = _toolForBinary(bin);
-        if (tool != null) installed.add(tool);
+        final paths = stdout.trim().split('\n').where((l) => l.isNotEmpty);
+        final installed = <AgentLaunchTool>{};
+        for (final path in paths) {
+          final bin = path.split('/').last;
+          final tool = _toolForBinary(bin);
+          if (tool != null) installed.add(tool);
+        }
+        setState(() => _installedTools = installed);
+      } finally {
+        execSession.close();
       }
-      setState(() => _installedTools = installed);
     } on Object {
       // Ignore — show all tools if detection fails.
     }
   }
 
   static AgentLaunchTool? _toolForBinary(String bin) => switch (bin) {
+    'aider' => AgentLaunchTool.aider,
     'claude' => AgentLaunchTool.claudeCode,
     'copilot' => AgentLaunchTool.copilotCli,
     'codex' => AgentLaunchTool.codex,
@@ -716,6 +721,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   /// All tools that can be shown in the picker.
   static const _allTools = [
+    AgentLaunchTool.aider,
     AgentLaunchTool.claudeCode,
     AgentLaunchTool.copilotCli,
     AgentLaunchTool.codex,
@@ -786,6 +792,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) {
     final iconData = switch (tool) {
+      AgentLaunchTool.aider => Icons.chat_bubble_outline,
       AgentLaunchTool.claudeCode => Icons.auto_awesome,
       AgentLaunchTool.copilotCli => Icons.flight,
       AgentLaunchTool.codex => Icons.code,

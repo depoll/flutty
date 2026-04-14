@@ -63,6 +63,10 @@ class TmuxService {
   /// Returns `true` if tmux is installed on the remote host.
   Future<bool> isTmuxInstalled(SshSession session) async {
     try {
+      final cachedTmuxPath = _tmuxPathCache[session.connectionId];
+      if (cachedTmuxPath != null && cachedTmuxPath.isNotEmpty) {
+        return true;
+      }
       final output = await _exec(session, 'which tmux');
       return output.trim().isNotEmpty;
     } on Exception {

@@ -1407,6 +1407,9 @@ class _ConnectionsPanel extends ConsumerWidget {
                             icon: const Icon(Icons.close),
                             tooltip: 'Disconnect',
                             onPressed: () async {
+                              ref
+                                  .read(tmuxServiceProvider)
+                                  .clearCache(connection.connectionId);
                               await ref
                                   .read(activeSessionsProvider.notifier)
                                   .disconnect(connection.connectionId);
@@ -2339,6 +2342,7 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   static const _initialSessionFetchLimit = 12;
   static const _sessionFetchStep = 12;
+  static const _tmuxQueryRetryDelay = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
@@ -2395,7 +2399,11 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         );
     }
 
-    if (_showSessions) {
+    if (!_hasAgentSessionAccess) {
+      _showSessions = false;
+    }
+
+    if (_showSessions && _hasAgentSessionAccess) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (mounted) _loadRecentSessions();
       });
@@ -2414,30 +2422,54 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }, identifier: _pageStorageIdentifier);
   }
 
+  bool get _hasAgentSessionAccess {
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    return monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
+  }
+
+  Future<void> _retryTmuxQuery(int retries) async {
+    if (retries <= 0 || !mounted) {
+      if (mounted) {
+        setState(() => _queried = true);
+      }
+      return;
+    }
+    await Future<void>.delayed(_tmuxQueryRetryDelay);
+    if (mounted) {
+      await _queryTmux(retries: retries - 1);
+    }
+  }
+
+  Future<void> _handleLockedAiSessionsTap() => requireMonetizationFeatureAccess(
+    context: context,
+    ref: ref,
+    feature: MonetizationFeature.agentLaunchPresets,
+  );
+
   Future<void> _queryTmux({int retries = 3}) async {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final session = sessionsNotifier.getSession(widget.connectionId);
     if (session == null) {
       // Session not available yet — retry after a delay so the badge
       // still appears for connections that finish establishing shortly.
-      if (retries > 0 && mounted) {
-        await Future<void>.delayed(const Duration(seconds: 2));
-        if (mounted) return _queryTmux(retries: retries - 1);
-      }
-      if (mounted) setState(() => _queried = true);
+      await _retryTmuxQuery(retries);
       return;
     }
 
     final tmux = ref.read(tmuxServiceProvider);
     final active = await tmux.isTmuxActive(session);
     if (!mounted || !active) {
-      if (mounted) setState(() => _queried = true);
+      await _retryTmuxQuery(retries);
       return;
     }
 
     final sessionName = await tmux.currentSessionName(session);
     if (!mounted || sessionName == null) {
-      if (mounted) setState(() => _queried = true);
+      await _retryTmuxQuery(retries);
       return;
     }
 
@@ -2491,6 +2523,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }
 
     final theme = Theme.of(context);
+    final hasAgentSessionAccess = _hasAgentSessionAccess;
     final windows = _windows!;
     final alertCount = windows.where((w) => w.hasAlert).length;
 
@@ -2556,91 +2589,48 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
             const SizedBox(height: 4),
             for (final window in windows) _buildWindowRow(theme, window),
 
-            // Recent AI Sessions subsection.
             const SizedBox(height: 4),
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                setState(() => _showSessions = !_showSessions);
-                _persistUiState();
-                if (_showSessions) _loadRecentSessions();
-              },
-              child: Padding(
-                padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.smart_toy_outlined,
-                      size: 12,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 4),
-                    Text(
-                      'AI Sessions',
-                      style: theme.textTheme.labelSmall?.copyWith(
+            if (hasAgentSessionAccess) ...[
+              // Recent AI Sessions subsection.
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  setState(() => _showSessions = !_showSessions);
+                  _persistUiState();
+                  if (_showSessions) _loadRecentSessions();
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 6,
+                    horizontal: 2,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.smart_toy_outlined,
+                        size: 12,
                         color: theme.colorScheme.onSurfaceVariant,
                       ),
-                    ),
-                    const Spacer(),
-                    Icon(
-                      _showSessions ? Icons.expand_less : Icons.expand_more,
-                      size: 14,
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ],
+                      const SizedBox(width: 4),
+                      Text(
+                        'AI Sessions',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(
+                        _showSessions ? Icons.expand_less : Icons.expand_more,
+                        size: 14,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ],
+                  ),
                 ),
               ),
-            ),
-            if (_showSessions) ...[
-              if (_isLoadingSessions &&
-                  (_recentSessions == null || _recentSessions!.isEmpty))
-                const Padding(
-                  padding: EdgeInsets.symmetric(vertical: 8),
-                  child: Center(
-                    child: SizedBox(
-                      width: 14,
-                      height: 14,
-                      child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                    ),
-                  ),
-                )
-              else if (_sessionLoadError != null &&
-                  _recentSessions != null &&
-                  _recentSessions!.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    _sessionLoadError!,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.error,
-                    ),
-                  ),
-                )
-              else if (_recentSessions != null && _recentSessions!.isEmpty)
-                Padding(
-                  padding: const EdgeInsets.symmetric(vertical: 4),
-                  child: Text(
-                    'No recent sessions found',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                )
-              else if (_recentSessions != null) ...[
-                if (_sessionLoadError != null)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      _sessionLoadError!,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.error,
-                      ),
-                    ),
-                  ),
-                ..._groupSessions(_recentSessions!).entries.map(
-                  (entry) => _buildSessionGroup(theme, entry.key, entry.value),
-                ),
-                if (_isLoadingSessions)
+              if (_showSessions) ...[
+                if (_isLoadingSessions &&
+                    (_recentSessions == null || _recentSessions!.isEmpty))
                   const Padding(
                     padding: EdgeInsets.symmetric(vertical: 8),
                     child: Center(
@@ -2652,17 +2642,108 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                         ),
                       ),
                     ),
-                  ),
-                if (_canLoadMoreSessions)
+                  )
+                else if (_sessionLoadError != null &&
+                    _recentSessions != null &&
+                    _recentSessions!.isEmpty)
                   Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: TextButton(
-                      onPressed: _loadMoreSessions,
-                      child: const Text('Load more'),
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      _sessionLoadError!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
                     ),
+                  )
+                else if (_recentSessions != null && _recentSessions!.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      'No recent sessions found',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                else if (_recentSessions != null) ...[
+                  if (_sessionLoadError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        _sessionLoadError!,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ..._groupSessions(_recentSessions!).entries.map(
+                    (entry) =>
+                        _buildSessionGroup(theme, entry.key, entry.value),
                   ),
+                  if (_isLoadingSessions)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Center(
+                        child: SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator.adaptive(
+                            strokeWidth: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_canLoadMoreSessions)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: TextButton(
+                        onPressed: _loadMoreSessions,
+                        child: const Text('Load more'),
+                      ),
+                    ),
+                ],
               ],
-            ],
+            ] else
+              InkWell(
+                onTap: () => unawaited(_handleLockedAiSessionsTap()),
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 6,
+                    horizontal: 2,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.smart_toy_outlined,
+                        size: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'AI Sessions',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.workspace_premium,
+                        size: 12,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const Spacer(),
+                      Text(
+                        'Pro',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
           ],
         ],
       ),
@@ -2699,6 +2780,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }
 
   Future<void> _loadRecentSessions({bool forceReload = false}) async {
+    if (!_hasAgentSessionAccess) {
+      return;
+    }
     if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
     final previousCount = _recentSessions?.length ?? 0;
     setState(() {
@@ -2775,6 +2859,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }
 
   void _resumeSession(ToolSessionInfo info) {
+    if (!_hasAgentSessionAccess) {
+      unawaited(_handleLockedAiSessionsTap());
+      return;
+    }
     final session = ref
         .read(activeSessionsProvider.notifier)
         .getSession(widget.connectionId);
