@@ -537,11 +537,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     required AgentLaunchPreset? preset,
     required AutoConnectCommandMode autoConnectMode,
   }) {
-    if (host.tmuxSessionName case final value? when value.trim().isNotEmpty) {
-      return _HostStartupMode.tmux;
-    }
     if (preset != null) {
       return _HostStartupMode.agent;
+    }
+    if (host.tmuxSessionName case final value? when value.trim().isNotEmpty) {
+      return _HostStartupMode.tmux;
     }
     return switch (autoConnectMode) {
       AutoConnectCommandMode.none => _HostStartupMode.none,

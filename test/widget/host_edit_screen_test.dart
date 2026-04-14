@@ -15,7 +15,9 @@ import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/port_forward_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
 
@@ -127,6 +129,9 @@ class _FakePortForwardRepository extends PortForwardRepository {
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
+class _MockAgentLaunchPresetService extends Mock
+    implements AgentLaunchPresetService {}
+
 const _proMonetizationState = MonetizationState(
   billingAvailability: MonetizationBillingAvailability.available,
   entitlements: MonetizationEntitlements.pro(),
@@ -147,6 +152,10 @@ MonetizationService _buildProMonetizationService() {
 }
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(const AgentLaunchPreset(tool: AgentLaunchTool.codex));
+  });
+
   group('HostEditScreen', () {
     testWidgets(
       'preserves imported auto-connect review when saving unrelated edits',
@@ -347,6 +356,102 @@ void main() {
       expect(hostRepository.updatedHost!.tmuxWorkingDirectory, '~/src/app');
       expect(hostRepository.updatedHost!.tmuxExtraFlags, '-f ~/.tmux.conf');
     });
+
+    testWidgets(
+      'prefers an existing agent preset over legacy tmux startup fields',
+      (tester) async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        final encryptionService = SecretEncryptionService.forTesting();
+        addTearDown(database.close);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.binding.setSurfaceSize(const Size(420, 900));
+
+        final hostRepository = _FakeHostRepository(
+          host: _testHost(
+            id: 1,
+            label: 'Legacy Mixed Host',
+            autoConnectRequiresConfirmation: false,
+            tmuxSessionName: 'workspace',
+          ),
+          database: database,
+          encryptionService: encryptionService,
+        );
+        final presetService = _MockAgentLaunchPresetService();
+        const preset = AgentLaunchPreset(
+          tool: AgentLaunchTool.codex,
+          tmuxSessionName: 'agent-session',
+        );
+        when(
+          () => presetService.getPresetForHost(1),
+        ).thenAnswer((_) async => preset);
+        when(
+          () => presetService.setPresetForHost(1, any()),
+        ).thenAnswer((_) async {});
+        when(
+          () => presetService.deletePresetForHost(1),
+        ).thenAnswer((_) async {});
+
+        final router = GoRouter(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) =>
+                  const Scaffold(body: SizedBox.shrink()),
+            ),
+            GoRoute(
+              path: '/edit',
+              builder: (context, state) => const HostEditScreen(hostId: 1),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              databaseProvider.overrideWithValue(database),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+              keyRepositoryProvider.overrideWithValue(
+                _FakeKeyRepository(
+                  database: database,
+                  encryptionService: encryptionService,
+                ),
+              ),
+              snippetRepositoryProvider.overrideWithValue(
+                _FakeSnippetRepository(snippets: const [], database: database),
+              ),
+              portForwardRepositoryProvider.overrideWithValue(
+                _FakePortForwardRepository(database: database),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+
+        unawaited(router.push('/edit'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(find.byKey(const Key('host-agent-tool-field')), findsOneWidget);
+        expect(find.byKey(const Key('host-tmux-session-field')), findsNothing);
+
+        await tester.scrollUntilVisible(
+          find.byKey(const Key('host-save-button')),
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.tap(find.byKey(const Key('host-save-button')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        verify(() => presetService.setPresetForHost(1, any())).called(1);
+        verifyNever(() => presetService.deletePresetForHost(1));
+      },
+    );
 
     testWidgets(
       'clears imported auto-connect review after replacing the command',
