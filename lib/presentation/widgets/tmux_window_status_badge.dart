@@ -48,21 +48,21 @@ class TmuxWindowStatusBadge extends StatelessWidget {
     if (window.hasAlert) {
       return _TmuxWindowStatusVisual(
         icon: Icons.notifications_active,
-        foregroundColor: theme.colorScheme.error,
-        backgroundColor: theme.colorScheme.errorContainer.withAlpha(150),
+        foregroundColor: theme.colorScheme.onErrorContainer,
+        backgroundColor: theme.colorScheme.errorContainer,
       );
     }
     if (window.isIdle) {
       return _TmuxWindowStatusVisual(
         icon: Icons.hourglass_bottom,
-        foregroundColor: theme.colorScheme.tertiary,
-        backgroundColor: theme.colorScheme.tertiaryContainer.withAlpha(170),
+        foregroundColor: theme.colorScheme.onTertiaryContainer,
+        backgroundColor: theme.colorScheme.tertiaryContainer,
       );
     }
     return _TmuxWindowStatusVisual(
       icon: Icons.play_arrow,
-      foregroundColor: theme.colorScheme.primary,
-      backgroundColor: theme.colorScheme.primaryContainer.withAlpha(170),
+      foregroundColor: theme.colorScheme.onPrimaryContainer,
+      backgroundColor: theme.colorScheme.primaryContainer,
     );
   }
 }

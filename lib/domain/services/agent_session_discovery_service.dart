@@ -86,6 +86,17 @@ class DiscoveredSessionsResult {
   }
 }
 
+/// Whether a tool-level discovery issue should be surfaced to the UI.
+///
+/// Partial parse issues should stay silent when the tool still yielded usable
+/// sessions, so users only see a failure banner when a tool's history could not
+/// be loaded at all.
+@visibleForTesting
+bool shouldSurfaceDiscoveryFailure({
+  required bool hadError,
+  required int loadedSessionCount,
+}) => hadError && loadedSessionCount == 0;
+
 String? _normalizeDiscoveredSessionSummary(
   ToolSessionInfo info, {
   String? activeWorkingDirectory,
@@ -400,14 +411,28 @@ class AgentSessionDiscoveryService {
       if (filtered.isNotEmpty) {
         return DiscoveredSessionsResult(
           sessions: filtered,
-          failedTools: results.where((r) => r.hadError).map((r) => r.toolName),
+          failedTools: results
+              .where(
+                (r) => shouldSurfaceDiscoveryFailure(
+                  hadError: r.hadError,
+                  loadedSessionCount: r.sessions.length,
+                ),
+              )
+              .map((r) => r.toolName),
         );
       }
     }
 
     return DiscoveredSessionsResult(
       sessions: _limitDiscoveredSessionsPerTool(all, maxPerTool),
-      failedTools: results.where((r) => r.hadError).map((r) => r.toolName),
+      failedTools: results
+          .where(
+            (r) => shouldSurfaceDiscoveryFailure(
+              hadError: r.hadError,
+              loadedSessionCount: r.sessions.length,
+            ),
+          )
+          .map((r) => r.toolName),
     );
   }
 

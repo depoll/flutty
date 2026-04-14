@@ -4,18 +4,25 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
   group('terminal layout helpers', () {
-    test(
-      'keeps horizontal and top breathing room without wasting bottom rows',
-      () {
-        expect(terminalViewportPadding, const EdgeInsets.fromLTRB(8, 8, 8, 0));
-        expect(terminalViewportPadding.bottom, 0);
-      },
-    );
+    test('keeps the terminal full width without wasting bottom rows', () {
+      expect(terminalViewportPadding, const EdgeInsets.fromLTRB(0, 8, 0, 0));
+      expect(terminalViewportPadding.bottom, 0);
+    });
 
     test('positions selection actions above the bottom safe area', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 
       expect(selectionActionsBottomOffset(mediaQuery), 46);
+    });
+
+    test('positions the upsell snackbar above visible bottom chrome only', () {
+      const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
+
+      expect(upgradeSnackBarBottomMargin(mediaQuery), 50);
+      expect(
+        upgradeSnackBarBottomMargin(mediaQuery, showKeyboardToolbar: true),
+        146,
+      );
     });
 
     test('tmux bar expansion uses the available terminal height', () {

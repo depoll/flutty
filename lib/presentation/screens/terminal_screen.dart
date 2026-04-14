@@ -1059,9 +1059,9 @@ enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
 /// Padding around the terminal viewport.
 ///
-/// Keep the terminal flush with the bottom edge so status lines from tools like
-/// tmux use the full available height in every keyboard and toolbar state.
-const terminalViewportPadding = EdgeInsets.fromLTRB(8, 8, 8, 0);
+/// Keep the terminal flush with the bottom and side edges so status lines from
+/// tools like tmux can use the full available width and height.
+const terminalViewportPadding = EdgeInsets.fromLTRB(0, 8, 0, 0);
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
@@ -1106,6 +1106,18 @@ String trimTerminalSelectionText(String text) =>
 @visibleForTesting
 double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
+
+/// Keeps the Pro upsell snackbar tucked just above the visible bottom chrome.
+@visibleForTesting
+double upgradeSnackBarBottomMargin(
+  MediaQueryData mediaQuery, {
+  bool showKeyboardToolbar = false,
+  double keyboardToolbarHeight = 96,
+  double baseSpacing = 16,
+}) =>
+    mediaQuery.padding.bottom +
+    (showKeyboardToolbar ? keyboardToolbarHeight : 0) +
+    baseSpacing;
 
 /// Resolves the transient indicator label for a terminal double-tap Tab gesture.
 @visibleForTesting
@@ -3127,13 +3139,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .canUseFeature(MonetizationFeature.autoConnectAutomation);
     if (!hasAccess) {
       if (mounted) {
-        const keyboardToolbarHeight = 96.0;
-        final bottomMargin =
-            MediaQuery.paddingOf(context).bottom +
-            (_showKeyboardToolbar ? keyboardToolbarHeight : 0) +
-            (_isTmuxActive && _showTmuxBar
-                ? _TmuxExpandableBar.handleHeight + 16
-                : 16);
+        final bottomMargin = upgradeSnackBarBottomMargin(
+          MediaQuery.of(context),
+          showKeyboardToolbar: _showKeyboardToolbar,
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             behavior: SnackBarBehavior.floating,
@@ -3373,14 +3382,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
           return Stack(
             children: [
-              // Drive the terminal inset and the handle reveal from the same
-              // animated value so the bar stays visually locked to the padding.
+              // Reserve actual layout space for the collapsed handle so the
+              // terminal viewport extends cleanly down to the bar boundary.
               Positioned.fill(
                 child: ColoredBox(
                   color: terminalTheme.background,
-                  child: Padding(
-                    padding: EdgeInsets.only(bottom: animatedBottomPadding),
-                    child: _buildTerminalView(terminalTheme, isMobile),
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: _buildTerminalView(terminalTheme, isMobile),
+                      ),
+                      SizedBox(height: animatedBottomPadding),
+                    ],
                   ),
                 ),
               ),

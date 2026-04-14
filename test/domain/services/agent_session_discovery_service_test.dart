@@ -141,6 +141,22 @@ cwd: /tmp/demo
     });
   });
 
+  group('shouldSurfaceDiscoveryFailure', () {
+    test('reports tools that failed to load any sessions', () {
+      expect(
+        shouldSurfaceDiscoveryFailure(hadError: true, loadedSessionCount: 0),
+        isTrue,
+      );
+    });
+
+    test('suppresses partial failures when sessions still loaded', () {
+      expect(
+        shouldSurfaceDiscoveryFailure(hadError: true, loadedSessionCount: 3),
+        isFalse,
+      );
+    });
+  });
+
   group('parseCodexRolloutMetadata', () {
     test('prefers the structured user_message event over input_text noise', () {
       final metadata = parseCodexRolloutMetadata('''
