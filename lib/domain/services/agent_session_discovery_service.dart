@@ -524,31 +524,14 @@ class AgentSessionDiscoveryService {
               session,
               sessionFilePath,
             );
-            final customTitle = await _exec(
+            final metadata = await _readClaudeSessionMetadata(
               session,
-              'grep -o \'"customTitle":"[^"]*"\' '
-              '${_shellQuote(sessionFilePath)} 2>/dev/null '
-              '| tail -1 '
-              '| sed \'s/"customTitle":"//;s/"\$//\'',
-            );
-            final agentName = await _exec(
-              session,
-              'grep -o \'"agentName":"[^"]*"\' '
-              '${_shellQuote(sessionFilePath)} 2>/dev/null '
-              '| tail -1 '
-              '| sed \'s/"agentName":"//;s/"\$//\'',
-            );
-            final lastPrompt = await _exec(
-              session,
-              'grep -o \'"lastPrompt":"[^"]*"\' '
-              '${_shellQuote(sessionFilePath)} 2>/dev/null '
-              '| tail -1 '
-              '| sed \'s/"lastPrompt":"//;s/"\$//\'',
+              sessionFilePath,
             );
             summary = _firstNonEmpty([
-              customTitle.trim(),
-              agentName.trim(),
-              lastPrompt.trim(),
+              metadata.customTitle,
+              metadata.agentName,
+              metadata.lastPrompt,
             ]);
           }
 
@@ -1128,6 +1111,47 @@ class AgentSessionDiscoveryService {
     } on Object {
       return null;
     }
+  }
+
+  Future<({String customTitle, String agentName, String lastPrompt})>
+  _readClaudeSessionMetadata(SshSession session, String path) async {
+    final output = await _exec(
+      session,
+      'awk '
+      '${_shellQuote(r'''
+match($0, /"customTitle":"([^"]*)"/, value) { customTitle = value[1] }
+match($0, /"agentName":"([^"]*)"/, value) { agentName = value[1] }
+match($0, /"lastPrompt":"([^"]*)"/, value) { lastPrompt = value[1] }
+END {
+  printf "customTitle=%s\nagentName=%s\nlastPrompt=%s\n", customTitle, agentName, lastPrompt
+}
+''')} '
+      '${_shellQuote(path)} 2>/dev/null',
+    );
+    var customTitle = '';
+    var agentName = '';
+    var lastPrompt = '';
+    for (final line in output.split('\n')) {
+      final separator = line.indexOf('=');
+      if (separator <= 0) {
+        continue;
+      }
+      final key = line.substring(0, separator);
+      final value = line.substring(separator + 1).trim();
+      switch (key) {
+        case 'customTitle':
+          customTitle = value;
+        case 'agentName':
+          agentName = value;
+        case 'lastPrompt':
+          lastPrompt = value;
+      }
+    }
+    return (
+      customTitle: customTitle,
+      agentName: agentName,
+      lastPrompt: lastPrompt,
+    );
   }
 
   DateTime _dateTimeFromEpoch(int epoch) => DateTime.fromMillisecondsSinceEpoch(
