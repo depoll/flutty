@@ -129,6 +129,7 @@ class TmuxService {
   /// Returns `true` if [sessionName] exists on the remote tmux server.
   Future<bool> hasSession(SshSession session, String sessionName) async {
     try {
+      await _cacheTmuxPath(session);
       final output = await _exec(
         session,
         'tmux has-session -t ${_shellQuote(sessionName)} 2>/dev/null && printf 1',
