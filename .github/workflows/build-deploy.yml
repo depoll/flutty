@@ -237,7 +237,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         if: inputs.android-reuse-aab-artifact-name == ''
         with:
           path: |
@@ -388,14 +388,14 @@ jobs:
 
       - name: Upload signed AAB artifact
         if: inputs.deploy-android-to != 'none' && inputs.android-reuse-aab-artifact-name == ''
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
       - name: Upload unsigned AAB artifact
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
@@ -403,7 +403,7 @@ jobs:
       - name: Upload APK artifact
         id: upload-apk
         if: inputs.deploy-android-to == 'none'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk
@@ -457,7 +457,7 @@ jobs:
 
       - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
-        uses: ruby/setup-ruby@3ff19f5e2baf30647122352b96108b1fbe250c64 # v1.299.0
+        uses: ruby/setup-ruby@4c56a21280b36d862b5fc31348f463d60bdc55d5 # v1.301.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -550,7 +550,7 @@ jobs:
           ref: ${{ steps.source-sha.outputs.value }}
           fetch-depth: 1
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         if: inputs.ios-reuse-ipa-artifact-name == ''
         with:
           path: |
@@ -566,7 +566,7 @@ jobs:
           channel: 'stable'
           cache: true
 
-      - uses: ruby/setup-ruby@3ff19f5e2baf30647122352b96108b1fbe250c64 # v1.299.0
+      - uses: ruby/setup-ruby@4c56a21280b36d862b5fc31348f463d60bdc55d5 # v1.301.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
@@ -781,14 +781,14 @@ jobs:
 
       - name: Upload signed IPA artifact
         if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/*.ipa
 
       - name: Upload unsigned IPA artifact
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/ios/ipa/Runner-unsigned.ipa
@@ -1005,7 +1005,7 @@ jobs:
           printf '%s\n' '${{ inputs.build-number }}' > build/private-deploy-marker/build-number.txt
 
       - name: Upload private deploy build marker
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: private-deploy-build-number-${{ inputs.build-number }}
           path: build/private-deploy-marker/build-number.txt

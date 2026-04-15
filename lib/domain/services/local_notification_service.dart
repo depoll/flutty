@@ -50,10 +50,10 @@ class LocalNotificationService {
 
     try {
       await _plugin.show(
-        notificationId,
-        title,
-        body,
-        const NotificationDetails(
+        id: notificationId,
+        title: title,
+        body: body,
+        notificationDetails: const NotificationDetails(
           android: androidDetails,
           iOS: darwinDetails,
           macOS: darwinDetails,
@@ -70,7 +70,7 @@ class LocalNotificationService {
     if (!didInitialize) return;
 
     try {
-      await _plugin.cancel(notificationId);
+      await _plugin.cancel(id: notificationId);
     } on MissingPluginException {
       // Widget and unit tests don't register platform notification plugins.
     }
@@ -85,7 +85,7 @@ class LocalNotificationService {
         iOS: DarwinInitializationSettings(),
         macOS: DarwinInitializationSettings(),
       );
-      await _plugin.initialize(initializationSettings);
+      await _plugin.initialize(settings: initializationSettings);
 
       final androidImplementation = _plugin
           .resolvePlatformSpecificImplementation<
