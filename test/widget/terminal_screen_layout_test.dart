@@ -4,8 +4,8 @@ import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
   group('terminal layout helpers', () {
-    test('keeps the terminal full width without wasting bottom rows', () {
-      expect(terminalViewportPadding, const EdgeInsets.fromLTRB(0, 8, 0, 0));
+    test('keeps the terminal flush with the viewport edges', () {
+      expect(terminalViewportPadding, EdgeInsets.zero);
       expect(terminalViewportPadding.bottom, 0);
     });
 

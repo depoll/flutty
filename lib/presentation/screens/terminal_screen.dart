@@ -1063,9 +1063,9 @@ enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
 /// Padding around the terminal viewport.
 ///
-/// Keep the terminal flush with the bottom and side edges so status lines from
-/// tools like tmux can use the full available width and height.
-const terminalViewportPadding = EdgeInsets.fromLTRB(0, 8, 0, 0);
+/// Keep the terminal flush with the viewport edges so status lines from tools
+/// like tmux can use the full available width and height.
+const terminalViewportPadding = EdgeInsets.zero;
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
