@@ -167,7 +167,7 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ~/.gradle/caches
@@ -207,7 +207,7 @@ jobs:
         run: flutter build apk --flavor production --release --no-tree-shake-icons --target-platform android-arm64
 
       - name: Upload APK
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-apk
           path: build/app/outputs/flutter-apk/app-production-release.apk
@@ -229,7 +229,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             ios/Pods
@@ -250,7 +250,7 @@ jobs:
         run: flutter build ios --flavor production --release --no-codesign --no-tree-shake-icons --split-debug-info=.debug-info
 
       - name: Upload iOS build
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: ios-build
           path: build/ios/iphoneos/MonkeySSH.app
@@ -268,7 +268,7 @@ jobs:
         with:
           persist-credentials: false
 
-      - uses: actions/cache@668228422ae6a00e4ad889ee87cd7109ec5666a7 # v5
+      - uses: actions/cache@27d5ce7f107fe9357f9df03efb73ab90386fccae # v5
         with:
           path: |
             macos/Pods
@@ -289,7 +289,7 @@ jobs:
         run: flutter build macos --release --no-tree-shake-icons
 
       - name: Upload macOS build
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: macos-build
           path: build/macos/Build/Products/Release/MonkeySSH.app
@@ -320,7 +320,7 @@ jobs:
         run: flutter build windows --release --no-tree-shake-icons
 
       - name: Upload Windows build
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: windows-build
           path: build/windows/x64/runner/Release/
@@ -356,7 +356,7 @@ jobs:
         run: flutter build linux --release --no-tree-shake-icons
 
       - name: Upload Linux build
-        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: linux-build
           path: build/linux/x64/release/bundle/
