@@ -32,6 +32,57 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   ActiveConnection? getActiveConnection(int connectionId) => null;
 }
 
+class _MutableActiveSessionsNotifier extends ActiveSessionsNotifier {
+  _MutableActiveSessionsNotifier({
+    List<ActiveConnection> initialConnections = const <ActiveConnection>[],
+  }) {
+    _connections.addEntries(
+      initialConnections.map(
+        (connection) => MapEntry(connection.connectionId, connection),
+      ),
+    );
+  }
+
+  final Map<int, ActiveConnection> _connections = <int, ActiveConnection>{};
+
+  @override
+  Map<int, SshConnectionState> build() => {
+    for (final connection in _connections.values)
+      connection.connectionId: connection.state,
+  };
+
+  @override
+  ConnectionAttemptStatus? getConnectionAttempt(int hostId) => null;
+
+  @override
+  List<int> getConnectionsForHost(int hostId) => _connections.values
+      .where((connection) => connection.hostId == hostId)
+      .map((connection) => connection.connectionId)
+      .toList(growable: false);
+
+  @override
+  ActiveConnection? getActiveConnection(int connectionId) =>
+      _connections[connectionId];
+
+  @override
+  List<ActiveConnection> getActiveConnections() =>
+      _connections.values.toList(growable: false);
+
+  void setActiveConnections(List<ActiveConnection> connections) {
+    _connections
+      ..clear()
+      ..addEntries(
+        connections.map(
+          (connection) => MapEntry(connection.connectionId, connection),
+        ),
+      );
+    state = {
+      for (final connection in connections)
+        connection.connectionId: connection.state,
+    };
+  }
+}
+
 Host _buildHost({
   required int id,
   required String label,
@@ -74,6 +125,22 @@ Snippet _buildSnippet({
   createdAt: DateTime(2026),
   usageCount: 0,
   sortOrder: sortOrder,
+);
+
+ActiveConnection _buildActiveConnection({
+  required int connectionId,
+  required int hostId,
+  SshConnectionState state = SshConnectionState.connected,
+}) => ActiveConnection(
+  connectionId: connectionId,
+  hostId: hostId,
+  state: state,
+  createdAt: DateTime(2026),
+  config: const SshConnectionConfig(
+    hostname: 'alpha.example.com',
+    port: 22,
+    username: 'root',
+  ),
 );
 
 // These tests are skipped because the HomeScreen uses StreamProviders
@@ -355,5 +422,46 @@ void main() {
       ),
       findsOneWidget,
     );
+  });
+
+  testWidgets('returns to Hosts when the last active connection disappears', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final sessionsNotifier = _MutableActiveSessionsNotifier(
+      initialConnections: [
+        _buildActiveConnection(
+          connectionId: 7,
+          hostId: 1,
+          state: SshConnectionState.connecting,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      buildMobileHomeScreen(
+        db: db,
+        overrides: [
+          activeSessionsProvider.overrideWith(() => sessionsNotifier),
+          allHostsProvider.overrideWith(
+            (ref) =>
+                Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
+          ),
+        ],
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Connections').first);
+    await tester.pump();
+    expect(find.text('No active connections'), findsNothing);
+
+    sessionsNotifier.setActiveConnections(const <ActiveConnection>[]);
+    await tester.pump();
+    await tester.pump();
+
+    expect(find.text('No active connections'), findsNothing);
   });
 }

@@ -2262,6 +2262,39 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
         defaultValue: const Constant(false),
       );
+  static const VerificationMeta _tmuxSessionNameMeta = const VerificationMeta(
+    'tmuxSessionName',
+  );
+  @override
+  late final GeneratedColumn<String> tmuxSessionName = GeneratedColumn<String>(
+    'tmux_session_name',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  static const VerificationMeta _tmuxWorkingDirectoryMeta =
+      const VerificationMeta('tmuxWorkingDirectory');
+  @override
+  late final GeneratedColumn<String> tmuxWorkingDirectory =
+      GeneratedColumn<String>(
+        'tmux_working_directory',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
+  static const VerificationMeta _tmuxExtraFlagsMeta = const VerificationMeta(
+    'tmuxExtraFlags',
+  );
+  @override
+  late final GeneratedColumn<String> tmuxExtraFlags = GeneratedColumn<String>(
+    'tmux_extra_flags',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
   static const VerificationMeta _sortOrderMeta = const VerificationMeta(
     'sortOrder',
   );
@@ -2298,6 +2331,9 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     autoConnectCommand,
     autoConnectSnippetId,
     autoConnectRequiresConfirmation,
+    tmuxSessionName,
+    tmuxWorkingDirectory,
+    tmuxExtraFlags,
     sortOrder,
   ];
   @override
@@ -2471,6 +2507,33 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         ),
       );
     }
+    if (data.containsKey('tmux_session_name')) {
+      context.handle(
+        _tmuxSessionNameMeta,
+        tmuxSessionName.isAcceptableOrUnknown(
+          data['tmux_session_name']!,
+          _tmuxSessionNameMeta,
+        ),
+      );
+    }
+    if (data.containsKey('tmux_working_directory')) {
+      context.handle(
+        _tmuxWorkingDirectoryMeta,
+        tmuxWorkingDirectory.isAcceptableOrUnknown(
+          data['tmux_working_directory']!,
+          _tmuxWorkingDirectoryMeta,
+        ),
+      );
+    }
+    if (data.containsKey('tmux_extra_flags')) {
+      context.handle(
+        _tmuxExtraFlagsMeta,
+        tmuxExtraFlags.isAcceptableOrUnknown(
+          data['tmux_extra_flags']!,
+          _tmuxExtraFlagsMeta,
+        ),
+      );
+    }
     if (data.containsKey('sort_order')) {
       context.handle(
         _sortOrderMeta,
@@ -2574,6 +2637,18 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.bool,
         data['${effectivePrefix}auto_connect_requires_confirmation'],
       )!,
+      tmuxSessionName: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}tmux_session_name'],
+      ),
+      tmuxWorkingDirectory: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}tmux_working_directory'],
+      ),
+      tmuxExtraFlags: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}tmux_extra_flags'],
+      ),
       sortOrder: attachedDatabase.typeMapping.read(
         DriftSqlType.int,
         data['${effectivePrefix}sort_order'],
@@ -2654,6 +2729,21 @@ class Host extends DataClass implements Insertable<Host> {
   /// Whether auto-connect should require user review before it can run.
   final bool autoConnectRequiresConfirmation;
 
+  /// tmux session name to attach/create on connect.
+  ///
+  /// When set, the app generates a `tmux new-session -A -s <name>` command
+  /// instead of using [autoConnectCommand], and knows the session name
+  /// directly for window navigation.
+  final String? tmuxSessionName;
+
+  /// Working directory to use when starting a tmux session.
+  ///
+  /// Passed as `-c <dir>` to `tmux new-session`.
+  final String? tmuxWorkingDirectory;
+
+  /// Extra tmux flags appended to the generated `tmux new-session` command.
+  final String? tmuxExtraFlags;
+
   /// Display order within the hosts list.
   final int sortOrder;
   const Host({
@@ -2679,6 +2769,9 @@ class Host extends DataClass implements Insertable<Host> {
     this.autoConnectCommand,
     this.autoConnectSnippetId,
     required this.autoConnectRequiresConfirmation,
+    this.tmuxSessionName,
+    this.tmuxWorkingDirectory,
+    this.tmuxExtraFlags,
     required this.sortOrder,
   });
   @override
@@ -2734,6 +2827,15 @@ class Host extends DataClass implements Insertable<Host> {
     map['auto_connect_requires_confirmation'] = Variable<bool>(
       autoConnectRequiresConfirmation,
     );
+    if (!nullToAbsent || tmuxSessionName != null) {
+      map['tmux_session_name'] = Variable<String>(tmuxSessionName);
+    }
+    if (!nullToAbsent || tmuxWorkingDirectory != null) {
+      map['tmux_working_directory'] = Variable<String>(tmuxWorkingDirectory);
+    }
+    if (!nullToAbsent || tmuxExtraFlags != null) {
+      map['tmux_extra_flags'] = Variable<String>(tmuxExtraFlags);
+    }
     map['sort_order'] = Variable<int>(sortOrder);
     return map;
   }
@@ -2786,6 +2888,15 @@ class Host extends DataClass implements Insertable<Host> {
           ? const Value.absent()
           : Value(autoConnectSnippetId),
       autoConnectRequiresConfirmation: Value(autoConnectRequiresConfirmation),
+      tmuxSessionName: tmuxSessionName == null && nullToAbsent
+          ? const Value.absent()
+          : Value(tmuxSessionName),
+      tmuxWorkingDirectory: tmuxWorkingDirectory == null && nullToAbsent
+          ? const Value.absent()
+          : Value(tmuxWorkingDirectory),
+      tmuxExtraFlags: tmuxExtraFlags == null && nullToAbsent
+          ? const Value.absent()
+          : Value(tmuxExtraFlags),
       sortOrder: Value(sortOrder),
     );
   }
@@ -2830,6 +2941,11 @@ class Host extends DataClass implements Insertable<Host> {
       autoConnectRequiresConfirmation: serializer.fromJson<bool>(
         json['autoConnectRequiresConfirmation'],
       ),
+      tmuxSessionName: serializer.fromJson<String?>(json['tmuxSessionName']),
+      tmuxWorkingDirectory: serializer.fromJson<String?>(
+        json['tmuxWorkingDirectory'],
+      ),
+      tmuxExtraFlags: serializer.fromJson<String?>(json['tmuxExtraFlags']),
       sortOrder: serializer.fromJson<int>(json['sortOrder']),
     );
   }
@@ -2861,6 +2977,9 @@ class Host extends DataClass implements Insertable<Host> {
       'autoConnectRequiresConfirmation': serializer.toJson<bool>(
         autoConnectRequiresConfirmation,
       ),
+      'tmuxSessionName': serializer.toJson<String?>(tmuxSessionName),
+      'tmuxWorkingDirectory': serializer.toJson<String?>(tmuxWorkingDirectory),
+      'tmuxExtraFlags': serializer.toJson<String?>(tmuxExtraFlags),
       'sortOrder': serializer.toJson<int>(sortOrder),
     };
   }
@@ -2888,6 +3007,9 @@ class Host extends DataClass implements Insertable<Host> {
     Value<String?> autoConnectCommand = const Value.absent(),
     Value<int?> autoConnectSnippetId = const Value.absent(),
     bool? autoConnectRequiresConfirmation,
+    Value<String?> tmuxSessionName = const Value.absent(),
+    Value<String?> tmuxWorkingDirectory = const Value.absent(),
+    Value<String?> tmuxExtraFlags = const Value.absent(),
     int? sortOrder,
   }) => Host(
     id: id ?? this.id,
@@ -2925,6 +3047,15 @@ class Host extends DataClass implements Insertable<Host> {
         : this.autoConnectSnippetId,
     autoConnectRequiresConfirmation:
         autoConnectRequiresConfirmation ?? this.autoConnectRequiresConfirmation,
+    tmuxSessionName: tmuxSessionName.present
+        ? tmuxSessionName.value
+        : this.tmuxSessionName,
+    tmuxWorkingDirectory: tmuxWorkingDirectory.present
+        ? tmuxWorkingDirectory.value
+        : this.tmuxWorkingDirectory,
+    tmuxExtraFlags: tmuxExtraFlags.present
+        ? tmuxExtraFlags.value
+        : this.tmuxExtraFlags,
     sortOrder: sortOrder ?? this.sortOrder,
   );
   Host copyWithCompanion(HostsCompanion data) {
@@ -2970,6 +3101,15 @@ class Host extends DataClass implements Insertable<Host> {
           data.autoConnectRequiresConfirmation.present
           ? data.autoConnectRequiresConfirmation.value
           : this.autoConnectRequiresConfirmation,
+      tmuxSessionName: data.tmuxSessionName.present
+          ? data.tmuxSessionName.value
+          : this.tmuxSessionName,
+      tmuxWorkingDirectory: data.tmuxWorkingDirectory.present
+          ? data.tmuxWorkingDirectory.value
+          : this.tmuxWorkingDirectory,
+      tmuxExtraFlags: data.tmuxExtraFlags.present
+          ? data.tmuxExtraFlags.value
+          : this.tmuxExtraFlags,
       sortOrder: data.sortOrder.present ? data.sortOrder.value : this.sortOrder,
     );
   }
@@ -3001,6 +3141,9 @@ class Host extends DataClass implements Insertable<Host> {
           ..write(
             'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation, ',
           )
+          ..write('tmuxSessionName: $tmuxSessionName, ')
+          ..write('tmuxWorkingDirectory: $tmuxWorkingDirectory, ')
+          ..write('tmuxExtraFlags: $tmuxExtraFlags, ')
           ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
@@ -3030,6 +3173,9 @@ class Host extends DataClass implements Insertable<Host> {
     autoConnectCommand,
     autoConnectSnippetId,
     autoConnectRequiresConfirmation,
+    tmuxSessionName,
+    tmuxWorkingDirectory,
+    tmuxExtraFlags,
     sortOrder,
   ]);
   @override
@@ -3059,6 +3205,9 @@ class Host extends DataClass implements Insertable<Host> {
           other.autoConnectSnippetId == this.autoConnectSnippetId &&
           other.autoConnectRequiresConfirmation ==
               this.autoConnectRequiresConfirmation &&
+          other.tmuxSessionName == this.tmuxSessionName &&
+          other.tmuxWorkingDirectory == this.tmuxWorkingDirectory &&
+          other.tmuxExtraFlags == this.tmuxExtraFlags &&
           other.sortOrder == this.sortOrder);
 }
 
@@ -3085,6 +3234,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<String?> autoConnectCommand;
   final Value<int?> autoConnectSnippetId;
   final Value<bool> autoConnectRequiresConfirmation;
+  final Value<String?> tmuxSessionName;
+  final Value<String?> tmuxWorkingDirectory;
+  final Value<String?> tmuxExtraFlags;
   final Value<int> sortOrder;
   const HostsCompanion({
     this.id = const Value.absent(),
@@ -3109,6 +3261,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.autoConnectCommand = const Value.absent(),
     this.autoConnectSnippetId = const Value.absent(),
     this.autoConnectRequiresConfirmation = const Value.absent(),
+    this.tmuxSessionName = const Value.absent(),
+    this.tmuxWorkingDirectory = const Value.absent(),
+    this.tmuxExtraFlags = const Value.absent(),
     this.sortOrder = const Value.absent(),
   });
   HostsCompanion.insert({
@@ -3134,6 +3289,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.autoConnectCommand = const Value.absent(),
     this.autoConnectSnippetId = const Value.absent(),
     this.autoConnectRequiresConfirmation = const Value.absent(),
+    this.tmuxSessionName = const Value.absent(),
+    this.tmuxWorkingDirectory = const Value.absent(),
+    this.tmuxExtraFlags = const Value.absent(),
     this.sortOrder = const Value.absent(),
   }) : label = Value(label),
        hostname = Value(hostname),
@@ -3161,6 +3319,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<String>? autoConnectCommand,
     Expression<int>? autoConnectSnippetId,
     Expression<bool>? autoConnectRequiresConfirmation,
+    Expression<String>? tmuxSessionName,
+    Expression<String>? tmuxWorkingDirectory,
+    Expression<String>? tmuxExtraFlags,
     Expression<int>? sortOrder,
   }) {
     return RawValuesInsertable({
@@ -3192,6 +3353,10 @@ class HostsCompanion extends UpdateCompanion<Host> {
         'auto_connect_snippet_id': autoConnectSnippetId,
       if (autoConnectRequiresConfirmation != null)
         'auto_connect_requires_confirmation': autoConnectRequiresConfirmation,
+      if (tmuxSessionName != null) 'tmux_session_name': tmuxSessionName,
+      if (tmuxWorkingDirectory != null)
+        'tmux_working_directory': tmuxWorkingDirectory,
+      if (tmuxExtraFlags != null) 'tmux_extra_flags': tmuxExtraFlags,
       if (sortOrder != null) 'sort_order': sortOrder,
     });
   }
@@ -3219,6 +3384,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<String?>? autoConnectCommand,
     Value<int?>? autoConnectSnippetId,
     Value<bool>? autoConnectRequiresConfirmation,
+    Value<String?>? tmuxSessionName,
+    Value<String?>? tmuxWorkingDirectory,
+    Value<String?>? tmuxExtraFlags,
     Value<int>? sortOrder,
   }) {
     return HostsCompanion(
@@ -3246,6 +3414,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
       autoConnectRequiresConfirmation:
           autoConnectRequiresConfirmation ??
           this.autoConnectRequiresConfirmation,
+      tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
+      tmuxWorkingDirectory: tmuxWorkingDirectory ?? this.tmuxWorkingDirectory,
+      tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
       sortOrder: sortOrder ?? this.sortOrder,
     );
   }
@@ -3327,6 +3498,17 @@ class HostsCompanion extends UpdateCompanion<Host> {
         autoConnectRequiresConfirmation.value,
       );
     }
+    if (tmuxSessionName.present) {
+      map['tmux_session_name'] = Variable<String>(tmuxSessionName.value);
+    }
+    if (tmuxWorkingDirectory.present) {
+      map['tmux_working_directory'] = Variable<String>(
+        tmuxWorkingDirectory.value,
+      );
+    }
+    if (tmuxExtraFlags.present) {
+      map['tmux_extra_flags'] = Variable<String>(tmuxExtraFlags.value);
+    }
     if (sortOrder.present) {
       map['sort_order'] = Variable<int>(sortOrder.value);
     }
@@ -3360,6 +3542,9 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write(
             'autoConnectRequiresConfirmation: $autoConnectRequiresConfirmation, ',
           )
+          ..write('tmuxSessionName: $tmuxSessionName, ')
+          ..write('tmuxWorkingDirectory: $tmuxWorkingDirectory, ')
+          ..write('tmuxExtraFlags: $tmuxExtraFlags, ')
           ..write('sortOrder: $sortOrder')
           ..write(')'))
         .toString();
@@ -6467,6 +6652,9 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<String?> autoConnectCommand,
       Value<int?> autoConnectSnippetId,
       Value<bool> autoConnectRequiresConfirmation,
+      Value<String?> tmuxSessionName,
+      Value<String?> tmuxWorkingDirectory,
+      Value<String?> tmuxExtraFlags,
       Value<int> sortOrder,
     });
 typedef $$HostsTableUpdateCompanionBuilder =
@@ -6493,6 +6681,9 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<String?> autoConnectCommand,
       Value<int?> autoConnectSnippetId,
       Value<bool> autoConnectRequiresConfirmation,
+      Value<String?> tmuxSessionName,
+      Value<String?> tmuxWorkingDirectory,
+      Value<String?> tmuxExtraFlags,
       Value<int> sortOrder,
     });
 
@@ -6689,6 +6880,21 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<bool> get autoConnectRequiresConfirmation => $composableBuilder(
     column: $table.autoConnectRequiresConfirmation,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get tmuxSessionName => $composableBuilder(
+    column: $table.tmuxSessionName,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get tmuxWorkingDirectory => $composableBuilder(
+    column: $table.tmuxWorkingDirectory,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get tmuxExtraFlags => $composableBuilder(
+    column: $table.tmuxExtraFlags,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -6915,6 +7121,21 @@ class $$HostsTableOrderingComposer
         builder: (column) => ColumnOrderings(column),
       );
 
+  ColumnOrderings<String> get tmuxSessionName => $composableBuilder(
+    column: $table.tmuxSessionName,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get tmuxWorkingDirectory => $composableBuilder(
+    column: $table.tmuxWorkingDirectory,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get tmuxExtraFlags => $composableBuilder(
+    column: $table.tmuxExtraFlags,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<int> get sortOrder => $composableBuilder(
     column: $table.sortOrder,
     builder: (column) => ColumnOrderings(column),
@@ -7090,6 +7311,21 @@ class $$HostsTableAnnotationComposer
         column: $table.autoConnectRequiresConfirmation,
         builder: (column) => column,
       );
+
+  GeneratedColumn<String> get tmuxSessionName => $composableBuilder(
+    column: $table.tmuxSessionName,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get tmuxWorkingDirectory => $composableBuilder(
+    column: $table.tmuxWorkingDirectory,
+    builder: (column) => column,
+  );
+
+  GeneratedColumn<String> get tmuxExtraFlags => $composableBuilder(
+    column: $table.tmuxExtraFlags,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<int> get sortOrder =>
       $composableBuilder(column: $table.sortOrder, builder: (column) => column);
@@ -7269,6 +7505,9 @@ class $$HostsTableTableManager
                 Value<int?> autoConnectSnippetId = const Value.absent(),
                 Value<bool> autoConnectRequiresConfirmation =
                     const Value.absent(),
+                Value<String?> tmuxSessionName = const Value.absent(),
+                Value<String?> tmuxWorkingDirectory = const Value.absent(),
+                Value<String?> tmuxExtraFlags = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion(
                 id: id,
@@ -7294,6 +7533,9 @@ class $$HostsTableTableManager
                 autoConnectSnippetId: autoConnectSnippetId,
                 autoConnectRequiresConfirmation:
                     autoConnectRequiresConfirmation,
+                tmuxSessionName: tmuxSessionName,
+                tmuxWorkingDirectory: tmuxWorkingDirectory,
+                tmuxExtraFlags: tmuxExtraFlags,
                 sortOrder: sortOrder,
               ),
           createCompanionCallback:
@@ -7321,6 +7563,9 @@ class $$HostsTableTableManager
                 Value<int?> autoConnectSnippetId = const Value.absent(),
                 Value<bool> autoConnectRequiresConfirmation =
                     const Value.absent(),
+                Value<String?> tmuxSessionName = const Value.absent(),
+                Value<String?> tmuxWorkingDirectory = const Value.absent(),
+                Value<String?> tmuxExtraFlags = const Value.absent(),
                 Value<int> sortOrder = const Value.absent(),
               }) => HostsCompanion.insert(
                 id: id,
@@ -7346,6 +7591,9 @@ class $$HostsTableTableManager
                 autoConnectSnippetId: autoConnectSnippetId,
                 autoConnectRequiresConfirmation:
                     autoConnectRequiresConfirmation,
+                tmuxSessionName: tmuxSessionName,
+                tmuxWorkingDirectory: tmuxWorkingDirectory,
+                tmuxExtraFlags: tmuxExtraFlags,
                 sortOrder: sortOrder,
               ),
           withReferenceMapper: (p0) => p0

@@ -8,6 +8,15 @@ enum AgentLaunchTool {
 
   /// Aider.
   aider,
+
+  /// OpenAI Codex CLI.
+  codex,
+
+  /// OpenCode CLI.
+  openCode,
+
+  /// Google Gemini CLI.
+  geminiCli,
 }
 
 /// Presentation helpers for [AgentLaunchTool].
@@ -17,6 +26,9 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
     AgentLaunchTool.aider => 'Aider',
+    AgentLaunchTool.codex => 'Codex',
+    AgentLaunchTool.openCode => 'OpenCode',
+    AgentLaunchTool.geminiCli => 'Gemini CLI',
   };
 
   /// Shell command used to launch this tool.
@@ -24,6 +36,19 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.claudeCode => 'claude',
     AgentLaunchTool.copilotCli => 'copilot',
     AgentLaunchTool.aider => 'aider',
+    AgentLaunchTool.codex => 'codex',
+    AgentLaunchTool.openCode => 'opencode',
+    AgentLaunchTool.geminiCli => 'gemini',
+  };
+
+  /// Whether this tool supports session resume.
+  bool get supportsResume => switch (this) {
+    AgentLaunchTool.claudeCode => true,
+    AgentLaunchTool.copilotCli => true,
+    AgentLaunchTool.aider => true,
+    AgentLaunchTool.codex => true,
+    AgentLaunchTool.openCode => true,
+    AgentLaunchTool.geminiCli => true,
   };
 }
 
@@ -38,16 +63,22 @@ class AgentLaunchPreset {
   });
 
   /// Decodes an [AgentLaunchPreset] from JSON.
-  factory AgentLaunchPreset.fromJson(Map<String, dynamic> json) =>
-      AgentLaunchPreset(
-        tool: AgentLaunchTool.values.firstWhere(
-          (value) => value.name == json['tool'],
-          orElse: () => AgentLaunchTool.claudeCode,
-        ),
-        workingDirectory: _readTrimmedString(json['workingDirectory']),
-        tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
-        additionalArguments: _readTrimmedString(json['additionalArguments']),
-      );
+  factory AgentLaunchPreset.fromJson(Map<String, dynamic> json) {
+    final rawTool = _readTrimmedString(json['tool']);
+    final tool = AgentLaunchTool.values.firstWhere(
+      (value) => value.name == rawTool,
+      orElse: () => switch (rawTool) {
+        'aider' => AgentLaunchTool.aider,
+        _ => AgentLaunchTool.claudeCode,
+      },
+    );
+    return AgentLaunchPreset(
+      tool: tool,
+      workingDirectory: _readTrimmedString(json['workingDirectory']),
+      tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
+      additionalArguments: _readTrimmedString(json['additionalArguments']),
+    );
+  }
 
   /// Selected coding-agent CLI.
   final AgentLaunchTool tool;

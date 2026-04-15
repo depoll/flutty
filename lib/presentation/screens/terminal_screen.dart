@@ -23,10 +23,14 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
@@ -34,6 +38,7 @@ import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/tmux_service.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
@@ -41,6 +46,8 @@ import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
+import '../widgets/tmux_window_navigator.dart';
+import '../widgets/tmux_window_status_badge.dart';
 
 bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x20 ||
@@ -52,6 +59,71 @@ bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
     (codeUnit >= 0x61 && codeUnit <= 0x7A);
+
+/// Resolves how much vertical space the tmux bar can safely expand into.
+@visibleForTesting
+double resolveTmuxBarMaxContentHeight(
+  double availableHeight, {
+  double handleHeight = 22,
+  double reservedPadding = 8,
+  double fallbackAvailableHeight = 0,
+}) {
+  const maxHeightFactor = 0.68;
+  const maxHeightCap = 400.0;
+  final minimumExpandableHeight = handleHeight + reservedPadding;
+  final effectiveAvailableHeight = availableHeight > minimumExpandableHeight
+      ? availableHeight
+      : fallbackAvailableHeight;
+  final rawHeight = max(
+    0,
+    effectiveAvailableHeight - handleHeight - reservedPadding,
+  ).toDouble();
+  return min(
+    rawHeight,
+    min(effectiveAvailableHeight * maxHeightFactor, maxHeightCap),
+  );
+}
+
+const _tmuxBarRevealDuration = Duration(milliseconds: 300);
+const _tmuxDetectionRetrySchedule = <Duration>[
+  Duration.zero,
+  Duration(milliseconds: 150),
+  Duration(milliseconds: 350),
+  Duration(milliseconds: 700),
+  Duration(milliseconds: 1400),
+];
+
+/// Resolves the retry schedule used for tmux detection after connect.
+@visibleForTesting
+List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
+    skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
+
+/// Resolves the tmux session name we can infer before remote verification.
+@visibleForTesting
+String? resolvePreferredTmuxSessionName({
+  String? structuredSessionName,
+  String? autoConnectCommand,
+}) => structuredSessionName ?? parseTmuxSessionName(autoConnectCommand);
+
+/// Resolves the tmux bar's vertical offset from the animated bottom padding.
+@visibleForTesting
+double resolveTmuxBarRevealBottomOffset(
+  double terminalBottomPadding, {
+  double handleHeight = 22,
+}) => terminalBottomPadding - handleHeight;
+
+/// Resolves the tmux bar's reveal opacity from the animated bottom padding.
+@visibleForTesting
+double resolveTmuxBarRevealOpacity(
+  double terminalBottomPadding, {
+  double handleHeight = 22,
+}) {
+  if (handleHeight <= 0) {
+    return terminalBottomPadding > 0 ? 1 : 0;
+  }
+
+  return (terminalBottomPadding / handleHeight).clamp(0.0, 1.0);
+}
 
 final _oscEscapeSequencePattern = RegExp(
   '\x1B\\][^\x07\x1B]*(?:\x07|\x1B\\\\)',
@@ -123,6 +195,776 @@ const _terminalFilePathVerificationExtensions = <String>[
   'h',
   'm',
 ];
+
+/// Expandable tmux bar overlaid at the bottom of the terminal.
+///
+/// Collapsed: a slim handle bar sitting over bottom padding in the terminal.
+/// Expanded: slides up over the terminal content.
+/// The handle height matches the terminal's bottom padding so it never
+/// covers actual terminal content when collapsed.
+class _TmuxExpandableBar extends StatefulWidget {
+  const _TmuxExpandableBar({
+    required this.session,
+    required this.tmuxSessionName,
+    required this.availableHeight,
+    required this.isProUser,
+    required this.ref,
+    required this.onAction,
+  });
+
+  /// The active SSH session.
+  final SshSession session;
+
+  /// The tmux session name.
+  final String tmuxSessionName;
+
+  /// The available terminal height the bar can expand into.
+  final double availableHeight;
+
+  /// Whether the user has Pro access.
+  final bool isProUser;
+
+  /// Riverpod ref.
+  final WidgetRef ref;
+
+  /// Callback for navigator actions.
+  final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  /// Height of the collapsed handle bar. The terminal adds this as
+  /// bottom padding so the handle sits over empty space.
+  static const handleHeight = 22.0;
+
+  @override
+  State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
+}
+
+class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
+    with SingleTickerProviderStateMixin {
+  static const _denseTileVisualDensity = VisualDensity(vertical: -2);
+  static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
+  static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
+  static const _sessionTilePadding = EdgeInsets.only(left: 68, right: 12);
+  static const _initialSessionFetchLimit = 12;
+  static const _sessionFetchStep = 12;
+
+  List<TmuxWindow>? _windows;
+  List<ToolSessionInfo>? _recentSessions;
+  final Set<String> _expandedSessionTools = <String>{};
+  final Set<int> _seenAlertWindows = <int>{};
+  String? _sessionLoadError;
+  bool _expanded = false;
+  bool _isLoading = true;
+  bool _isLoadingSessions = false;
+  bool _canLoadMoreSessions = false;
+  bool _showSessions = false;
+  double _dragOffset = 0;
+  int _sessionFetchLimit = _initialSessionFetchLimit;
+  StreamSubscription<void>? _windowChangeSubscription;
+  late AnimationController _bounceController;
+  late Animation<double> _bounceAnimation;
+  bool _loadingWindows = false;
+  bool _pendingWindowReload = false;
+
+  TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
+
+  @override
+  void initState() {
+    super.initState();
+    _bounceController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 600),
+    );
+    _bounceAnimation =
+        TweenSequence<double>([
+          TweenSequenceItem(tween: Tween(begin: 0, end: -6), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: -6, end: 0), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: 0, end: -3), weight: 1),
+          TweenSequenceItem(tween: Tween(begin: -3, end: 0), weight: 1),
+        ]).animate(
+          CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
+        );
+    _loadWindows();
+    _subscribeToWindowChanges();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TmuxExpandableBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.connectionId == widget.session.connectionId &&
+        oldWidget.tmuxSessionName == widget.tmuxSessionName) {
+      return;
+    }
+    _windowChangeSubscription?.cancel();
+    _subscribeToWindowChanges();
+    _loadWindows();
+  }
+
+  @override
+  void dispose() {
+    _windowChangeSubscription?.cancel();
+    for (final windowIndex in _seenAlertWindows) {
+      _clearAlertNotification(windowIndex);
+    }
+    _bounceController.dispose();
+    super.dispose();
+  }
+
+  void _subscribeToWindowChanges() {
+    _windowChangeSubscription = _tmux
+        .watchWindowChanges(widget.session, widget.tmuxSessionName)
+        .listen((_) {
+          if (!mounted) return;
+          _loadWindows();
+        });
+  }
+
+  Future<void> _loadWindows() async {
+    if (_loadingWindows) {
+      _pendingWindowReload = true;
+      return;
+    }
+    _loadingWindows = true;
+    try {
+      final windows = await _tmux.listWindows(
+        widget.session,
+        widget.tmuxSessionName,
+      );
+      if (!mounted) return;
+
+      // Detect new alerts that weren't in the previous window list.
+      final newAlerts = windows.where(
+        (w) =>
+            w.hasAlert && !w.isActive && !_seenAlertWindows.contains(w.index),
+      );
+      if (newAlerts.isNotEmpty) {
+        unawaited(_bounceController.forward(from: 0));
+        for (final w in newAlerts) {
+          _seenAlertWindows.add(w.index);
+          _sendAlertNotification(w);
+        }
+      }
+
+      final activeAlerts = _seenAlertWindows
+          .where(
+            (idx) =>
+                windows.any((w) => w.index == idx && w.hasAlert && w.isActive),
+          )
+          .toList(growable: false);
+      for (final windowIndex in activeAlerts) {
+        _clearAlertNotification(windowIndex);
+      }
+
+      final clearedAlerts = _seenAlertWindows
+          .where((idx) => !windows.any((w) => w.index == idx && w.hasAlert))
+          .toList(growable: false);
+      for (final windowIndex in clearedAlerts) {
+        _seenAlertWindows.remove(windowIndex);
+        _clearAlertNotification(windowIndex);
+      }
+
+      setState(() {
+        _windows = windows;
+        _isLoading = false;
+      });
+    } on Object {
+      if (!mounted) return;
+      if (_isLoading) setState(() => _isLoading = false);
+    } finally {
+      _loadingWindows = false;
+      if (_pendingWindowReload) {
+        _pendingWindowReload = false;
+        unawaited(_loadWindows());
+      }
+    }
+  }
+
+  Future<void> _loadRecentSessions({bool forceReload = false}) async {
+    if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
+    final previousCount = _recentSessions?.length ?? 0;
+    setState(() {
+      _isLoadingSessions = true;
+      _sessionLoadError = null;
+    });
+
+    try {
+      final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
+      final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final result = await discovery.discoverSessions(
+        widget.session,
+        workingDirectory: activeWindow?.currentPath,
+        maxPerTool: _sessionFetchLimit,
+      );
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = result.sessions;
+        _sessionLoadError = result.failureMessage;
+        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
+          _expandedSessionTools.add(result.sessions.first.toolName);
+        }
+        _canLoadMoreSessions =
+            result.sessions.length > previousCount &&
+            _hasSessionGroupAtLimit(result.sessions);
+        _isLoadingSessions = false;
+      });
+    } on Exception {
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = const [];
+        _sessionLoadError = 'Could not load recent AI sessions.';
+        _canLoadMoreSessions = false;
+        _isLoadingSessions = false;
+      });
+    }
+  }
+
+  void _loadMoreSessions() {
+    if (_isLoadingSessions) return;
+    setState(() => _sessionFetchLimit += _sessionFetchStep);
+    _loadRecentSessions(forceReload: true);
+  }
+
+  bool _hasSessionGroupAtLimit(List<ToolSessionInfo> sessions) {
+    final countsByTool = <String, int>{};
+    for (final session in sessions) {
+      countsByTool.update(
+        session.toolName,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    return countsByTool.values.any((count) => count >= _sessionFetchLimit);
+  }
+
+  void _resumeSession(ToolSessionInfo info) {
+    final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
+    final command = discovery.buildResumeCommand(info);
+    setState(() => _expanded = false);
+    widget.onAction(
+      TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
+    );
+  }
+
+  int _tmuxAlertNotificationId(int windowIndex) =>
+      Object.hash(widget.tmuxSessionName, windowIndex) & 0x7fffffff;
+
+  void _sendAlertNotification(TmuxWindow window) {
+    unawaited(HapticFeedback.mediumImpact());
+    final title = 'tmux alert · ${widget.tmuxSessionName}';
+    final name = window.displayTitle.trim();
+    final body = name.isEmpty ? 'Window ${window.index} needs attention' : name;
+    unawaited(
+      widget.ref
+          .read(localNotificationServiceProvider)
+          .showTmuxAlert(
+            notificationId: _tmuxAlertNotificationId(window.index),
+            title: title,
+            body: body,
+          ),
+    );
+  }
+
+  void _clearAlertNotification(int windowIndex) {
+    unawaited(
+      widget.ref
+          .read(localNotificationServiceProvider)
+          .clearTmuxAlert(_tmuxAlertNotificationId(windowIndex)),
+    );
+  }
+
+  void _onVerticalDragUpdate(DragUpdateDetails details) {
+    setState(() {
+      _dragOffset += _expanded ? details.delta.dy : -details.delta.dy;
+      _dragOffset = _dragOffset.clamp(0.0, 300.0);
+    });
+  }
+
+  void _onVerticalDragEnd(DragEndDetails details) {
+    final velocity = details.primaryVelocity ?? 0;
+    final shouldExpand = !_expanded && (velocity < -200 || _dragOffset > 60);
+    final shouldCollapse = _expanded && (velocity > 200 || _dragOffset > 60);
+    setState(() {
+      if (shouldExpand) {
+        _expanded = true;
+      } else if (shouldCollapse) {
+        _expanded = false;
+      }
+      _dragOffset = 0;
+    });
+    if (shouldExpand) _loadWindows();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final availableHeight = widget.availableHeight.isFinite
+        ? widget.availableHeight
+        : MediaQuery.sizeOf(context).height * 0.5;
+    final mediaQuery = MediaQuery.of(context);
+    final visibleViewportHeight = max(
+      0,
+      mediaQuery.size.height -
+          mediaQuery.viewPadding.vertical -
+          mediaQuery.viewInsets.bottom,
+    );
+    final maxContentHeight = resolveTmuxBarMaxContentHeight(
+      availableHeight,
+      fallbackAvailableHeight: visibleViewportHeight * 0.5,
+    );
+    final dragDistance = _dragOffset.clamp(0.0, maxContentHeight);
+    final contentHeight = _expanded
+        ? (maxContentHeight - dragDistance).clamp(0.0, maxContentHeight)
+        : dragDistance;
+
+    return AnimatedBuilder(
+      animation: _bounceAnimation,
+      builder: (context, child) => Transform.translate(
+        offset: Offset(0, _bounceAnimation.value),
+        child: child,
+      ),
+      child: GestureDetector(
+        onVerticalDragUpdate: _onVerticalDragUpdate,
+        onVerticalDragEnd: _onVerticalDragEnd,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: theme.colorScheme.surfaceContainerHighest,
+            border: Border(
+              top: BorderSide(
+                color: theme.colorScheme.outlineVariant,
+                width: 0.5,
+              ),
+            ),
+          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _buildHandleBar(theme),
+              AnimatedContainer(
+                duration: _dragOffset > 0
+                    ? Duration.zero
+                    : const Duration(milliseconds: 300),
+                curve: Curves.easeOutCubic,
+                height: contentHeight,
+                child: contentHeight > 0
+                    ? ClipRect(child: _buildWindowList(theme))
+                    : const SizedBox.shrink(),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildHandleBar(ThemeData theme) => GestureDetector(
+    key: const ValueKey('tmux-handle-bar'),
+    onTap: () {
+      final wasExpanded = _expanded;
+      setState(() => _expanded = !_expanded);
+      // Refresh window list when expanding to get current active state.
+      if (!wasExpanded) _loadWindows();
+    },
+    child: SizedBox(
+      height: _TmuxExpandableBar.handleHeight,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        child: Stack(
+          alignment: Alignment.center,
+          children: [
+            // Centered drag handle pill.
+            Container(
+              width: 28,
+              height: 3,
+              decoration: BoxDecoration(
+                color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            // Left-aligned session name, right-aligned chevron.
+            Row(
+              children: [
+                Icon(
+                  Icons.window_outlined,
+                  size: 12,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 4),
+                Text(
+                  widget.tmuxSessionName,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const Spacer(),
+                AnimatedRotation(
+                  duration: const Duration(milliseconds: 300),
+                  turns: _expanded ? 0.5 : 0,
+                  child: Icon(
+                    Icons.keyboard_arrow_up,
+                    size: 14,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    ),
+  );
+
+  Widget _buildWindowList(ThemeData theme) {
+    if (_isLoading) {
+      return const Padding(
+        padding: EdgeInsets.all(16),
+        child: Center(
+          child: SizedBox(
+            width: 20,
+            height: 20,
+            child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+          ),
+        ),
+      );
+    }
+
+    if (_windows == null || _windows!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    return SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Divider(height: 1),
+          for (final window in _windows!) _buildWindowTile(theme, window),
+          const Divider(height: 1),
+          ListTile(
+            dense: true,
+            visualDensity: _denseTileVisualDensity,
+            minTileHeight: 42,
+            contentPadding: _denseTilePadding,
+            horizontalTitleGap: 12,
+            minLeadingWidth: 20,
+            leading: Icon(
+              Icons.add_circle_outline,
+              color: theme.colorScheme.primary,
+              size: 18,
+            ),
+            title: const Text('New Window'),
+            onTap: () {
+              setState(() => _expanded = false);
+              showModalBottomSheet<AgentLaunchTool?>(
+                context: context,
+                builder: (ctx) => TmuxToolPickerSheet(
+                  isProUser: widget.isProUser,
+                  onToolSelected: (tool) => Navigator.pop(ctx, tool),
+                  onEmptyWindow: () {
+                    Navigator.pop(ctx);
+                    widget.onAction(const TmuxNewWindowAction());
+                  },
+                ),
+              ).then((tool) {
+                if (!mounted || tool == null) {
+                  return;
+                }
+                widget.onAction(
+                  TmuxNewWindowAction(
+                    command: tool.commandName,
+                    windowName: tool.commandName,
+                  ),
+                );
+              });
+            },
+          ),
+          if (widget.isProUser) ...[
+            const Divider(height: 1),
+            _buildSessionsSection(theme),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSessionsSection(ThemeData theme) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      ListTile(
+        dense: true,
+        visualDensity: _denseTileVisualDensity,
+        minTileHeight: 42,
+        contentPadding: _denseTilePadding,
+        horizontalTitleGap: 12,
+        minLeadingWidth: 18,
+        leading: Icon(
+          Icons.smart_toy_outlined,
+          size: 16,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        title: const Text('AI Sessions'),
+        trailing: Icon(
+          _showSessions ? Icons.expand_less : Icons.expand_more,
+          size: 16,
+          color: theme.colorScheme.onSurfaceVariant,
+        ),
+        onTap: () {
+          setState(() => _showSessions = !_showSessions);
+          if (_showSessions) _loadRecentSessions();
+        },
+      ),
+      if (_showSessions) ...[
+        if (_isLoadingSessions &&
+            (_recentSessions == null || _recentSessions!.isEmpty))
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 8),
+            child: Center(
+              child: SizedBox(
+                width: 16,
+                height: 16,
+                child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+              ),
+            ),
+          )
+        else if (_sessionLoadError != null &&
+            _recentSessions != null &&
+            _recentSessions!.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              _sessionLoadError!,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.error,
+              ),
+            ),
+          )
+        else if (_recentSessions != null && _recentSessions!.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+            child: Text(
+              'No recent sessions found',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          )
+        else if (_recentSessions != null) ...[
+          if (_sessionLoadError != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                _sessionLoadError!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            ),
+          ..._groupSessions(_recentSessions!).entries.map(
+            (entry) => _buildSessionGroup(theme, entry.key, entry.value),
+          ),
+          if (_isLoadingSessions)
+            const Padding(
+              padding: EdgeInsets.symmetric(vertical: 8),
+              child: Center(
+                child: SizedBox(
+                  width: 16,
+                  height: 16,
+                  child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                ),
+              ),
+            ),
+          if (_canLoadMoreSessions)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8),
+              child: TextButton(
+                onPressed: _loadMoreSessions,
+                child: const Text('Load more'),
+              ),
+            ),
+        ],
+      ],
+    ],
+  );
+
+  Map<String, List<ToolSessionInfo>> _groupSessions(
+    List<ToolSessionInfo> sessions,
+  ) {
+    final grouped = <String, List<ToolSessionInfo>>{};
+    for (final session in sessions) {
+      grouped
+          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+          .add(session);
+    }
+    return grouped;
+  }
+
+  Widget _buildSessionGroup(
+    ThemeData theme,
+    String toolName,
+    List<ToolSessionInfo> sessions,
+  ) {
+    final isExpanded = _expandedSessionTools.contains(toolName);
+    final iconData = switch (toolName) {
+      'Claude Code' => Icons.auto_awesome,
+      'Codex' => Icons.code,
+      'Copilot CLI' => Icons.flight,
+      'Gemini CLI' => Icons.diamond_outlined,
+      'OpenCode' => Icons.terminal,
+      _ => Icons.smart_toy_outlined,
+    };
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        ListTile(
+          dense: true,
+          visualDensity: _denseTileVisualDensity,
+          minVerticalPadding: 2,
+          contentPadding: _groupTilePadding,
+          horizontalTitleGap: 12,
+          minLeadingWidth: 18,
+          leading: Icon(iconData, size: 16, color: theme.colorScheme.primary),
+          title: Text(toolName),
+          subtitle: Text(
+            '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
+            style: theme.textTheme.bodySmall?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+            ),
+          ),
+          trailing: Icon(
+            isExpanded ? Icons.expand_less : Icons.expand_more,
+            color: theme.colorScheme.onSurfaceVariant,
+          ),
+          onTap: () {
+            setState(() {
+              if (isExpanded) {
+                _expandedSessionTools.remove(toolName);
+              } else {
+                _expandedSessionTools.add(toolName);
+              }
+            });
+          },
+        ),
+        if (isExpanded)
+          for (final session in sessions)
+            ListTile(
+              dense: true,
+              visualDensity: _denseTileVisualDensity,
+              minVerticalPadding: 2,
+              contentPadding: _sessionTilePadding,
+              horizontalTitleGap: 12,
+              minLeadingWidth: 18,
+              title: Text(
+                session.summary ?? session.sessionId,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+              ),
+              subtitle: session.lastUpdatedLabel.isNotEmpty
+                  ? Text(
+                      session.lastUpdatedLabel,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    )
+                  : null,
+              trailing: TextButton(
+                onPressed: () => _resumeSession(session),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                ),
+                child: const Text('Resume'),
+              ),
+            ),
+      ],
+    );
+  }
+
+  Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
+    final isActive = window.isActive;
+    final secondaryTitle = window.secondaryTitle;
+
+    return ListTile(
+      dense: true,
+      visualDensity: _denseTileVisualDensity,
+      minVerticalPadding: 2,
+      contentPadding: const EdgeInsets.only(left: 12, right: 4),
+      horizontalTitleGap: 10,
+      minLeadingWidth: 24,
+      tileColor: isActive
+          ? theme.colorScheme.primaryContainer.withAlpha(80)
+          : null,
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+      leading: Container(
+        width: 22,
+        height: 22,
+        decoration: BoxDecoration(
+          color: isActive
+              ? theme.colorScheme.primary
+              : theme.colorScheme.surfaceContainerHigh,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        alignment: Alignment.center,
+        child: Text(
+          '${window.index}',
+          style: theme.textTheme.labelSmall?.copyWith(
+            color: isActive
+                ? theme.colorScheme.onPrimary
+                : theme.colorScheme.onSurfaceVariant,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+      title: Text(
+        window.displayTitle,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: isActive
+            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
+            : null,
+      ),
+      subtitle: secondaryTitle != null
+          ? Text(
+              secondaryTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            )
+          : null,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Padding(
+            padding: const EdgeInsets.only(right: 6),
+            child: TmuxWindowStatusBadge(window: window),
+          ),
+          IconButton(
+            icon: const Icon(Icons.close, size: 16),
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints.tightFor(width: 30, height: 30),
+            padding: EdgeInsets.zero,
+            tooltip: 'Close window',
+            onPressed: () {
+              widget.onAction(TmuxCloseWindowAction(window.index));
+              setState(() {
+                _windows = _windows
+                    ?.where((w) => w.index != window.index)
+                    .toList();
+              });
+            },
+          ),
+        ],
+      ),
+      onTap: isActive
+          ? () => setState(() => _expanded = false)
+          : () {
+              widget.onAction(TmuxSwitchWindowAction(window.index));
+              setState(() => _expanded = false);
+            },
+    );
+  }
+}
 
 class _ExtraKeysToggleKeycap extends StatelessWidget {
   const _ExtraKeysToggleKeycap({required this.isActive, super.key});
@@ -221,9 +1063,9 @@ enum _AutoConnectReviewDecision { skip, runOnce, trustAndRun }
 
 /// Padding around the terminal viewport.
 ///
-/// Keep the terminal flush with the bottom edge so status lines from tools like
-/// tmux use the full available height in every keyboard and toolbar state.
-const terminalViewportPadding = EdgeInsets.fromLTRB(8, 8, 8, 0);
+/// Keep the terminal flush with the bottom and side edges so status lines from
+/// tools like tmux can use the full available width and height.
+const terminalViewportPadding = EdgeInsets.fromLTRB(0, 8, 0, 0);
 
 /// Clamps a terminal font size into the supported zoom range.
 @visibleForTesting
@@ -268,6 +1110,18 @@ String trimTerminalSelectionText(String text) =>
 @visibleForTesting
 double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
+
+/// Keeps the Pro upsell snackbar tucked just above the visible bottom chrome.
+@visibleForTesting
+double upgradeSnackBarBottomMargin(
+  MediaQueryData mediaQuery, {
+  bool showKeyboardToolbar = false,
+  double keyboardToolbarHeight = 96,
+  double baseSpacing = 16,
+}) =>
+    mediaQuery.padding.bottom +
+    (showKeyboardToolbar ? keyboardToolbarHeight : 0) +
+    baseSpacing;
 
 /// Resolves the transient indicator label for a terminal double-tap Tab gesture.
 @visibleForTesting
@@ -1348,6 +2202,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
   bool _showsTerminalMetadata = false;
+  bool _isTmuxActive = false;
+  String? _tmuxSessionName;
+  bool _showTmuxBar = true;
+  String? _tmuxLaunchWorkingDirectory;
+  String? _tmuxWorkingDirectory;
+  int _tmuxDetectionGeneration = 0;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -1424,7 +2284,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       formatTerminalWorkingDirectoryLabel(_workingDirectory);
 
   String? get _workingDirectoryPath =>
-      resolveTerminalWorkingDirectoryPath(_workingDirectory);
+      resolveTerminalWorkingDirectoryPath(_workingDirectory) ??
+      _tmuxWorkingDirectory;
 
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
@@ -2036,6 +2897,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _isConnecting = false;
         });
         _restoreTerminalFocus();
+
+        // Detect tmux on existing sessions too (may not have been detected
+        // yet if the terminal was opened before tmux started).
+        if (!_isTmuxActive) {
+          unawaited(_detectTmux(session, skipDelay: true));
+        }
         return;
       }
 
@@ -2075,10 +2942,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
       });
       _restoreTerminalFocus();
+      _primeTmuxStateFromHost();
 
       // Start port forwards
       await _startPortForwards(session);
       await _runAutoConnectCommand();
+
+      // Detect tmux after the auto-connect command has had time to start.
+      // A small delay ensures tmux has initialized if the auto-connect
+      // command launches a tmux session.
+      unawaited(_detectTmux(session));
     } on Object catch (e) {
       if (!mounted) return;
       setState(() {
@@ -2251,13 +3124,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    // Structured tmux attach is a first-class connection mode, not a generic
+    // automation command. Run it even when Pro-only auto-connect automation is
+    // unavailable so tmux-native navigation remains accessible.
+    final tmuxSession = host.tmuxSessionName;
+    if (tmuxSession != null && tmuxSession.isNotEmpty) {
+      final tmuxCommand = buildTmuxCommand(
+        sessionName: tmuxSession,
+        workingDirectory: host.tmuxWorkingDirectory,
+        extraFlags: host.tmuxExtraFlags,
+      );
+      final review = assessAutoConnectCommandExecution(
+        tmuxCommand,
+        importedNeedsReview: host.autoConnectRequiresConfirmation,
+      );
+      if (review.requiresReview) {
+        final decision = await _reviewImportedAutoConnectCommand(review);
+        if (!mounted || decision == _AutoConnectReviewDecision.skip) {
+          return;
+        }
+        if (decision == _AutoConnectReviewDecision.trustAndRun) {
+          final updatedHost = host.copyWith(
+            autoConnectRequiresConfirmation: false,
+          );
+          await ref.read(hostRepositoryProvider).update(updatedHost);
+          _host = updatedHost;
+        }
+      }
+      shell.write(utf8.encode(formatAutoConnectCommandForShell(tmuxCommand)));
+      return;
+    }
+
     final hasAccess = await ref
         .read(monetizationServiceProvider)
         .canUseFeature(MonetizationFeature.autoConnectAutomation);
     if (!hasAccess) {
       if (mounted) {
+        final bottomMargin = upgradeSnackBarBottomMargin(
+          MediaQuery.of(context),
+          showKeyboardToolbar: _showKeyboardToolbar,
+        );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
+            behavior: SnackBarBehavior.floating,
+            margin: EdgeInsets.fromLTRB(16, 0, 16, bottomMargin),
             content: const Text(
               'MonkeySSH Pro unlocks auto-connect commands and snippets.',
             ),
@@ -2333,6 +3243,356 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ref.read(snippetRepositoryProvider).incrementUsage(resolvedSnippetId),
       );
     }
+  }
+
+  void _primeTmuxStateFromHost() {
+    final host = _host;
+    final preferredSessionName = resolvePreferredTmuxSessionName(
+      structuredSessionName: host?.tmuxSessionName,
+      autoConnectCommand: host?.autoConnectCommand,
+    );
+    if (!mounted || preferredSessionName == null) {
+      return;
+    }
+
+    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
+    setState(() {
+      _isTmuxActive = true;
+      _tmuxSessionName = preferredSessionName;
+      _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+      _tmuxWorkingDirectory = preferredWorkingDirectory;
+    });
+  }
+
+  /// Detects whether the connected session is inside tmux.
+  ///
+  /// Starts with any structured tmux configuration immediately, then retries
+  /// discovery until the shell-side attach command has settled.
+  Future<void> _detectTmux(SshSession session, {bool skipDelay = false}) async {
+    // Capture the connection ID at the start so we can verify it hasn't
+    // changed after async gaps (user may have switched connections).
+    final capturedConnectionId = _connectionId;
+    final detectionGeneration = ++_tmuxDetectionGeneration;
+    final host = _host;
+    final preferredSessionName = resolvePreferredTmuxSessionName(
+      structuredSessionName: host?.tmuxSessionName,
+      autoConnectCommand: host?.autoConnectCommand,
+    );
+    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
+
+    if (mounted) {
+      setState(() {
+        _isTmuxActive = preferredSessionName != null;
+        _tmuxSessionName = preferredSessionName;
+        _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+        _tmuxWorkingDirectory = preferredWorkingDirectory;
+      });
+    }
+
+    try {
+      final tmux = ref.read(tmuxServiceProvider);
+      final retrySchedule = resolveTmuxDetectionRetrySchedule(
+        skipDelay: skipDelay,
+      );
+
+      for (final delay in retrySchedule) {
+        if (delay > Duration.zero) {
+          await Future<void>.delayed(delay);
+          if (!mounted ||
+              _connectionId != capturedConnectionId ||
+              detectionGeneration != _tmuxDetectionGeneration) {
+            return;
+          }
+        }
+
+        final active = preferredSessionName != null
+            ? await tmux.hasSession(session, preferredSessionName)
+            : await tmux.isTmuxActive(session);
+        if (!mounted ||
+            _connectionId != capturedConnectionId ||
+            detectionGeneration != _tmuxDetectionGeneration) {
+          return;
+        }
+        if (!active) {
+          continue;
+        }
+
+        var sessionName = preferredSessionName;
+        sessionName ??= await tmux.currentSessionName(session);
+        if (!mounted ||
+            _connectionId != capturedConnectionId ||
+            detectionGeneration != _tmuxDetectionGeneration) {
+          return;
+        }
+        if (sessionName == null) {
+          continue;
+        }
+
+        // Get the active window's working directory for SFTP/path resolution.
+        var tmuxLaunchCwd = preferredWorkingDirectory;
+        var tmuxCwd = preferredWorkingDirectory;
+        try {
+          final windows = await tmux.listWindows(session, sessionName);
+          final activeWindow = windows.where((w) => w.isActive).firstOrNull;
+          tmuxLaunchCwd ??= activeWindow?.currentPath;
+          tmuxCwd ??= activeWindow?.currentPath;
+        } on Object {
+          // Non-critical — path resolution will fall back to OSC 7.
+        }
+
+        if (!mounted ||
+            _connectionId != capturedConnectionId ||
+            detectionGeneration != _tmuxDetectionGeneration) {
+          return;
+        }
+
+        setState(() {
+          _isTmuxActive = true;
+          _tmuxSessionName = sessionName;
+          _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
+          _tmuxWorkingDirectory = tmuxCwd;
+        });
+        return;
+      }
+
+      if (!mounted ||
+          _connectionId != capturedConnectionId ||
+          detectionGeneration != _tmuxDetectionGeneration) {
+        return;
+      }
+
+      setState(() {
+        _isTmuxActive = false;
+        _tmuxSessionName = null;
+        _tmuxLaunchWorkingDirectory = null;
+        _tmuxWorkingDirectory = null;
+      });
+    } on Object {
+      // Silently ignore — tmux detection is best-effort.
+    }
+  }
+
+  /// Wraps the terminal view in a Stack with the tmux bar overlaid.
+  ///
+  /// When tmux is active, the terminal gets bottom padding equal to the
+  /// handle bar height so the collapsed handle sits over empty space.
+  /// When expanded, the bar slides up over the terminal content.
+  /// When tmux is not active, the terminal fills the entire space.
+  Widget _buildTerminalWithTmuxBar(
+    TerminalThemeData terminalTheme,
+    bool isMobile,
+    ThemeData theme,
+    SshConnectionState connectionState,
+  ) {
+    final showTmux =
+        _isTmuxActive &&
+        _showTmuxBar &&
+        connectionState == SshConnectionState.connected;
+    final targetBottomPadding = showTmux
+        ? _TmuxExpandableBar.handleHeight
+        : 0.0;
+
+    return LayoutBuilder(
+      builder: (context, constraints) => TweenAnimationBuilder<double>(
+        tween: Tween<double>(end: targetBottomPadding),
+        duration: _tmuxBarRevealDuration,
+        curve: Curves.easeOutCubic,
+        child: _buildTmuxExpandableBar(theme, constraints.maxHeight),
+        builder: (context, animatedBottomPadding, child) {
+          final barOpacity = resolveTmuxBarRevealOpacity(animatedBottomPadding);
+
+          return Stack(
+            children: [
+              // Reserve actual layout space for the collapsed handle so the
+              // terminal viewport ends exactly at the handle boundary.
+              Positioned.fill(
+                child: ColoredBox(
+                  color: terminalTheme.background,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: _buildTerminalView(terminalTheme, isMobile),
+                      ),
+                      SizedBox(height: animatedBottomPadding),
+                    ],
+                  ),
+                ),
+              ),
+              if (showTmux || animatedBottomPadding > 0)
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: resolveTmuxBarRevealBottomOffset(
+                    animatedBottomPadding,
+                  ),
+                  child: IgnorePointer(
+                    ignoring: barOpacity == 0,
+                    child: Opacity(
+                      opacity: barOpacity,
+                      child: child ?? const SizedBox.shrink(),
+                    ),
+                  ),
+                ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  /// Builds the tmux expandable bar overlaid at the bottom of the terminal.
+  Widget _buildTmuxExpandableBar(ThemeData theme, double availableHeight) {
+    final connectionId = _connectionId;
+    if (connectionId == null || _tmuxSessionName == null) {
+      return const SizedBox.shrink();
+    }
+
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) return const SizedBox.shrink();
+
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final isProUser = monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
+
+    return _TmuxExpandableBar(
+      session: session,
+      tmuxSessionName: _tmuxSessionName!,
+      availableHeight: availableHeight,
+      isProUser: isProUser,
+      ref: ref,
+      onAction: _handleTmuxAction,
+    );
+  }
+
+  /// Handles an action from the draggable tmux panel.
+  Future<void> _handleTmuxAction(TmuxNavigatorAction action) async {
+    final connectionId = _connectionId;
+    if (connectionId == null) return;
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) return;
+
+    switch (action) {
+      case TmuxSwitchWindowAction(:final windowIndex):
+        _switchTmuxWindow(session, windowIndex);
+      case TmuxNewWindowAction(:final command, :final windowName):
+        await _createTmuxWindow(session, command: command, name: windowName);
+      case TmuxResumeSessionAction(
+        :final resumeCommand,
+        :final workingDirectory,
+      ):
+        await _createTmuxWindow(
+          session,
+          command: resumeCommand,
+          workingDirectory: workingDirectory,
+        );
+      case TmuxCloseWindowAction(:final windowIndex):
+        _closeTmuxWindow(session, windowIndex);
+    }
+  }
+
+  /// Opens the tmux window navigator bottom sheet and handles the
+  /// selected action.
+  Future<void> _openTmuxNavigator() async {
+    final connectionId = _connectionId;
+    if (connectionId == null || _tmuxSessionName == null) return;
+
+    final session = _sessionsNotifier?.getSession(connectionId);
+    if (session == null) return;
+
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    final isProUser = monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
+
+    final action = await showTmuxNavigator(
+      context: context,
+      ref: ref,
+      session: session,
+      tmuxSessionName: _tmuxSessionName!,
+      isProUser: isProUser,
+    );
+
+    if (!mounted || action == null) return;
+
+    switch (action) {
+      case TmuxSwitchWindowAction(:final windowIndex):
+        _switchTmuxWindow(session, windowIndex);
+      case TmuxNewWindowAction(:final command, :final windowName):
+        await _createTmuxWindow(session, command: command, name: windowName);
+      case TmuxResumeSessionAction(
+        :final resumeCommand,
+        :final workingDirectory,
+      ):
+        await _createTmuxWindow(
+          session,
+          command: resumeCommand,
+          workingDirectory: workingDirectory,
+        );
+      case TmuxCloseWindowAction(:final windowIndex):
+        _closeTmuxWindow(session, windowIndex);
+    }
+  }
+
+  /// Switches to a different tmux window via exec channel.
+  ///
+  /// Uses an exec channel (not the interactive shell) because
+  /// `tmux select-window` is a server operation — the tmux server
+  /// notifies all attached clients of the change. Writing to the PTY
+  /// would inject the command as input to whatever program is running.
+  void _switchTmuxWindow(SshSession session, int windowIndex) {
+    final sessionName = _tmuxSessionName;
+    if (sessionName == null) return;
+
+    ref
+        .read(tmuxServiceProvider)
+        .selectWindow(session, sessionName, windowIndex);
+
+    // Clear stale working directory — it will be refreshed from
+    // OSC 7 or the next tmux query.
+    _tmuxWorkingDirectory = null;
+  }
+
+  /// Creates a new tmux window via exec channel, then switches to it.
+  ///
+  /// Only passes `-c` when an explicit [workingDirectory] is provided
+  /// (e.g. resuming an AI session). Otherwise tmux uses its own
+  /// `default-directory` (where the session was started), matching
+  /// native `Ctrl+b, c` behavior.
+  Future<void> _createTmuxWindow(
+    SshSession session, {
+    String? command,
+    String? name,
+    String? workingDirectory,
+  }) async {
+    final sessionName = _tmuxSessionName;
+    if (sessionName == null) return;
+
+    final tmux = ref.read(tmuxServiceProvider);
+    final resolvedWorkingDirectory =
+        workingDirectory ??
+        (command != null && command.trim().isNotEmpty
+            ? (_tmuxLaunchWorkingDirectory ?? _host?.tmuxWorkingDirectory)
+            : null);
+    await tmux.createWindow(
+      session,
+      sessionName,
+      command: command,
+      name: name,
+      workingDirectory: resolvedWorkingDirectory,
+    );
+  }
+
+  /// Closes a tmux window via exec channel.
+  void _closeTmuxWindow(SshSession session, int windowIndex) {
+    final sessionName = _tmuxSessionName;
+    if (sessionName == null) return;
+
+    ref.read(tmuxServiceProvider).killWindow(session, sessionName, windowIndex);
   }
 
   void _handleTrackedConnectionStateChange(
@@ -2417,6 +3677,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _doneSubscription = null;
     _shell = null;
     if (connectionId != null) {
+      ref.read(tmuxServiceProvider).clearCache(connectionId);
       await _sessionsNotifier?.disconnect(connectionId);
     }
     if (mounted) {
@@ -2671,6 +3932,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 ),
               ),
         actions: [
+          if (_isTmuxActive &&
+              !_showTmuxBar &&
+              connectionState == SshConnectionState.connected)
+            IconButton(
+              icon: const Icon(Icons.window_outlined),
+              onPressed: _connectionId == null ? null : _openTmuxNavigator,
+              tooltip: 'tmux windows',
+            ),
           IconButton(
             icon: const Icon(Icons.folder_outlined),
             onPressed:
@@ -2747,6 +4016,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                             ? 'Hide Terminal Info'
                             : 'Show Terminal Info',
                       ),
+                    ],
+                  ),
+                ),
+              if (_isTmuxActive)
+                PopupMenuItem(
+                  value: 'toggle_tmux_bar',
+                  child: Row(
+                    children: [
+                      Icon(
+                        _showTmuxBar
+                            ? Icons.window_outlined
+                            : Icons.window_rounded,
+                        size: 20,
+                      ),
+                      const SizedBox(width: 12),
+                      Text(_showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar'),
                     ],
                   ),
                 ),
@@ -2845,7 +4130,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
       body: Column(
         children: [
-          Expanded(child: _buildTerminalView(terminalTheme, isMobile)),
+          Expanded(
+            child: _buildTerminalWithTmuxBar(
+              terminalTheme,
+              isMobile,
+              theme,
+              connectionState,
+            ),
+          ),
           if (_showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
               (!_isNativeSelectionMode || _isMobilePlatform))
@@ -3520,10 +4812,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (connectionId == null) {
       return;
     }
+
+    // Pass the terminal's working directory (from OSC 7) as both the
+    // initial path and the working directory for relative path resolution.
+    final cwd = _workingDirectoryPath;
     context.pushNamed(
       Routes.sftp,
       pathParameters: {'hostId': widget.hostId.toString()},
-      queryParameters: {'connectionId': connectionId.toString()},
+      queryParameters: {
+        'connectionId': connectionId.toString(),
+        if (cwd != null) ...{'path': cwd, 'cwd': cwd},
+      },
     );
   }
 
@@ -3537,6 +4836,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'toggle_terminal_info':
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
+        break;
+      case 'toggle_tmux_bar':
+        setState(() => _showTmuxBar = !_showTmuxBar);
         break;
       case 'toggle_tap_keyboard':
         final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);

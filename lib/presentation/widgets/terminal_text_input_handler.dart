@@ -490,10 +490,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     bool flushPlatformContext = false,
   }) {
     if (flushPlatformContext && hasInputConnection) {
-      _closeInputConnectionIfNeeded();
-      if (widget.focusNode.hasFocus) {
-        _openInputConnection();
-      }
+      // Reset the editing state in-place rather than closing/reopening
+      // the input connection. Closing triggers a keyboard dismiss+reshow
+      // flicker on iPad.
+      _currentEditingState = _initEditingState.copyWith();
+      _connection!.setEditingState(_currentEditingState);
     }
     _invalidatePendingEditingUpdates();
     _resetCommittedInputState(clearPendingDeleteResetBaseline: false);

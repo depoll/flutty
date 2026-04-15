@@ -16,12 +16,15 @@ import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/connection_attempt_dialog.dart';
@@ -29,6 +32,7 @@ import '../widgets/connection_preview_snippet.dart';
 import '../widgets/file_picker_helpers.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
+import '../widgets/tmux_window_status_badge.dart';
 import 'transfer_screen.dart';
 
 /// The main home screen - Termius-style sidebar layout.
@@ -43,6 +47,18 @@ class HomeScreen extends ConsumerStatefulWidget {
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
   int _selectedIndex = 0;
+
+  /// Switches to the Connections tab so the user lands there when
+  /// returning from the terminal.
+  void switchToConnectionsTab() {
+    if (_selectedIndex != 1) setState(() => _selectedIndex = 1);
+  }
+
+  /// Switches back to the Hosts tab.
+  void switchToHostsTab() {
+    if (_selectedIndex != 0) setState(() => _selectedIndex = 0);
+  }
+
   StreamSubscription<String>? _incomingTransferSubscription;
   final Queue<String> _incomingTransferQueue = Queue<String>();
   String? _activeIncomingTransferPayload;
@@ -223,6 +239,22 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<Map<int, SshConnectionState>>(activeSessionsProvider, (
+      previous,
+      next,
+    ) {
+      final hadConnections = previous?.isNotEmpty ?? false;
+      if (!hadConnections || next.isNotEmpty || _selectedIndex != 1) {
+        return;
+      }
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted || _selectedIndex != 1) {
+          return;
+        }
+        switchToHostsTab();
+      });
+    });
+
     final screenWidth = MediaQuery.of(context).size.width;
     final isWide = screenWidth >= _mobileBreakpoint;
 
@@ -401,20 +433,13 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
     );
   }
 
-  Widget _buildContent() {
-    switch (_selectedIndex) {
-      case 0:
-        return const HostsPanel();
-      case 1:
-        return const _ConnectionsPanel();
-      case 2:
-        return const _KeysPanel();
-      case 3:
-        return const SnippetsPanel();
-      default:
-        return const HostsPanel();
-    }
-  }
+  Widget _buildContent() => switch (_selectedIndex) {
+    0 => const HostsPanel(),
+    1 => const _ConnectionsPanel(),
+    2 => const _KeysPanel(),
+    3 => const SnippetsPanel(),
+    _ => const HostsPanel(),
+  };
 }
 
 class _NavItem extends StatelessWidget {
@@ -878,6 +903,9 @@ class _HostRow extends ConsumerWidget {
 
     if (connectionIds.length == 1) {
       if (context.mounted) {
+        context
+            .findAncestorStateOfType<_HomeScreenState>()
+            ?.switchToConnectionsTab();
         unawaited(
           context.push(
             '/terminal/${host.id}?connectionId=${connectionIds.first}',
@@ -960,6 +988,9 @@ class _HostRow extends ConsumerWidget {
 
     final selectedId = int.tryParse(selection.replaceFirst('connection:', ''));
     if (selectedId != null) {
+      context
+          .findAncestorStateOfType<_HomeScreenState>()
+          ?.switchToConnectionsTab();
       unawaited(context.push('/terminal/${host.id}?connectionId=$selectedId'));
     }
   }
@@ -993,6 +1024,11 @@ class _HostRow extends ConsumerWidget {
     unawaited(
       context.push('/terminal/${host.id}?connectionId=${result.connectionId}'),
     );
+    if (context.mounted) {
+      context
+          .findAncestorStateOfType<_HomeScreenState>()
+          ?.switchToConnectionsTab();
+    }
   }
 
   Future<void> _showContextMenu(
@@ -1229,6 +1265,9 @@ class _ConnectionSelectionTile extends StatelessWidget {
         ? endpoint
         : '$endpoint\nOpened ${_formatTime(createdAt!)}';
     return ListTile(
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      minTileHeight: 64,
+      minVerticalPadding: 10,
       leading: const Icon(Icons.terminal),
       title: Text('Connection #$connectionId'),
       subtitle: _ConnectionPreviewText(
@@ -1339,41 +1378,64 @@ class _ConnectionsPanel extends ConsumerWidget {
                               : null),
                     );
 
-                    return ListTile(
-                      leading: Icon(
-                        Icons.terminal,
-                        color: state == SshConnectionState.connected
-                            ? colorScheme.primary
-                            : colorScheme.onSurfaceVariant,
-                      ),
-                      title: Text(host?.label ?? 'Host ${connection.hostId}'),
-                      subtitle: _ConnectionPreviewText(
-                        endpoint:
-                            '$endpoint  •  Connection #${connection.connectionId}',
-                        preview: preview,
-                        windowTitle: connection.windowTitle,
-                        iconName: connection.iconName,
-                        workingDirectory: connection.workingDirectory,
-                        shellStatus: connection.shellStatus,
-                        lastExitCode: connection.lastExitCode,
-                        terminalTheme: previewTheme,
-                      ),
-                      isThreeLine: preview?.trim().isNotEmpty ?? false,
-                      trailing: IconButton(
-                        icon: const Icon(Icons.close),
-                        tooltip: 'Disconnect',
-                        onPressed: () async {
-                          await ref
-                              .read(activeSessionsProvider.notifier)
-                              .disconnect(connection.connectionId);
-                        },
-                      ),
-                      onTap: () => unawaited(
-                        context.push(
-                          '/terminal/${connection.hostId}'
-                          '?connectionId=${connection.connectionId}',
+                    return Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        ListTile(
+                          leading: Icon(
+                            Icons.terminal,
+                            color: state == SshConnectionState.connected
+                                ? colorScheme.primary
+                                : colorScheme.onSurfaceVariant,
+                          ),
+                          title: Text(
+                            host?.label ?? 'Host ${connection.hostId}',
+                          ),
+                          subtitle: _ConnectionPreviewText(
+                            endpoint:
+                                '$endpoint  •  Connection #${connection.connectionId}',
+                            preview: preview,
+                            windowTitle: connection.windowTitle,
+                            iconName: connection.iconName,
+                            workingDirectory: connection.workingDirectory,
+                            shellStatus: connection.shellStatus,
+                            lastExitCode: connection.lastExitCode,
+                            terminalTheme: previewTheme,
+                          ),
+                          isThreeLine: preview?.trim().isNotEmpty ?? false,
+                          trailing: IconButton(
+                            icon: const Icon(Icons.close),
+                            tooltip: 'Disconnect',
+                            onPressed: () async {
+                              ref
+                                  .read(tmuxServiceProvider)
+                                  .clearCache(connection.connectionId);
+                              await ref
+                                  .read(activeSessionsProvider.notifier)
+                                  .disconnect(connection.connectionId);
+                            },
+                          ),
+                          onTap: () => unawaited(
+                            context.push(
+                              '/terminal/${connection.hostId}'
+                              '?connectionId=${connection.connectionId}',
+                            ),
+                          ),
                         ),
-                      ),
+                        if (state == SshConnectionState.connected)
+                          _TmuxConnectionBadge(
+                            key: ValueKey(
+                              'tmux-badge-${connection.connectionId}',
+                            ),
+                            connectionId: connection.connectionId,
+                            onTap: () => unawaited(
+                              context.push(
+                                '/terminal/${connection.hostId}'
+                                '?connectionId=${connection.connectionId}',
+                              ),
+                            ),
+                          ),
+                      ],
                     );
                   },
                 ),
@@ -2253,5 +2315,788 @@ class _SnippetRow extends ConsumerWidget {
         ).showSnackBar(SnackBar(content: Text('Deleted "${snippet.name}"')));
       }
     }
+  }
+}
+
+/// Shows a compact tmux window badge below a connection tile.
+///
+/// Asynchronously queries tmux state for the given connection and displays
+/// a horizontal list of window name chips if tmux is active.
+class _TmuxConnectionBadge extends ConsumerStatefulWidget {
+  const _TmuxConnectionBadge({
+    required this.connectionId,
+    required this.onTap,
+    super.key,
+  });
+
+  final int connectionId;
+
+  /// Called when the user taps a window chip — opens the terminal.
+  final VoidCallback onTap;
+
+  @override
+  ConsumerState<_TmuxConnectionBadge> createState() =>
+      _TmuxConnectionBadgeState();
+}
+
+class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
+  static const _initialSessionFetchLimit = 12;
+  static const _sessionFetchStep = 12;
+  static const _tmuxQueryRetryDelay = Duration(seconds: 2);
+
+  List<TmuxWindow>? _windows;
+  List<ToolSessionInfo>? _recentSessions;
+  final Set<String> _expandedSessionTools = <String>{};
+  String? _sessionLoadError;
+  String? _sessionName;
+  bool _queried = false;
+  bool _expanded = false;
+  bool _showSessions = false;
+  bool _isLoadingSessions = false;
+  bool _canLoadMoreSessions = false;
+  int _sessionFetchLimit = _initialSessionFetchLimit;
+  bool _restoredUiState = false;
+  StreamSubscription<void>? _windowChangeSubscription;
+  bool _loadingWindows = false;
+  bool _pendingWindowReload = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _queryTmux();
+  }
+
+  @override
+  void dispose() {
+    unawaited(_windowChangeSubscription?.cancel());
+    super.dispose();
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    if (_restoredUiState) return;
+    _restoredUiState = true;
+
+    final storedState = PageStorage.maybeOf(
+      context,
+    )?.readState(context, identifier: _pageStorageIdentifier);
+    if (storedState is! Map<Object?, Object?>) return;
+
+    _expanded = storedState['expanded'] as bool? ?? _expanded;
+    _showSessions = storedState['showSessions'] as bool? ?? _showSessions;
+    _sessionFetchLimit =
+        storedState['sessionFetchLimit'] as int? ?? _sessionFetchLimit;
+
+    final expandedSessionTools = storedState['expandedSessionTools'];
+    if (expandedSessionTools is List<Object?>) {
+      _expandedSessionTools
+        ..clear()
+        ..addAll(
+          expandedSessionTools.whereType<String>().where(
+            (toolName) => toolName.isNotEmpty,
+          ),
+        );
+    }
+
+    if (!_hasAgentSessionAccess) {
+      _showSessions = false;
+    }
+
+    if (_showSessions && _hasAgentSessionAccess) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) _loadRecentSessions();
+      });
+    }
+  }
+
+  String get _pageStorageIdentifier =>
+      'tmux-badge-state-${widget.connectionId}';
+
+  void _persistUiState() {
+    PageStorage.maybeOf(context)?.writeState(context, <String, Object>{
+      'expanded': _expanded,
+      'showSessions': _showSessions,
+      'sessionFetchLimit': _sessionFetchLimit,
+      'expandedSessionTools': _expandedSessionTools.toList(growable: false),
+    }, identifier: _pageStorageIdentifier);
+  }
+
+  bool get _hasAgentSessionAccess {
+    final monetizationState =
+        ref.read(monetizationStateProvider).asData?.value ??
+        ref.read(monetizationServiceProvider).currentState;
+    return monetizationState.allowsFeature(
+      MonetizationFeature.agentLaunchPresets,
+    );
+  }
+
+  Future<void> _retryTmuxQuery(int retries) async {
+    if (retries <= 0 || !mounted) {
+      if (mounted) {
+        setState(() => _queried = true);
+      }
+      return;
+    }
+    await Future<void>.delayed(_tmuxQueryRetryDelay);
+    if (mounted) {
+      await _queryTmux(retries: retries - 1);
+    }
+  }
+
+  Future<void> _handleLockedAiSessionsTap() => requireMonetizationFeatureAccess(
+    context: context,
+    ref: ref,
+    feature: MonetizationFeature.agentLaunchPresets,
+  );
+
+  Future<void> _queryTmux({int retries = 3}) async {
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final session = sessionsNotifier.getSession(widget.connectionId);
+    if (session == null) {
+      // Session not available yet — retry after a delay so the badge
+      // still appears for connections that finish establishing shortly.
+      await _retryTmuxQuery(retries);
+      return;
+    }
+
+    final tmux = ref.read(tmuxServiceProvider);
+    final active = await tmux.isTmuxActive(session);
+    if (!mounted || !active) {
+      await _retryTmuxQuery(retries);
+      return;
+    }
+
+    final sessionName = await tmux.currentSessionName(session);
+    if (!mounted || sessionName == null) {
+      await _retryTmuxQuery(retries);
+      return;
+    }
+
+    await _windowChangeSubscription?.cancel();
+    _windowChangeSubscription = tmux
+        .watchWindowChanges(session, sessionName)
+        .listen((_) {
+          if (!mounted) return;
+          _refreshTmuxWindows(session, sessionName);
+        });
+    await _refreshTmuxWindows(session, sessionName);
+  }
+
+  Future<void> _refreshTmuxWindows(
+    SshSession session,
+    String sessionName,
+  ) async {
+    if (_loadingWindows) {
+      _pendingWindowReload = true;
+      return;
+    }
+    _loadingWindows = true;
+    try {
+      final windows = await ref
+          .read(tmuxServiceProvider)
+          .listWindows(session, sessionName);
+      if (!mounted) return;
+      setState(() {
+        _windows = windows;
+        _sessionName = sessionName;
+        _queried = true;
+      });
+    } on Object {
+      if (!mounted) return;
+      setState(() {
+        _queried = true;
+      });
+    } finally {
+      _loadingWindows = false;
+      if (_pendingWindowReload) {
+        _pendingWindowReload = false;
+        unawaited(_refreshTmuxWindows(session, sessionName));
+      }
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_queried || _windows == null || _windows!.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final theme = Theme.of(context);
+    final hasAgentSessionAccess = _hasAgentSessionAccess;
+    final windows = _windows!;
+    final alertCount = windows.where((w) => w.hasAlert).length;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(56, 0, 16, 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Collapsed summary row — tap to expand/collapse.
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              setState(() => _expanded = !_expanded);
+              _persistUiState();
+            },
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 2),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.window_outlined,
+                    size: 14,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _sessionName != null
+                        ? '$_sessionName · ${windows.length} windows'
+                        : 'tmux · ${windows.length} windows',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                  if (alertCount > 0) ...[
+                    const SizedBox(width: 4),
+                    Icon(
+                      Icons.notifications_active,
+                      size: 12,
+                      color: theme.colorScheme.error,
+                    ),
+                    const SizedBox(width: 2),
+                    Text(
+                      '$alertCount',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                        fontWeight: FontWeight.bold,
+                      ),
+                    ),
+                  ],
+                  const Spacer(),
+                  Icon(
+                    _expanded ? Icons.expand_less : Icons.expand_more,
+                    size: 16,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ],
+              ),
+            ),
+          ),
+
+          // Expanded window list.
+          if (_expanded) ...[
+            const SizedBox(height: 4),
+            for (final window in windows) _buildWindowRow(theme, window),
+
+            const SizedBox(height: 4),
+            if (hasAgentSessionAccess) ...[
+              // Recent AI Sessions subsection.
+              GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  setState(() => _showSessions = !_showSessions);
+                  _persistUiState();
+                  if (_showSessions) _loadRecentSessions();
+                },
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 6,
+                    horizontal: 2,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.smart_toy_outlined,
+                        size: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'AI Sessions',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const Spacer(),
+                      Icon(
+                        _showSessions ? Icons.expand_less : Icons.expand_more,
+                        size: 14,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              if (_showSessions) ...[
+                if (_isLoadingSessions &&
+                    (_recentSessions == null || _recentSessions!.isEmpty))
+                  const Padding(
+                    padding: EdgeInsets.symmetric(vertical: 8),
+                    child: Center(
+                      child: SizedBox(
+                        width: 14,
+                        height: 14,
+                        child: CircularProgressIndicator.adaptive(
+                          strokeWidth: 2,
+                        ),
+                      ),
+                    ),
+                  )
+                else if (_sessionLoadError != null &&
+                    _recentSessions != null &&
+                    _recentSessions!.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      _sessionLoadError!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  )
+                else if (_recentSessions != null && _recentSessions!.isEmpty)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      'No recent sessions found',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  )
+                else if (_recentSessions != null) ...[
+                  if (_sessionLoadError != null)
+                    Padding(
+                      padding: const EdgeInsets.only(bottom: 4),
+                      child: Text(
+                        _sessionLoadError!,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.error,
+                        ),
+                      ),
+                    ),
+                  ..._groupSessions(_recentSessions!).entries.map(
+                    (entry) =>
+                        _buildSessionGroup(theme, entry.key, entry.value),
+                  ),
+                  if (_isLoadingSessions)
+                    const Padding(
+                      padding: EdgeInsets.symmetric(vertical: 8),
+                      child: Center(
+                        child: SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator.adaptive(
+                            strokeWidth: 2,
+                          ),
+                        ),
+                      ),
+                    ),
+                  if (_canLoadMoreSessions)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: TextButton(
+                        onPressed: _loadMoreSessions,
+                        child: const Text('Load more'),
+                      ),
+                    ),
+                ],
+              ],
+            ] else
+              InkWell(
+                onTap: () => unawaited(_handleLockedAiSessionsTap()),
+                borderRadius: BorderRadius.circular(6),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(
+                    vertical: 6,
+                    horizontal: 2,
+                  ),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.smart_toy_outlined,
+                        size: 12,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                      const SizedBox(width: 4),
+                      Text(
+                        'AI Sessions',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Icon(
+                        Icons.workspace_premium,
+                        size: 12,
+                        color: theme.colorScheme.primary,
+                      ),
+                      const Spacer(),
+                      Text(
+                        'Pro',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: theme.colorScheme.primary,
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  void _closeWindow(int windowIndex) {
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null || _sessionName == null) return;
+
+    ref
+        .read(tmuxServiceProvider)
+        .killWindow(session, _sessionName!, windowIndex);
+
+    // Optimistically remove from the list.
+    setState(() {
+      _windows = _windows?.where((w) => w.index != windowIndex).toList();
+    });
+  }
+
+  void _switchAndOpenWindow(int windowIndex) {
+    // Switch tmux to the target window before opening the terminal.
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session != null && _sessionName != null) {
+      ref
+          .read(tmuxServiceProvider)
+          .selectWindow(session, _sessionName!, windowIndex);
+    }
+    widget.onTap();
+  }
+
+  Future<void> _loadRecentSessions({bool forceReload = false}) async {
+    if (!_hasAgentSessionAccess) {
+      return;
+    }
+    if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
+    final previousCount = _recentSessions?.length ?? 0;
+    setState(() {
+      _isLoadingSessions = true;
+      _sessionLoadError = null;
+    });
+
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null) {
+      if (mounted) {
+        setState(() {
+          _recentSessions = const [];
+          _canLoadMoreSessions = false;
+          _isLoadingSessions = false;
+        });
+      }
+      return;
+    }
+
+    try {
+      final discovery = ref.read(agentSessionDiscoveryServiceProvider);
+      // Scope sessions to the active tmux window's working directory
+      // so results match the current project context.
+      final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final result = await discovery.discoverSessions(
+        session,
+        workingDirectory: activeWindow?.currentPath,
+        maxPerTool: _sessionFetchLimit,
+      );
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = result.sessions;
+        _sessionLoadError = result.failureMessage;
+        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
+          _expandedSessionTools.add(result.sessions.first.toolName);
+        }
+        _canLoadMoreSessions =
+            result.sessions.length > previousCount &&
+            _hasSessionGroupAtLimit(result.sessions);
+        _isLoadingSessions = false;
+      });
+      _persistUiState();
+    } on Exception {
+      if (!mounted) return;
+      setState(() {
+        _recentSessions = const [];
+        _sessionLoadError = 'Could not load recent AI sessions.';
+        _canLoadMoreSessions = false;
+        _isLoadingSessions = false;
+      });
+      _persistUiState();
+    }
+  }
+
+  void _loadMoreSessions() {
+    if (_isLoadingSessions) return;
+    setState(() => _sessionFetchLimit += _sessionFetchStep);
+    _persistUiState();
+    _loadRecentSessions(forceReload: true);
+  }
+
+  bool _hasSessionGroupAtLimit(List<ToolSessionInfo> sessions) {
+    final countsByTool = <String, int>{};
+    for (final session in sessions) {
+      countsByTool.update(
+        session.toolName,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
+    }
+    return countsByTool.values.any((count) => count >= _sessionFetchLimit);
+  }
+
+  void _resumeSession(ToolSessionInfo info) {
+    if (!_hasAgentSessionAccess) {
+      unawaited(_handleLockedAiSessionsTap());
+      return;
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null || _sessionName == null) return;
+
+    final discovery = ref.read(agentSessionDiscoveryServiceProvider);
+    final command = discovery.buildResumeCommand(info);
+    final tmux = ref.read(tmuxServiceProvider);
+    tmux
+        .createWindow(
+          session,
+          _sessionName!,
+          command: command,
+          name: info.toolName,
+          workingDirectory: info.workingDirectory,
+        )
+        .then((_) => widget.onTap())
+        .ignore();
+  }
+
+  Map<String, List<ToolSessionInfo>> _groupSessions(
+    List<ToolSessionInfo> sessions,
+  ) {
+    final grouped = <String, List<ToolSessionInfo>>{};
+    for (final session in sessions) {
+      grouped
+          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+          .add(session);
+    }
+    return grouped;
+  }
+
+  Widget _buildSessionGroup(
+    ThemeData theme,
+    String toolName,
+    List<ToolSessionInfo> sessions,
+  ) {
+    final isExpanded = _expandedSessionTools.contains(toolName);
+
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        InkWell(
+          onTap: () {
+            setState(() {
+              if (isExpanded) {
+                _expandedSessionTools.remove(toolName);
+              } else {
+                _expandedSessionTools.add(toolName);
+              }
+            });
+            _persistUiState();
+          },
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+            child: Row(
+              children: [
+                Icon(
+                  _toolIconData(toolName),
+                  size: 14,
+                  color: theme.colorScheme.primary,
+                ),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    toolName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                Text(
+                  '${sessions.length}',
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Icon(
+                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                  size: 14,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (isExpanded)
+          for (final session in sessions)
+            _buildSessionRow(theme, session, indent: 20),
+      ],
+    );
+  }
+
+  Widget _buildSessionRow(
+    ThemeData theme,
+    ToolSessionInfo info, {
+    double indent = 0,
+  }) {
+    final iconData = _toolIconData(info.toolName);
+
+    return InkWell(
+      onTap: () => _resumeSession(info),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: EdgeInsets.fromLTRB(6 + indent, 6, 6, 6),
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Icon(iconData, size: 14, color: theme.colorScheme.primary),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    info.summary ?? info.sessionId,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: theme.colorScheme.onSurface,
+                    ),
+                  ),
+                  if (info.lastUpdatedLabel.isNotEmpty)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 2),
+                      child: Text(
+                        info.lastUpdatedLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontSize: 10,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  IconData _toolIconData(String toolName) => switch (toolName) {
+    'Claude Code' => Icons.auto_awesome,
+    'Codex' => Icons.code,
+    'Copilot CLI' => Icons.flight,
+    'Gemini CLI' => Icons.diamond_outlined,
+    'OpenCode' => Icons.terminal,
+    _ => Icons.smart_toy_outlined,
+  };
+
+  Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
+    final title = window.displayTitle;
+
+    return InkWell(
+      onTap: () => _switchAndOpenWindow(window.index),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+        child: Row(
+          children: [
+            // Window index badge.
+            Container(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
+                color: window.isActive
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.surfaceContainerHighest,
+                borderRadius: BorderRadius.circular(4),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                '${window.index}',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  fontSize: 10,
+                  color: window.isActive
+                      ? theme.colorScheme.onPrimary
+                      : theme.colorScheme.onSurfaceVariant,
+                  fontWeight: FontWeight.bold,
+                ),
+              ),
+            ),
+            const SizedBox(width: 6),
+            // Alert icon.
+            if (window.hasAlert)
+              Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: Icon(
+                  Icons.notifications_active,
+                  size: 12,
+                  color: theme.colorScheme.error,
+                ),
+              ),
+            // Title — truncated.
+            Expanded(
+              child: Text(
+                title,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: window.isActive
+                      ? theme.colorScheme.primary
+                      : theme.colorScheme.onSurface,
+                  fontWeight: window.isActive
+                      ? FontWeight.bold
+                      : FontWeight.normal,
+                ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.only(left: 6, right: 6),
+              child: TmuxWindowStatusBadge(window: window),
+            ),
+            // Close button.
+            GestureDetector(
+              onTap: () => _closeWindow(window.index),
+              child: Icon(
+                Icons.close,
+                size: 14,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

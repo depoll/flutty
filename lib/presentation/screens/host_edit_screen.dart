@@ -15,6 +15,7 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
@@ -25,6 +26,18 @@ import '../widgets/premium_badge.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
+
+enum _HostStartupMode { none, tmux, agent, customCommand, snippet }
+
+extension _HostStartupModePresentation on _HostStartupMode {
+  String get label => switch (this) {
+    _HostStartupMode.none => 'Do nothing',
+    _HostStartupMode.tmux => 'Open tmux session',
+    _HostStartupMode.agent => 'Launch coding agent',
+    _HostStartupMode.customCommand => 'Run custom command',
+    _HostStartupMode.snippet => 'Run saved snippet',
+  };
+}
 
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
@@ -48,6 +61,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _passwordController;
   late TextEditingController _tagsController;
   late TextEditingController _autoConnectCommandController;
+  late TextEditingController _tmuxSessionController;
+  late TextEditingController _tmuxWorkingDirectoryController;
+  late TextEditingController _tmuxExtraFlagsController;
   late TextEditingController _agentWorkingDirectoryController;
   late TextEditingController _agentTmuxSessionController;
   late TextEditingController _agentArgumentsController;
@@ -59,9 +75,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   String? _selectedLightThemeId;
   String? _selectedDarkThemeId;
   String? _selectedFontFamily;
+  _HostStartupMode _selectedStartupMode = _HostStartupMode.none;
   AutoConnectCommandMode _selectedAutoConnectMode = AutoConnectCommandMode.none;
   AgentLaunchTool _selectedAgentLaunchTool = AgentLaunchTool.claudeCode;
-  bool _useAgentLaunchPreset = false;
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
@@ -79,6 +95,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _passwordController = TextEditingController();
     _tagsController = TextEditingController();
     _autoConnectCommandController = TextEditingController();
+    _tmuxSessionController = TextEditingController();
+    _tmuxWorkingDirectoryController = TextEditingController();
+    _tmuxExtraFlagsController = TextEditingController();
     _agentWorkingDirectoryController = TextEditingController();
     _agentTmuxSessionController = TextEditingController();
     _agentArgumentsController = TextEditingController();
@@ -118,10 +137,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedLightThemeId = host.terminalThemeLightId;
       _selectedDarkThemeId = host.terminalThemeDarkId;
       _selectedFontFamily = host.terminalFontFamily;
+      _tmuxSessionController.text = host.tmuxSessionName ?? '';
+      _tmuxWorkingDirectoryController.text = host.tmuxWorkingDirectory ?? '';
+      _tmuxExtraFlagsController.text = host.tmuxExtraFlags ?? '';
       _autoConnectCommandController.text = host.autoConnectCommand ?? '';
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
         command: host.autoConnectCommand,
         snippetId: host.autoConnectSnippetId,
+      );
+      _selectedStartupMode = _resolveStartupMode(
+        host: host,
+        preset: preset,
+        autoConnectMode: _selectedAutoConnectMode,
       );
       if (preset != null) {
         final presetCommand = buildAgentLaunchCommand(preset);
@@ -129,7 +156,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _agentWorkingDirectoryController.text = preset.workingDirectory ?? '';
         _agentTmuxSessionController.text = preset.tmuxSessionName ?? '';
         _agentArgumentsController.text = preset.additionalArguments ?? '';
-        _useAgentLaunchPreset = true;
         if (_selectedAutoConnectMode == AutoConnectCommandMode.custom ||
             host.autoConnectCommand == presetCommand) {
           _autoConnectCommandController.text = presetCommand;
@@ -150,6 +176,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _passwordController.dispose();
     _tagsController.dispose();
     _autoConnectCommandController.dispose();
+    _tmuxSessionController.dispose();
+    _tmuxWorkingDirectoryController.dispose();
+    _tmuxExtraFlagsController.dispose();
     _agentWorkingDirectoryController.dispose();
     _agentTmuxSessionController.dispose();
     _agentArgumentsController.dispose();
@@ -365,13 +394,19 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                   ),
                   const SizedBox(height: 24),
 
+                  _buildStartupSection(
+                    context: context,
+                    hasAutomationAccess: hasAutomationAccess,
+                    hasAgentPresetAccess: hasAgentPresetAccess,
+                    snippetsAsync: snippetsAsync,
+                  ),
+                  const SizedBox(height: 24),
+
                   // Advanced section
                   ExpansionTile(
                     key: const Key('host-advanced-tile'),
                     title: const Text('Advanced'),
-                    initiallyExpanded:
-                        _selectedJumpHostId != null ||
-                        _selectedAutoConnectMode != AutoConnectCommandMode.none,
+                    initiallyExpanded: _selectedJumpHostId != null,
                     children: [
                       const SizedBox(height: 8),
                       // Jump host dropdown
@@ -421,266 +456,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           );
                         },
                       ),
-                      const SizedBox(height: 24),
-                      Text(
-                        'Auto-Run Command',
-                        style: Theme.of(context).textTheme.titleSmall?.copyWith(
-                          color: Theme.of(context).colorScheme.primary,
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                      const SizedBox(height: 8),
-                      const PremiumBadge(),
-                      if (!hasAutomationAccess) ...[
-                        const SizedBox(height: 12),
-                        Container(
-                          width: double.infinity,
-                          padding: const EdgeInsets.all(12),
-                          decoration: BoxDecoration(
-                            color: Theme.of(
-                              context,
-                            ).colorScheme.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          child: Text(
-                            _selectedAutoConnectMode ==
-                                    AutoConnectCommandMode.none
-                                ? 'MonkeySSH Pro unlocks auto-run commands, saved snippets, and guided agent launch presets.'
-                                : 'This host keeps its saved Pro automation, but it will not run until MonkeySSH Pro is active again.',
-                            style: Theme.of(context).textTheme.bodySmall,
-                          ),
-                        ),
-                      ],
-                      const SizedBox(height: 12),
-                      DropdownButtonFormField<AutoConnectCommandMode>(
-                        // ignore: deprecated_member_use
-                        value: _selectedAutoConnectMode,
-                        decoration: const InputDecoration(
-                          labelText: 'After terminal connect',
-                          prefixIcon: Icon(Icons.play_circle_outline),
-                          helperText:
-                              'Optional command to run after connecting or reconnecting.',
-                        ),
-                        items: const [
-                          DropdownMenuItem(
-                            value: AutoConnectCommandMode.none,
-                            child: Text('Do nothing'),
-                          ),
-                          DropdownMenuItem(
-                            value: AutoConnectCommandMode.custom,
-                            child: Text('Run custom command'),
-                          ),
-                          DropdownMenuItem(
-                            value: AutoConnectCommandMode.snippet,
-                            child: Text('Run saved snippet'),
-                          ),
-                        ],
-                        onChanged: (value) {
-                          if (value == null) {
-                            return;
-                          }
-                          unawaited(_handleAutoConnectModeSelection(value));
-                        },
-                      ),
-                      if (_selectedAutoConnectMode ==
-                          AutoConnectCommandMode.custom) ...[
-                        const SizedBox(height: 16),
-                        SwitchListTile(
-                          contentPadding: EdgeInsets.zero,
-                          title: const Text('Use agent launch preset'),
-                          subtitle: const Text(
-                            'Build a repeatable startup flow for Claude Code, Copilot CLI, or Aider.',
-                          ),
-                          value: _useAgentLaunchPreset,
-                          onChanged: hasAgentPresetAccess
-                              ? (value) {
-                                  setState(() => _useAgentLaunchPreset = value);
-                                  if (value) {
-                                    _syncAutoConnectCommandFromPreset();
-                                  }
-                                }
-                              : null,
-                        ),
-                        if (_useAgentLaunchPreset) ...[
-                          const SizedBox(height: 12),
-                          Text(
-                            'Agent launch preset',
-                            style: Theme.of(context).textTheme.titleSmall,
-                          ),
-                          const SizedBox(height: 12),
-                          SegmentedButton<AgentLaunchTool>(
-                            segments: AgentLaunchTool.values
-                                .map(
-                                  (tool) => ButtonSegment<AgentLaunchTool>(
-                                    value: tool,
-                                    label: Text(tool.label),
-                                  ),
-                                )
-                                .toList(growable: false),
-                            selected: {_selectedAgentLaunchTool},
-                            onSelectionChanged: hasAgentPresetAccess
-                                ? (selection) {
-                                    setState(
-                                      () => _selectedAgentLaunchTool =
-                                          selection.first,
-                                    );
-                                    _syncAutoConnectCommandFromPreset();
-                                  }
-                                : null,
-                          ),
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _agentWorkingDirectoryController,
-                            readOnly: !hasAgentPresetAccess,
-                            decoration: const InputDecoration(
-                              labelText: 'Working directory (optional)',
-                              hintText: '~/src/app',
-                              prefixIcon: Icon(Icons.folder_outlined),
-                            ),
-                            onChanged: hasAgentPresetAccess
-                                ? (_) => _syncAutoConnectCommandFromPreset()
-                                : null,
-                          ),
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _agentTmuxSessionController,
-                            readOnly: !hasAgentPresetAccess,
-                            decoration: const InputDecoration(
-                              labelText: 'tmux session (optional)',
-                              hintText: 'app-agent',
-                              prefixIcon: Icon(Icons.view_carousel_outlined),
-                            ),
-                            onChanged: hasAgentPresetAccess
-                                ? (_) => _syncAutoConnectCommandFromPreset()
-                                : null,
-                          ),
-                          const SizedBox(height: 12),
-                          TextFormField(
-                            controller: _agentArgumentsController,
-                            readOnly: !hasAgentPresetAccess,
-                            decoration: const InputDecoration(
-                              labelText: 'Extra arguments (optional)',
-                              hintText: '--resume',
-                              prefixIcon: Icon(Icons.tune_outlined),
-                            ),
-                            onChanged: hasAgentPresetAccess
-                                ? (_) => _syncAutoConnectCommandFromPreset()
-                                : null,
-                          ),
-                          const SizedBox(height: 12),
-                        ],
-                        TextFormField(
-                          key: const Key('host-auto-connect-command-field'),
-                          controller: _autoConnectCommandController,
-                          decoration: InputDecoration(
-                            labelText: _useAgentLaunchPreset
-                                ? 'Generated command'
-                                : 'Custom command',
-                            hintText: defaultAutoConnectCommandSuggestion,
-                            helperText: _useAgentLaunchPreset
-                                ? 'Turn off the preset builder to edit the raw command directly.'
-                                : 'Suggested: tmux new -As MonkeySSH',
-                            prefixIcon: const Icon(Icons.terminal),
-                          ),
-                          minLines: 1,
-                          maxLines: 3,
-                          readOnly:
-                              _useAgentLaunchPreset || !hasAutomationAccess,
-                          autocorrect: false,
-                          validator: (value) {
-                            if (_selectedAutoConnectMode !=
-                                AutoConnectCommandMode.custom) {
-                              return null;
-                            }
-                            if (value == null || value.trim().isEmpty) {
-                              return 'Enter a command or choose "Do nothing"';
-                            }
-                            return null;
-                          },
-                        ),
-                      ],
-                      if (_selectedAutoConnectMode ==
-                          AutoConnectCommandMode.snippet) ...[
-                        const SizedBox(height: 16),
-                        snippetsAsync.when(
-                          loading: () => const LinearProgressIndicator(),
-                          error: (_, _) => const Text('Error loading snippets'),
-                          data: (snippets) {
-                            final selectedSnippetStillExists = snippets.any(
-                              (snippet) =>
-                                  snippet.id == _selectedAutoConnectSnippetId,
-                            );
-                            final effectiveSnippetId =
-                                selectedSnippetStillExists
-                                ? _selectedAutoConnectSnippetId
-                                : null;
-                            final selectedSnippet = effectiveSnippetId == null
-                                ? null
-                                : snippets.firstWhere(
-                                    (snippet) =>
-                                        snippet.id == effectiveSnippetId,
-                                  );
-                            return Column(
-                              children: [
-                                DropdownButtonFormField<int?>(
-                                  // ignore: deprecated_member_use
-                                  value: effectiveSnippetId,
-                                  decoration: const InputDecoration(
-                                    labelText: 'Snippet',
-                                    prefixIcon: Icon(Icons.code),
-                                    helperText:
-                                        'Variable prompts are not shown when a snippet runs automatically.',
-                                  ),
-                                  items: [
-                                    const DropdownMenuItem<int?>(
-                                      child: Text('Choose a snippet'),
-                                    ),
-                                    ...snippets.map(
-                                      (snippet) => DropdownMenuItem<int?>(
-                                        value: snippet.id,
-                                        child: Text(snippet.name),
-                                      ),
-                                    ),
-                                  ],
-                                  onChanged: hasAutomationAccess
-                                      ? (value) => setState(
-                                          () => _selectedAutoConnectSnippetId =
-                                              value,
-                                        )
-                                      : null,
-                                  validator: (value) {
-                                    if (_selectedAutoConnectMode !=
-                                        AutoConnectCommandMode.snippet) {
-                                      return null;
-                                    }
-                                    if (value == null) {
-                                      return 'Choose a snippet or select "Do nothing"';
-                                    }
-                                    return null;
-                                  },
-                                ),
-                                if (selectedSnippet != null) ...[
-                                  const SizedBox(height: 12),
-                                  Align(
-                                    alignment: Alignment.centerLeft,
-                                    child: Text(
-                                      selectedSnippet.command,
-                                      maxLines: 3,
-                                      overflow: TextOverflow.ellipsis,
-                                      style: FluttyTheme.monoStyle.copyWith(
-                                        fontSize: 12,
-                                        color: Theme.of(
-                                          context,
-                                        ).textTheme.bodySmall?.color,
-                                      ),
-                                    ),
-                                  ),
-                                ],
-                              ],
-                            );
-                          },
-                        ),
-                      ],
                       const SizedBox(height: 24),
                       // Terminal theme section
                       Row(
@@ -757,6 +532,410 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     );
   }
 
+  _HostStartupMode _resolveStartupMode({
+    required Host host,
+    required AgentLaunchPreset? preset,
+    required AutoConnectCommandMode autoConnectMode,
+  }) {
+    if (preset != null) {
+      return _HostStartupMode.agent;
+    }
+    if (host.tmuxSessionName case final value? when value.trim().isNotEmpty) {
+      return _HostStartupMode.tmux;
+    }
+    return switch (autoConnectMode) {
+      AutoConnectCommandMode.none => _HostStartupMode.none,
+      AutoConnectCommandMode.custom => _HostStartupMode.customCommand,
+      AutoConnectCommandMode.snippet => _HostStartupMode.snippet,
+    };
+  }
+
+  Widget _buildStartupSection({
+    required BuildContext context,
+    required bool hasAutomationAccess,
+    required bool hasAgentPresetAccess,
+    required AsyncValue<List<Snippet>> snippetsAsync,
+  }) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          crossAxisAlignment: WrapCrossAlignment.center,
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            Text('Launch After Connect', style: theme.textTheme.titleMedium),
+            const PremiumBadge(),
+          ],
+        ),
+        const SizedBox(height: 8),
+        Text(
+          'Optionally open a tmux workspace, launch an agent with tmux window helpers, or run any shell command right after the terminal connects.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+        if (!hasAutomationAccess) ...[
+          const SizedBox(height: 12),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: colorScheme.surfaceContainerHighest,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Text(
+              _selectedStartupMode == _HostStartupMode.agent ||
+                      _selectedStartupMode == _HostStartupMode.customCommand ||
+                      _selectedStartupMode == _HostStartupMode.snippet
+                  ? 'This host keeps its saved Pro startup, but it will not run until MonkeySSH Pro is active again.'
+                  : 'Free hosts can still open tmux automatically. MonkeySSH Pro unlocks coding agents, custom commands, and saved snippets after connect.',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
+        ],
+        const SizedBox(height: 12),
+        DropdownButtonFormField<_HostStartupMode>(
+          key: const Key('host-startup-mode-field'),
+          // ignore: deprecated_member_use
+          value: _selectedStartupMode,
+          decoration: const InputDecoration(
+            labelText: 'Startup behavior',
+            prefixIcon: Icon(Icons.play_circle_outline),
+            helperText:
+                'Pick a startup flow for this host. tmux stays free; agent/custom/snippet flows require MonkeySSH Pro.',
+          ),
+          items: _HostStartupMode.values
+              .map(
+                (mode) => DropdownMenuItem<_HostStartupMode>(
+                  value: mode,
+                  child: Text(mode.label),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: (value) {
+            if (value == null) {
+              return;
+            }
+            unawaited(_handleStartupModeSelection(value));
+          },
+        ),
+        switch (_selectedStartupMode) {
+          _HostStartupMode.none => const SizedBox.shrink(),
+          _HostStartupMode.tmux => _buildTmuxStartupFields(context),
+          _HostStartupMode.agent => _buildAgentStartupFields(
+            context,
+            hasAgentPresetAccess: hasAgentPresetAccess,
+          ),
+          _HostStartupMode.customCommand => _buildCustomCommandFields(
+            hasAutomationAccess: hasAutomationAccess,
+          ),
+          _HostStartupMode.snippet => _buildSnippetFields(
+            context,
+            snippetsAsync: snippetsAsync,
+            hasAutomationAccess: hasAutomationAccess,
+          ),
+        },
+      ],
+    );
+  }
+
+  Widget _buildTmuxStartupFields(BuildContext context) {
+    final preview = _tmuxSessionController.text.trim().isEmpty
+        ? null
+        : buildTmuxCommand(
+            sessionName: _tmuxSessionController.text.trim(),
+            workingDirectory: _tmuxWorkingDirectoryController.text.trim(),
+            extraFlags: _tmuxExtraFlagsController.text.trim(),
+          );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 16),
+        TextFormField(
+          key: const Key('host-tmux-session-field'),
+          controller: _tmuxSessionController,
+          decoration: const InputDecoration(
+            labelText: 'tmux session name',
+            hintText: 'workspace',
+            prefixIcon: Icon(Icons.view_carousel_outlined),
+            helperText:
+                'Creates or attaches to this tmux session without launching any extra command.',
+          ),
+          autocorrect: false,
+          onChanged: (_) => setState(() {}),
+          validator: (value) {
+            if (_selectedStartupMode != _HostStartupMode.tmux) {
+              return null;
+            }
+            if (value == null || value.trim().isEmpty) {
+              return 'Enter a tmux session name';
+            }
+            return null;
+          },
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          key: const Key('host-tmux-working-directory-field'),
+          controller: _tmuxWorkingDirectoryController,
+          decoration: const InputDecoration(
+            labelText: 'Working directory (optional)',
+            hintText: '~/src/app',
+            prefixIcon: Icon(Icons.folder_outlined),
+          ),
+          autocorrect: false,
+          onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          key: const Key('host-tmux-extra-flags-field'),
+          controller: _tmuxExtraFlagsController,
+          decoration: const InputDecoration(
+            labelText: 'Extra tmux flags (optional)',
+            hintText: '-f ~/.tmux.conf',
+            prefixIcon: Icon(Icons.tune_outlined),
+          ),
+          autocorrect: false,
+          onChanged: (_) => setState(() {}),
+        ),
+        if (preview != null) ...[
+          const SizedBox(height: 12),
+          Text(
+            'Generated command',
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(height: 8),
+          SelectableText(
+            preview,
+            style: FluttyTheme.monoStyle.copyWith(
+              fontSize: 12,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+
+  Widget _buildAgentStartupFields(
+    BuildContext context, {
+    required bool hasAgentPresetAccess,
+  }) {
+    final generatedCommand = buildAgentLaunchCommand(
+      _buildCurrentAgentLaunchPreset()!,
+    );
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const SizedBox(height: 16),
+        DropdownButtonFormField<AgentLaunchTool>(
+          key: const Key('host-agent-tool-field'),
+          // ignore: deprecated_member_use
+          value: _selectedAgentLaunchTool,
+          decoration: const InputDecoration(
+            labelText: 'Coding agent',
+            prefixIcon: Icon(Icons.smart_toy_outlined),
+            helperText:
+                'Launch an agent directly, or pair it with tmux so Flutty can show extra window navigation.',
+          ),
+          items: AgentLaunchTool.values
+              .map(
+                (tool) => DropdownMenuItem<AgentLaunchTool>(
+                  value: tool,
+                  child: Text(tool.label),
+                ),
+              )
+              .toList(growable: false),
+          onChanged: hasAgentPresetAccess
+              ? (value) {
+                  if (value == null) {
+                    return;
+                  }
+                  setState(() => _selectedAgentLaunchTool = value);
+                  _syncAutoConnectCommandFromPreset();
+                }
+              : null,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          key: const Key('host-agent-working-directory-field'),
+          controller: _agentWorkingDirectoryController,
+          readOnly: !hasAgentPresetAccess,
+          decoration: const InputDecoration(
+            labelText: 'Working directory (optional)',
+            hintText: '~/src/app',
+            prefixIcon: Icon(Icons.folder_outlined),
+          ),
+          autocorrect: false,
+          onChanged: hasAgentPresetAccess
+              ? (_) => _syncAutoConnectCommandFromPreset()
+              : null,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          key: const Key('host-agent-tmux-session-field'),
+          controller: _agentTmuxSessionController,
+          readOnly: !hasAgentPresetAccess,
+          decoration: const InputDecoration(
+            labelText: 'tmux session (optional)',
+            hintText: 'app-agent',
+            prefixIcon: Icon(Icons.view_carousel_outlined),
+            helperText:
+                'Add a tmux session to keep agent workspaces visible in the tmux bar.',
+          ),
+          autocorrect: false,
+          onChanged: hasAgentPresetAccess
+              ? (_) => _syncAutoConnectCommandFromPreset()
+              : null,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
+          key: const Key('host-agent-arguments-field'),
+          controller: _agentArgumentsController,
+          readOnly: !hasAgentPresetAccess,
+          decoration: const InputDecoration(
+            labelText: 'Extra arguments (optional)',
+            hintText: '--resume',
+            prefixIcon: Icon(Icons.tune_outlined),
+          ),
+          autocorrect: false,
+          onChanged: hasAgentPresetAccess
+              ? (_) => _syncAutoConnectCommandFromPreset()
+              : null,
+        ),
+        const SizedBox(height: 12),
+        Text(
+          'Generated command',
+          style: Theme.of(context).textTheme.titleSmall,
+        ),
+        const SizedBox(height: 8),
+        SelectableText(
+          generatedCommand,
+          style: FluttyTheme.monoStyle.copyWith(
+            fontSize: 12,
+            color: Theme.of(context).textTheme.bodySmall?.color,
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCustomCommandFields({
+    required bool hasAutomationAccess,
+  }) => Column(
+    children: [
+      const SizedBox(height: 16),
+      TextFormField(
+        key: const Key('host-auto-connect-command-field'),
+        controller: _autoConnectCommandController,
+        decoration: const InputDecoration(
+          labelText: 'Custom command',
+          hintText: defaultAutoConnectCommandSuggestion,
+          helperText:
+              'Run any shell command after connect. Choose the tmux or agent modes above for extra window-aware behavior.',
+          prefixIcon: Icon(Icons.terminal),
+        ),
+        minLines: 1,
+        maxLines: 3,
+        readOnly: !hasAutomationAccess,
+        autocorrect: false,
+        validator: (value) {
+          if (_selectedStartupMode != _HostStartupMode.customCommand) {
+            return null;
+          }
+          if (value == null || value.trim().isEmpty) {
+            return 'Enter a command or choose "Do nothing"';
+          }
+          return null;
+        },
+      ),
+    ],
+  );
+
+  Widget _buildSnippetFields(
+    BuildContext context, {
+    required AsyncValue<List<Snippet>> snippetsAsync,
+    required bool hasAutomationAccess,
+  }) => Column(
+    children: [
+      const SizedBox(height: 16),
+      snippetsAsync.when(
+        loading: () => const LinearProgressIndicator(),
+        error: (_, _) => const Text('Error loading snippets'),
+        data: (snippets) {
+          final selectedSnippetStillExists = snippets.any(
+            (snippet) => snippet.id == _selectedAutoConnectSnippetId,
+          );
+          final effectiveSnippetId = selectedSnippetStillExists
+              ? _selectedAutoConnectSnippetId
+              : null;
+          final selectedSnippet = effectiveSnippetId == null
+              ? null
+              : snippets.firstWhere(
+                  (snippet) => snippet.id == effectiveSnippetId,
+                );
+          return Column(
+            children: [
+              DropdownButtonFormField<int?>(
+                key: const Key('host-auto-connect-snippet-field'),
+                // ignore: deprecated_member_use
+                value: effectiveSnippetId,
+                decoration: const InputDecoration(
+                  labelText: 'Snippet',
+                  prefixIcon: Icon(Icons.code),
+                  helperText:
+                      'Variable prompts are not shown when a snippet runs automatically.',
+                ),
+                items: [
+                  const DropdownMenuItem<int?>(child: Text('Choose a snippet')),
+                  ...snippets.map(
+                    (snippet) => DropdownMenuItem<int?>(
+                      value: snippet.id,
+                      child: Text(snippet.name),
+                    ),
+                  ),
+                ],
+                onChanged: hasAutomationAccess
+                    ? (value) =>
+                          setState(() => _selectedAutoConnectSnippetId = value)
+                    : null,
+                validator: (value) {
+                  if (_selectedStartupMode != _HostStartupMode.snippet) {
+                    return null;
+                  }
+                  if (value == null) {
+                    return 'Choose a snippet or select "Do nothing"';
+                  }
+                  return null;
+                },
+              ),
+              if (selectedSnippet != null) ...[
+                const SizedBox(height: 12),
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    selectedSnippet.command,
+                    maxLines: 3,
+                    overflow: TextOverflow.ellipsis,
+                    style: FluttyTheme.monoStyle.copyWith(
+                      fontSize: 12,
+                      color: Theme.of(context).textTheme.bodySmall?.color,
+                    ),
+                  ),
+                ),
+              ],
+            ],
+          );
+        },
+      ),
+    ],
+  );
+
   Future<void> _saveHost() async {
     if (!_formKey.currentState!.validate()) return;
 
@@ -793,34 +972,97 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final presetCommand = currentPreset == null
           ? null
           : buildAgentLaunchCommand(currentPreset);
-      final autoConnectCommand = switch (_selectedAutoConnectMode) {
-        AutoConnectCommandMode.none => null,
-        AutoConnectCommandMode.custom =>
-          _useAgentLaunchPreset && presetCommand != null
-              ? presetCommand
-              : _autoConnectCommandController.text.trim(),
-        AutoConnectCommandMode.snippet =>
-          selectedSnippet?.command ?? _autoConnectCommandController.text,
+      final tmuxSessionName = _tmuxSessionController.text.trim();
+      final tmuxWorkingDirectory = _tmuxWorkingDirectoryController.text.trim();
+      final tmuxExtraFlags = _tmuxExtraFlagsController.text.trim();
+
+      final normalizedTmuxSessionName = switch (_selectedStartupMode) {
+        _HostStartupMode.tmux =>
+          tmuxSessionName.isEmpty ? null : tmuxSessionName,
+        _HostStartupMode.none => null,
+        _ => hasAutomationAccess ? null : _existingHost?.tmuxSessionName,
       };
-      final normalizedAutoConnectCommand = hasAutomationAccess
-          ? (autoConnectCommand == null || autoConnectCommand.trim().isEmpty
+      final normalizedTmuxWorkingDirectory = switch (_selectedStartupMode) {
+        _HostStartupMode.tmux =>
+          tmuxWorkingDirectory.isEmpty ? null : tmuxWorkingDirectory,
+        _HostStartupMode.none => null,
+        _ => hasAutomationAccess ? null : _existingHost?.tmuxWorkingDirectory,
+      };
+      final normalizedTmuxExtraFlags = switch (_selectedStartupMode) {
+        _HostStartupMode.tmux => tmuxExtraFlags.isEmpty ? null : tmuxExtraFlags,
+        _HostStartupMode.none => null,
+        _ => hasAutomationAccess ? null : _existingHost?.tmuxExtraFlags,
+      };
+
+      String? normalizedAutoConnectCommand;
+      int? normalizedAutoConnectSnippetId;
+      late final bool autoConnectRequiresConfirmation;
+      switch (_selectedStartupMode) {
+        case _HostStartupMode.none:
+        case _HostStartupMode.tmux:
+          normalizedAutoConnectCommand = null;
+          normalizedAutoConnectSnippetId = null;
+          autoConnectRequiresConfirmation = false;
+        case _HostStartupMode.agent:
+          if (hasAutomationAccess) {
+            normalizedAutoConnectCommand =
+                presetCommand == null || presetCommand.trim().isEmpty
                 ? null
-                : autoConnectCommand)
-          : _existingHost?.autoConnectCommand;
-      final normalizedAutoConnectSnippetId = hasAutomationAccess
-          ? (_selectedAutoConnectMode == AutoConnectCommandMode.snippet &&
-                    selectedSnippet != null
-                ? selectedSnippet.id
-                : null)
-          : _existingHost?.autoConnectSnippetId;
-      final autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
-        command: hasAutomationAccess
-            ? normalizedAutoConnectCommand
-            : _existingHost?.autoConnectCommand,
-        snippetId: hasAutomationAccess
-            ? normalizedAutoConnectSnippetId
-            : _existingHost?.autoConnectSnippetId,
-      );
+                : presetCommand;
+            normalizedAutoConnectSnippetId = null;
+            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+              command: normalizedAutoConnectCommand,
+              snippetId: null,
+            );
+          } else {
+            normalizedAutoConnectCommand = _existingHost?.autoConnectCommand;
+            normalizedAutoConnectSnippetId =
+                _existingHost?.autoConnectSnippetId;
+            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+              command: _existingHost?.autoConnectCommand,
+              snippetId: _existingHost?.autoConnectSnippetId,
+            );
+          }
+        case _HostStartupMode.customCommand:
+          if (hasAutomationAccess) {
+            final autoConnectCommand = _autoConnectCommandController.text
+                .trim();
+            normalizedAutoConnectCommand = autoConnectCommand.isEmpty
+                ? null
+                : autoConnectCommand;
+            normalizedAutoConnectSnippetId = null;
+            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+              command: normalizedAutoConnectCommand,
+              snippetId: null,
+            );
+          } else {
+            normalizedAutoConnectCommand = _existingHost?.autoConnectCommand;
+            normalizedAutoConnectSnippetId =
+                _existingHost?.autoConnectSnippetId;
+            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+              command: _existingHost?.autoConnectCommand,
+              snippetId: _existingHost?.autoConnectSnippetId,
+            );
+          }
+        case _HostStartupMode.snippet:
+          if (hasAutomationAccess) {
+            normalizedAutoConnectCommand =
+                selectedSnippet?.command ?? _autoConnectCommandController.text;
+            normalizedAutoConnectSnippetId = selectedSnippet?.id;
+            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+              command: normalizedAutoConnectCommand,
+              snippetId: normalizedAutoConnectSnippetId,
+            );
+          } else {
+            normalizedAutoConnectCommand = _existingHost?.autoConnectCommand;
+            normalizedAutoConnectSnippetId =
+                _existingHost?.autoConnectSnippetId;
+            autoConnectRequiresConfirmation = _resolveAutoConnectConfirmation(
+              command: _existingHost?.autoConnectCommand,
+              snippetId: _existingHost?.autoConnectSnippetId,
+            );
+          }
+      }
       var savedHostId = widget.hostId;
 
       if (widget.hostId != null && _existingHost != null) {
@@ -841,6 +1083,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           autoConnectCommand: drift.Value(normalizedAutoConnectCommand),
           autoConnectSnippetId: drift.Value(normalizedAutoConnectSnippetId),
           autoConnectRequiresConfirmation: autoConnectRequiresConfirmation,
+          tmuxSessionName: drift.Value(normalizedTmuxSessionName),
+          tmuxWorkingDirectory: drift.Value(normalizedTmuxWorkingDirectory),
+          tmuxExtraFlags: drift.Value(normalizedTmuxExtraFlags),
           isFavorite: _isFavorite,
         );
         await repo.update(updatedHost);
@@ -865,6 +1110,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             autoConnectRequiresConfirmation: drift.Value(
               autoConnectRequiresConfirmation,
             ),
+            tmuxSessionName: drift.Value(normalizedTmuxSessionName),
+            tmuxWorkingDirectory: drift.Value(normalizedTmuxWorkingDirectory),
+            tmuxExtraFlags: drift.Value(normalizedTmuxExtraFlags),
             isFavorite: drift.Value(_isFavorite),
           ),
         );
@@ -872,13 +1120,17 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
       if (savedHostId != null) {
         final preset = _buildCurrentAgentLaunchPreset();
-        if (hasAutomationAccess &&
+        if (_selectedStartupMode == _HostStartupMode.agent &&
+            hasAutomationAccess &&
             hasAgentPresetAccess &&
-            _selectedAutoConnectMode == AutoConnectCommandMode.custom &&
-            _useAgentLaunchPreset &&
             preset != null) {
           await presetService.setPresetForHost(savedHostId, preset);
-        } else if (hasAutomationAccess && hasAgentPresetAccess) {
+        } else if (_selectedStartupMode == _HostStartupMode.none ||
+            _selectedStartupMode == _HostStartupMode.tmux ||
+            ((_selectedStartupMode == _HostStartupMode.customCommand ||
+                    _selectedStartupMode == _HostStartupMode.snippet) &&
+                hasAutomationAccess &&
+                hasAgentPresetAccess)) {
           await presetService.deletePresetForHost(savedHostId);
         }
       }
@@ -906,10 +1158,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
   }
 
-  Future<void> _handleAutoConnectModeSelection(
-    AutoConnectCommandMode value,
-  ) async {
-    if (value != AutoConnectCommandMode.none) {
+  Future<void> _handleStartupModeSelection(_HostStartupMode value) async {
+    if (value == _HostStartupMode.agent) {
+      final hasAccess = await requireMonetizationFeatureAccess(
+        context: context,
+        ref: ref,
+        feature: MonetizationFeature.agentLaunchPresets,
+      );
+      if (!hasAccess || !mounted) {
+        return;
+      }
+    } else if (value == _HostStartupMode.customCommand ||
+        value == _HostStartupMode.snippet) {
       final hasAccess = await requireMonetizationFeatureAccess(
         context: context,
         ref: ref,
@@ -921,12 +1181,20 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
 
     setState(() {
-      _selectedAutoConnectMode = value;
-      if (value != AutoConnectCommandMode.custom) {
-        _useAgentLaunchPreset = false;
+      _selectedStartupMode = value;
+      switch (value) {
+        case _HostStartupMode.none:
+        case _HostStartupMode.tmux:
+          _selectedAutoConnectMode = AutoConnectCommandMode.none;
+        case _HostStartupMode.agent:
+          _selectedAutoConnectMode = AutoConnectCommandMode.custom;
+        case _HostStartupMode.customCommand:
+          _selectedAutoConnectMode = AutoConnectCommandMode.custom;
+        case _HostStartupMode.snippet:
+          _selectedAutoConnectMode = AutoConnectCommandMode.snippet;
       }
     });
-    if (_useAgentLaunchPreset) {
+    if (value == _HostStartupMode.agent) {
       _syncAutoConnectCommandFromPreset();
     }
   }
@@ -1091,7 +1359,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   AgentLaunchPreset? _buildCurrentAgentLaunchPreset() {
-    if (!_useAgentLaunchPreset) {
+    if (_selectedStartupMode != _HostStartupMode.agent) {
       return null;
     }
     return AgentLaunchPreset(
