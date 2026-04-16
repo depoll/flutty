@@ -1112,16 +1112,20 @@ double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
     _selectionActionsBottomPadding + mediaQuery.padding.bottom;
 
 /// Keeps the Pro upsell snackbar tucked just above the visible bottom chrome.
+///
+/// Flutter's floating [SnackBar] already anchors itself above the keyboard
+/// inset and the bottom safe area (see `Scaffold`'s snack bar layout, which
+/// uses `min(contentBottom, size.height - viewPadding.bottom)`). The only
+/// bottom chrome the scaffold does not know about is the in-body keyboard
+/// toolbar that sits inside the body `Column`, so the margin only needs to
+/// clear that toolbar with a small visual gap.
 @visibleForTesting
 double upgradeSnackBarBottomMargin(
   MediaQueryData mediaQuery, {
   bool showKeyboardToolbar = false,
-  double keyboardToolbarHeight = 96,
+  double keyboardToolbarHeight = 84,
   double baseSpacing = 16,
-}) =>
-    mediaQuery.padding.bottom +
-    (showKeyboardToolbar ? keyboardToolbarHeight : 0) +
-    baseSpacing;
+}) => (showKeyboardToolbar ? keyboardToolbarHeight : 0) + baseSpacing;
 
 /// Resolves the transient indicator label for a terminal double-tap Tab gesture.
 @visibleForTesting
