@@ -55,6 +55,10 @@ jobs:
   deploy:
     name: Build & Deploy Internal Release
     needs: compute-version
+    permissions:
+      actions: read
+      contents: read
+      issues: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
