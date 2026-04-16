@@ -128,6 +128,10 @@ jobs:
     name: Build Android Preview
     needs: compute-version
     if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: read
+      contents: read
+      issues: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
@@ -147,6 +151,10 @@ jobs:
     name: Build iOS Preview
     needs: compute-version
     if: github.event.pull_request.head.repo.full_name == github.repository
+    permissions:
+      actions: read
+      contents: read
+      issues: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
