@@ -639,11 +639,12 @@ jobs:
         run: |
           cd ios
           SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          SOURCE_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/Runner-unsigned.ipa"))')"
           ADHOC_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/Runner-adhoc.ipa"))')"
           bundle exec fastlane resign_ipa \
             scheme:"$SCHEME" \
             distribution_type:adhoc \
-            source_ipa_path:"../build/ios/ipa/Runner-unsigned.ipa" \
+            source_ipa_path:"$SOURCE_IPA_PATH" \
             output_ipa_path:"$ADHOC_IPA_PATH"
           rm -f ../build/ios/ipa/Runner-unsigned.ipa
 
