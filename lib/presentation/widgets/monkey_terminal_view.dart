@@ -1,15 +1,19 @@
-// Adapted from package:xterm 4.0.0 TerminalView internals to keep a local
-// trackpad/mobile gesture fix. Keep this aligned with the pinned xterm
-// dependency when upgrading.
-// ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions
+// Adapted from package:xterm 4.0.0 TerminalView internals to keep local
+// terminal layout and trackpad/mobile gesture fixes. Keep this aligned with the
+// pinned xterm dependency when upgrading.
+// ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks
 
 import 'dart:async';
+import 'dart:math' show max;
+import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/range.dart';
+import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -21,14 +25,17 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
-import 'monkey_terminal_gesture_handler.dart';
-import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
+import 'package:xterm/src/ui/terminal_size.dart';
 import 'package:xterm/src/ui/terminal_text_style.dart';
 import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
+
+import 'monkey_terminal_gesture_handler.dart';
+import 'monkey_terminal_scroll_gesture_handler.dart';
 
 /// Terminal render padding.
 ///
@@ -51,6 +58,32 @@ EdgeInsets resolveTerminalRenderPadding(MediaQueryData mediaQuery) {
       ? mediaQuery.padding.right
       : mediaQuery.viewPadding.right;
   return EdgeInsets.only(left: leftInset, right: rightInset);
+}
+
+/// Whether terminal cell slack should be shifted off the trailing edges.
+bool shouldAlignTerminalToTrailingEdges(MediaQueryData mediaQuery) {
+  final viewportHeight = mediaQuery.size.height + mediaQuery.viewInsets.bottom;
+  return mediaQuery.size.width > viewportHeight;
+}
+
+/// Resolves the terminal grid origin inside the viewport.
+@visibleForTesting
+Offset resolveTerminalContentOrigin({
+  required Size viewportSize,
+  required Size cellSize,
+  required int columns,
+  required int rows,
+  EdgeInsets padding = EdgeInsets.zero,
+  bool alignToTrailingEdges = false,
+}) {
+  final availableWidth = max(0.0, viewportSize.width - padding.horizontal);
+  final availableHeight = max(0.0, viewportSize.height - padding.vertical);
+  final slackWidth = max(0.0, availableWidth - (columns * cellSize.width));
+  final slackHeight = max(0.0, availableHeight - (rows * cellSize.height));
+  return Offset(
+    padding.left + (alignToTrailingEdges ? slackWidth : 0),
+    padding.top + (alignToTrailingEdges ? slackHeight : 0),
+  );
 }
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
@@ -227,8 +260,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
 
   late ScrollController _scrollController;
 
-  RenderTerminal get renderTerminal =>
-      _viewportKey.currentContext!.findRenderObject() as RenderTerminal;
+  MonkeyRenderTerminal get renderTerminal =>
+      _viewportKey.currentContext!.findRenderObject() as MonkeyRenderTerminal;
 
   @override
   void initState() {
@@ -289,12 +322,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           ? const NeverScrollableScrollPhysics()
           : null,
       viewportBuilder: (context, offset) {
+        final mediaQuery = MediaQuery.of(context);
         return _TerminalView(
           key: _viewportKey,
           terminal: widget.terminal,
           controller: _controller,
           offset: offset,
-          padding: resolveTerminalRenderPadding(MediaQuery.of(context)),
+          padding: resolveTerminalRenderPadding(mediaQuery),
+          alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
@@ -670,6 +705,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.controller,
     required this.offset,
     required this.padding,
+    required this.alignToTrailingEdges,
     required this.autoResize,
     required this.textStyle,
     required this.textScaler,
@@ -688,6 +724,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final ViewportOffset offset;
 
   final EdgeInsets padding;
+
+  final bool alignToTrailingEdges;
 
   final bool autoResize;
 
@@ -708,12 +746,13 @@ class _TerminalView extends LeafRenderObjectWidget {
   final String? composingText;
 
   @override
-  RenderTerminal createRenderObject(BuildContext context) {
-    return RenderTerminal(
+  MonkeyRenderTerminal createRenderObject(BuildContext context) {
+    return MonkeyRenderTerminal(
       terminal: terminal,
       controller: controller,
       offset: offset,
       padding: padding,
+      alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
       textStyle: textStyle,
       textScaler: textScaler,
@@ -727,12 +766,16 @@ class _TerminalView extends LeafRenderObjectWidget {
   }
 
   @override
-  void updateRenderObject(BuildContext context, RenderTerminal renderObject) {
+  void updateRenderObject(
+    BuildContext context,
+    MonkeyRenderTerminal renderObject,
+  ) {
     renderObject
       ..terminal = terminal
       ..controller = controller
       ..offset = offset
       ..padding = padding
+      ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
       ..textStyle = textStyle
       ..textScaler = textScaler
@@ -742,5 +785,520 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..alwaysShowCursor = alwaysShowCursor
       ..onEditableRect = onEditableRect
       ..composingText = composingText;
+  }
+}
+
+class MonkeyRenderTerminal extends RenderBox
+    with RelayoutWhenSystemFontsChangeMixin {
+  MonkeyRenderTerminal({
+    required Terminal terminal,
+    required TerminalController controller,
+    required ViewportOffset offset,
+    required EdgeInsets padding,
+    required bool alignToTrailingEdges,
+    required bool autoResize,
+    required TerminalStyle textStyle,
+    required TextScaler textScaler,
+    required TerminalTheme theme,
+    required FocusNode focusNode,
+    required TerminalCursorType cursorType,
+    required bool alwaysShowCursor,
+    EditableRectCallback? onEditableRect,
+    String? composingText,
+  }) : _terminal = terminal,
+       _controller = controller,
+       _offset = offset,
+       _padding = padding,
+       _alignToTrailingEdges = alignToTrailingEdges,
+       _autoResize = autoResize,
+       _focusNode = focusNode,
+       _cursorType = cursorType,
+       _alwaysShowCursor = alwaysShowCursor,
+       _onEditableRect = onEditableRect,
+       _composingText = composingText,
+       _painter = TerminalPainter(
+         theme: theme,
+         textStyle: textStyle,
+         textScaler: textScaler,
+       );
+
+  Terminal _terminal;
+  set terminal(Terminal terminal) {
+    if (_terminal == terminal) return;
+    if (attached) _terminal.removeListener(_onTerminalChange);
+    _terminal = terminal;
+    if (attached) _terminal.addListener(_onTerminalChange);
+    _resizeTerminalIfNeeded();
+    markNeedsLayout();
+  }
+
+  TerminalController _controller;
+  set controller(TerminalController controller) {
+    if (_controller == controller) return;
+    if (attached) _controller.removeListener(_onControllerUpdate);
+    _controller = controller;
+    if (attached) _controller.addListener(_onControllerUpdate);
+    markNeedsLayout();
+  }
+
+  ViewportOffset _offset;
+  set offset(ViewportOffset value) {
+    if (value == _offset) return;
+    if (attached) _offset.removeListener(_onScroll);
+    _offset = value;
+    if (attached) _offset.addListener(_onScroll);
+    markNeedsLayout();
+  }
+
+  EdgeInsets _padding;
+  set padding(EdgeInsets value) {
+    if (value == _padding) return;
+    _padding = value;
+    markNeedsLayout();
+  }
+
+  bool _alignToTrailingEdges;
+  set alignToTrailingEdges(bool value) {
+    if (value == _alignToTrailingEdges) return;
+    _alignToTrailingEdges = value;
+    markNeedsLayout();
+  }
+
+  bool _autoResize;
+  set autoResize(bool value) {
+    if (value == _autoResize) return;
+    _autoResize = value;
+    markNeedsLayout();
+  }
+
+  set textStyle(TerminalStyle value) {
+    if (value == _painter.textStyle) return;
+    _painter.textStyle = value;
+    markNeedsLayout();
+  }
+
+  set textScaler(TextScaler value) {
+    if (value == _painter.textScaler) return;
+    _painter.textScaler = value;
+    markNeedsLayout();
+  }
+
+  set theme(TerminalTheme value) {
+    if (value == _painter.theme) return;
+    _painter.theme = value;
+    markNeedsPaint();
+  }
+
+  FocusNode _focusNode;
+  set focusNode(FocusNode value) {
+    if (value == _focusNode) return;
+    if (attached) _focusNode.removeListener(_onFocusChange);
+    _focusNode = value;
+    if (attached) _focusNode.addListener(_onFocusChange);
+    markNeedsPaint();
+  }
+
+  TerminalCursorType _cursorType;
+  set cursorType(TerminalCursorType value) {
+    if (value == _cursorType) return;
+    _cursorType = value;
+    markNeedsPaint();
+  }
+
+  bool _alwaysShowCursor;
+  set alwaysShowCursor(bool value) {
+    if (value == _alwaysShowCursor) return;
+    _alwaysShowCursor = value;
+    markNeedsPaint();
+  }
+
+  EditableRectCallback? _onEditableRect;
+  set onEditableRect(EditableRectCallback? value) {
+    if (value == _onEditableRect) return;
+    _onEditableRect = value;
+    markNeedsLayout();
+  }
+
+  String? _composingText;
+  set composingText(String? value) {
+    if (value == _composingText) return;
+    _composingText = value;
+    markNeedsPaint();
+  }
+
+  TerminalSize? _viewportSize;
+
+  final TerminalPainter _painter;
+
+  var _stickToBottom = true;
+
+  void _onScroll() {
+    _stickToBottom = _scrollOffset >= _maxScrollExtent;
+    markNeedsLayout();
+    _notifyEditableRect();
+  }
+
+  void _onFocusChange() {
+    markNeedsPaint();
+  }
+
+  void _onTerminalChange() {
+    markNeedsLayout();
+    _notifyEditableRect();
+  }
+
+  void _onControllerUpdate() {
+    markNeedsLayout();
+  }
+
+  @override
+  final isRepaintBoundary = true;
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    _offset.addListener(_onScroll);
+    _terminal.addListener(_onTerminalChange);
+    _controller.addListener(_onControllerUpdate);
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  @override
+  void detach() {
+    super.detach();
+    _offset.removeListener(_onScroll);
+    _terminal.removeListener(_onTerminalChange);
+    _controller.removeListener(_onControllerUpdate);
+    _focusNode.removeListener(_onFocusChange);
+  }
+
+  @override
+  bool hitTestSelf(Offset position) => true;
+
+  @override
+  void systemFontsDidChange() {
+    _painter.clearFontCache();
+    super.systemFontsDidChange();
+  }
+
+  @override
+  void performLayout() {
+    size = constraints.biggest;
+
+    _updateViewportSize();
+    _updateScrollOffset();
+
+    if (_stickToBottom) {
+      _offset.correctBy(_maxScrollExtent - _scrollOffset);
+    }
+  }
+
+  double get _terminalHeight =>
+      _terminal.buffer.lines.length * _painter.cellSize.height;
+
+  double get _scrollOffset => _offset.pixels;
+
+  double get lineHeight => _painter.cellSize.height;
+
+  Offset get _contentOrigin => resolveTerminalContentOrigin(
+    viewportSize: size,
+    cellSize: _painter.cellSize,
+    columns: _terminal.viewWidth,
+    rows: _terminal.viewHeight,
+    padding: _padding,
+    alignToTrailingEdges: _alignToTrailingEdges,
+  );
+
+  Offset getOffset(CellOffset cellOffset) {
+    final origin = _contentOrigin;
+    return Offset(
+      origin.dx + (cellOffset.x * _painter.cellSize.width),
+      origin.dy + (cellOffset.y * _painter.cellSize.height) - _scrollOffset,
+    );
+  }
+
+  CellOffset getCellOffset(Offset offset) {
+    final origin = _contentOrigin;
+    final x = offset.dx - origin.dx;
+    final y = offset.dy - origin.dy + _scrollOffset;
+    final row = y ~/ _painter.cellSize.height;
+    final col = x ~/ _painter.cellSize.width;
+    return CellOffset(
+      col.clamp(0, _terminal.viewWidth - 1),
+      row.clamp(0, _terminal.buffer.lines.length - 1),
+    );
+  }
+
+  void selectWord(Offset from, [Offset? to]) {
+    final fromOffset = getCellOffset(from);
+    final fromBoundary = _terminal.buffer.getWordBoundary(fromOffset);
+    if (fromBoundary == null) return;
+
+    if (to == null) {
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(fromBoundary.begin),
+        _terminal.buffer.createAnchorFromOffset(fromBoundary.end),
+        mode: SelectionMode.line,
+      );
+    } else {
+      final toOffset = getCellOffset(to);
+      final toBoundary = _terminal.buffer.getWordBoundary(toOffset);
+      if (toBoundary == null) return;
+      final range = fromBoundary.merge(toBoundary);
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(range.begin),
+        _terminal.buffer.createAnchorFromOffset(range.end),
+        mode: SelectionMode.line,
+      );
+    }
+  }
+
+  void selectCharacters(Offset from, [Offset? to]) {
+    final fromPosition = getCellOffset(from);
+    if (to == null) {
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(fromPosition),
+        _terminal.buffer.createAnchorFromOffset(fromPosition),
+      );
+    } else {
+      var toPosition = getCellOffset(to);
+      if (toPosition.x >= fromPosition.x) {
+        toPosition = CellOffset(toPosition.x + 1, toPosition.y);
+      }
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(fromPosition),
+        _terminal.buffer.createAnchorFromOffset(toPosition),
+      );
+    }
+  }
+
+  bool mouseEvent(
+    TerminalMouseButton button,
+    TerminalMouseButtonState buttonState,
+    Offset offset,
+  ) {
+    final position = getCellOffset(offset);
+    return _terminal.mouseInput(button, buttonState, position);
+  }
+
+  void _notifyEditableRect() {
+    final cursor = localToGlobal(cursorOffset);
+
+    final rect = Rect.fromLTRB(
+      cursor.dx,
+      cursor.dy,
+      size.width,
+      cursor.dy + _painter.cellSize.height,
+    );
+
+    final caretRect = cursor & _painter.cellSize;
+
+    _onEditableRect?.call(rect, caretRect);
+  }
+
+  void _updateViewportSize() {
+    final availableWidth = size.width - _padding.horizontal;
+    final availableHeight = _viewportHeight;
+    if (availableWidth <= _painter.cellSize.width ||
+        availableHeight <= _painter.cellSize.height) {
+      return;
+    }
+
+    final viewportSize = TerminalSize(
+      availableWidth ~/ _painter.cellSize.width,
+      availableHeight ~/ _painter.cellSize.height,
+    );
+
+    if (_viewportSize != viewportSize) {
+      _viewportSize = viewportSize;
+      _resizeTerminalIfNeeded();
+    }
+  }
+
+  void _resizeTerminalIfNeeded() {
+    if (_autoResize && _viewportSize != null) {
+      _terminal.resize(
+        _viewportSize!.width,
+        _viewportSize!.height,
+        _painter.cellSize.width.round(),
+        _painter.cellSize.height.round(),
+      );
+    }
+  }
+
+  void _updateScrollOffset() {
+    _offset.applyViewportDimension(_viewportHeight);
+    _offset.applyContentDimensions(0, _maxScrollExtent);
+  }
+
+  bool get _isComposingText =>
+      _composingText != null && _composingText!.isNotEmpty;
+
+  bool get _shouldShowCursor =>
+      _terminal.cursorVisibleMode || _alwaysShowCursor || _isComposingText;
+
+  double get _viewportHeight => size.height - _padding.vertical;
+
+  double get _maxScrollExtent => max(_terminalHeight - _viewportHeight, 0.0);
+
+  double get _lineOffset => -_scrollOffset + _contentOrigin.dy;
+
+  Offset get cursorOffset => Offset(
+    _contentOrigin.dx + (_terminal.buffer.cursorX * _painter.cellSize.width),
+    (_terminal.buffer.absoluteCursorY * _painter.cellSize.height) + _lineOffset,
+  );
+
+  Size get cellSize => _painter.cellSize;
+
+  @override
+  void paint(PaintingContext context, Offset offset) {
+    _paint(context, offset);
+    context.setWillChangeHint();
+  }
+
+  void _paint(PaintingContext context, Offset offset) {
+    final canvas = context.canvas;
+    final lines = _terminal.buffer.lines;
+    final charHeight = _painter.cellSize.height;
+    final origin = _contentOrigin;
+    final firstLineOffset = _scrollOffset - origin.dy;
+    final lastLineOffset = _scrollOffset - origin.dy + size.height;
+    final firstLine = firstLineOffset ~/ charHeight;
+    final lastLine = lastLineOffset ~/ charHeight;
+    final effectFirstLine = firstLine.clamp(0, lines.length - 1);
+    final effectLastLine = lastLine.clamp(0, lines.length - 1);
+
+    for (var i = effectFirstLine; i <= effectLastLine; i++) {
+      _painter.paintLine(
+        canvas,
+        offset.translate(
+          origin.dx,
+          (i * charHeight + _lineOffset).truncateToDouble(),
+        ),
+        lines[i],
+      );
+    }
+
+    if (_terminal.buffer.absoluteCursorY >= effectFirstLine &&
+        _terminal.buffer.absoluteCursorY <= effectLastLine) {
+      if (_isComposingText) {
+        _paintComposingText(canvas, offset + cursorOffset);
+      }
+
+      if (_shouldShowCursor) {
+        _painter.paintCursor(
+          canvas,
+          offset + cursorOffset,
+          cursorType: _cursorType,
+          hasFocus: _focusNode.hasFocus,
+        );
+      }
+    }
+
+    _paintHighlights(
+      canvas,
+      _controller.highlights,
+      effectFirstLine,
+      effectLastLine,
+    );
+
+    if (_controller.selection != null) {
+      _paintSelection(
+        canvas,
+        _controller.selection!,
+        effectFirstLine,
+        effectLastLine,
+      );
+    }
+  }
+
+  void _paintComposingText(Canvas canvas, Offset offset) {
+    final composingText = _composingText;
+    if (composingText == null) {
+      return;
+    }
+
+    final style = _painter.textStyle.toTextStyle(
+      color: _painter.resolveForegroundColor(_terminal.cursor.foreground),
+      backgroundColor: _painter.theme.background,
+      underline: true,
+    );
+
+    final builder = ParagraphBuilder(style.getParagraphStyle());
+    builder.addPlaceholder(
+      offset.dx,
+      _painter.cellSize.height,
+      PlaceholderAlignment.middle,
+    );
+    builder.pushStyle(style.getTextStyle(textScaler: _painter.textScaler));
+    builder.addText(composingText);
+
+    final paragraph = builder.build();
+    paragraph.layout(ParagraphConstraints(width: size.width));
+
+    canvas.drawParagraph(paragraph, Offset(0, offset.dy));
+  }
+
+  void _paintSelection(
+    Canvas canvas,
+    BufferRange selection,
+    int firstLine,
+    int lastLine,
+  ) {
+    for (final segment in selection.toSegments()) {
+      if (segment.line >= _terminal.buffer.lines.length) {
+        break;
+      }
+
+      if (segment.line < firstLine) {
+        continue;
+      }
+
+      if (segment.line > lastLine) {
+        break;
+      }
+
+      _paintSegment(canvas, segment, _painter.theme.selection);
+    }
+  }
+
+  void _paintHighlights(
+    Canvas canvas,
+    List<TerminalHighlight> highlights,
+    int firstLine,
+    int lastLine,
+  ) {
+    for (final highlight in _controller.highlights) {
+      final range = highlight.range?.normalized;
+
+      if (range == null ||
+          range.begin.y > lastLine ||
+          range.end.y < firstLine) {
+        continue;
+      }
+
+      for (final segment in range.toSegments()) {
+        if (segment.line < firstLine) {
+          continue;
+        }
+
+        if (segment.line > lastLine) {
+          break;
+        }
+
+        _paintSegment(canvas, segment, highlight.color);
+      }
+    }
+  }
+
+  void _paintSegment(Canvas canvas, BufferSegment segment, Color color) {
+    final start = segment.start ?? 0;
+    final end = segment.end ?? _terminal.viewWidth;
+    final startOffset = Offset(
+      _contentOrigin.dx + (start * _painter.cellSize.width),
+      (segment.line * _painter.cellSize.height) + _lineOffset,
+    );
+
+    _painter.paintHighlight(canvas, startOffset, end - start, color);
   }
 }

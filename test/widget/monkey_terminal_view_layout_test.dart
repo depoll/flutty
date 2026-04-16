@@ -82,4 +82,41 @@ void main() {
       },
     );
   });
+
+  group('landscape terminal alignment', () {
+    test('keeps trailing-edge alignment enabled in landscape', () {
+      const mediaQuery = MediaQueryData(
+        size: Size(844, 390),
+        viewInsets: EdgeInsets.only(bottom: 200),
+      );
+
+      expect(shouldAlignTerminalToTrailingEdges(mediaQuery), isTrue);
+    });
+
+    test('shifts partial-cell slack to the leading and top edges', () {
+      expect(
+        resolveTerminalContentOrigin(
+          viewportSize: const Size(844, 390),
+          cellSize: const Size(10, 20),
+          columns: 70,
+          rows: 18,
+          padding: const EdgeInsets.only(left: 72, right: 54),
+          alignToTrailingEdges: true,
+        ),
+        const Offset(90, 30),
+      );
+    });
+
+    test('keeps portrait content anchored to the origin', () {
+      expect(
+        resolveTerminalContentOrigin(
+          viewportSize: const Size(390, 844),
+          cellSize: const Size(10, 20),
+          columns: 39,
+          rows: 42,
+        ),
+        Offset.zero,
+      );
+    });
+  });
 }

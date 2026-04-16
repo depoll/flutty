@@ -8,7 +8,6 @@ import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
-import 'package:xterm/src/ui/render.dart';
 
 import 'monkey_terminal_gesture_detector.dart';
 import 'monkey_terminal_view.dart';
@@ -82,7 +81,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
 class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   MonkeyTerminalViewState get terminalView => widget.terminalView;
 
-  RenderTerminal get renderTerminal => terminalView.renderTerminal;
+  MonkeyRenderTerminal get renderTerminal => terminalView.renderTerminal;
 
   DragStartDetails? _lastDragStartDetails;
 
