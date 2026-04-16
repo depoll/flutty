@@ -98,8 +98,8 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 ### PR Preview (`preview.yml`)
 
 Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
-- **iOS**: Builds an **ad hoc signed** IPA artifact for direct download from the workflow/PR comment
-- **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
+- **iOS**: Builds an **ad hoc signed** IPA and uploads the raw `.ipa` file for direct download from the workflow/PR comment
+- **Android**: Builds a **debug** APK and uploads the raw `.apk` file for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
 
 When `/deploy` promotes a PR preview, it reuses the existing preview Android artifacts and re-signs the preview ad hoc IPA for TestFlight when their build number is still ahead of the latest private deploy. If a newer private build has already been deployed, the workflow automatically rebuilds with a fresh build number before uploading to TestFlight and Play internal.
 

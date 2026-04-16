@@ -409,13 +409,32 @@ jobs:
           name: android-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab
 
+      - name: Prepare APK artifact
+        id: prepare-apk-artifact
+        env:
+          TARGET_APK_NAME: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk
+        run: |
+          SOURCE_APK_PATH=$(find build/app/outputs/flutter-apk -maxdepth 1 -name '*.apk' -print -quit)
+          if [ -z "$SOURCE_APK_PATH" ]; then
+            echo "Expected an APK under build/app/outputs/flutter-apk, but none was found."
+            find build/app/outputs/flutter-apk -maxdepth 4 -print || true
+            exit 1
+          fi
+
+          SOURCE_APK_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$SOURCE_APK_PATH")"
+          TARGET_APK_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "build/app/outputs/flutter-apk/$TARGET_APK_NAME")"
+          if [ "$SOURCE_APK_PATH" != "$TARGET_APK_PATH" ]; then
+            cp "$SOURCE_APK_PATH" "$TARGET_APK_PATH"
+          fi
+
+          echo "artifact-path=$TARGET_APK_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Upload APK artifact
         id: upload-apk
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/app/outputs/flutter-apk/*.apk
-          compression-level: 0
+          path: ${{ steps.prepare-apk-artifact.outputs.artifact-path }}
+          archive: false
 
       - name: Fetch PR commits
         if: inputs.pr-number != ''
@@ -648,6 +667,27 @@ jobs:
             output_ipa_path:"$ADHOC_IPA_PATH"
           rm -f ../build/ios/ipa/Runner-unsigned.ipa
 
+      - name: Prepare ad hoc IPA artifact
+        id: prepare-adhoc-ipa-artifact
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        env:
+          TARGET_IPA_NAME: ios-adhoc-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa
+        run: |
+          SOURCE_IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+          if [ -z "$SOURCE_IPA_PATH" ]; then
+            echo "Expected an IPA under build/ios/ipa, but none was found."
+            find build/ios/ipa -maxdepth 4 -print || true
+            exit 1
+          fi
+
+          SOURCE_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$SOURCE_IPA_PATH")"
+          TARGET_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "build/ios/ipa/$TARGET_IPA_NAME")"
+          if [ "$SOURCE_IPA_PATH" != "$TARGET_IPA_PATH" ]; then
+            cp "$SOURCE_IPA_PATH" "$TARGET_IPA_PATH"
+          fi
+
+          echo "artifact-path=$TARGET_IPA_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Download reusable IPA artifact
         if: inputs.ios-reuse-ipa-artifact-name != ''
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
@@ -768,23 +808,26 @@ jobs:
           fi
 
           FINAL_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$FINAL_IPA_PATH")"
+          ARTIFACT_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "../build/ios/ipa/ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa")"
+          if [ "$FINAL_IPA_PATH" != "$ARTIFACT_IPA_PATH" ]; then
+            cp "$FINAL_IPA_PATH" "$ARTIFACT_IPA_PATH"
+            FINAL_IPA_PATH="$ARTIFACT_IPA_PATH"
+          fi
           echo "artifact-path=$FINAL_IPA_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload signed IPA artifact
         if: inputs.deploy-ios-to != 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
           path: ${{ steps.prepare-deploy-ipa.outputs.artifact-path }}
-          compression-level: 0
+          archive: false
 
       - name: Upload ad hoc IPA artifact
         if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-adhoc-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/ios/ipa/*.ipa
-          compression-level: 0
+          path: ${{ steps.prepare-adhoc-ipa-artifact.outputs.artifact-path }}
+          archive: false
 
   deploy-status-summary:
     name: Summarize Deploy Status
