@@ -18,10 +18,13 @@ void main() {
     test('positions the upsell snackbar above visible bottom chrome only', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 
-      expect(upgradeSnackBarBottomMargin(mediaQuery), 50);
+      // Flutter's floating SnackBar already lifts above the home-indicator
+      // safe area, so the margin just needs a small visual gap when there is
+      // no in-body keyboard toolbar to clear.
+      expect(upgradeSnackBarBottomMargin(mediaQuery), 16);
       expect(
         upgradeSnackBarBottomMargin(mediaQuery, showKeyboardToolbar: true),
-        146,
+        100,
       );
     });
 
