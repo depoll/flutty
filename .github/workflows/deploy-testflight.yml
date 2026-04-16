@@ -356,7 +356,7 @@ jobs:
             const requiredArtifactNames = [
               `android-apk-private-${buildName}-${buildNumber}`,
               `android-unsigned-private-${buildName}-${buildNumber}`,
-              `ios-unsigned-private-${buildName}-${buildNumber}`,
+              `ios-adhoc-private-${buildName}-${buildNumber}`,
             ];
             const waitStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
             const maxWaitAttempts = 40;
@@ -580,7 +580,7 @@ jobs:
               rebuildRequired
                 ? `| **Artifacts** | Rebuilding deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` is not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
                 : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reusing unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                ? `| **Artifacts** | Reusing preview Android intermediates and re-signing the preview ad hoc IPA from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Preview intermediates unavailable, so this run is building deploy artifacts from source |';
 
             const body = [
@@ -667,8 +667,8 @@ jobs:
       android-reuse-aab-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       android-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       ios-reuse-run-id: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.resolve-preview-artifacts.outputs.preview-run-id || '' }}
-      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-unsigned-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
-      ios-reuse-ipa-is-unsigned: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
+      ios-reuse-ipa-artifact-name: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && format('ios-adhoc-{0}-{1}-{2}', 'private', needs.finalize-version.outputs.build-name, needs.finalize-version.outputs.build-number) || '' }}
+      ios-reuse-ipa-needs-resign: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' }}
       ios-reuse-source-sha: ${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts == 'true' && needs.validate-pr.outputs.deploy-sha || '' }}
       update-pr-deploy-comment: true
     secrets:
@@ -823,7 +823,7 @@ jobs:
               rebuildRequired
                 ? `| **Artifacts** | Built fresh deploy artifacts in this run because requested preview build \`${{ needs.finalize-version.outputs.requested-build-number }}\` was not newer than the highest recent private deploy build \`${{ needs.finalize-version.outputs.previous-private-deploy-build-number }}\` |`
                 : '${{ needs.resolve-preview-artifacts.outputs.reuse-artifacts }}' === 'true'
-                ? `| **Artifacts** | Reused unsigned preview intermediates from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
+                ? `| **Artifacts** | Reused preview Android intermediates and re-signed the preview ad hoc IPA from run #${{ needs.resolve-preview-artifacts.outputs.preview-run-id }} |`
                 : '| **Artifacts** | Built fresh deploy artifacts in this run because matching preview intermediates were unavailable |';
 
             const syncRequestCommentReaction = async (targetReaction) => {

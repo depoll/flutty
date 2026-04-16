@@ -319,7 +319,7 @@ jobs:
                previewSha,
                previewCommentUrl,
                state: 'queued',
-               note: '> Duplicate requests stay locked out while this deploy is queued or running. The deploy workflow waits for matching unsigned preview intermediates for this SHA, then signs and uploads them without recompiling source when they are available.',
+                note: '> Duplicate requests stay locked out while this deploy is queued or running. The deploy workflow waits for matching preview Android intermediates and the preview ad hoc IPA for this SHA, then re-signs and uploads them without recompiling source when they are available.',
                requestKey,
              });
 

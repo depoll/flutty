@@ -26,6 +26,18 @@ platform :ios do
   }.freeze
 
   TEAM_ID = '43AWMS3YJX'.freeze
+  SIGNING_TYPES = {
+    'appstore' => {
+      match_type: 'appstore',
+      export_method: 'app-store',
+      profile_label: 'AppStore',
+    },
+    'adhoc' => {
+      match_type: 'adhoc',
+      export_method: 'ad-hoc',
+      profile_label: 'AdHoc',
+    },
+  }.freeze
 
   private_lane :get_api_key do
     app_store_connect_api_key(
@@ -52,24 +64,36 @@ platform :ios do
     )
   end
 
+  private_lane :signing_config do |options|
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    config = SIGNING_TYPES[distribution_type]
+    UI.user_error!(
+      "Unknown distribution_type '#{distribution_type}'. Supported types: #{SIGNING_TYPES.keys.join(', ')}",
+    ) if config.nil?
+
+    config
+  end
+
   private_lane :build_and_sign do |options|
     scheme = options[:scheme]
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    signing = signing_config(distribution_type: distribution_type)
     app_id = APP_IDS[scheme]
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
-      type: 'appstore',
+      type: signing[:match_type],
       readonly: false,
     )
 
-    profile_name = ENV["sigh_#{app_id}_appstore_profile-name"] ||
-                   ENV["sigh_#{app_id}_appstore_profile_name"] ||
-                   "match AppStore #{app_id}"
+    profile_name = ENV["sigh_#{app_id}_#{distribution_type}_profile-name"] ||
+                   ENV["sigh_#{app_id}_#{distribution_type}_profile_name"] ||
+                   "match #{signing[:profile_label]} #{app_id}"
     live_activity_profile_name =
-      ENV["sigh_#{live_activity_app_id}_appstore_profile-name"] ||
-      ENV["sigh_#{live_activity_app_id}_appstore_profile_name"] ||
-      "match AppStore #{live_activity_app_id}"
+      ENV["sigh_#{live_activity_app_id}_#{distribution_type}_profile-name"] ||
+      ENV["sigh_#{live_activity_app_id}_#{distribution_type}_profile_name"] ||
+      "match #{signing[:profile_label]} #{live_activity_app_id}"
 
     update_code_signing_settings(
       use_automatic_signing: false,
@@ -97,7 +121,7 @@ platform :ios do
       workspace: 'Runner.xcworkspace',
       scheme: scheme,
       configuration: "Release-#{scheme}",
-      export_method: 'app-store',
+      export_method: signing[:export_method],
       output_directory: '../build/ios/ipa',
       archive_path: '../build/ios/archive/Runner.xcarchive',
       xcargs: "DEVELOPMENT_TEAM=#{TEAM_ID}",
@@ -125,8 +149,9 @@ platform :ios do
 
   private_lane :resolved_profile_path do |options|
     app_id = options[:app_identifier]
-    profile_path = ENV["sigh_#{app_id}_appstore_profile-path"] ||
-                   ENV["sigh_#{app_id}_appstore_profile_path"]
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    profile_path = ENV["sigh_#{app_id}_#{distribution_type}_profile-path"] ||
+                   ENV["sigh_#{app_id}_#{distribution_type}_profile_path"]
 
     UI.user_error!("Missing installed provisioning profile path for #{app_id}") if profile_path.to_s.empty?
     UI.user_error!("Provisioning profile not found at #{profile_path} for #{app_id}") unless File.exist?(profile_path)
@@ -136,8 +161,9 @@ platform :ios do
 
   private_lane :resolved_certificate_name do |options|
     app_id = options[:app_identifier]
-    certificate_name = ENV["sigh_#{app_id}_appstore_certificate-name"] ||
-                       ENV["sigh_#{app_id}_appstore_certificate_name"]
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    certificate_name = ENV["sigh_#{app_id}_#{distribution_type}_certificate-name"] ||
+                       ENV["sigh_#{app_id}_#{distribution_type}_certificate_name"]
 
     UI.user_error!("Missing installed certificate name for #{app_id}") if certificate_name.to_s.empty?
 
@@ -240,20 +266,30 @@ platform :ios do
 
   desc 'Setup code signing for CI builds'
   lane :setup_signing do |options|
-    app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
-    sync_certs(app_identifier: app_id, type: 'appstore')
+    scheme = options[:scheme] || 'Private'
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    signing = signing_config(distribution_type: distribution_type)
+    app_id = APP_IDS[scheme]
+    live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
+
+    sync_certs(
+      app_identifier: [app_id, live_activity_app_id],
+      type: signing[:match_type],
+    )
   end
 
   desc 'Build and sign an IPA without uploading it'
   lane :build_ipa do |options|
     scheme = options[:scheme] || 'Private'
-    build_and_sign(scheme: scheme)
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    build_and_sign(scheme: scheme, distribution_type: distribution_type)
   end
 
-  desc 'Re-sign an existing IPA for App Store Connect upload'
+  desc 'Re-sign an existing IPA for App Store Connect or ad hoc distribution'
   lane :resign_ipa do |options|
     scheme = options[:scheme] || 'Private'
-    unsigned_ipa_path = options[:unsigned_ipa_path].to_s
+    distribution_type = (options[:distribution_type] || 'appstore').to_s
+    source_ipa_path = options[:source_ipa_path].to_s
     output_ipa_path = options[:output_ipa_path].to_s
     supported_schemes = APP_IDS.keys & LIVE_ACTIVITY_APP_IDS.keys
     unless APP_IDS.key?(scheme) && LIVE_ACTIVITY_APP_IDS.key?(scheme)
@@ -262,27 +298,36 @@ platform :ios do
     app_id = APP_IDS[scheme]
     live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
 
-    UI.user_error!('unsigned_ipa_path is required') if unsigned_ipa_path.empty?
-    unsigned_ipa_path = File.expand_path(unsigned_ipa_path)
+    UI.user_error!('source_ipa_path is required') if source_ipa_path.empty?
+    source_ipa_path = File.expand_path(source_ipa_path)
     output_ipa_path = File.expand_path(output_ipa_path) unless output_ipa_path.empty?
-    UI.user_error!("IPA not found at #{unsigned_ipa_path}") unless File.exist?(unsigned_ipa_path)
+    UI.user_error!("IPA not found at #{source_ipa_path}") unless File.exist?(source_ipa_path)
 
     sync_certs(
       app_identifier: [app_id, live_activity_app_id],
-      type: 'appstore',
+      type: signing_config(distribution_type: distribution_type)[:match_type],
       readonly: false,
     )
 
-    resigned_ipa_path = unsigned_ipa_path
+    resigned_ipa_path = source_ipa_path
     unless output_ipa_path.empty?
       FileUtils.mkdir_p(File.dirname(output_ipa_path))
-      FileUtils.cp(unsigned_ipa_path, output_ipa_path)
+      FileUtils.cp(source_ipa_path, output_ipa_path)
       resigned_ipa_path = output_ipa_path
     end
 
-    signing_identity = resolved_certificate_name(app_identifier: app_id)
-    app_profile_path = resolved_profile_path(app_identifier: app_id)
-    live_activity_profile_path = resolved_profile_path(app_identifier: live_activity_app_id)
+    signing_identity = resolved_certificate_name(
+      app_identifier: app_id,
+      distribution_type: distribution_type,
+    )
+    app_profile_path = resolved_profile_path(
+      app_identifier: app_id,
+      distribution_type: distribution_type,
+    )
+    live_activity_profile_path = resolved_profile_path(
+      app_identifier: live_activity_app_id,
+      distribution_type: distribution_type,
+    )
 
     Dir.mktmpdir('flutty-resign-ipa') do |tmpdir|
       sh("unzip -q #{resigned_ipa_path.shellescape} -d #{tmpdir.shellescape}")

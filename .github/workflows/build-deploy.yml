@@ -60,11 +60,11 @@ on:
         type: boolean
         default: false
         description: 'Whether to build an unsigned Android release bundle artifact'
-      build-ios-unsigned-ipa:
+      build-ios-adhoc-ipa:
         required: false
         type: boolean
         default: false
-        description: 'Whether to package an unsigned iOS IPA artifact'
+        description: 'Whether to build an ad hoc signed iOS IPA artifact'
       run-android-deploy:
         required: false
         type: boolean
@@ -115,11 +115,11 @@ on:
         type: string
         default: ''
         description: 'Artifact name for a reusable iOS IPA'
-      ios-reuse-ipa-is-unsigned:
+      ios-reuse-ipa-needs-resign:
         required: false
         type: boolean
         default: false
-        description: 'Whether the reusable iOS IPA must be signed in this workflow'
+        description: 'Whether the reusable iOS IPA must be re-signed in this workflow'
       ios-reuse-source-sha:
         required: false
         type: string
@@ -587,7 +587,7 @@ jobs:
         run: flutter pub get
 
       - name: Setup code signing
-        if: inputs.deploy-ios-to != 'none' && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-is-unsigned)
+        if: (inputs.deploy-ios-to != 'none' || inputs.build-ios-adhoc-ipa) && (inputs.ios-reuse-ipa-artifact-name == '' || inputs.ios-reuse-ipa-needs-resign)
         env:
           MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
           MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
@@ -598,11 +598,12 @@ jobs:
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
         run: |
           cd ios
-          if [ "${{ inputs.flavor }}" = "private" ]; then
-            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh.private
-          else
-            bundle exec fastlane setup_signing app_identifier:xyz.depollsoft.monkeyssh
+          SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          DISTRIBUTION_TYPE='appstore'
+          if [ "${{ inputs.build-ios-adhoc-ipa }}" = 'true' ] && [ "${{ inputs.deploy-ios-to }}" = 'none' ]; then
+            DISTRIBUTION_TYPE='adhoc'
           fi
+          bundle exec fastlane setup_signing scheme:"$SCHEME" distribution_type:"$DISTRIBUTION_TYPE"
 
       - name: Build iOS
         if: inputs.ios-reuse-ipa-artifact-name == ''
@@ -623,9 +624,30 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
 
-      - name: Package unsigned IPA
-        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+      - name: Package source IPA
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         run: bash scripts/package_unsigned_ipa.sh
+
+      - name: Sign ad hoc IPA
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+        env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          cd ios
+          SCHEME="${{ inputs.flavor == 'private' && 'Private' || 'Production' }}"
+          ADHOC_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/Runner-adhoc.ipa"))')"
+          bundle exec fastlane resign_ipa \
+            scheme:"$SCHEME" \
+            distribution_type:adhoc \
+            source_ipa_path:"../build/ios/ipa/Runner-unsigned.ipa" \
+            output_ipa_path:"$ADHOC_IPA_PATH"
+          rm -f ../build/ios/ipa/Runner-unsigned.ipa
 
       - name: Download reusable IPA artifact
         if: inputs.ios-reuse-ipa-artifact-name != ''
@@ -712,15 +734,16 @@ jobs:
             REUSED_IPA_PATH="$(python3 -c 'import os, sys; print(os.path.abspath(sys.argv[1]))' "$REUSED_IPA_PATH")"
           fi
 
-          if [ "${{ inputs.ios-reuse-ipa-is-unsigned }}" = 'true' ]; then
+          if [ "${{ inputs.ios-reuse-ipa-needs-resign }}" = 'true' ]; then
             if [ -z "$REUSED_IPA_PATH" ]; then
-              echo "ios-reuse-ipa-is-unsigned requires a reusable IPA artifact to be downloaded first."
+              echo "ios-reuse-ipa-needs-resign requires a reusable IPA artifact to be downloaded first."
               exit 1
             fi
             SIGNED_IPA_PATH="$(python3 -c 'import os; print(os.path.abspath("../build/ios/ipa/resigned-${{ inputs.flavor }}.ipa"))')"
             bundle exec fastlane resign_ipa \
               scheme:"$SCHEME" \
-              unsigned_ipa_path:"$REUSED_IPA_PATH" \
+              distribution_type:appstore \
+              source_ipa_path:"$REUSED_IPA_PATH" \
               output_ipa_path:"$SIGNED_IPA_PATH"
             REUSED_IPA_PATH="$SIGNED_IPA_PATH"
           fi
@@ -756,12 +779,12 @@ jobs:
           path: ${{ steps.prepare-deploy-ipa.outputs.artifact-path }}
           compression-level: 0
 
-      - name: Upload unsigned IPA artifact
-        if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
+      - name: Upload ad hoc IPA artifact
+        if: inputs.build-ios-adhoc-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/ios/ipa/Runner-unsigned.ipa
+          name: ios-adhoc-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: build/ios/ipa/*.ipa
           compression-level: 0
 
   deploy-status-summary:
