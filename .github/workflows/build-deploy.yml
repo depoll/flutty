@@ -436,6 +436,13 @@ jobs:
           path: ${{ steps.prepare-apk-artifact.outputs.artifact-path }}
           archive: false
 
+      - name: Upload ZIP-wrapped APK artifact
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
+          path: ${{ steps.prepare-apk-artifact.outputs.artifact-path }}
+          compression-level: 0
+
       - name: Fetch PR commits
         if: inputs.pr-number != ''
         continue-on-error: true

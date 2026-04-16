@@ -230,9 +230,13 @@ jobs:
               run_id: runId,
               per_page: 100,
             });
-            const apkArtifact = artifacts.find((artifact) =>
-              artifact.name.startsWith('android-apk-private-'),
-            );
+            const apkArtifact =
+              artifacts.find((artifact) =>
+                artifact.name.startsWith('android-apk-private-') && artifact.name.endsWith('.apk'),
+              ) ||
+              artifacts.find((artifact) =>
+                artifact.name.startsWith('android-apk-private-'),
+              );
             const ipaArtifact = artifacts.find((artifact) =>
               artifact.name.startsWith('ios-adhoc-private-'),
             );
@@ -340,9 +344,13 @@ jobs:
               run_id: runId,
               per_page: 100,
             });
-            const apkArtifact = artifacts.find((artifact) =>
-              artifact.name.startsWith('android-apk-private-'),
-            );
+            const apkArtifact =
+              artifacts.find((artifact) =>
+                artifact.name.startsWith('android-apk-private-') && artifact.name.endsWith('.apk'),
+              ) ||
+              artifacts.find((artifact) =>
+                artifact.name.startsWith('android-apk-private-'),
+              );
             const ipaArtifact = artifacts.find((artifact) =>
               artifact.name.startsWith('ios-adhoc-private-'),
             );
