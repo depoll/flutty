@@ -133,6 +133,7 @@ jobs:
       actions: read
       contents: read
       issues: write
+      pull-requests: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
@@ -156,6 +157,7 @@ jobs:
       actions: read
       contents: read
       issues: write
+      pull-requests: write
     uses: ./.github/workflows/build-deploy.yml
     with:
       build-name: ${{ needs.compute-version.outputs.build-name }}
