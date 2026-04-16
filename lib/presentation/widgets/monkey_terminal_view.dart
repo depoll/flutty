@@ -32,16 +32,17 @@ import 'package:xterm/src/ui/themes.dart';
 
 /// Terminal render padding.
 ///
-/// Keep horizontal cutout insets in landscape, but avoid adding extra blank
-/// rows at the bottom or side gutters in portrait.
+/// Keep horizontal safe-area cutout insets in landscape, but avoid adding
+/// extra blank rows at the bottom or side gutters in portrait.
 EdgeInsets resolveTerminalRenderPadding(MediaQueryData mediaQuery) {
-  final isLandscape = mediaQuery.size.width > mediaQuery.size.height;
+  final viewportHeight = mediaQuery.size.height + mediaQuery.viewInsets.bottom;
+  final isLandscape = mediaQuery.size.width > viewportHeight;
   if (!isLandscape) {
     return EdgeInsets.zero;
   }
   return EdgeInsets.only(
-    left: mediaQuery.padding.left,
-    right: mediaQuery.padding.right,
+    left: mediaQuery.viewPadding.left,
+    right: mediaQuery.viewPadding.right,
   );
 }
 
