@@ -32,18 +32,25 @@ import 'package:xterm/src/ui/themes.dart';
 
 /// Terminal render padding.
 ///
-/// Keep horizontal safe-area cutout insets in landscape, but avoid adding
+/// Keep effective horizontal safe-area insets in landscape, but avoid adding
 /// extra blank rows at the bottom or side gutters in portrait.
+///
+/// Some devices report larger lateral insets through [MediaQueryData.padding]
+/// than [MediaQueryData.viewPadding] while the keyboard is visible. Use the
+/// larger inset so the terminal stays aligned with the rest of the UI.
 EdgeInsets resolveTerminalRenderPadding(MediaQueryData mediaQuery) {
   final viewportHeight = mediaQuery.size.height + mediaQuery.viewInsets.bottom;
   final isLandscape = mediaQuery.size.width > viewportHeight;
   if (!isLandscape) {
     return EdgeInsets.zero;
   }
-  return EdgeInsets.only(
-    left: mediaQuery.viewPadding.left,
-    right: mediaQuery.viewPadding.right,
-  );
+  final leftInset = mediaQuery.padding.left > mediaQuery.viewPadding.left
+      ? mediaQuery.padding.left
+      : mediaQuery.viewPadding.left;
+  final rightInset = mediaQuery.padding.right > mediaQuery.viewPadding.right
+      ? mediaQuery.padding.right
+      : mediaQuery.viewPadding.right;
+  return EdgeInsets.only(left: leftInset, right: rightInset);
 }
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.

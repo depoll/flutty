@@ -288,7 +288,7 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     children: [..._buildArrowButtons(), ..._buildSeriesNavigationButtons()],
   );
 
-  Widget _buildLandscapeRow() => _ScrollableKeyRow(
+  Widget _buildLandscapeRow() => _KeyRow(
     children: [
       ..._buildModifierButtons(),
       ..._buildArrowButtons(),
@@ -599,31 +599,6 @@ class _KeyRow extends StatelessWidget {
   );
 }
 
-class _ScrollableKeyRow extends StatelessWidget {
-  const _ScrollableKeyRow({required this.children});
-
-  static const _minimumButtonWidth = 56.0;
-
-  final List<Widget> children;
-
-  @override
-  Widget build(BuildContext context) => SizedBox(
-    height: _KeyRow.height,
-    child: SingleChildScrollView(
-      scrollDirection: Axis.horizontal,
-      child: Row(
-        children: [
-          for (final child in children)
-            ConstrainedBox(
-              constraints: const BoxConstraints(minWidth: _minimumButtonWidth),
-              child: child,
-            ),
-        ],
-      ),
-    ),
-  );
-}
-
 class _ToolbarButton extends StatefulWidget {
   const _ToolbarButton({
     required this.label,
@@ -727,33 +702,39 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
           borderRadius: BorderRadius.circular(6),
           border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
-        child: Center(
-          child: widget.icon != null && widget.label.isNotEmpty
-              ? Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildIcon(14, colorScheme.onSurfaceVariant),
-                    const SizedBox(width: 3),
-                    Text(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: widget.icon != null && widget.label.isNotEmpty
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildIcon(14, colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 3),
+                        Text(
+                          widget.label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    )
+                  : widget.icon != null
+                  ? _buildIcon(18, colorScheme.onSurfaceVariant)
+                  : Text(
                       widget.label,
                       style: TextStyle(
-                        fontSize: 10,
+                        fontSize: 11,
                         fontWeight: FontWeight.w500,
                         color: colorScheme.onSurfaceVariant,
                       ),
                     ),
-                  ],
-                )
-              : widget.icon != null
-              ? _buildIcon(18, colorScheme.onSurfaceVariant)
-              : Text(
-                  widget.label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
+            ),
+          ),
         ),
       ),
     );
@@ -836,27 +817,33 @@ class _ModifierButtonState extends State<_ModifierButton> {
           color: bgColor,
           borderRadius: BorderRadius.circular(6),
         ),
-        child: Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (widget.icon != null) ...[
-                Icon(widget.icon, size: 14, color: textColor),
-                const SizedBox(width: 3),
-              ],
-              Text(
-                widget.label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: textColor,
-                ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.icon != null) ...[
+                    Icon(widget.icon, size: 14, color: textColor),
+                    const SizedBox(width: 3),
+                  ],
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: textColor,
+                    ),
+                  ),
+                  if (lockIcon != null) ...[
+                    const SizedBox(width: 2),
+                    Icon(lockIcon, size: 10, color: textColor),
+                  ],
+                ],
               ),
-              if (lockIcon != null) ...[
-                const SizedBox(width: 2),
-                Icon(lockIcon, size: 10, color: textColor),
-              ],
-            ],
+            ),
           ),
         ),
       ),

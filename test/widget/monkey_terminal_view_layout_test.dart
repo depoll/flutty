@@ -64,5 +64,22 @@ void main() {
         const EdgeInsets.only(left: 44, right: 34),
       );
     });
+
+    test(
+      'prefers larger landscape insets when padding exceeds viewPadding',
+      () {
+        const mediaQuery = MediaQueryData(
+          size: Size(844, 390),
+          padding: EdgeInsets.fromLTRB(72, 0, 54, 0),
+          viewPadding: EdgeInsets.fromLTRB(44, 0, 34, 21),
+          viewInsets: EdgeInsets.only(bottom: 200),
+        );
+
+        expect(
+          resolveTerminalRenderPadding(mediaQuery),
+          const EdgeInsets.only(left: 72, right: 54),
+        );
+      },
+    );
   });
 }

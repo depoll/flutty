@@ -125,6 +125,24 @@ void main() {
       expect((escapeCenter.dy - endCenter.dy).abs(), lessThan(0.1));
     });
 
+    testWidgets('keeps the landscape End key fully on screen', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(844, 390));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(844, 390)),
+            child: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        ),
+      );
+
+      final endRight = tester.getTopRight(find.byTooltip('End')).dx;
+
+      expect(endRight, lessThanOrEqualTo(844));
+    });
+
     testWidgets('modifier key toggles state on tap', (tester) async {
       await tester.pumpWidget(
         MaterialApp(
