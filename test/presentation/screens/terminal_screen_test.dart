@@ -16,7 +16,9 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
+import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
@@ -331,6 +333,52 @@ void main() {
         expect(find.byType(TerminalTextInputHandler), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'overlay long press reselects from the live terminal after output changes',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('alpha');
+        await tester.pumpAndSettle();
+
+        Offset cellCenter(CellOffset offset) {
+          final terminalViewState = tester.state<MonkeyTerminalViewState>(
+            find.byType(MonkeyTerminalView),
+          );
+          final renderTerminal = terminalViewState.renderTerminal;
+          return renderTerminal.localToGlobal(
+            renderTerminal.getOffset(offset) +
+                renderTerminal.cellSize.center(Offset.zero),
+          );
+        }
+
+        await tester.longPressAt(cellCenter(const CellOffset(2, 0)));
+        await tester.pumpAndSettle();
+
+        final overlayField = find.byType(TextField);
+        expect(overlayField, findsOneWidget);
+        var overlayController = tester
+            .widget<TextField>(overlayField)
+            .controller;
+        expect(overlayController, isNotNull);
+        expect(overlayController!.selection.isCollapsed, isFalse);
+        expect(overlayController.text, contains('alpha'));
+
+        session.terminal!.write('\r\ncharlie');
+        await tester.pumpAndSettle();
+        expect(overlayController.text, isNot(contains('charlie')));
+
+        await tester.longPressAt(cellCenter(const CellOffset(2, 1)));
+        await tester.pumpAndSettle();
+
+        overlayController = tester.widget<TextField>(overlayField).controller;
+        expect(overlayController, isNotNull);
+        expect(overlayController!.text, contains('charlie'));
+        expect(overlayController.selection.isCollapsed, isFalse);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(

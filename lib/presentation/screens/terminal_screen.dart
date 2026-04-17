@@ -2203,6 +2203,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
   Timer? _nativeOverlayCollapseTimer;
+  Timer? _nativeOverlayLongPressTimer;
+  int? _nativeOverlayPointerId;
+  Offset? _nativeOverlayPointerDownPosition;
   int? _connectionId;
   double? _pinchFontSize;
   double? _lastPinchScale;
@@ -3761,6 +3764,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..removeListener(_onNativeOverlayControllerChanged)
       ..dispose();
     _nativeOverlayCollapseTimer?.cancel();
+    _clearNativeOverlayLongPressState();
     _doneSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
@@ -4760,25 +4764,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       padding: terminalViewportPadding,
       child: ValueListenableBuilder<TextEditingValue>(
         valueListenable: _nativeSelectionController,
-        child: TextField(
-          controller: _nativeSelectionController,
-          readOnly: true,
-          showCursor: false,
-          enableInteractiveSelection: true,
-          scrollController: _nativeSelectionScrollController,
-          expands: true,
-          maxLines: null,
-          textAlignVertical: TextAlignVertical.top,
-          style: textStyle,
-          strutStyle: StrutStyle.fromTextStyle(
-            textStyle,
-            forceStrutHeight: true,
-          ),
-          decoration: const InputDecoration(
-            isDense: true,
-            isCollapsed: true,
-            border: InputBorder.none,
-            contentPadding: EdgeInsets.zero,
+        child: Listener(
+          onPointerDown: _handleNativeOverlayPointerDown,
+          onPointerMove: _handleNativeOverlayPointerMove,
+          onPointerUp: _handleNativeOverlayPointerUp,
+          onPointerCancel: _handleNativeOverlayPointerCancel,
+          child: TextField(
+            controller: _nativeSelectionController,
+            readOnly: true,
+            showCursor: false,
+            enableInteractiveSelection: true,
+            scrollController: _nativeSelectionScrollController,
+            expands: true,
+            maxLines: null,
+            textAlignVertical: TextAlignVertical.top,
+            style: textStyle,
+            strutStyle: StrutStyle.fromTextStyle(
+              textStyle,
+              forceStrutHeight: true,
+            ),
+            decoration: const InputDecoration(
+              isDense: true,
+              isCollapsed: true,
+              border: InputBorder.none,
+              contentPadding: EdgeInsets.zero,
+            ),
           ),
         ),
         builder: (context, value, child) => IgnorePointer(
@@ -4942,6 +4952,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     _hadNativeOverlaySelection = hasActiveNativeOverlaySelection(selection);
     _nativeOverlayCollapseTimer?.cancel();
+    _clearNativeOverlayLongPressState();
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
@@ -4970,6 +4981,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
     _nativeOverlayCollapseTimer?.cancel();
+    _clearNativeOverlayLongPressState();
     _terminalFocusNode.requestFocus();
   }
 
@@ -5104,6 +5116,85 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
+  bool _isNativeOverlayTouchPointer(PointerDeviceKind kind) =>
+      kind == PointerDeviceKind.touch ||
+      kind == PointerDeviceKind.stylus ||
+      kind == PointerDeviceKind.invertedStylus;
+
+  void _clearNativeOverlayLongPressState() {
+    _nativeOverlayLongPressTimer?.cancel();
+    _nativeOverlayLongPressTimer = null;
+    _nativeOverlayPointerId = null;
+    _nativeOverlayPointerDownPosition = null;
+  }
+
+  void _handleNativeOverlayPointerDown(PointerDownEvent event) {
+    if (!_isMobilePlatform ||
+        !_showsNativeSelectionOverlay ||
+        !_isNativeOverlayTouchPointer(event.kind) ||
+        !hasActiveNativeOverlaySelection(
+          _nativeSelectionController.selection,
+        )) {
+      return;
+    }
+    _clearNativeOverlayLongPressState();
+    _nativeOverlayPointerId = event.pointer;
+    _nativeOverlayPointerDownPosition = event.position;
+    _nativeOverlayLongPressTimer = Timer(kLongPressTimeout, () {
+      final globalPosition = _nativeOverlayPointerDownPosition;
+      _clearNativeOverlayLongPressState();
+      if (globalPosition == null) {
+        return;
+      }
+      _forwardNativeOverlayLongPress(globalPosition);
+    });
+  }
+
+  void _handleNativeOverlayPointerMove(PointerMoveEvent event) {
+    if (event.pointer != _nativeOverlayPointerId) {
+      return;
+    }
+    final downPosition = _nativeOverlayPointerDownPosition;
+    if (downPosition == null) {
+      return;
+    }
+    if ((event.position - downPosition).distance > kTouchSlop) {
+      _clearNativeOverlayLongPressState();
+    }
+  }
+
+  void _handleNativeOverlayPointerUp(PointerUpEvent event) {
+    if (event.pointer == _nativeOverlayPointerId) {
+      _clearNativeOverlayLongPressState();
+    }
+  }
+
+  void _handleNativeOverlayPointerCancel(PointerCancelEvent event) {
+    if (event.pointer == _nativeOverlayPointerId) {
+      _clearNativeOverlayLongPressState();
+    }
+  }
+
+  void _forwardNativeOverlayLongPress(Offset globalPosition) {
+    if (!mounted) {
+      return;
+    }
+    final terminalViewState = _terminalViewKey.currentState;
+    if (terminalViewState == null) {
+      return;
+    }
+    final renderTerminal = terminalViewState.renderTerminal;
+    final localPosition = renderTerminal.globalToLocal(globalPosition);
+    if (localPosition.dx < 0 ||
+        localPosition.dy < 0 ||
+        localPosition.dx > renderTerminal.size.width ||
+        localPosition.dy > renderTerminal.size.height) {
+      return;
+    }
+    _dismissNativeSelectionOverlayForEditing();
+    renderTerminal.selectWord(localPosition);
+  }
+
   void _onNativeOverlayControllerChanged() {
     if (!mounted || !_isNativeSelectionMode) {
       return;
@@ -5174,6 +5265,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .clamp(0, textLength);
     _nativeSelectionController.value = _nativeSelectionController.value
         .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    _clearNativeOverlayLongPressState();
     if (!mounted) {
       return;
     }
@@ -5204,6 +5296,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
     _nativeOverlayCollapseTimer?.cancel();
+    _clearNativeOverlayLongPressState();
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
