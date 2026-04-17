@@ -316,10 +316,6 @@ void main() {
             localizedDescription: 'Lifetime MonkeySSH Pro purchase',
             priceLocale: _usdPriceLocale,
             price: '99.00',
-            subscriptionPeriod: SKProductSubscriptionPeriodWrapper(
-              numberOfUnits: 0,
-              unit: SKSubscriptionPeriodUnit.month,
-            ),
           ),
         ),
       ]);
@@ -548,6 +544,186 @@ void main() {
           MonetizationProductIds.iosProLifetimeProd,
         );
         verify(() => inAppPurchase.completePurchase(purchase)).called(1);
+      },
+    );
+
+    test(
+      'lifetime purchase clears any stale activeOfferId carried over from a prior subscription',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        // Simulate a user who previously had a subscription: pre-seed
+        // the cached entitlement settings with an active subscription
+        // product and offer.
+        await settings.setBool(
+          SettingKeys.monetizationProUnlocked,
+          value: true,
+        );
+        await settings.setString(
+          SettingKeys.monetizationActiveProductId,
+          MonetizationProductIds.iosMonthly,
+        );
+        await settings.setString(
+          SettingKeys.monetizationActiveOfferId,
+          'monthly-base-offer',
+        );
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        final purchase = MockPurchaseDetails();
+        when(
+          () => purchase.productID,
+        ).thenReturn(MonetizationProductIds.iosProLifetimeProd);
+        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
+        when(() => purchase.pendingCompletePurchase).thenReturn(true);
+        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(purchase),
+        ).thenAnswer((_) async {});
+
+        await service.initialize();
+        // Sanity check: the prior subscription offer was loaded from settings.
+        expect(service.currentState.activeOfferId, 'monthly-base-offer');
+
+        purchaseController.add([purchase]);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(service.currentState.isLifetimeUnlocked, isTrue);
+        expect(
+          service.currentState.activeProductId,
+          MonetizationProductIds.iosProLifetimeProd,
+        );
+        // The stale subscription offer must be cleared from both the
+        // in-memory state and the persisted settings.
+        expect(service.currentState.activeOfferId, isNull);
+        expect(
+          await settings.getString(SettingKeys.monetizationActiveOfferId),
+          isNull,
+        );
+      },
+    );
+
+    test(
+      'lifetime entitlement is preserved when a stale subscription transaction is replayed by the purchase stream',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        final lifetime = MockPurchaseDetails();
+        when(
+          () => lifetime.productID,
+        ).thenReturn(MonetizationProductIds.iosProLifetimeProd);
+        when(() => lifetime.status).thenReturn(PurchaseStatus.restored);
+        when(() => lifetime.pendingCompletePurchase).thenReturn(true);
+        when(() => lifetime.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(lifetime),
+        ).thenAnswer((_) async {});
+
+        final staleSub = MockPurchaseDetails();
+        when(
+          () => staleSub.productID,
+        ).thenReturn(MonetizationProductIds.iosMonthly);
+        when(() => staleSub.status).thenReturn(PurchaseStatus.restored);
+        when(() => staleSub.pendingCompletePurchase).thenReturn(true);
+        when(() => staleSub.transactionDate).thenReturn('1712732401000');
+        when(
+          () => inAppPurchase.completePurchase(staleSub),
+        ).thenAnswer((_) async {});
+
+        await service.initialize();
+        // Deliver both transactions in the same batch, mimicking what
+        // StoreKit does during a restore.
+        purchaseController.add([lifetime, staleSub]);
+        await Future<void>.delayed(const Duration(milliseconds: 50));
+
+        // Lifetime must win regardless of replay order.
+        expect(service.currentState.isLifetimeUnlocked, isTrue);
+        expect(
+          service.currentState.activeProductId,
+          MonetizationProductIds.iosProLifetimeProd,
+        );
+        expect(service.currentState.activeOfferId, isNull);
+        expect(
+          await settings.getString(SettingKeys.monetizationActiveProductId),
+          MonetizationProductIds.iosProLifetimeProd,
+        );
+      },
+    );
+
+    test(
+      'Android reconcile promotes lifetime when a previously cached subscription has lapsed',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+        // Pre-seed cached entitlement as the now-defunct subscription.
+        await settings.setBool(
+          SettingKeys.monetizationProUnlocked,
+          value: true,
+        );
+        await settings.setString(
+          SettingKeys.monetizationActiveProductId,
+          MonetizationProductIds.androidPro,
+        );
+        await settings.setString(
+          SettingKeys.monetizationActiveOfferId,
+          'monthly-base',
+        );
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: const [],
+            notFoundIDs: const [],
+          ),
+        );
+        when(androidPlatformAddition.queryPastPurchases).thenAnswer(
+          (_) async => QueryPurchaseDetailsResponse(
+            pastPurchases: [
+              _androidPastLifetimePurchase(purchaseTimeMillis: 1712732400000),
+            ],
+          ),
+        );
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+
+        expect(service.currentState.isProUnlocked, isTrue);
+        expect(service.currentState.isLifetimeUnlocked, isTrue);
+        expect(
+          service.currentState.activeProductId,
+          MonetizationProductIds.androidProLifetime,
+        );
+        expect(service.currentState.activeOfferId, isNull);
+        expect(
+          await settings.getString(SettingKeys.monetizationActiveProductId),
+          MonetizationProductIds.androidProLifetime,
+        );
+        expect(
+          await settings.getString(SettingKeys.monetizationActiveOfferId),
+          isNull,
+        );
       },
     );
 

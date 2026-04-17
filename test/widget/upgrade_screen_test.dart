@@ -412,7 +412,7 @@ void main() {
         ],
         debugUnlockAvailable: false,
         debugUnlocked: false,
-        activeProductId: 'monkeyssh_pro_lifetime_prod',
+        activeProductId: MonetizationProductIds.iosProLifetimeProd,
       );
 
       when(() => service.currentState).thenReturn(state);
