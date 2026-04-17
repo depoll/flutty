@@ -5179,20 +5179,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
-    final terminalViewState = _terminalViewKey.currentState;
-    if (terminalViewState == null) {
-      return;
-    }
-    final renderTerminal = terminalViewState.renderTerminal;
-    final localPosition = renderTerminal.globalToLocal(globalPosition);
-    if (localPosition.dx < 0 ||
-        localPosition.dy < 0 ||
-        localPosition.dx > renderTerminal.size.width ||
-        localPosition.dy > renderTerminal.size.height) {
-      return;
-    }
     _dismissNativeSelectionOverlayForEditing();
-    renderTerminal.selectWord(localPosition);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      final terminalViewState = _terminalViewKey.currentState;
+      if (terminalViewState == null) {
+        return;
+      }
+      final renderTerminal = terminalViewState.renderTerminal;
+      final localPosition = renderTerminal.globalToLocal(globalPosition);
+      if (localPosition.dx < 0 ||
+          localPosition.dy < 0 ||
+          localPosition.dx > renderTerminal.size.width ||
+          localPosition.dy > renderTerminal.size.height) {
+        return;
+      }
+      renderTerminal.selectWord(localPosition);
+    });
   }
 
   void _onNativeOverlayControllerChanged() {
