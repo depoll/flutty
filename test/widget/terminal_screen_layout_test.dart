@@ -113,4 +113,59 @@ void main() {
       expect(resolvePreferredTmuxSessionName(), isNull);
     });
   });
+
+  group('tmux bar safe insets vs. keyboard toolbar', () {
+    testWidgets(
+      'collapses to zero when the chrome below already absorbs the safe area',
+      (tester) async {
+        late MediaQueryData strippedMediaQuery;
+        await tester.pumpWidget(
+          MediaQuery(
+            data: const MediaQueryData(
+              padding: EdgeInsets.only(bottom: 34),
+              viewPadding: EdgeInsets.only(bottom: 34),
+            ),
+            child: Directionality(
+              textDirection: TextDirection.ltr,
+              child: Builder(
+                builder: (outerContext) => Column(
+                  children: [
+                    Expanded(
+                      child: MediaQuery.removePadding(
+                        context: outerContext,
+                        removeBottom: true,
+                        child: Builder(
+                          builder: (innerContext) {
+                            strippedMediaQuery = MediaQuery.of(innerContext);
+                            return const SizedBox.expand();
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(height: 84),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        );
+
+        // The tmux bar is positioned via resolveTmuxBarSafeInsets, which uses
+        // the surrounding MediaQuery's bottom padding. When a chrome below the
+        // terminal absorbs the home-indicator inset, the upper area must see
+        // padding.bottom == 0 so the bar sits flush against that chrome
+        // instead of floating above it.
+        expect(resolveTmuxBarSafeInsets(strippedMediaQuery).bottom, 0);
+        expect(
+          resolveTmuxBarRevealBottomOffset(
+            _tmuxExpandableBarHandleHeight +
+                resolveTmuxBarSafeInsets(strippedMediaQuery).bottom,
+          ),
+          0,
+        );
+      },
+    );
+  });
 }
+
+const double _tmuxExpandableBarHandleHeight = 22;
