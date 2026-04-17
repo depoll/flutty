@@ -2075,6 +2075,11 @@ bool shouldShowNativeSelectionOverlay({
     isNativeSelectionMode &&
     (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
 
+/// Whether the native overlay currently holds an expanded text selection.
+@visibleForTesting
+bool hasActiveNativeOverlaySelection(TextSelection selection) =>
+    selection.isValid && !selection.isCollapsed;
+
 /// Whether terminal tap links should be resolved for the current overlay state.
 @visibleForTesting
 bool shouldResolveTerminalTapLinks({
@@ -2395,7 +2400,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onTerminalStateChanged() {
-    if (_isNativeSelectionMode) {
+    if (_isNativeSelectionMode &&
+        !hasActiveNativeOverlaySelection(
+          _nativeSelectionController.selection,
+        )) {
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
@@ -4750,24 +4758,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
       padding: terminalViewportPadding,
-      child: TextField(
-        controller: _nativeSelectionController,
-        readOnly: true,
-        showCursor: false,
-        enableInteractiveSelection: true,
-        scrollController: _nativeSelectionScrollController,
-        expands: true,
-        maxLines: null,
-        textAlignVertical: TextAlignVertical.top,
-        style: textStyle,
-        strutStyle: StrutStyle.fromTextStyle(textStyle, forceStrutHeight: true),
-        decoration: const InputDecoration(
-          isDense: true,
-          isCollapsed: true,
-          border: InputBorder.none,
-          contentPadding: EdgeInsets.zero,
+      child: ValueListenableBuilder<TextEditingValue>(
+        valueListenable: _nativeSelectionController,
+        child: TextField(
+          controller: _nativeSelectionController,
+          readOnly: true,
+          showCursor: false,
+          enableInteractiveSelection: true,
+          scrollController: _nativeSelectionScrollController,
+          expands: true,
+          maxLines: null,
+          textAlignVertical: TextAlignVertical.top,
+          style: textStyle,
+          strutStyle: StrutStyle.fromTextStyle(
+            textStyle,
+            forceStrutHeight: true,
+          ),
+          decoration: const InputDecoration(
+            isDense: true,
+            isCollapsed: true,
+            border: InputBorder.none,
+            contentPadding: EdgeInsets.zero,
+          ),
         ),
-        onChanged: (_) {},
+        builder: (context, value, child) => IgnorePointer(
+          ignoring: !hasActiveNativeOverlaySelection(value.selection),
+          child: child,
+        ),
       ),
     ),
   );
@@ -4923,7 +4940,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: snapshot.text,
       selection: selection,
     );
-    _hadNativeOverlaySelection = !selection.isCollapsed;
+    _hadNativeOverlaySelection = hasActiveNativeOverlaySelection(selection);
     _nativeOverlayCollapseTimer?.cancel();
     setState(() {
       _isNativeSelectionMode = true;
@@ -5095,7 +5112,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!selection.isValid) {
       return;
     }
-    if (!selection.isCollapsed) {
+    if (hasActiveNativeOverlaySelection(selection)) {
       _hadNativeOverlaySelection = true;
       _nativeOverlayCollapseTimer?.cancel();
       return;
