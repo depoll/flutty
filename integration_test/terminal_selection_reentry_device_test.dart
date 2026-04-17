@@ -175,6 +175,345 @@ void main() {
       expect(overlayController!.text, contains('charlie'));
       expect(overlayController.selection.isCollapsed, isFalse);
     },
-    skip: defaultTargetPlatform != TargetPlatform.android,
+    skip:
+        defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS,
+  );
+
+  testWidgets(
+    'dismissing a selection still allows the next long press to select text',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 932));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepository = _MockHostRepository();
+      final sshClient = _MockSshClient();
+      final shellChannel = _MockShellChannel();
+      final host = _buildHost(id: 2);
+      final shellDoneCompleter = Completer<void>();
+      final shellStdoutController = StreamController<Uint8List>.broadcast();
+      addTearDown(shellStdoutController.close);
+
+      when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
+      when(
+        () => sshClient.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shellChannel);
+      when(
+        () => shellChannel.stdout,
+      ).thenAnswer((_) => shellStdoutController.stream);
+      when(
+        () => shellChannel.stderr,
+      ).thenAnswer((_) => const Stream<Uint8List>.empty());
+      when(
+        () => shellChannel.done,
+      ).thenAnswer((_) => shellDoneCompleter.future);
+      when(() => shellChannel.write(any())).thenReturn(null);
+
+      final session = SshSession(
+        connectionId: 8,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      )..getOrCreateTerminal();
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          sharedClipboardProvider.overrideWith((ref) async => false),
+          activeSessionsProvider.overrideWith(
+            () => _TestActiveSessionsNotifier(session),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+
+      Offset cellCenter(CellOffset offset) {
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        return renderTerminal.localToGlobal(
+          renderTerminal.getOffset(offset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+      }
+
+      session.terminal!.write('alpha bravo');
+      await tester.pumpAndSettle();
+
+      final selectionOffset = cellCenter(const CellOffset(2, 0));
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      final overlayField = find.byType(TextField);
+      expect(overlayField, findsOneWidget);
+      var overlayController = tester.widget<TextField>(overlayField).controller;
+      expect(overlayController, isNotNull);
+      expect(overlayController!.selection.isCollapsed, isFalse);
+
+      await tester.tapAt(cellCenter(const CellOffset(2, 2)));
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pumpAndSettle();
+
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      overlayController = tester.widget<TextField>(overlayField).controller;
+      expect(overlayController, isNotNull);
+      expect(overlayController!.selection.isCollapsed, isFalse);
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS,
+  );
+
+  testWidgets(
+    'immediately retrying after tap dismissal still selects on the first long press',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 932));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepository = _MockHostRepository();
+      final sshClient = _MockSshClient();
+      final shellChannel = _MockShellChannel();
+      final host = _buildHost(id: 3);
+      final shellDoneCompleter = Completer<void>();
+      final shellStdoutController = StreamController<Uint8List>.broadcast();
+      addTearDown(shellStdoutController.close);
+
+      when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
+      when(
+        () => sshClient.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shellChannel);
+      when(
+        () => shellChannel.stdout,
+      ).thenAnswer((_) => shellStdoutController.stream);
+      when(
+        () => shellChannel.stderr,
+      ).thenAnswer((_) => const Stream<Uint8List>.empty());
+      when(
+        () => shellChannel.done,
+      ).thenAnswer((_) => shellDoneCompleter.future);
+      when(() => shellChannel.write(any())).thenReturn(null);
+
+      final session = SshSession(
+        connectionId: 9,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      )..getOrCreateTerminal();
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          sharedClipboardProvider.overrideWith((ref) async => false),
+          activeSessionsProvider.overrideWith(
+            () => _TestActiveSessionsNotifier(session),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+
+      Offset cellCenter(CellOffset offset) {
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        return renderTerminal.localToGlobal(
+          renderTerminal.getOffset(offset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+      }
+
+      session.terminal!.write('alpha bravo');
+      await tester.pumpAndSettle();
+
+      final selectionOffset = cellCenter(const CellOffset(2, 0));
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      final overlayField = find.byType(TextField);
+      expect(overlayField, findsOneWidget);
+      var overlayController = tester.widget<TextField>(overlayField).controller;
+      expect(overlayController, isNotNull);
+      expect(overlayController!.selection.isCollapsed, isFalse);
+
+      await tester.tapAt(cellCenter(const CellOffset(2, 2)));
+      await tester.pump(const Duration(milliseconds: 16));
+
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      overlayController = tester.widget<TextField>(overlayField).controller;
+      expect(overlayController, isNotNull);
+      expect(overlayController!.selection.isCollapsed, isFalse);
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS,
+  );
+
+  testWidgets(
+    'streaming output does not block the first retry after tap dismissal',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 932));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepository = _MockHostRepository();
+      final sshClient = _MockSshClient();
+      final shellChannel = _MockShellChannel();
+      final host = _buildHost(id: 4);
+      final shellDoneCompleter = Completer<void>();
+      final shellStdoutController = StreamController<Uint8List>.broadcast();
+      addTearDown(shellStdoutController.close);
+
+      when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
+      when(
+        () => sshClient.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shellChannel);
+      when(
+        () => shellChannel.stdout,
+      ).thenAnswer((_) => shellStdoutController.stream);
+      when(
+        () => shellChannel.stderr,
+      ).thenAnswer((_) => const Stream<Uint8List>.empty());
+      when(
+        () => shellChannel.done,
+      ).thenAnswer((_) => shellDoneCompleter.future);
+      when(() => shellChannel.write(any())).thenReturn(null);
+
+      final session = SshSession(
+        connectionId: 10,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      )..getOrCreateTerminal();
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          sharedClipboardProvider.overrideWith((ref) async => false),
+          activeSessionsProvider.overrideWith(
+            () => _TestActiveSessionsNotifier(session),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+
+      Offset cellCenter(CellOffset offset) {
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        return renderTerminal.localToGlobal(
+          renderTerminal.getOffset(offset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+      }
+
+      session.terminal!.write('alpha bravo\r\nprocessing |');
+      await tester.pumpAndSettle();
+
+      final selectionOffset = cellCenter(const CellOffset(2, 0));
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      final overlayField = find.byType(TextField);
+      expect(overlayField, findsOneWidget);
+      var overlayController = tester.widget<TextField>(overlayField).controller;
+      expect(overlayController, isNotNull);
+      expect(overlayController!.selection.isCollapsed, isFalse);
+
+      final spinnerFrames = <String>['|', '/', '-', String.fromCharCode(92)];
+      var spinnerIndex = 0;
+      final spinnerTimer = Timer.periodic(const Duration(milliseconds: 50), (
+        _,
+      ) {
+        session.terminal!.write('\rprocessing ${spinnerFrames[spinnerIndex]}');
+        spinnerIndex = (spinnerIndex + 1) % spinnerFrames.length;
+      });
+      addTearDown(spinnerTimer.cancel);
+
+      await tester.tapAt(cellCenter(const CellOffset(2, 2)));
+      await tester.pump(const Duration(milliseconds: 16));
+
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      spinnerTimer.cancel();
+
+      overlayController = tester.widget<TextField>(overlayField).controller;
+      expect(overlayController, isNotNull);
+      expect(overlayController!.selection.isCollapsed, isFalse);
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS,
   );
 }

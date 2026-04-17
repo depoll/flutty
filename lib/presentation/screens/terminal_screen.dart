@@ -2186,6 +2186,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ScrollController _terminalScrollController;
   late final ScrollController _nativeSelectionScrollController;
   late final TextEditingController _nativeSelectionController;
+  late final FocusNode _nativeSelectionFocusNode;
   late FocusNode _terminalFocusNode;
   final _terminalTextInputController = TerminalTextInputHandlerController();
   final _toolbarController = KeyboardToolbarController();
@@ -2393,6 +2394,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..addListener(_syncTerminalScrollFromNative);
     _nativeSelectionController = TextEditingController()
       ..addListener(_onNativeOverlayControllerChanged);
+    _nativeSelectionFocusNode = FocusNode();
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
@@ -3765,6 +3767,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..dispose();
     _nativeOverlayCollapseTimer?.cancel();
     _clearNativeOverlayLongPressState();
+    _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
@@ -4771,6 +4774,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           onPointerCancel: _handleNativeOverlayPointerCancel,
           child: TextField(
             controller: _nativeSelectionController,
+            focusNode: _nativeSelectionFocusNode,
             readOnly: true,
             showCursor: false,
             enableInteractiveSelection: true,
@@ -4961,7 +4965,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           revealOverlayInTouchScrollMode;
     });
     WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_isNativeSelectionMode) {
+        return;
+      }
       _syncNativeScrollFromTerminal();
+      _nativeSelectionFocusNode.requestFocus();
+      if (!_nativeSelectionController.selection.isCollapsed) {
+        _nativeSelectionController.selection = selection;
+      }
     });
     if (_terminalController.selection != null) {
       _terminalController.clearSelection();
@@ -4972,6 +4983,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_isMobilePlatform) {
       return;
     }
+    _nativeSelectionFocusNode.unfocus();
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
@@ -5270,6 +5282,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .clamp(0, textLength);
     _nativeSelectionController.value = _nativeSelectionController.value
         .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    _nativeSelectionFocusNode.unfocus();
     _clearNativeOverlayLongPressState();
     if (!mounted) {
       return;
@@ -5297,6 +5310,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    _nativeSelectionFocusNode.unfocus();
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
