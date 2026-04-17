@@ -2196,6 +2196,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isNativeSelectionMode = false;
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
+  bool _hadNativeOverlaySelection = false;
+  Timer? _nativeOverlayCollapseTimer;
   int? _connectionId;
   double? _pinchFontSize;
   double? _lastPinchScale;
@@ -2381,7 +2383,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..addListener(_handleTerminalScroll);
     _nativeSelectionScrollController = ScrollController()
       ..addListener(_syncTerminalScrollFromNative);
-    _nativeSelectionController = TextEditingController();
+    _nativeSelectionController = TextEditingController()
+      ..addListener(_onNativeOverlayControllerChanged);
     _isUsingAltBuffer = _terminal.isUsingAltBuffer;
     _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
     _terminal.addListener(_onTerminalStateChanged);
@@ -3746,7 +3749,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionScrollController
       ..removeListener(_syncTerminalScrollFromNative)
       ..dispose();
-    _nativeSelectionController.dispose();
+    _nativeSelectionController
+      ..removeListener(_onNativeOverlayControllerChanged)
+      ..dispose();
+    _nativeOverlayCollapseTimer?.cancel();
     _doneSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
     _terminalFocusNode.dispose();
@@ -4744,21 +4750,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
     child: Padding(
       padding: terminalViewportPadding,
-      child: SingleChildScrollView(
-        controller: _nativeSelectionScrollController,
-        physics: const ClampingScrollPhysics(),
-        child: ValueListenableBuilder<TextEditingValue>(
-          valueListenable: _nativeSelectionController,
-          builder: (context, value, _) => SelectableText(
-            value.text,
-            style: textStyle,
-            onSelectionChanged: _handleNativeOverlaySelectionChanged,
-            strutStyle: StrutStyle.fromTextStyle(
-              textStyle,
-              forceStrutHeight: true,
-            ),
-          ),
+      child: TextField(
+        controller: _nativeSelectionController,
+        readOnly: true,
+        showCursor: false,
+        enableInteractiveSelection: true,
+        scrollController: _nativeSelectionScrollController,
+        expands: true,
+        maxLines: null,
+        textAlignVertical: TextAlignVertical.top,
+        style: textStyle,
+        strutStyle: StrutStyle.fromTextStyle(textStyle, forceStrutHeight: true),
+        decoration: const InputDecoration(
+          isDense: true,
+          isCollapsed: true,
+          border: InputBorder.none,
+          contentPadding: EdgeInsets.zero,
         ),
+        onChanged: (_) {},
       ),
     ),
   );
@@ -4914,6 +4923,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: snapshot.text,
       selection: selection,
     );
+    _hadNativeOverlaySelection = !selection.isCollapsed;
+    _nativeOverlayCollapseTimer?.cancel();
     setState(() {
       _isNativeSelectionMode = true;
       _hasTerminalSelection = false;
@@ -4940,6 +4951,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
+    _hadNativeOverlaySelection = false;
+    _nativeOverlayCollapseTimer?.cancel();
     _terminalFocusNode.requestFocus();
   }
 
@@ -5074,6 +5087,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
+  void _onNativeOverlayControllerChanged() {
+    if (!mounted || !_isNativeSelectionMode) {
+      return;
+    }
+    final selection = _nativeSelectionController.selection;
+    if (!selection.isValid) {
+      return;
+    }
+    if (!selection.isCollapsed) {
+      _hadNativeOverlaySelection = true;
+      _nativeOverlayCollapseTimer?.cancel();
+      return;
+    }
+    if (!_hadNativeOverlaySelection) {
+      return;
+    }
+    _nativeOverlayCollapseTimer?.cancel();
+    _nativeOverlayCollapseTimer = Timer(const Duration(milliseconds: 250), () {
+      if (!mounted || !_isNativeSelectionMode) {
+        return;
+      }
+      if (!_nativeSelectionController.selection.isCollapsed) {
+        return;
+      }
+      _hadNativeOverlaySelection = false;
+      _handleNativeOverlaySelectionChanged(
+        _nativeSelectionController.selection,
+        null,
+      );
+    });
+  }
+
   void _handleNativeOverlaySelectionChanged(
     TextSelection selection,
     SelectionChangedCause? cause,
@@ -5140,6 +5185,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
+    _hadNativeOverlaySelection = false;
+    _nativeOverlayCollapseTimer?.cancel();
     setState(() {
       _isNativeSelectionMode = false;
       _hasTerminalSelection = false;
