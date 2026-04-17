@@ -4158,26 +4158,42 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         ],
       ),
-      body: Column(
-        children: [
-          Expanded(
-            child: _buildTerminalWithTmuxBar(
-              terminalTheme,
-              isMobile,
-              theme,
-              connectionState,
-            ),
-          ),
-          if (_showKeyboardToolbar &&
+      body: Builder(
+        builder: (bodyContext) {
+          final showsKeyboardToolbar =
+              _showKeyboardToolbar &&
               !showsDisconnectedOverlay &&
-              (!_isNativeSelectionMode || _isMobilePlatform))
-            KeyboardToolbar(
-              controller: _toolbarController,
-              terminal: _terminal,
-              onKeyPressed: _handleKeyboardToolbarKeyPressed,
-              terminalFocusNode: _terminalFocusNode,
-            ),
-        ],
+              (!_isNativeSelectionMode || _isMobilePlatform);
+          final terminalArea = _buildTerminalWithTmuxBar(
+            terminalTheme,
+            isMobile,
+            theme,
+            connectionState,
+          );
+          return Column(
+            children: [
+              Expanded(
+                // The KeyboardToolbar below already absorbs the bottom
+                // safe-area inset via its own SafeArea, so strip it here to
+                // prevent the tmux bar from floating above the toolbar.
+                child: showsKeyboardToolbar
+                    ? MediaQuery.removePadding(
+                        context: bodyContext,
+                        removeBottom: true,
+                        child: terminalArea,
+                      )
+                    : terminalArea,
+              ),
+              if (showsKeyboardToolbar)
+                KeyboardToolbar(
+                  controller: _toolbarController,
+                  terminal: _terminal,
+                  onKeyPressed: _handleKeyboardToolbarKeyPressed,
+                  terminalFocusNode: _terminalFocusNode,
+                ),
+            ],
+          );
+        },
       ),
     );
   }
