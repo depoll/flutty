@@ -4669,7 +4669,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          _nativeSelectionOverlay(nativeSelectionTextStyle),
+          _nativeSelectionOverlay(nativeSelectionTextStyle, terminalTheme),
         ],
       );
     } else if (_hasTerminalSelection) {
@@ -4759,43 +4759,53 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return terminalViewWithInput;
   }
 
-  Widget _nativeSelectionOverlay(TextStyle textStyle) => Positioned.fill(
+  Widget _nativeSelectionOverlay(
+    TextStyle textStyle,
+    TerminalThemeData terminalTheme,
+  ) => Positioned.fill(
     child: Padding(
       padding: terminalViewportPadding,
       child: ValueListenableBuilder<TextEditingValue>(
         valueListenable: _nativeSelectionController,
-        child: Listener(
-          onPointerDown: _handleNativeOverlayPointerDown,
-          onPointerMove: _handleNativeOverlayPointerMove,
-          onPointerUp: _handleNativeOverlayPointerUp,
-          onPointerCancel: _handleNativeOverlayPointerCancel,
-          child: TextField(
-            controller: _nativeSelectionController,
-            readOnly: true,
-            showCursor: false,
-            enableInteractiveSelection: true,
-            scrollController: _nativeSelectionScrollController,
-            expands: true,
-            maxLines: null,
-            textAlignVertical: TextAlignVertical.top,
-            style: textStyle,
-            strutStyle: StrutStyle.fromTextStyle(
-              textStyle,
-              forceStrutHeight: true,
-            ),
-            decoration: const InputDecoration(
-              isDense: true,
-              isCollapsed: true,
-              filled: false,
-              fillColor: Colors.transparent,
-              hoverColor: Colors.transparent,
-              border: InputBorder.none,
-              enabledBorder: InputBorder.none,
-              disabledBorder: InputBorder.none,
-              focusedBorder: InputBorder.none,
-              errorBorder: InputBorder.none,
-              focusedErrorBorder: InputBorder.none,
-              contentPadding: EdgeInsets.zero,
+        child: TextSelectionTheme(
+          data: TextSelectionTheme.of(context).copyWith(
+            selectionColor: terminalTheme.selection,
+            selectionHandleColor: terminalTheme.cursor,
+          ),
+          child: Listener(
+            onPointerDown: _handleNativeOverlayPointerDown,
+            onPointerMove: _handleNativeOverlayPointerMove,
+            onPointerUp: _handleNativeOverlayPointerUp,
+            onPointerCancel: _handleNativeOverlayPointerCancel,
+            child: TextField(
+              controller: _nativeSelectionController,
+              readOnly: true,
+              showCursor: false,
+              cursorColor: Colors.transparent,
+              enableInteractiveSelection: true,
+              scrollController: _nativeSelectionScrollController,
+              expands: true,
+              maxLines: null,
+              textAlignVertical: TextAlignVertical.top,
+              style: textStyle,
+              strutStyle: StrutStyle.fromTextStyle(
+                textStyle,
+                forceStrutHeight: true,
+              ),
+              decoration: const InputDecoration(
+                isDense: true,
+                isCollapsed: true,
+                filled: false,
+                fillColor: Colors.transparent,
+                hoverColor: Colors.transparent,
+                border: InputBorder.none,
+                enabledBorder: InputBorder.none,
+                disabledBorder: InputBorder.none,
+                focusedBorder: InputBorder.none,
+                errorBorder: InputBorder.none,
+                focusedErrorBorder: InputBorder.none,
+                contentPadding: EdgeInsets.zero,
+              ),
             ),
           ),
         ),

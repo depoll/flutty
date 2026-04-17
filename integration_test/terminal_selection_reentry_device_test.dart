@@ -10,6 +10,8 @@ import 'package:integration_test/integration_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart'
+    as app_terminal_themes;
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -88,6 +90,24 @@ void _expectTransparentOverlayDecoration(
   expect(decoration.focusedErrorBorder, InputBorder.none);
 }
 
+void _expectOverlaySelectionTheme(WidgetTester tester, Finder overlayField) {
+  final selectionTheme = find.ancestor(
+    of: overlayField,
+    matching: find.byType(TextSelectionTheme),
+  );
+  expect(selectionTheme, findsOneWidget);
+
+  final data = tester.widget<TextSelectionTheme>(selectionTheme).data;
+  expect(
+    data.selectionColor,
+    app_terminal_themes.TerminalThemes.cleanWhite.selection,
+  );
+  expect(
+    data.selectionHandleColor,
+    app_terminal_themes.TerminalThemes.cleanWhite.cursor,
+  );
+}
+
 TextEditingController _expectOverlayWordSelection(
   WidgetTester tester,
   Finder overlayField,
@@ -105,6 +125,7 @@ TextEditingController _expectOverlayWordSelection(
   expect(editableText, findsOneWidget);
   expect(tester.widget<EditableText>(editableText).focusNode.hasFocus, isFalse);
   _expectTransparentOverlayDecoration(tester, overlayField);
+  _expectOverlaySelectionTheme(tester, overlayField);
 
   return controller;
 }
