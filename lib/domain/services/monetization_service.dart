@@ -198,6 +198,11 @@ class MonetizationService {
         'Subscriptions are only available through the App Store and Google Play.',
       );
     }
+    if (_state.isLifetimeUnlocked) {
+      return const MonetizationActionResult.failure(
+        'MonkeySSH Pro Lifetime is already active. Manage your subscription in the store if you need to cancel a monthly or annual renewal.',
+      );
+    }
     await _tryRecoverStaleAndroidPurchaseAttempt();
     if (_pendingPurchaseResult != null || _restoreInFlight) {
       return const MonetizationActionResult.failure(

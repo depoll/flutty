@@ -870,6 +870,59 @@ void main() {
     });
 
     test(
+      'purchaseOffer refuses recurring plans when lifetime is already active',
+      () async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.android;
+        addTearDown(() => debugDefaultTargetPlatformOverride = null);
+        await settings.setBool(
+          SettingKeys.monetizationProUnlocked,
+          value: true,
+        );
+        await settings.setString(
+          SettingKeys.monetizationActiveProductId,
+          MonetizationProductIds.androidProLifetime,
+        );
+
+        when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+        when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+          (_) async => ProductDetailsResponse(
+            productDetails: _androidCatalogDetails(),
+            notFoundIDs: const [],
+          ),
+        );
+        when(androidPlatformAddition.queryPastPurchases).thenAnswer(
+          (_) async => QueryPurchaseDetailsResponse(
+            pastPurchases: [
+              _androidPastLifetimePurchase(purchaseTimeMillis: 1712732400000),
+            ],
+          ),
+        );
+
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          androidPlatformAddition: androidPlatformAddition,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        await service.initialize();
+        final offerId = service.currentState.offers.first.id;
+
+        final result = await service.purchaseOffer(offerId);
+
+        expect(result.success, isFalse);
+        expect(result.cancelled, isFalse);
+        expect(result.message, contains('Lifetime is already active'));
+        verifyNever(
+          () => inAppPurchase.buyNonConsumable(
+            purchaseParam: any(named: 'purchaseParam'),
+          ),
+        );
+      },
+    );
+
+    test(
       'purchaseOffer lets Android users retry with another plan after dismissing Play checkout',
       () async {
         debugDefaultTargetPlatformOverride = TargetPlatform.android;

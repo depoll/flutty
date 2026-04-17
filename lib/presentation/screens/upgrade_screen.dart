@@ -100,6 +100,16 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
     _ => 'your local storefront',
   };
 
+  String _lifetimeDetailLabel(BuildContext context, MonetizationState state) {
+    if (state.entitlementUpdatedAt case final unlockedAt?) {
+      final formattedDate = MaterialLocalizations.of(
+        context,
+      ).formatMediumDate(unlockedAt);
+      return 'Unlocked with a one-time purchase on $formattedDate.';
+    }
+    return 'Unlocked with a one-time purchase.';
+  }
+
   Future<void> _purchasePro(String offerId) async {
     final messenger = ScaffoldMessenger.of(context);
     final result = await ref
@@ -174,6 +184,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
     final state =
         ref.watch(monetizationStateProvider).asData?.value ??
         ref.read(monetizationServiceProvider).currentState;
+    final isLifetimeUnlocked = state.isLifetimeUnlocked;
     final isCatalogLoading = state.isLoading && state.offers.isEmpty;
     final isBusy = state.isLoading || _restoreInProgress;
     final progressMessage = switch ((state.isLoading, _restoreInProgress)) {
@@ -184,21 +195,26 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
       _ => null,
     };
     final feature = widget.feature;
-    final highlightedOffer = state.activeOffer ?? state.defaultOffer;
-    final priceLabel =
-        highlightedOffer?.displayPriceLabel ??
-        (isCatalogLoading ? 'Loading pricing...' : _pricingSourceLabel());
-    final priceDetailLabel =
-        highlightedOffer?.detailLabel ??
-        (highlightedOffer == null
-            ? 'The exact price comes from your local storefront and currency.'
-            : null);
+    final highlightedOffer = isLifetimeUnlocked
+        ? null
+        : state.activeOffer ?? state.defaultOffer;
+    final priceLabel = isLifetimeUnlocked
+        ? 'MonkeySSH Pro Lifetime'
+        : highlightedOffer?.displayPriceLabel ??
+              (isCatalogLoading ? 'Loading pricing...' : _pricingSourceLabel());
+    final priceDetailLabel = isLifetimeUnlocked
+        ? _lifetimeDetailLabel(context, state)
+        : highlightedOffer?.detailLabel ??
+              (highlightedOffer == null
+                  ? 'The exact price comes from your local storefront and currency.'
+                  : null);
     final sharedIntroductoryOfferLabel = _sharedIntroductoryOfferLabel(
       state.offers,
     );
-    final introductoryOfferLabel =
-        sharedIntroductoryOfferLabel ??
-        highlightedOffer?.introductoryOfferLabel;
+    final introductoryOfferLabel = isLifetimeUnlocked
+        ? null
+        : sharedIntroductoryOfferLabel ??
+              highlightedOffer?.introductoryOfferLabel;
     final annualSavingsPercent = _annualSavingsPercent(state.offers);
     final priceCardTextStyle = theme.textTheme.bodyMedium?.copyWith(
       color: colorScheme.onSurfaceVariant,
@@ -233,6 +249,16 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             const SizedBox(height: 20),
             _UpgradeProgressBanner(message: message),
           ],
+          if (isLifetimeUnlocked) ...[
+            const SizedBox(height: 20),
+            _UpgradeBanner(
+              key: const ValueKey('lifetime-status-banner'),
+              message:
+                  'MonkeySSH Pro Lifetime is already active. If an older monthly or annual subscription is still renewing, manage it in ${_storefrontLabel()} to cancel future renewals.',
+              backgroundColor: colorScheme.tertiaryContainer,
+              foregroundColor: colorScheme.onTertiaryContainer,
+            ),
+          ],
           const SizedBox(height: 24),
           Text('Included with Pro', style: theme.textTheme.titleMedium),
           const SizedBox(height: 12),
@@ -254,7 +280,7 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
             subtitle:
                 'Share hosts, keys, and migration bundles through encrypted files.',
           ),
-          if (state.offers.isNotEmpty) ...[
+          if (state.offers.isNotEmpty && !isLifetimeUnlocked) ...[
             const SizedBox(height: 24),
             Text('Choose a plan', style: theme.textTheme.titleMedium),
             if (annualSavingsPercent case final savings?) ...[
@@ -334,8 +360,8 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                   ],
                   Text(
                     state.isProUnlocked
-                        ? state.isLifetimeUnlocked
-                              ? 'MonkeySSH Pro Lifetime is unlocked on this device.'
+                        ? isLifetimeUnlocked
+                              ? 'You already own MonkeySSH Pro Lifetime. If an older monthly or annual subscription is still active, manage it in ${_storefrontLabel()} to cancel future renewals.'
                               : switch (state.activeOffer) {
                                   final activeOffer? =>
                                     '${activeOffer.planLabel} is active on this device.',
@@ -371,7 +397,11 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                 ? null
                 : _openManageSubscriptions,
             style: TextButton.styleFrom(foregroundColor: colorScheme.onSurface),
-            child: const Text('Manage subscription'),
+            child: Text(
+              isLifetimeUnlocked
+                  ? 'Manage existing subscription'
+                  : 'Manage subscription',
+            ),
           ),
           if (state.debugUnlockAvailable) ...[
             const SizedBox(height: 24),

@@ -391,13 +391,13 @@ void main() {
   });
 
   testWidgets(
-    'shows lifetime active copy and never offers a lifetime plan card',
+    'shows lifetime ownership info and hides recurring plan actions',
     (tester) async {
       final service = _MockMonetizationService();
-      const state = MonetizationState(
+      final state = MonetizationState(
         billingAvailability: MonetizationBillingAvailability.available,
-        entitlements: MonetizationEntitlements.pro(),
-        offers: [
+        entitlements: const MonetizationEntitlements.pro(),
+        offers: const [
           MonetizationOffer(
             id: 'monthly',
             productId: 'monkeyssh_pro_monthly',
@@ -413,6 +413,7 @@ void main() {
         debugUnlockAvailable: false,
         debugUnlocked: false,
         activeProductId: MonetizationProductIds.iosProLifetimeProd,
+        entitlementUpdatedAt: DateTime(2026, 4, 10),
       );
 
       when(() => service.currentState).thenReturn(state);
@@ -434,20 +435,26 @@ void main() {
       );
       await tester.pumpAndSettle();
       await tester.dragUntilVisible(
-        find.text('MonkeySSH Pro Lifetime is unlocked on this device.'),
+        find.byKey(const ValueKey('lifetime-status-banner')),
         find.byType(ListView),
         const Offset(0, -200),
       );
       await tester.pumpAndSettle();
 
       expect(
-        find.text('MonkeySSH Pro Lifetime is unlocked on this device.'),
+        find.byKey(const ValueKey('lifetime-status-banner')),
         findsOneWidget,
       );
-      // Lifetime is never offered as a buyable plan card in the paywall;
-      // the only "Lifetime" text on screen comes from the active-state
-      // copy verified above.
-      expect(find.text('Lifetime'), findsNothing);
+      expect(find.text('MonkeySSH Pro Lifetime'), findsOneWidget);
+      expect(
+        find.textContaining('Unlocked with a one-time purchase on'),
+        findsOneWidget,
+      );
+      expect(find.text('Choose a plan'), findsNothing);
+      expect(find.text('Monthly'), findsNothing);
+      expect(find.textContaining('cancel future renewals'), findsWidgets);
+      expect(find.text('Subscribe monthly'), findsNothing);
+      expect(find.text('Switch to Monthly'), findsNothing);
       expect(find.text('Subscribe lifetime'), findsNothing);
       expect(find.text('Switch to Lifetime'), findsNothing);
     },
