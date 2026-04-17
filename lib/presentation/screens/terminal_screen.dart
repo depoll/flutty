@@ -664,10 +664,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             title: const Text('New Window'),
             onTap: () {
               setState(() => _expanded = false);
+              final installedToolsFuture = _tmux.detectInstalledAgentTools(
+                widget.session,
+              );
               showModalBottomSheet<AgentLaunchTool?>(
                 context: context,
                 builder: (ctx) => TmuxToolPickerSheet(
                   isProUser: widget.isProUser,
+                  installedToolsFuture: installedToolsFuture,
                   onToolSelected: (tool) => Navigator.pop(ctx, tool),
                   onEmptyWindow: () {
                     Navigator.pop(ctx);

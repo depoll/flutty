@@ -5,6 +5,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'ssh_service.dart';
 
@@ -26,6 +27,9 @@ class TmuxService {
   /// Cached profile source commands per SSH session.
   static final Map<int, String> _profileSourceCache = {};
 
+  /// Cached set of installed agent CLIs per SSH session (by connectionId).
+  static final Map<int, Set<AgentLaunchTool>> _installedAgentToolsCache = {};
+
   static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
   _windowObservers = {};
 
@@ -33,6 +37,7 @@ class TmuxService {
   void clearCache(int connectionId) {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
+    _installedAgentToolsCache.remove(connectionId);
     final observerKeys = _windowObservers.keys
         .where((key) => key.connectionId == connectionId)
         .toList(growable: false);
@@ -74,7 +79,37 @@ class TmuxService {
     }
   }
 
-  // ── Session queries ────────────────────────────────────────────────────
+  /// Detects which supported coding-agent CLIs are available on the
+  /// remote host's `PATH`.
+  ///
+  /// Resolves binaries via `command -v`, sourcing the user's login
+  /// shell profile so Homebrew/nvm/asdf-installed CLIs are found over
+  /// SSH exec channels (which start with a minimal `PATH`).
+  ///
+  /// Results are cached per connection. Returns an empty set on any
+  /// detection error so callers can render a sensible fallback rather
+  /// than blocking the user.
+  Future<Set<AgentLaunchTool>> detectInstalledAgentTools(
+    SshSession session,
+  ) async {
+    final cached = _installedAgentToolsCache[session.connectionId];
+    if (cached != null) return cached;
+    try {
+      final binaries = AgentLaunchTool.values
+          .map((t) => t.commandName)
+          .toSet()
+          .join(' ');
+      final output = await _exec(
+        session,
+        'command -v $binaries 2>/dev/null || true',
+      );
+      final installed = parseInstalledAgentTools(output);
+      _installedAgentToolsCache[session.connectionId] = installed;
+      return installed;
+    } on Object {
+      return const <AgentLaunchTool>{};
+    }
+  }
 
   /// Lists all tmux sessions on the remote host.
   Future<List<TmuxSession>> listSessions(SshSession session) async {
@@ -612,3 +647,34 @@ class _TmuxWindowChangeObserver {
 
 /// Provider for [TmuxService].
 final tmuxServiceProvider = Provider<TmuxService>((ref) => const TmuxService());
+
+/// Maps a binary's basename (e.g. `claude`) to the matching [AgentLaunchTool],
+/// or `null` if it does not correspond to a supported CLI.
+AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
+    switch (binaryName) {
+      'aider' => AgentLaunchTool.aider,
+      'claude' => AgentLaunchTool.claudeCode,
+      'copilot' => AgentLaunchTool.copilotCli,
+      'codex' => AgentLaunchTool.codex,
+      'gemini' => AgentLaunchTool.geminiCli,
+      'opencode' => AgentLaunchTool.openCode,
+      _ => null,
+    };
+
+/// Parses the output of `command -v <bins...>` into the set of supported
+/// agent CLIs that resolved to an absolute path.
+///
+/// Lines that do not start with `/` are ignored, so shell function names,
+/// builtins, or aliases (which `command -v` may report as bare names) are
+/// not treated as installed CLIs.
+Set<AgentLaunchTool> parseInstalledAgentTools(String output) {
+  final installed = <AgentLaunchTool>{};
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trim();
+    if (line.isEmpty || !line.startsWith('/')) continue;
+    final binary = line.split('/').last;
+    final tool = agentToolForBinaryName(binary);
+    if (tool != null) installed.add(tool);
+  }
+  return installed;
+}
