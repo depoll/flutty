@@ -2657,6 +2657,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Bypass xterm's built-in word selection on touch: open the native
     // selection overlay directly so users get the polished selection UI
     // instead of the underlying terminal selection.
+    if (_isNativeSelectionMode) {
+      // Already in native selection mode; in touch-scroll-to-terminal mode
+      // the overlay may have been collapsed/hidden after a previous deselect.
+      // Re-reveal it instead of hitting the early-return in
+      // _enterNativeSelectionMode that triggers when initialRange is null.
+      if (_routesTouchScrollToTerminal &&
+          !_revealsNativeSelectionOverlayInTouchScrollMode) {
+        setState(() {
+          _revealsNativeSelectionOverlayInTouchScrollMode = true;
+        });
+      }
+      return;
+    }
     _enterNativeSelectionMode(
       revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
     );
