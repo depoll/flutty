@@ -63,6 +63,29 @@ Host _buildHost({required int id}) => Host(
   sortOrder: 0,
 );
 
+String _selectedText(TextEditingController controller) =>
+    controller.selection.textInside(controller.text);
+
+TextEditingController _expectOverlayWordSelection(
+  WidgetTester tester,
+  Finder overlayField,
+  String expectedWord,
+) {
+  final controller = tester.widget<TextField>(overlayField).controller;
+  expect(controller, isNotNull);
+  expect(controller!.selection.isCollapsed, isFalse);
+  expect(_selectedText(controller), expectedWord);
+
+  final editableText = find.descendant(
+    of: overlayField,
+    matching: find.byType(EditableText),
+  );
+  expect(editableText, findsOneWidget);
+  expect(tester.widget<EditableText>(editableText).focusNode.hasFocus, isFalse);
+
+  return controller;
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -159,9 +182,12 @@ void main() {
 
       final overlayField = find.byType(TextField);
       expect(overlayField, findsOneWidget);
-      var overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.text, contains('alpha'));
+      var overlayController = _expectOverlayWordSelection(
+        tester,
+        overlayField,
+        'alpha',
+      );
+      expect(overlayController.text, contains('alpha'));
 
       session.terminal!.write('\r\ncharlie');
       await tester.pumpAndSettle();
@@ -170,10 +196,12 @@ void main() {
       await tester.longPressAt(cellCenter(const CellOffset(2, 1)));
       await tester.pumpAndSettle();
 
-      overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.text, contains('charlie'));
-      expect(overlayController.selection.isCollapsed, isFalse);
+      overlayController = _expectOverlayWordSelection(
+        tester,
+        overlayField,
+        'charlie',
+      );
+      expect(overlayController.text, contains('charlie'));
     },
     skip:
         defaultTargetPlatform != TargetPlatform.android &&
@@ -269,9 +297,7 @@ void main() {
 
       final overlayField = find.byType(TextField);
       expect(overlayField, findsOneWidget);
-      var overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.selection.isCollapsed, isFalse);
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
 
       await tester.tapAt(cellCenter(const CellOffset(2, 2)));
       await tester.pump(const Duration(milliseconds: 300));
@@ -280,9 +306,7 @@ void main() {
       await tester.longPressAt(selectionOffset);
       await tester.pumpAndSettle();
 
-      overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.selection.isCollapsed, isFalse);
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
     },
     skip:
         defaultTargetPlatform != TargetPlatform.android &&
@@ -378,9 +402,7 @@ void main() {
 
       final overlayField = find.byType(TextField);
       expect(overlayField, findsOneWidget);
-      var overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.selection.isCollapsed, isFalse);
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
 
       await tester.tapAt(cellCenter(const CellOffset(2, 2)));
       await tester.pump(const Duration(milliseconds: 16));
@@ -388,9 +410,7 @@ void main() {
       await tester.longPressAt(selectionOffset);
       await tester.pumpAndSettle();
 
-      overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.selection.isCollapsed, isFalse);
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
     },
     skip:
         defaultTargetPlatform != TargetPlatform.android &&
@@ -486,9 +506,7 @@ void main() {
 
       final overlayField = find.byType(TextField);
       expect(overlayField, findsOneWidget);
-      var overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.selection.isCollapsed, isFalse);
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
 
       final spinnerFrames = <String>['|', '/', '-', String.fromCharCode(92)];
       var spinnerIndex = 0;
@@ -508,9 +526,7 @@ void main() {
 
       spinnerTimer.cancel();
 
-      overlayController = tester.widget<TextField>(overlayField).controller;
-      expect(overlayController, isNotNull);
-      expect(overlayController!.selection.isCollapsed, isFalse);
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
     },
     skip:
         defaultTargetPlatform != TargetPlatform.android &&
