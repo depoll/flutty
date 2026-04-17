@@ -14,6 +14,24 @@ import 'terminal_key_input.dart';
 bool shouldKeepToolbarBottomSafeArea(MediaQueryData mediaQuery) =>
     mediaQuery.viewInsets.bottom == 0;
 
+/// Whether the extra-keys toolbar should collapse to a single row.
+///
+/// In landscape, vertical space is tighter and the toolbar behaves more like a
+/// keyboard extension on compact screens, so it should stay to one
+/// horizontally scrollable row.
+bool shouldUseSingleRowKeyboardToolbar(MediaQueryData mediaQuery) =>
+    mediaQuery.orientation == Orientation.landscape &&
+    mediaQuery.size.shortestSide < 600;
+
+/// Resolves the total rendered height of the keyboard toolbar.
+double resolveKeyboardToolbarHeight(MediaQueryData mediaQuery) {
+  final rowCount = shouldUseSingleRowKeyboardToolbar(mediaQuery) ? 1 : 2;
+  final bottomInset = shouldKeepToolbarBottomSafeArea(mediaQuery)
+      ? mediaQuery.padding.bottom
+      : 0.0;
+  return rowCount * _KeyRow.height + bottomInset;
+}
+
 /// Resolves the terminal output sequence for a Tab action.
 ///
 /// An explicit Shift modifier from the terminal toolbar turns Tab into the
@@ -240,11 +258,11 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
 
   @override
   Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final keepBottomSafeArea = shouldKeepToolbarBottomSafeArea(
-      MediaQuery.of(context),
-    );
+    final keepBottomSafeArea = shouldKeepToolbarBottomSafeArea(mediaQuery);
+    final useSingleRow = shouldUseSingleRowKeyboardToolbar(mediaQuery);
 
     return DecoratedBox(
       decoration: BoxDecoration(
@@ -254,69 +272,79 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
       child: SafeArea(
         top: false,
         bottom: keepBottomSafeArea,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [_buildModifierRow(), _buildNavigationRow()],
-        ),
+        child: useSingleRow
+            ? _buildLandscapeRow()
+            : Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [_buildModifierRow(), _buildNavigationRow()],
+              ),
       ),
     );
   }
 
-  Widget _buildModifierRow() => _KeyRow(
-    children: [
-      _ToolbarButton(
-        icon: Icons.cancel_outlined,
-        label: 'Esc',
-        onTap: _sendEscape,
-        onLongPressStart: _sendEscape,
-        tooltip: 'Escape',
-      ),
-      _ToolbarButton(
-        icon: Icons.keyboard_tab_rounded,
-        mirrorIcon: _controller.isShiftActive,
-        label: 'Tab',
-        onTap: _sendTab,
-        onLongPressStart: _sendTab,
-        tooltip: 'Tab',
-      ),
-      _ModifierButton(
-        icon: Icons.keyboard_control_key_rounded,
-        label: 'Ctrl',
-        state: _controller.ctrlState,
-        onTap: _toggleCtrl,
-        onDoubleTap: _lockCtrl,
-        tooltip: 'Ctrl',
-      ),
-      _ModifierButton(
-        icon: Icons.keyboard_option_key_rounded,
-        label: 'Alt',
-        state: _controller.altState,
-        onTap: _toggleAlt,
-        onDoubleTap: _lockAlt,
-        tooltip: 'Alt',
-      ),
-      _ModifierButton(
-        icon: Icons.north_rounded,
-        label: 'Shift',
-        state: _controller.shiftState,
-        onTap: _toggleShift,
-        onDoubleTap: _lockShift,
-        tooltip: 'Shift',
-      ),
-      _ToolbarButton(label: '|', onTap: () => _sendText('|'), tooltip: 'Pipe'),
-      _ToolbarButton(label: '/', onTap: () => _sendText('/'), tooltip: 'Slash'),
-      _ToolbarButton(
-        icon: Icons.keyboard_return_rounded,
-        label: '',
-        onTap: _sendEnter,
-        tooltip: 'Enter',
-      ),
-    ],
-  );
+  Widget _buildModifierRow() => _KeyRow(children: _buildModifierButtons());
 
   Widget _buildNavigationRow() => _KeyRow(
     children: [..._buildArrowButtons(), ..._buildSeriesNavigationButtons()],
   );
+
+  Widget _buildLandscapeRow() => _KeyRow(
+    children: [
+      ..._buildModifierButtons(),
+      ..._buildArrowButtons(),
+      ..._buildSeriesNavigationButtons(),
+    ],
+  );
+
+  List<Widget> _buildModifierButtons() => [
+    _ToolbarButton(
+      icon: Icons.cancel_outlined,
+      label: 'Esc',
+      onTap: _sendEscape,
+      onLongPressStart: _sendEscape,
+      tooltip: 'Escape',
+    ),
+    _ToolbarButton(
+      icon: Icons.keyboard_tab_rounded,
+      mirrorIcon: _controller.isShiftActive,
+      label: 'Tab',
+      onTap: _sendTab,
+      onLongPressStart: _sendTab,
+      tooltip: 'Tab',
+    ),
+    _ModifierButton(
+      icon: Icons.keyboard_control_key_rounded,
+      label: 'Ctrl',
+      state: _controller.ctrlState,
+      onTap: _toggleCtrl,
+      onDoubleTap: _lockCtrl,
+      tooltip: 'Ctrl',
+    ),
+    _ModifierButton(
+      icon: Icons.keyboard_option_key_rounded,
+      label: 'Alt',
+      state: _controller.altState,
+      onTap: _toggleAlt,
+      onDoubleTap: _lockAlt,
+      tooltip: 'Alt',
+    ),
+    _ModifierButton(
+      icon: Icons.north_rounded,
+      label: 'Shift',
+      state: _controller.shiftState,
+      onTap: _toggleShift,
+      onDoubleTap: _lockShift,
+      tooltip: 'Shift',
+    ),
+    _ToolbarButton(label: '|', onTap: () => _sendText('|'), tooltip: 'Pipe'),
+    _ToolbarButton(label: '/', onTap: () => _sendText('/'), tooltip: 'Slash'),
+    _ToolbarButton(
+      icon: Icons.keyboard_return_rounded,
+      label: '',
+      onTap: _sendEnter,
+      tooltip: 'Enter',
+    ),
+  ];
 
   List<Widget> _buildSeriesNavigationButtons() => [
     _ToolbarButton(
@@ -555,11 +583,13 @@ enum _Arrow { up, down, left, right }
 class _KeyRow extends StatelessWidget {
   const _KeyRow({required this.children});
 
+  static const height = 42.0;
+
   final List<Widget> children;
 
   @override
   Widget build(BuildContext context) => SizedBox(
-    height: 42,
+    height: height,
     child: Row(
       children: children.map((c) {
         if (c is Expanded) return c;
@@ -672,33 +702,39 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
           borderRadius: BorderRadius.circular(6),
           border: _isPressed ? Border.all(color: colorScheme.primary) : null,
         ),
-        child: Center(
-          child: widget.icon != null && widget.label.isNotEmpty
-              ? Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildIcon(14, colorScheme.onSurfaceVariant),
-                    const SizedBox(width: 3),
-                    Text(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: widget.icon != null && widget.label.isNotEmpty
+                  ? Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        _buildIcon(14, colorScheme.onSurfaceVariant),
+                        const SizedBox(width: 3),
+                        Text(
+                          widget.label,
+                          style: TextStyle(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                            color: colorScheme.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    )
+                  : widget.icon != null
+                  ? _buildIcon(18, colorScheme.onSurfaceVariant)
+                  : Text(
                       widget.label,
                       style: TextStyle(
-                        fontSize: 10,
+                        fontSize: 11,
                         fontWeight: FontWeight.w500,
                         color: colorScheme.onSurfaceVariant,
                       ),
                     ),
-                  ],
-                )
-              : widget.icon != null
-              ? _buildIcon(18, colorScheme.onSurfaceVariant)
-              : Text(
-                  widget.label,
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w500,
-                    color: colorScheme.onSurfaceVariant,
-                  ),
-                ),
+            ),
+          ),
         ),
       ),
     );
@@ -781,27 +817,33 @@ class _ModifierButtonState extends State<_ModifierButton> {
           color: bgColor,
           borderRadius: BorderRadius.circular(6),
         ),
-        child: Center(
-          child: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              if (widget.icon != null) ...[
-                Icon(widget.icon, size: 14, color: textColor),
-                const SizedBox(width: 3),
-              ],
-              Text(
-                widget.label,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w500,
-                  color: textColor,
-                ),
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 4),
+          child: Center(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (widget.icon != null) ...[
+                    Icon(widget.icon, size: 14, color: textColor),
+                    const SizedBox(width: 3),
+                  ],
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w500,
+                      color: textColor,
+                    ),
+                  ),
+                  if (lockIcon != null) ...[
+                    const SizedBox(width: 2),
+                    Icon(lockIcon, size: 10, color: textColor),
+                  ],
+                ],
               ),
-              if (lockIcon != null) ...[
-                const SizedBox(width: 2),
-                Icon(lockIcon, size: 10, color: textColor),
-              ],
-            ],
+            ),
           ),
         ),
       ),

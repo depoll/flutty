@@ -3178,6 +3178,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final bottomMargin = upgradeSnackBarBottomMargin(
           MediaQuery.of(context),
           showKeyboardToolbar: _showKeyboardToolbar,
+          keyboardToolbarHeight: resolveKeyboardToolbarHeight(
+            MediaQuery.of(context),
+          ),
         );
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(

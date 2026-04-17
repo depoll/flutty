@@ -27,6 +27,23 @@ void main() {
     expect(resolveTerminalTabInput(shiftActive: true), '\x1b[Z');
   });
 
+  test('uses a single toolbar row in landscape', () {
+    const mediaQuery = MediaQueryData(size: Size(844, 390));
+
+    expect(shouldUseSingleRowKeyboardToolbar(mediaQuery), isTrue);
+    expect(resolveKeyboardToolbarHeight(mediaQuery), 42);
+  });
+
+  test('uses two toolbar rows in portrait', () {
+    const mediaQuery = MediaQueryData(
+      size: Size(390, 844),
+      padding: EdgeInsets.only(bottom: 34),
+    );
+
+    expect(shouldUseSingleRowKeyboardToolbar(mediaQuery), isFalse);
+    expect(resolveKeyboardToolbarHeight(mediaQuery), 118);
+  });
+
   group('KeyboardToolbar', () {
     late Terminal terminal;
 
@@ -86,6 +103,44 @@ void main() {
         ..sort((a, b) => positions[a]!.compareTo(positions[b]!));
 
       expect(actualOrder, expectedOrder);
+    });
+
+    testWidgets('renders a single landscape row for extra keys', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(844, 390)),
+            child: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        ),
+      );
+
+      final escapeCenter = tester.getCenter(find.byTooltip('Escape'));
+      final upCenter = tester.getCenter(find.byTooltip('Up'));
+      final endCenter = tester.getCenter(find.byTooltip('End'));
+
+      expect((escapeCenter.dy - upCenter.dy).abs(), lessThan(0.1));
+      expect((escapeCenter.dy - endCenter.dy).abs(), lessThan(0.1));
+    });
+
+    testWidgets('keeps the landscape End key fully on screen', (tester) async {
+      await tester.binding.setSurfaceSize(const Size(844, 390));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(size: Size(844, 390)),
+            child: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+          ),
+        ),
+      );
+
+      final endRight = tester.getTopRight(find.byTooltip('End')).dx;
+
+      expect(endRight, lessThanOrEqualTo(844));
     });
 
     testWidgets('modifier key toggles state on tap', (tester) async {
