@@ -2650,6 +2650,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _handleTerminalLongPressStart(
+    LongPressStartDetails details,
+    CellOffset cellOffset,
+  ) {
+    // Bypass xterm's built-in word selection on touch: open the native
+    // selection overlay directly so users get the polished selection UI
+    // instead of the underlying terminal selection.
+    _enterNativeSelectionMode(
+      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+    );
+  }
+
   void _showTerminalInputIndicator(String label) {
     _terminalInputIndicatorTimer?.cancel();
     setState(() => _terminalInputIndicatorLabel = label);
@@ -4516,6 +4528,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _terminalTextInputController.suppressNextTouchKeyboardRequest,
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
+      onLongPressStart: isMobile ? _handleTerminalLongPressStart : null,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
