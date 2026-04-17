@@ -101,4 +101,68 @@ void main() {
       );
     });
   });
+
+  group('decideTmuxHeartbeatAction', () {
+    const heartbeat = Duration(seconds: 5);
+    const maxSilence = Duration(seconds: 30);
+
+    test('noop while control-mode notifications are flowing', () {
+      expect(
+        decideTmuxHeartbeatAction(
+          silence: Duration.zero,
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.noop,
+      );
+      expect(
+        decideTmuxHeartbeatAction(
+          silence: const Duration(milliseconds: 4999),
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.noop,
+      );
+    });
+
+    test('synthesizes a refresh once the channel has been silent for the '
+        'heartbeat interval', () {
+      expect(
+        decideTmuxHeartbeatAction(
+          silence: heartbeat,
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.refresh,
+      );
+      expect(
+        decideTmuxHeartbeatAction(
+          silence: const Duration(seconds: 20),
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.refresh,
+      );
+    });
+
+    test('restarts the control session once silence exceeds the dead-channel '
+        'threshold', () {
+      expect(
+        decideTmuxHeartbeatAction(
+          silence: maxSilence,
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.restart,
+      );
+      expect(
+        decideTmuxHeartbeatAction(
+          silence: const Duration(minutes: 5),
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.restart,
+      );
+    });
+  });
 }

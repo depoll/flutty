@@ -466,6 +466,40 @@ bool shouldReloadTmuxWindowsFromControlLine(
   return notificationPrefixes.any(trimmed.startsWith);
 }
 
+/// Action the tmux control-mode heartbeat decides to take based on how
+/// long the channel has been silent.
+@visibleForTesting
+enum TmuxControlHeartbeatAction {
+  /// No action — control-mode notifications have arrived recently.
+  noop,
+
+  /// Synthesize a refresh event so listeners refetch window state via a
+  /// separate exec channel.
+  refresh,
+
+  /// Tear down and restart the control session — silence has exceeded
+  /// the dead-channel threshold.
+  restart,
+}
+
+/// Pure decision function used by the control-mode observer's heartbeat
+/// to keep the UI in sync when push notifications are dropped or the SSH
+/// channel is half-open.
+@visibleForTesting
+TmuxControlHeartbeatAction decideTmuxHeartbeatAction({
+  required Duration silence,
+  required Duration heartbeatInterval,
+  required Duration maxSilenceBeforeRestart,
+}) {
+  if (silence >= maxSilenceBeforeRestart) {
+    return TmuxControlHeartbeatAction.restart;
+  }
+  if (silence >= heartbeatInterval) {
+    return TmuxControlHeartbeatAction.refresh;
+  }
+  return TmuxControlHeartbeatAction.noop;
+}
+
 @immutable
 class _TmuxWindowWatchKey {
   const _TmuxWindowWatchKey({
@@ -493,7 +527,9 @@ class _TmuxWindowChangeObserver {
     required this.session,
     required this.sessionName,
     required this.onDispose,
-  }) : _controller = StreamController<void>.broadcast() {
+    DateTime Function()? now,
+  }) : _now = now ?? DateTime.now,
+       _controller = StreamController<void>.broadcast() {
     _controller
       ..onListen = _ensureStarted
       ..onCancel = () => unawaited(dispose());
@@ -501,10 +537,22 @@ class _TmuxWindowChangeObserver {
 
   static const _eventDebounce = Duration(milliseconds: 150);
 
+  /// How often to check whether the control-mode session has gone silent
+  /// and synthesize a refresh event when it has. Keeps the UI in sync
+  /// even if `%subscription-changed` notifications are dropped (e.g. due
+  /// to a half-open SSH channel that did not surface as `done`).
+  static const _heartbeatInterval = Duration(seconds: 5);
+
+  /// If no control-mode line arrives for this long, treat the session as
+  /// dead and force a reconnect even though the SSH `done` callback never
+  /// fired.
+  static const _maxSilenceBeforeRestart = Duration(seconds: 30);
+
   final TmuxService service;
   final SshSession session;
   final String sessionName;
   final VoidCallback onDispose;
+  final DateTime Function() _now;
   final StreamController<void> _controller;
 
   StreamSubscription<String>? _stdoutSubscription;
@@ -512,10 +560,12 @@ class _TmuxWindowChangeObserver {
   StreamSubscription<void>? _doneSubscription;
   Timer? _debounceTimer;
   Timer? _restartTimer;
+  Timer? _heartbeatTimer;
   SSHSession? _controlSession;
   bool _starting = false;
   bool _disposed = false;
   int _restartAttempts = 0;
+  DateTime? _lastControlActivity;
 
   String get _subscriptionName =>
       'flutty-${session.connectionId}-${sessionName.hashCode.abs()}';
@@ -555,6 +605,8 @@ class _TmuxWindowChangeObserver {
       );
       _configureControlSession();
       _restartAttempts = 0;
+      _lastControlActivity = _now();
+      _startHeartbeat();
     } on Object catch (error, stackTrace) {
       _handleControlFailure(error, stackTrace);
     } finally {
@@ -572,6 +624,7 @@ class _TmuxWindowChangeObserver {
 
   void _handleStdoutLine(String line) {
     if (_disposed) return;
+    _lastControlActivity = _now();
     final trimmed = line.trim();
     if (trimmed.startsWith('%exit')) {
       _handleControlClosed();
@@ -588,6 +641,7 @@ class _TmuxWindowChangeObserver {
 
   void _handleStderrLine(String line) {
     if (_disposed || line.trim().isEmpty) return;
+    _lastControlActivity = _now();
     _scheduleRestart();
   }
 
@@ -612,6 +666,7 @@ class _TmuxWindowChangeObserver {
 
   void _scheduleRestart() {
     if (_disposed || !_controller.hasListener) return;
+    _stopHeartbeat();
     _restartTimer?.cancel();
     final cappedAttempt = _restartAttempts.clamp(0, 4);
     final delay = Duration(seconds: 1 << cappedAttempt);
@@ -619,7 +674,47 @@ class _TmuxWindowChangeObserver {
     _restartTimer = Timer(delay, () => unawaited(_ensureStarted()));
   }
 
+  void _startHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = Timer.periodic(_heartbeatInterval, (_) => _onHeartbeat());
+  }
+
+  void _stopHeartbeat() {
+    _heartbeatTimer?.cancel();
+    _heartbeatTimer = null;
+  }
+
+  /// Heartbeat tick. Two responsibilities:
+  ///
+  /// 1. If the control session has been silent for [_heartbeatInterval],
+  ///    synthesize a refresh event so listeners refetch window state via
+  ///    a separate exec channel. This keeps alerts visible in real time
+  ///    even when control-mode notifications are dropped or delayed.
+  /// 2. If the silence exceeds [_maxSilenceBeforeRestart], assume the SSH
+  ///    channel is half-open and tear down + restart it; tmux normally
+  ///    emits some traffic at least every few seconds, so prolonged
+  ///    silence is a strong signal of a dead channel.
+  void _onHeartbeat() {
+    if (_disposed) return;
+    final lastActivity = _lastControlActivity;
+    if (lastActivity == null) return;
+    final action = decideTmuxHeartbeatAction(
+      silence: _now().difference(lastActivity),
+      heartbeatInterval: _heartbeatInterval,
+      maxSilenceBeforeRestart: _maxSilenceBeforeRestart,
+    );
+    switch (action) {
+      case TmuxControlHeartbeatAction.noop:
+        return;
+      case TmuxControlHeartbeatAction.refresh:
+        _scheduleEvent();
+      case TmuxControlHeartbeatAction.restart:
+        _handleControlClosed();
+    }
+  }
+
   void _cleanupControlSession() {
+    _stopHeartbeat();
     _debounceTimer?.cancel();
     _debounceTimer = null;
     unawaited(_stdoutSubscription?.cancel());
@@ -630,11 +725,13 @@ class _TmuxWindowChangeObserver {
     _doneSubscription = null;
     _controlSession?.close();
     _controlSession = null;
+    _lastControlActivity = null;
   }
 
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _stopHeartbeat();
     _restartTimer?.cancel();
     _restartTimer = null;
     _cleanupControlSession();
