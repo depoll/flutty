@@ -35,6 +35,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onLinkTapDown,
     this.onLinkTap,
     this.readOnly = false,
+    this.suppressLongPressDragSelection = false,
   });
 
   final MonkeyTerminalViewState terminalView;
@@ -82,6 +83,12 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final ValueChanged<String>? onLinkTap;
 
   final bool readOnly;
+
+  /// When true, suppresses xterm's drag-to-extend behavior during a touch
+  /// long-press while still allowing the initial long-press to set a word
+  /// selection. Useful when the parent widget renders its own selection UI
+  /// and doesn't want to be re-entered on every drag update.
+  final bool suppressLongPressDragSelection;
 
   @override
   State<MonkeyTerminalGestureHandler> createState() =>
@@ -250,6 +257,12 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
     final override = widget.onLongPressMoveUpdate;
     if (override != null) {
       override(details);
+      return;
+    }
+    if (widget.suppressLongPressDragSelection) {
+      // Skip xterm's drag-to-extend on touch so the parent's selection UI
+      // (e.g. native selection overlay) isn't thrashed by repeated selection
+      // changes during a long-press drag.
       return;
     }
     renderTerminal.selectWord(

@@ -103,7 +103,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.autofocus = false,
     this.onTapUp,
     this.onDoubleTapDown,
-    this.onLongPressStart,
+    this.suppressLongPressDragSelection = false,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.resolveLinkTap,
@@ -165,10 +165,11 @@ class MonkeyTerminalView extends StatefulWidget {
   /// Callback for when the user double taps on the terminal.
   final void Function(TapDownDetails, CellOffset)? onDoubleTapDown;
 
-  /// Callback for when the user starts a touch long-press on the terminal.
-  /// When provided, the default xterm behavior of selecting a word at the
-  /// long-press location is suppressed in favor of this callback.
-  final void Function(LongPressStartDetails, CellOffset)? onLongPressStart;
+  /// When true, the terminal's built-in drag-to-extend selection on touch
+  /// long-press is suppressed. The initial word selection on long-press
+  /// start still occurs (so the existing selection-changed listener can
+  /// react), but subsequent move updates do not extend the selection.
+  final bool suppressLongPressDragSelection;
 
   /// Function called when the user taps on the terminal with a secondary
   /// button.
@@ -455,12 +456,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
       onDoubleTapDown: widget.onDoubleTapDown != null ? _onDoubleTapDown : null,
-      onLongPressStart: widget.onLongPressStart != null
-          ? _onLongPressStart
-          : null,
-      onLongPressMoveUpdate: widget.onLongPressStart != null
-          ? _onLongPressMoveUpdate
-          : null,
+      suppressLongPressDragSelection: widget.suppressLongPressDragSelection,
       onSecondaryTapDown: widget.onSecondaryTapDown != null
           ? _onSecondaryTapDown
           : null,
@@ -534,16 +530,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   void _onDoubleTapDown(TapDownDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onDoubleTapDown?.call(details, offset);
-  }
-
-  void _onLongPressStart(LongPressStartDetails details) {
-    final offset = renderTerminal.getCellOffset(details.localPosition);
-    widget.onLongPressStart?.call(details, offset);
-  }
-
-  void _onLongPressMoveUpdate(LongPressMoveUpdateDetails details) {
-    // No-op: suppresses xterm's drag-to-extend selection while a parent
-    // long-press handler is wired up.
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {
