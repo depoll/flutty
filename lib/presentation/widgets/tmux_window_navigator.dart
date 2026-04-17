@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:convert';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -113,7 +112,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
-  Set<AgentLaunchTool>? _installedTools;
+  Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<void>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
@@ -132,6 +131,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   @override
   void initState() {
     super.initState();
+    _installedToolsFuture = _tmux.detectInstalledAgentTools(widget.session);
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
         .listen((_) {
@@ -163,8 +163,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         _windows = windows;
         _isLoadingWindows = false;
       });
-      // Detect installed CLIs in parallel (non-blocking).
-      unawaited(_detectInstalledTools());
     } on Exception catch (e) {
       if (!mounted) return;
       setState(() {
@@ -179,55 +177,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       }
     }
   }
-
-  Future<void> _detectInstalledTools() async {
-    try {
-      // Source shell profiles so CLIs in Homebrew/nvm/etc. paths are found,
-      // while silencing profile output so only `command -v` results are parsed.
-      final execSession = await widget.session.execute(
-        '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
-        '>/dev/null 2>&1; '
-        'command -v aider claude copilot codex gemini opencode 2>/dev/null'
-        ' || true',
-      );
-      try {
-        final stdout = await execSession.stdout
-            .cast<List<int>>()
-            .transform(utf8.decoder)
-            .join()
-            .timeout(const Duration(seconds: 5), onTimeout: () => '');
-        await execSession.stderr
-            .cast<List<int>>()
-            .transform(utf8.decoder)
-            .join()
-            .timeout(const Duration(seconds: 5), onTimeout: () => '');
-        if (!mounted) return;
-
-        final paths = stdout.trim().split('\n').where((l) => l.isNotEmpty);
-        final installed = <AgentLaunchTool>{};
-        for (final path in paths) {
-          final bin = path.split('/').last;
-          final tool = _toolForBinary(bin);
-          if (tool != null) installed.add(tool);
-        }
-        setState(() => _installedTools = installed);
-      } finally {
-        execSession.close();
-      }
-    } on Object {
-      // Ignore — show all tools if detection fails.
-    }
-  }
-
-  static AgentLaunchTool? _toolForBinary(String bin) => switch (bin) {
-    'aider' => AgentLaunchTool.aider,
-    'claude' => AgentLaunchTool.claudeCode,
-    'copilot' => AgentLaunchTool.copilotCli,
-    'codex' => AgentLaunchTool.codex,
-    'gemini' => AgentLaunchTool.geminiCli,
-    'opencode' => AgentLaunchTool.openCode,
-    _ => null,
-  };
 
   Future<void> _loadRecentSessions() async {
     if (_isLoadingSessions || _recentSessions != null) return;
@@ -291,7 +240,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       context: context,
       builder: (context) => TmuxToolPickerSheet(
         isProUser: widget.isProUser,
-        installedTools: _installedTools,
+        installedToolsFuture: _installedToolsFuture,
         onToolSelected: (tool) {
           Navigator.pop(context);
           _createNewWindow(command: tool.commandName, name: tool.commandName);
@@ -702,16 +651,20 @@ class TmuxToolPickerSheet extends StatelessWidget {
     required this.isProUser,
     required this.onToolSelected,
     required this.onEmptyWindow,
-    this.installedTools,
+    this.installedToolsFuture,
     super.key,
   });
 
   /// Whether the user has Pro access.
   final bool isProUser;
 
-  /// Tools detected as installed on the remote host, or `null` if not yet
-  /// detected (shows all tools).
-  final Set<AgentLaunchTool>? installedTools;
+  /// Future that resolves to the set of agent CLIs detected on the remote
+  /// host, or `null` if the caller could not initiate detection. While the
+  /// future is pending the picker shows a loading indicator. Once it
+  /// completes, only the detected tools are listed; if it resolves to an
+  /// empty set (or fails), no CLI tools are shown but "Empty window"
+  /// remains available.
+  final Future<Set<AgentLaunchTool>>? installedToolsFuture;
 
   /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
@@ -719,7 +672,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
   /// Called when the user selects an empty window.
   final VoidCallback onEmptyWindow;
 
-  /// All tools that can be shown in the picker.
+  /// All tools that can be shown in the picker, in display order.
   static const _allTools = [
     AgentLaunchTool.aider,
     AgentLaunchTool.claudeCode,
@@ -737,10 +690,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
       screenHeight * _tmuxToolPickerMaxHeightFactor,
       _tmuxToolPickerMaxHeightCap,
     );
-    // Show only installed tools, or all if detection hasn't completed.
-    final tools = installedTools != null
-        ? _allTools.where((t) => installedTools!.contains(t)).toList()
-        : _allTools;
 
     return SafeArea(
       child: ConstrainedBox(
@@ -754,19 +703,73 @@ class TmuxToolPickerSheet extends StatelessWidget {
                 padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
                 child: Text('New Window', style: theme.textTheme.titleMedium),
               ),
-              for (final tool in tools)
-                ListTile(
-                  visualDensity: _tmuxNavigatorDenseVisualDensity,
-                  minTileHeight: 42,
-                  contentPadding: _tmuxNavigatorTilePadding,
-                  horizontalTitleGap: 12,
-                  minLeadingWidth: 20,
-                  leading: TmuxToolPickerSheet._iconForTool(tool, theme),
-                  title: Text(tool.label),
-                  trailing: !isProUser ? const PremiumBadge() : null,
-                  enabled: isProUser,
-                  onTap: () => onToolSelected(tool),
-                ),
+              FutureBuilder<Set<AgentLaunchTool>>(
+                future: installedToolsFuture,
+                builder: (context, snapshot) {
+                  if (installedToolsFuture != null &&
+                      snapshot.connectionState != ConnectionState.done) {
+                    return const Padding(
+                      padding: EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Row(
+                        children: [
+                          SizedBox(
+                            width: 16,
+                            height: 16,
+                            child: CircularProgressIndicator.adaptive(
+                              strokeWidth: 2,
+                            ),
+                          ),
+                          SizedBox(width: 12),
+                          Text('Detecting installed CLIs…'),
+                        ],
+                      ),
+                    );
+                  }
+                  final installed = snapshot.data;
+                  final tools = installed != null
+                      ? _allTools.where(installed.contains).toList()
+                      : _allTools;
+                  if (tools.isEmpty) {
+                    return Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 16,
+                        vertical: 12,
+                      ),
+                      child: Text(
+                        'No supported CLIs found on PATH.',
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    );
+                  }
+                  return Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      for (final tool in tools)
+                        ListTile(
+                          visualDensity: _tmuxNavigatorDenseVisualDensity,
+                          minTileHeight: 42,
+                          contentPadding: _tmuxNavigatorTilePadding,
+                          horizontalTitleGap: 12,
+                          minLeadingWidth: 20,
+                          leading: TmuxToolPickerSheet._iconForTool(
+                            tool,
+                            theme,
+                          ),
+                          title: Text(tool.label),
+                          trailing: !isProUser ? const PremiumBadge() : null,
+                          enabled: isProUser,
+                          onTap: () => onToolSelected(tool),
+                        ),
+                    ],
+                  );
+                },
+              ),
               const Divider(height: 1),
               ListTile(
                 visualDensity: _tmuxNavigatorDenseVisualDensity,
