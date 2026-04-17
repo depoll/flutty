@@ -66,6 +66,28 @@ Host _buildHost({required int id}) => Host(
 String _selectedText(TextEditingController controller) =>
     controller.selection.textInside(controller.text);
 
+void _expectTransparentOverlayDecoration(
+  WidgetTester tester,
+  Finder overlayField,
+) {
+  final inputDecorator = find.descendant(
+    of: overlayField,
+    matching: find.byType(InputDecorator),
+  );
+  expect(inputDecorator, findsOneWidget);
+
+  final decoration = tester.widget<InputDecorator>(inputDecorator).decoration;
+  expect(decoration.filled, isFalse);
+  expect(decoration.fillColor, Colors.transparent);
+  expect(decoration.hoverColor, Colors.transparent);
+  expect(decoration.border, InputBorder.none);
+  expect(decoration.enabledBorder, InputBorder.none);
+  expect(decoration.disabledBorder, InputBorder.none);
+  expect(decoration.focusedBorder, InputBorder.none);
+  expect(decoration.errorBorder, InputBorder.none);
+  expect(decoration.focusedErrorBorder, InputBorder.none);
+}
+
 TextEditingController _expectOverlayWordSelection(
   WidgetTester tester,
   Finder overlayField,
@@ -82,6 +104,7 @@ TextEditingController _expectOverlayWordSelection(
   );
   expect(editableText, findsOneWidget);
   expect(tester.widget<EditableText>(editableText).focusNode.hasFocus, isFalse);
+  _expectTransparentOverlayDecoration(tester, overlayField);
 
   return controller;
 }
