@@ -41,12 +41,42 @@ void main() {
       expect(resolveTmuxBarRevealBottomOffset(0), -22);
       expect(resolveTmuxBarRevealBottomOffset(11), -11);
       expect(resolveTmuxBarRevealBottomOffset(22), 0);
+      expect(resolveTmuxBarRevealBottomOffset(56), 34);
 
       expect(resolveTmuxBarRevealOpacity(-10), 0);
       expect(resolveTmuxBarRevealOpacity(0), 0);
       expect(resolveTmuxBarRevealOpacity(11), 0.5);
       expect(resolveTmuxBarRevealOpacity(22), 1);
       expect(resolveTmuxBarRevealOpacity(40), 1);
+    });
+
+    test('tmux bar stays inside visible safe insets', () {
+      const portraitMediaQuery = MediaQueryData(
+        size: Size(390, 844),
+        padding: EdgeInsets.only(bottom: 34),
+      );
+      const portraitKeyboardMediaQuery = MediaQueryData(
+        size: Size(390, 844),
+        viewPadding: EdgeInsets.only(bottom: 34),
+        viewInsets: EdgeInsets.only(bottom: 320),
+      );
+      const landscapeMediaQuery = MediaQueryData(
+        size: Size(844, 390),
+        padding: EdgeInsets.fromLTRB(44, 0, 34, 21),
+      );
+
+      expect(
+        resolveTmuxBarSafeInsets(portraitMediaQuery),
+        const EdgeInsets.only(bottom: 34),
+      );
+      expect(
+        resolveTmuxBarSafeInsets(portraitKeyboardMediaQuery),
+        EdgeInsets.zero,
+      );
+      expect(
+        resolveTmuxBarSafeInsets(landscapeMediaQuery),
+        const EdgeInsets.fromLTRB(44, 0, 34, 21),
+      );
     });
 
     test(

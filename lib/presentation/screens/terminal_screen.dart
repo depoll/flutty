@@ -105,6 +105,17 @@ String? resolvePreferredTmuxSessionName({
   String? autoConnectCommand,
 }) => structuredSessionName ?? parseTmuxSessionName(autoConnectCommand);
 
+/// Resolves the safe-area insets the tmux bar should stay within.
+@visibleForTesting
+EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
+  final horizontalInsets = resolveTerminalRenderPadding(mediaQuery);
+  return EdgeInsets.only(
+    left: horizontalInsets.left,
+    right: horizontalInsets.right,
+    bottom: mediaQuery.padding.bottom,
+  );
+}
+
 /// Resolves the tmux bar's vertical offset from the animated bottom padding.
 @visibleForTesting
 double resolveTmuxBarRevealBottomOffset(
@@ -3392,55 +3403,67 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isTmuxActive &&
         _showTmuxBar &&
         connectionState == SshConnectionState.connected;
-    final targetBottomPadding = showTmux
-        ? _TmuxExpandableBar.handleHeight
-        : 0.0;
 
     return LayoutBuilder(
-      builder: (context, constraints) => TweenAnimationBuilder<double>(
-        tween: Tween<double>(end: targetBottomPadding),
-        duration: _tmuxBarRevealDuration,
-        curve: Curves.easeOutCubic,
-        child: _buildTmuxExpandableBar(theme, constraints.maxHeight),
-        builder: (context, animatedBottomPadding, child) {
-          final barOpacity = resolveTmuxBarRevealOpacity(animatedBottomPadding);
+      builder: (context, constraints) {
+        final tmuxBarSafeInsets = resolveTmuxBarSafeInsets(
+          MediaQuery.of(context),
+        );
+        final targetBottomPadding = showTmux
+            ? _TmuxExpandableBar.handleHeight + tmuxBarSafeInsets.bottom
+            : 0.0;
+        final availableHeight = max(
+          0,
+          constraints.maxHeight - tmuxBarSafeInsets.bottom,
+        ).toDouble();
 
-          return Stack(
-            children: [
-              // Reserve actual layout space for the collapsed handle so the
-              // terminal viewport ends exactly at the handle boundary.
-              Positioned.fill(
-                child: ColoredBox(
-                  color: terminalTheme.background,
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: _buildTerminalView(terminalTheme, isMobile),
-                      ),
-                      SizedBox(height: animatedBottomPadding),
-                    ],
-                  ),
-                ),
-              ),
-              if (showTmux || animatedBottomPadding > 0)
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: resolveTmuxBarRevealBottomOffset(
-                    animatedBottomPadding,
-                  ),
-                  child: IgnorePointer(
-                    ignoring: barOpacity == 0,
-                    child: Opacity(
-                      opacity: barOpacity,
-                      child: child ?? const SizedBox.shrink(),
+        return TweenAnimationBuilder<double>(
+          tween: Tween<double>(end: targetBottomPadding),
+          duration: _tmuxBarRevealDuration,
+          curve: Curves.easeOutCubic,
+          child: _buildTmuxExpandableBar(theme, availableHeight),
+          builder: (context, animatedBottomPadding, child) {
+            final barOpacity = resolveTmuxBarRevealOpacity(
+              animatedBottomPadding,
+            );
+
+            return Stack(
+              children: [
+                // Reserve actual layout space for the collapsed handle so the
+                // terminal viewport ends exactly at the handle boundary.
+                Positioned.fill(
+                  child: ColoredBox(
+                    color: terminalTheme.background,
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: _buildTerminalView(terminalTheme, isMobile),
+                        ),
+                        SizedBox(height: animatedBottomPadding),
+                      ],
                     ),
                   ),
                 ),
-            ],
-          );
-        },
-      ),
+                if (showTmux || animatedBottomPadding > 0)
+                  Positioned(
+                    left: tmuxBarSafeInsets.left,
+                    right: tmuxBarSafeInsets.right,
+                    bottom: resolveTmuxBarRevealBottomOffset(
+                      animatedBottomPadding,
+                    ),
+                    child: IgnorePointer(
+                      ignoring: barOpacity == 0,
+                      child: Opacity(
+                        opacity: barOpacity,
+                        child: child ?? const SizedBox.shrink(),
+                      ),
+                    ),
+                  ),
+              ],
+            );
+          },
+        );
+      },
     );
   }
 
