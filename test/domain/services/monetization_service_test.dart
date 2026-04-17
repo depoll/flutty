@@ -43,6 +43,8 @@ void main() {
           MonetizationProductIds.iosAnnual,
           MonetizationProductIds.iosMonthlyProd,
           MonetizationProductIds.iosAnnualProd,
+          MonetizationProductIds.iosProLifetime,
+          MonetizationProductIds.iosProLifetimeProd,
         ]),
       );
       expect(
@@ -52,6 +54,15 @@ void main() {
           MonetizationProductIds.iosAnnual,
           MonetizationProductIds.iosMonthlyProd,
           MonetizationProductIds.iosAnnualProd,
+          MonetizationProductIds.iosProLifetime,
+          MonetizationProductIds.iosProLifetimeProd,
+        ]),
+      );
+      expect(
+        MonetizationProductIds.forPlatform(TargetPlatform.android),
+        unorderedEquals([
+          MonetizationProductIds.androidPro,
+          MonetizationProductIds.androidProLifetime,
         ]),
       );
       expect(
@@ -59,8 +70,27 @@ void main() {
         containsAll({
           MonetizationProductIds.iosMonthlyProd,
           MonetizationProductIds.iosAnnualProd,
+          MonetizationProductIds.iosProLifetimeProd,
+          MonetizationProductIds.androidProLifetime,
         }),
       );
+      expect(
+        MonetizationProductIds.isLifetime(
+          MonetizationProductIds.androidProLifetime,
+        ),
+        isTrue,
+      );
+      expect(
+        MonetizationProductIds.isLifetime(
+          MonetizationProductIds.iosProLifetimeProd,
+        ),
+        isTrue,
+      );
+      expect(
+        MonetizationProductIds.isLifetime(MonetizationProductIds.androidPro),
+        isFalse,
+      );
+      expect(MonetizationProductIds.isLifetime(null), isFalse);
     },
   );
 
@@ -261,6 +291,66 @@ void main() {
 
       expect(offers.single.currencySymbol, 'USD');
     });
+
+    test('excludes lifetime products from the paywall offers list', () {
+      final offers = buildMonetizationOffers([
+        AppStoreProductDetails.fromSKProduct(
+          SKProductWrapper(
+            productIdentifier: MonetizationProductIds.iosMonthly,
+            localizedTitle: 'MonkeySSH Pro Monthly',
+            localizedDescription: 'Monthly MonkeySSH Pro subscription',
+            priceLocale: _usdPriceLocale,
+            price: '5.00',
+            subscriptionPeriod: SKProductSubscriptionPeriodWrapper(
+              numberOfUnits: 1,
+              unit: SKSubscriptionPeriodUnit.month,
+            ),
+          ),
+        ),
+        // A non-consumable lifetime App Store product has no
+        // subscriptionPeriod. It must never appear in the paywall.
+        AppStoreProductDetails.fromSKProduct(
+          SKProductWrapper(
+            productIdentifier: MonetizationProductIds.iosProLifetimeProd,
+            localizedTitle: 'MonkeySSH Pro Lifetime',
+            localizedDescription: 'Lifetime MonkeySSH Pro purchase',
+            priceLocale: _usdPriceLocale,
+            price: '99.00',
+            subscriptionPeriod: SKProductSubscriptionPeriodWrapper(
+              numberOfUnits: 0,
+              unit: SKSubscriptionPeriodUnit.month,
+            ),
+          ),
+        ),
+      ]);
+
+      expect(offers, hasLength(1));
+      expect(offers.single.productId, MonetizationProductIds.iosMonthly);
+    });
+
+    test(
+      'excludes lifetime Google Play one-time products from the paywall',
+      () {
+        final offers = buildMonetizationOffers(
+          GooglePlayProductDetails.fromProductDetails(
+            const ProductDetailsWrapper(
+              description: 'MonkeySSH Pro Lifetime',
+              name: 'MonkeySSH Pro Lifetime',
+              productId: MonetizationProductIds.androidProLifetime,
+              productType: ProductType.inapp,
+              title: 'MonkeySSH Pro Lifetime',
+              oneTimePurchaseOfferDetails: OneTimePurchaseOfferDetailsWrapper(
+                priceAmountMicros: 99000000,
+                priceCurrencyCode: 'USD',
+                formattedPrice: r'$99.00',
+              ),
+            ),
+          ),
+        );
+
+        expect(offers, isEmpty);
+      },
+    );
   });
 
   group('MonetizationService', () {
@@ -420,6 +510,89 @@ void main() {
         verify(() => inAppPurchase.isAvailable()).called(1);
       },
     );
+
+    test(
+      'purchase stream activates lifetime entitlement when a redeemed lifetime product arrives',
+      () async {
+        final service = MonetizationService(
+          settings,
+          inAppPurchase: inAppPurchase,
+          allowDebugUnlock: false,
+        );
+        addTearDown(service.dispose);
+
+        final purchase = MockPurchaseDetails();
+        when(
+          () => purchase.productID,
+        ).thenReturn(MonetizationProductIds.iosProLifetimeProd);
+        when(() => purchase.status).thenReturn(PurchaseStatus.purchased);
+        when(() => purchase.pendingCompletePurchase).thenReturn(true);
+        when(() => purchase.transactionDate).thenReturn('1712732400000');
+        when(
+          () => inAppPurchase.completePurchase(purchase),
+        ).thenAnswer((_) async {});
+
+        await service.initialize();
+        purchaseController.add([purchase]);
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+
+        expect(service.currentState.isProUnlocked, isTrue);
+        expect(service.currentState.isLifetimeUnlocked, isTrue);
+        expect(
+          service.currentState.activeProductId,
+          MonetizationProductIds.iosProLifetimeProd,
+        );
+        expect(service.currentState.activeOfferId, isNull);
+        expect(
+          await settings.getString(SettingKeys.monetizationActiveProductId),
+          MonetizationProductIds.iosProLifetimeProd,
+        );
+        verify(() => inAppPurchase.completePurchase(purchase)).called(1);
+      },
+    );
+
+    test('restored lifetime purchase from Google Play unlocks pro', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.android;
+      addTearDown(() => debugDefaultTargetPlatformOverride = null);
+
+      when(() => inAppPurchase.isAvailable()).thenAnswer((_) async => true);
+      when(() => inAppPurchase.queryProductDetails(any())).thenAnswer(
+        (_) async => ProductDetailsResponse(
+          productDetails: const [],
+          notFoundIDs: const [],
+        ),
+      );
+      when(androidPlatformAddition.queryPastPurchases).thenAnswer(
+        (_) async => QueryPurchaseDetailsResponse(
+          pastPurchases: [
+            _androidPastLifetimePurchase(purchaseTimeMillis: 1712732400000),
+          ],
+        ),
+      );
+
+      final service = MonetizationService(
+        settings,
+        inAppPurchase: inAppPurchase,
+        androidPlatformAddition: androidPlatformAddition,
+        allowDebugUnlock: false,
+      );
+      addTearDown(service.dispose);
+
+      final result = await service.restorePurchases();
+
+      expect(result.success, isTrue);
+      expect(result.message, contains('Lifetime'));
+      expect(service.currentState.isProUnlocked, isTrue);
+      expect(service.currentState.isLifetimeUnlocked, isTrue);
+      expect(
+        service.currentState.activeProductId,
+        MonetizationProductIds.androidProLifetime,
+      );
+      expect(
+        await settings.getBool(SettingKeys.monetizationProUnlocked),
+        isTrue,
+      );
+    });
 
     test(
       'purchase stream updates cached entitlements after a purchase',
@@ -951,6 +1124,32 @@ GooglePlayPurchaseDetails _androidPastPurchase({
     signature: 'signature',
     products: const [MonetizationProductIds.androidPro],
     isAutoRenewing: true,
+    originalJson: '{}',
+    isAcknowledged: true,
+    purchaseState: PurchaseStateWrapper.purchased,
+  ),
+  status: PurchaseStatus.restored,
+);
+
+GooglePlayPurchaseDetails _androidPastLifetimePurchase({
+  required int purchaseTimeMillis,
+}) => GooglePlayPurchaseDetails(
+  purchaseID: 'lifetime-$purchaseTimeMillis',
+  productID: MonetizationProductIds.androidProLifetime,
+  verificationData: PurchaseVerificationData(
+    localVerificationData: 'local-verification-data',
+    serverVerificationData: 'server-verification-data',
+    source: 'google_play',
+  ),
+  transactionDate: purchaseTimeMillis.toString(),
+  billingClientPurchase: PurchaseWrapper(
+    orderId: 'lifetime-$purchaseTimeMillis',
+    packageName: 'xyz.depollsoft.monkeyssh',
+    purchaseTime: purchaseTimeMillis,
+    purchaseToken: 'token-$purchaseTimeMillis',
+    signature: 'signature',
+    products: const [MonetizationProductIds.androidProLifetime],
+    isAutoRenewing: false,
     originalJson: '{}',
     isAcknowledged: true,
     purchaseState: PurchaseStateWrapper.purchased,
