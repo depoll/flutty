@@ -4,7 +4,7 @@
 // ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks
 
 import 'dart:async';
-import 'dart:math' show max;
+import 'dart:math' as math;
 import 'dart:ui';
 
 import 'package:flutter/cupertino.dart';
@@ -51,12 +51,14 @@ EdgeInsets resolveTerminalRenderPadding(MediaQueryData mediaQuery) {
   if (!isLandscape) {
     return EdgeInsets.zero;
   }
-  final leftInset = mediaQuery.padding.left > mediaQuery.viewPadding.left
-      ? mediaQuery.padding.left
-      : mediaQuery.viewPadding.left;
-  final rightInset = mediaQuery.padding.right > mediaQuery.viewPadding.right
-      ? mediaQuery.padding.right
-      : mediaQuery.viewPadding.right;
+  final leftInset = math.max(
+    mediaQuery.padding.left,
+    mediaQuery.viewPadding.left,
+  );
+  final rightInset = math.max(
+    mediaQuery.padding.right,
+    mediaQuery.viewPadding.right,
+  );
   return EdgeInsets.only(left: leftInset, right: rightInset);
 }
 
@@ -76,14 +78,49 @@ Offset resolveTerminalContentOrigin({
   EdgeInsets padding = EdgeInsets.zero,
   bool alignToTrailingEdges = false,
 }) {
-  final availableWidth = max(0.0, viewportSize.width - padding.horizontal);
-  final availableHeight = max(0.0, viewportSize.height - padding.vertical);
-  final slackWidth = max(0.0, availableWidth - (columns * cellSize.width));
-  final slackHeight = max(0.0, availableHeight - (rows * cellSize.height));
+  final availableWidth = math.max(0.0, viewportSize.width - padding.horizontal);
+  final availableHeight = math.max(0.0, viewportSize.height - padding.vertical);
+  final slackWidth = math.max(0.0, availableWidth - (columns * cellSize.width));
+  final slackHeight = math.max(0.0, availableHeight - (rows * cellSize.height));
   return Offset(
     padding.left + (alignToTrailingEdges ? slackWidth : 0),
     padding.top + (alignToTrailingEdges ? slackHeight : 0),
   );
+}
+
+/// Terminal viewport padding applied outside the render object.
+///
+/// Horizontal safe-area insets are applied by the outer viewport container so
+/// the terminal stays clear of cutouts while still filling the safe width.
+EdgeInsets resolveTerminalViewportPadding(
+  MediaQueryData mediaQuery, {
+  EdgeInsets basePadding = EdgeInsets.zero,
+}) {
+  final renderPadding = resolveTerminalRenderPadding(mediaQuery);
+  return EdgeInsets.fromLTRB(
+    basePadding.left + renderPadding.left,
+    basePadding.top + renderPadding.top,
+    basePadding.right + renderPadding.right,
+    basePadding.bottom + renderPadding.bottom,
+  );
+}
+
+/// Slightly stretches the terminal horizontally to absorb the final remainder
+/// when the viewport width does not divide evenly into whole cells.
+@visibleForTesting
+double resolveTerminalHorizontalFillScale({
+  required double viewportWidth,
+  required double cellWidth,
+  required int columns,
+}) {
+  if (viewportWidth <= 0 || cellWidth <= 0 || columns <= 0) {
+    return 1;
+  }
+  final contentWidth = cellWidth * columns;
+  if (contentWidth <= 0) {
+    return 1;
+  }
+  return (viewportWidth / contentWidth).clamp(1.0, 1.03);
 }
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
@@ -255,6 +292,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   String? _composingText;
   Offset _lastTouchScrollPosition = Offset.zero;
   double _touchScrollRemainder = 0;
+  int _lastTerminalViewWidth = 0;
 
   late TerminalController _controller;
 
@@ -268,6 +306,8 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
     _focusNode = widget.focusNode ?? FocusNode();
     _controller = widget.controller ?? TerminalController();
     _scrollController = widget.scrollController ?? ScrollController();
+    _lastTerminalViewWidth = widget.terminal.viewWidth;
+    widget.terminal.addListener(_handleTerminalMetricsChanged);
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
@@ -276,6 +316,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
 
   @override
   void didUpdateWidget(covariant MonkeyTerminalView oldWidget) {
+    if (oldWidget.terminal != widget.terminal) {
+      oldWidget.terminal.removeListener(_handleTerminalMetricsChanged);
+      _lastTerminalViewWidth = widget.terminal.viewWidth;
+      widget.terminal.addListener(_handleTerminalMetricsChanged);
+    }
     if (oldWidget.focusNode != widget.focusNode) {
       if (oldWidget.focusNode == null) {
         _focusNode.dispose();
@@ -300,6 +345,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
 
   @override
   void dispose() {
+    widget.terminal.removeListener(_handleTerminalMetricsChanged);
     if (widget.focusNode == null) {
       _focusNode.dispose();
     }
@@ -313,8 +359,27 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
     super.dispose();
   }
 
+  void _handleTerminalMetricsChanged() {
+    final currentViewWidth = widget.terminal.viewWidth;
+    if (currentViewWidth == _lastTerminalViewWidth) {
+      return;
+    }
+    _lastTerminalViewWidth = currentViewWidth;
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
+    final mediaQuery = MediaQuery.of(context);
+    final terminalViewportPadding = resolveTerminalViewportPadding(
+      mediaQuery,
+      basePadding: widget.padding ?? EdgeInsets.zero,
+    );
+    final shouldFillHorizontalRemainder =
+        terminalViewportPadding.left == 0 && terminalViewportPadding.right == 0;
+
     Widget child = Scrollable(
       key: _scrollableKey,
       controller: _scrollController,
@@ -328,7 +393,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           terminal: widget.terminal,
           controller: _controller,
           offset: offset,
-          padding: resolveTerminalRenderPadding(mediaQuery),
+          padding: EdgeInsets.zero,
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
           textStyle: widget.textStyle,
@@ -474,11 +539,28 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
 
     child = MouseRegion(cursor: widget.mouseCursor, child: child);
 
+    if (shouldFillHorizontalRemainder && _viewportKey.currentContext != null) {
+      final horizontalFillScale = resolveTerminalHorizontalFillScale(
+        viewportWidth: renderTerminal.size.width,
+        cellWidth: renderTerminal.cellSize.width,
+        columns: widget.terminal.viewWidth,
+      );
+      if (horizontalFillScale > 1) {
+        child = Transform.scale(
+          alignment: Alignment.centerLeft,
+          scaleX: horizontalFillScale,
+          child: child,
+        );
+      }
+    }
+
+    child = ClipRect(child: child);
+
     child = Container(
       color: widget.theme.background.withValues(
         alpha: widget.backgroundOpacity,
       ),
-      padding: widget.padding,
+      padding: terminalViewportPadding,
       child: child,
     );
 
@@ -1139,7 +1221,8 @@ class MonkeyRenderTerminal extends RenderBox
 
   double get _viewportHeight => size.height - _padding.vertical;
 
-  double get _maxScrollExtent => max(_terminalHeight - _viewportHeight, 0.0);
+  double get _maxScrollExtent =>
+      math.max(_terminalHeight - _viewportHeight, 0.0);
 
   double get _lineOffset => -_scrollOffset + _contentOrigin.dy;
 
