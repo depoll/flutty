@@ -389,4 +389,67 @@ void main() {
     expect(find.textContaining('Processing your request with'), findsOneWidget);
     expect(find.byType(LinearProgressIndicator), findsOneWidget);
   });
+
+  testWidgets(
+    'shows lifetime active copy and never offers a lifetime plan card',
+    (tester) async {
+      final service = _MockMonetizationService();
+      const state = MonetizationState(
+        billingAvailability: MonetizationBillingAvailability.available,
+        entitlements: MonetizationEntitlements.pro(),
+        offers: [
+          MonetizationOffer(
+            id: 'monthly',
+            productId: 'monkeyssh_pro_monthly',
+            billingPeriod: MonetizationBillingPeriod.monthly,
+            planLabel: 'Monthly',
+            priceLabel: r'$5.00',
+            displayPriceLabel: r'$5.00 / month',
+            rawPrice: 5,
+            currencyCode: 'USD',
+            currencySymbol: r'$',
+          ),
+        ],
+        debugUnlockAvailable: false,
+        debugUnlocked: false,
+        activeProductId: 'monkeyssh_pro_lifetime_prod',
+      );
+
+      when(() => service.currentState).thenReturn(state);
+      when(
+        () => service.purchaseOffer(any()),
+      ).thenAnswer(_cancelledPurchaseResult);
+      _stubRestorePurchases(service);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            monetizationServiceProvider.overrideWithValue(service),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(state),
+            ),
+          ],
+          child: const MaterialApp(home: UpgradeScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+      await tester.dragUntilVisible(
+        find.text('MonkeySSH Pro Lifetime is unlocked on this device.'),
+        find.byType(ListView),
+        const Offset(0, -200),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        find.text('MonkeySSH Pro Lifetime is unlocked on this device.'),
+        findsOneWidget,
+      );
+      // Lifetime is never offered as a buyable plan card in the paywall;
+      // the only "Lifetime" text on screen comes from the active-state
+      // copy verified above.
+      expect(find.text('Lifetime'), findsNothing);
+      expect(find.text('Subscribe lifetime'), findsNothing);
+      expect(find.text('Switch to Lifetime'), findsNothing);
+    },
+  );
 }

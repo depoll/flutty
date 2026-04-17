@@ -334,12 +334,14 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
                   ],
                   Text(
                     state.isProUnlocked
-                        ? switch (state.activeOffer) {
-                            final activeOffer? =>
-                              '${activeOffer.planLabel} is active on this device.',
-                            null =>
-                              'MonkeySSH Pro is already unlocked on this device.',
-                          }
+                        ? state.isLifetimeUnlocked
+                              ? 'MonkeySSH Pro Lifetime is unlocked on this device.'
+                              : switch (state.activeOffer) {
+                                  final activeOffer? =>
+                                    '${activeOffer.planLabel} is active on this device.',
+                                  null =>
+                                    'MonkeySSH Pro is already unlocked on this device.',
+                                }
                         : 'No trial traps, fake urgency, or hidden close buttons. You can restore or manage your subscription from Settings at any time.',
                     style: priceCardEmphasisStyle,
                   ),

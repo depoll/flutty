@@ -18,26 +18,61 @@ abstract final class MonetizationProductIds {
   /// Apple App Store annual subscription product for the production app.
   static const iosAnnualProd = 'monkeyssh_pro_annual_prod';
 
+  /// Google Play one-time lifetime product.
+  ///
+  /// This product is intentionally never displayed in the in-app paywall.
+  /// It is distributed exclusively via Google Play promo codes redeemed
+  /// outside of the app and surfaces in the app through the store
+  /// purchase/restore flow.
+  static const androidProLifetime = 'monkeyssh_pro_lifetime';
+
+  /// Apple App Store non-consumable lifetime product for the preview app.
+  ///
+  /// Distributed exclusively via App Store offer/promo codes and surfaces
+  /// in the app via the store purchase/restore flow.
+  static const iosProLifetime = 'monkeyssh_pro_lifetime';
+
+  /// Apple App Store non-consumable lifetime product for the production app.
+  ///
+  /// Distributed exclusively via App Store offer/promo codes and surfaces
+  /// in the app via the store purchase/restore flow.
+  static const iosProLifetimeProd = 'monkeyssh_pro_lifetime_prod';
+
   /// All recognized paid products across platforms.
+  // The Android lifetime SKU and the iOS preview lifetime SKU share the
+  // same product identifier on purpose; we only list each unique string
+  // once to keep this a valid `const` set literal.
   static const allKnown = <String>{
     androidPro,
     iosMonthly,
     iosAnnual,
     iosMonthlyProd,
     iosAnnualProd,
+    androidProLifetime,
+    iosProLifetimeProd,
   };
+
+  /// All recognized lifetime (one-time) product identifiers.
+  // Same identifier sharing applies as in [allKnown].
+  static const allLifetime = <String>{androidProLifetime, iosProLifetimeProd};
 
   /// Product identifiers to query on the current platform.
   static Set<String> forPlatform(TargetPlatform platform) => switch (platform) {
-    TargetPlatform.android => const {androidPro},
+    TargetPlatform.android => const {androidPro, androidProLifetime},
     TargetPlatform.iOS || TargetPlatform.macOS => const {
       iosMonthly,
       iosAnnual,
       iosMonthlyProd,
       iosAnnualProd,
+      iosProLifetime,
+      iosProLifetimeProd,
     },
     _ => const {},
   };
+
+  /// Whether [productId] identifies a lifetime (one-time) product.
+  static bool isLifetime(String? productId) =>
+      productId != null && allLifetime.contains(productId);
 }
 
 /// Premium features controlled by MonkeySSH Pro.
@@ -107,6 +142,9 @@ enum MonetizationBillingPeriod {
   /// Annual billing cadence.
   annual,
 
+  /// One-time, lifetime purchase (no recurring billing).
+  lifetime,
+
   /// A billing cadence that could not be identified.
   unknown,
 }
@@ -117,6 +155,7 @@ extension MonetizationBillingPeriodPresentation on MonetizationBillingPeriod {
   String get label => switch (this) {
     MonetizationBillingPeriod.monthly => 'Monthly',
     MonetizationBillingPeriod.annual => 'Annual',
+    MonetizationBillingPeriod.lifetime => 'Lifetime',
     MonetizationBillingPeriod.unknown => 'MonkeySSH Pro',
   };
 
@@ -124,6 +163,7 @@ extension MonetizationBillingPeriodPresentation on MonetizationBillingPeriod {
   String get billingSuffix => switch (this) {
     MonetizationBillingPeriod.monthly => 'month',
     MonetizationBillingPeriod.annual => 'year',
+    MonetizationBillingPeriod.lifetime => 'lifetime',
     MonetizationBillingPeriod.unknown => 'billing period',
   };
 }
@@ -258,6 +298,15 @@ class MonetizationState {
 
   /// Whether MonkeySSH Pro is currently unlocked.
   bool get isProUnlocked => entitlements.proUnlocked;
+
+  /// Whether the active product is the lifetime (one-time) purchase.
+  ///
+  /// `true` only when [isProUnlocked] is `true` and [activeProductId]
+  /// matches a known lifetime SKU. The lifetime product is intentionally
+  /// not exposed in the in-app paywall, so this is the canonical signal
+  /// for UI surfaces that need to render lifetime-specific copy.
+  bool get isLifetimeUnlocked =>
+      isProUnlocked && MonetizationProductIds.isLifetime(activeProductId);
 
   /// Default offer to preselect on the paywall, if any.
   MonetizationOffer? get defaultOffer =>

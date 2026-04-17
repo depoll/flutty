@@ -387,9 +387,15 @@ class MonetizationService {
   }
 
   Future<void> _handleSuccessfulPurchase(PurchaseDetails purchase) async {
+    final isLifetime = MonetizationProductIds.isLifetime(purchase.productID);
+    final successMessage = isLifetime
+        ? (purchase.status == PurchaseStatus.restored
+              ? 'Restored MonkeySSH Pro Lifetime.'
+              : 'MonkeySSH Pro Lifetime activated.')
+        : 'MonkeySSH Pro unlocked.';
     final result = await _applySuccessfulPurchase(
       purchase,
-      successMessage: 'MonkeySSH Pro unlocked.',
+      successMessage: successMessage,
     );
     _resolvePendingPurchase(result);
   }
@@ -535,9 +541,14 @@ class MonetizationService {
             : latest,
       );
 
+      final isLifetime = MonetizationProductIds.isLifetime(
+        latestPurchase.productID,
+      );
       return _applySuccessfulPurchase(
         latestPurchase,
-        successMessage: 'Restored MonkeySSH Pro subscription.',
+        successMessage: isLifetime
+            ? 'Restored MonkeySSH Pro Lifetime.'
+            : 'Restored MonkeySSH Pro subscription.',
       );
     } finally {
       _restoreInFlight = false;
@@ -666,16 +677,25 @@ _MonetizationCatalog _buildMonetizationCatalog(
   );
 }
 
-_CatalogOfferCandidate? _buildCatalogOfferCandidate(ProductDetails details) =>
-    switch (details) {
-      final GooglePlayProductDetails googlePlayDetails =>
-        _buildGooglePlayOfferCandidate(googlePlayDetails),
-      final AppStoreProductDetails appStoreDetails =>
-        _buildAppStoreOfferCandidate(appStoreDetails),
-      final AppStoreProduct2Details appStore2Details =>
-        _buildAppStore2OfferCandidate(appStore2Details),
-      _ => _buildFallbackOfferCandidate(details),
-    };
+_CatalogOfferCandidate? _buildCatalogOfferCandidate(ProductDetails details) {
+  // Lifetime products are intentionally never displayed in the paywall.
+  // They are distributed exclusively via store promo/offer codes redeemed
+  // outside the app and surface in the app via the purchase / restore
+  // flow, where they update the entitlement directly without going
+  // through `MonetizationState.offers`.
+  if (MonetizationProductIds.isLifetime(details.id)) {
+    return null;
+  }
+  return switch (details) {
+    final GooglePlayProductDetails googlePlayDetails =>
+      _buildGooglePlayOfferCandidate(googlePlayDetails),
+    final AppStoreProductDetails appStoreDetails =>
+      _buildAppStoreOfferCandidate(appStoreDetails),
+    final AppStoreProduct2Details appStore2Details =>
+      _buildAppStore2OfferCandidate(appStore2Details),
+    _ => _buildFallbackOfferCandidate(details),
+  };
+}
 
 _CatalogOfferCandidate? _buildGooglePlayOfferCandidate(
   GooglePlayProductDetails details,
@@ -830,7 +850,8 @@ int _billingPeriodSortOrder(MonetizationBillingPeriod billingPeriod) =>
     switch (billingPeriod) {
       MonetizationBillingPeriod.monthly => 0,
       MonetizationBillingPeriod.annual => 1,
-      MonetizationBillingPeriod.unknown => 2,
+      MonetizationBillingPeriod.lifetime => 2,
+      MonetizationBillingPeriod.unknown => 3,
     };
 
 PricingPhaseWrapper _findRecurringPricingPhase(
@@ -920,6 +941,7 @@ String _buildDisplayPriceLabel(
 ) => switch (billingPeriod) {
   MonetizationBillingPeriod.monthly => '$priceLabel / month',
   MonetizationBillingPeriod.annual => '$priceLabel / year',
+  MonetizationBillingPeriod.lifetime => '$priceLabel — one-time',
   MonetizationBillingPeriod.unknown => priceLabel,
 };
 
@@ -927,6 +949,7 @@ String? _defaultOfferDetailLabel(MonetizationBillingPeriod billingPeriod) =>
     switch (billingPeriod) {
       MonetizationBillingPeriod.monthly => 'Billed monthly',
       MonetizationBillingPeriod.annual => 'Billed yearly',
+      MonetizationBillingPeriod.lifetime => 'One-time purchase',
       MonetizationBillingPeriod.unknown => null,
     };
 

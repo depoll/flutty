@@ -140,6 +140,24 @@ void main() {
       expect(find.text('Active'), findsOneWidget);
     });
 
+    testWidgets('shows lifetime state when Pro is unlocked via lifetime SKU', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final settings = SettingsService(db);
+      await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      await settings.setString(
+        SettingKeys.monetizationActiveProductId,
+        'monkeyssh_pro_lifetime_prod',
+      );
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      expect(find.text('Lifetime — unlocked on this device'), findsOneWidget);
+      expect(find.text('Lifetime'), findsOneWidget);
+    });
+
     testWidgets('displays theme option', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);

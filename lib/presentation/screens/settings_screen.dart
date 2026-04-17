@@ -90,11 +90,15 @@ class _SubscriptionSection extends ConsumerWidget {
           title: const Text('Subscription'),
           subtitle: Text(
             state.isProUnlocked
-                ? 'Unlocked on this device'
+                ? state.isLifetimeUnlocked
+                      ? 'Lifetime — unlocked on this device'
+                      : 'Unlocked on this device'
                 : 'Unlock transfers, automation, and agent launch presets',
           ),
           trailing: state.isProUnlocked
-              ? const PremiumBadge(label: 'Active')
+              ? PremiumBadge(
+                  label: state.isLifetimeUnlocked ? 'Lifetime' : 'Active',
+                )
               : const PremiumBadge(),
           onTap: () => context.pushNamed(Routes.upgrade),
         ),
