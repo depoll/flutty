@@ -9,6 +9,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
@@ -149,7 +150,7 @@ void main() {
       await settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
       await settings.setString(
         SettingKeys.monetizationActiveProductId,
-        'monkeyssh_pro_lifetime_prod',
+        MonetizationProductIds.iosProLifetimeProd,
       );
 
       await _pumpSettingsScreen(tester, db: db);

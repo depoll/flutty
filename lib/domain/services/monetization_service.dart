@@ -46,6 +46,14 @@ class MonetizationService {
   bool _restoreInFlight = false;
   bool _restoreObservedPurchaseUpdate = false;
   Future<void>? _initializationFuture;
+  // Serializes async per-purchase handlers so that a batch of restore
+  // updates (e.g. an old subscription transaction + a redeemed lifetime
+  // transaction delivered together by StoreKit) is processed in order.
+  // Without this, multiple `_handleSuccessfulPurchase` calls race and
+  // the last finisher overwrites `activeProductId`/`activeOfferId`,
+  // which can demote a freshly redeemed lifetime back to a stale
+  // subscription label.
+  Future<void> _purchaseHandlerChain = Future<void>.value();
   bool _initialized = false;
   MonetizationState _state = MonetizationState.initial(
     debugUnlockAvailable: kDebugMode,
@@ -360,7 +368,7 @@ class MonetizationService {
           if (_restoreInFlight) {
             _restoreObservedPurchaseUpdate = true;
           }
-          unawaited(_handleSuccessfulPurchase(purchase));
+          unawaited(_enqueueSuccessfulPurchase(purchase));
           break;
         case PurchaseStatus.error:
           unawaited(_completePurchaseIfNeeded(purchase));
@@ -386,6 +394,16 @@ class MonetizationService {
     }
   }
 
+  Future<void> _enqueueSuccessfulPurchase(PurchaseDetails purchase) {
+    final next = _purchaseHandlerChain.then(
+      (_) => _handleSuccessfulPurchase(purchase),
+    );
+    // Swallow errors so one bad handler doesn't break the chain for
+    // subsequent purchases. Errors are already surfaced via state.
+    _purchaseHandlerChain = next.catchError((Object _) {});
+    return next;
+  }
+
   Future<void> _handleSuccessfulPurchase(PurchaseDetails purchase) async {
     final isLifetime = MonetizationProductIds.isLifetime(purchase.productID);
     final successMessage = isLifetime
@@ -409,14 +427,34 @@ class MonetizationService {
       final timestamp =
           _parsePurchaseDate(purchase.transactionDate) ?? DateTime.now();
       await _settings.setBool(SettingKeys.monetizationProUnlocked, value: true);
+      final isLifetime = MonetizationProductIds.isLifetime(purchase.productID);
+      // Lifetime always wins: never let a (possibly older or expiring)
+      // subscription transaction overwrite a lifetime entitlement that
+      // is already active. StoreKit replays every historical transaction
+      // through the purchase stream during a restore, so the chronological
+      // order in which they arrive is not meaningful for entitlement
+      // precedence.
+      final currentIsLifetime = MonetizationProductIds.isLifetime(
+        _state.activeProductId,
+      );
+      if (currentIsLifetime && !isLifetime) {
+        return MonetizationActionResult.success(successMessage);
+      }
+
       await _settings.setString(
         SettingKeys.monetizationActiveProductId,
         purchase.productID,
       );
-      final activeOfferId =
-          _pendingOfferId ??
-          _resolveOfferIdForPurchase(purchase) ??
-          _state.activeOfferId;
+      // For lifetime purchases there is no concept of an offer ID — the
+      // product is non-recurring and isn't surfaced as a paywall offer.
+      // Force-clear any stale offer ID that may have been carried over
+      // from a previous subscription so the UI doesn't render
+      // "Current plan" / "Switch to ..." against a defunct sub offer.
+      final activeOfferId = isLifetime
+          ? null
+          : _pendingOfferId ??
+                _resolveOfferIdForPurchase(purchase) ??
+                _state.activeOfferId;
       if (activeOfferId != null) {
         await _settings.setString(
           SettingKeys.monetizationActiveOfferId,
@@ -533,19 +571,28 @@ class MonetizationService {
         );
       }
 
-      final latestPurchase = purchases.reduce(
-        (latest, purchase) =>
-            purchase.billingClientPurchase.purchaseTime >
-                latest.billingClientPurchase.purchaseTime
-            ? purchase
-            : latest,
+      // Lifetime takes precedence over any subscription that might be
+      // returned alongside it, even if the subscription has a newer
+      // purchaseTime. A user who owns lifetime should always see the
+      // "Lifetime" label, regardless of whether they later subscribed.
+      final lifetimePurchase = purchases.firstWhereOrNull(
+        (purchase) => MonetizationProductIds.isLifetime(purchase.productID),
       );
+      final selectedPurchase =
+          lifetimePurchase ??
+          purchases.reduce(
+            (latest, purchase) =>
+                purchase.billingClientPurchase.purchaseTime >
+                    latest.billingClientPurchase.purchaseTime
+                ? purchase
+                : latest,
+          );
 
       final isLifetime = MonetizationProductIds.isLifetime(
-        latestPurchase.productID,
+        selectedPurchase.productID,
       );
       return _applySuccessfulPurchase(
-        latestPurchase,
+        selectedPurchase,
         successMessage: isLifetime
             ? 'Restored MonkeySSH Pro Lifetime.'
             : 'Restored MonkeySSH Pro subscription.',
@@ -560,13 +607,52 @@ class MonetizationService {
     if (response.error != null) {
       return;
     }
-    final hasActiveMonkeySshSubscription = response.pastPurchases.any(
-      (purchase) =>
-          MonetizationProductIds.allKnown.contains(purchase.productID),
-    );
-    if (!hasActiveMonkeySshSubscription) {
+    final knownPurchases = response.pastPurchases
+        .where(
+          (purchase) =>
+              MonetizationProductIds.allKnown.contains(purchase.productID),
+        )
+        .toList(growable: false);
+    if (knownPurchases.isEmpty) {
       await _clearCachedStoreEntitlement();
+      return;
     }
+
+    // Recompute the active product from the surviving purchase set so
+    // that, e.g., a lapsed subscription leaves the cached active SKU
+    // pointing at the still-owned lifetime non-consumable instead of
+    // the now-defunct sub. Lifetime always takes precedence.
+    final lifetime = knownPurchases.firstWhereOrNull(
+      (purchase) => MonetizationProductIds.isLifetime(purchase.productID),
+    );
+    final selected =
+        lifetime ??
+        knownPurchases.reduce(
+          (latest, purchase) =>
+              purchase.billingClientPurchase.purchaseTime >
+                  latest.billingClientPurchase.purchaseTime
+              ? purchase
+              : latest,
+        );
+
+    if (_state.activeProductId == selected.productID) {
+      return;
+    }
+
+    await _settings.setString(
+      SettingKeys.monetizationActiveProductId,
+      selected.productID,
+    );
+    final isLifetime = MonetizationProductIds.isLifetime(selected.productID);
+    if (isLifetime) {
+      await _settings.delete(SettingKeys.monetizationActiveOfferId);
+    }
+    _emit(
+      _state.copyWith(
+        activeProductId: selected.productID,
+        activeOfferId: isLifetime ? null : _state.activeOfferId,
+      ),
+    );
   }
 
   Future<void> _tryRecoverStaleAndroidPurchaseAttempt() async {
