@@ -134,6 +134,42 @@ TextEditingController _expectOverlayWordSelection(
   return controller;
 }
 
+Offset? _visibleTokenCenter(
+  WidgetTester tester,
+  Terminal terminal,
+  String token,
+) {
+  final terminalViewState = tester.state<MonkeyTerminalViewState>(
+    find.byType(MonkeyTerminalView),
+  );
+  final renderTerminal = terminalViewState.renderTerminal;
+  final firstVisibleRow = (terminal.buffer.lines.length - terminal.viewHeight)
+      .clamp(0, terminal.buffer.lines.length - 1);
+
+  for (
+    var row = firstVisibleRow;
+    row < terminal.buffer.lines.length;
+    row += 1
+  ) {
+    final lineText = trimTerminalLinePadding(
+      terminal.buffer.lines[row].getText(0, terminal.buffer.viewWidth),
+    );
+    final startColumn = lineText.indexOf(token);
+    if (startColumn == -1) {
+      continue;
+    }
+
+    final tapColumn = startColumn + (token.length ~/ 2);
+    final cellOffset = CellOffset(tapColumn, row);
+    return renderTerminal.localToGlobal(
+      renderTerminal.getOffset(cellOffset) +
+          renderTerminal.cellSize.center(Offset.zero),
+    );
+  }
+
+  return null;
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -695,6 +731,117 @@ void main() {
 
       spinnerTimer.cancel();
 
+      _expectOverlayWordSelection(tester, overlayField, 'alpha');
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS,
+  );
+
+  testWidgets(
+    'touch-scroll mode keeps the touched word selected while output streams during the long press',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 932));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepository = _MockHostRepository();
+      final sshClient = _MockSshClient();
+      final shellChannel = _MockShellChannel();
+      final host = _buildHost(id: 15);
+      final shellDoneCompleter = Completer<void>();
+      final shellStdoutController = StreamController<Uint8List>.broadcast();
+      addTearDown(shellStdoutController.close);
+
+      when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
+      when(
+        () => sshClient.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shellChannel);
+      when(
+        () => shellChannel.stdout,
+      ).thenAnswer((_) => shellStdoutController.stream);
+      when(
+        () => shellChannel.stderr,
+      ).thenAnswer((_) => const Stream<Uint8List>.empty());
+      when(
+        () => shellChannel.done,
+      ).thenAnswer((_) => shellDoneCompleter.future);
+      when(() => shellChannel.write(any())).thenReturn(null);
+
+      final session = SshSession(
+        connectionId: 16,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      )..getOrCreateTerminal();
+
+      session.terminal!
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          sharedClipboardProvider.overrideWith((ref) async => false),
+          activeSessionsProvider.overrideWith(
+            () => _TestActiveSessionsNotifier(session),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+
+      final initialLines = List<String>.generate(
+        28,
+        (index) => index == 27 ? 'alpha bravo' : 'line $index',
+      ).join('\r\n');
+      session.terminal!.write(initialLines);
+      await tester.pumpAndSettle();
+
+      final selectionOffset = _visibleTokenCenter(
+        tester,
+        session.terminal!,
+        'alpha',
+      );
+      expect(selectionOffset, isNotNull);
+
+      var streamIndex = 0;
+      final streamTimer = Timer.periodic(const Duration(milliseconds: 16), (_) {
+        session.terminal!.write('\r\nstream $streamIndex');
+        streamIndex += 1;
+      });
+      addTearDown(streamTimer.cancel);
+
+      final gesture = await tester.startGesture(selectionOffset!);
+      await tester.pump(const Duration(milliseconds: 650));
+      await tester.pumpAndSettle();
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      streamTimer.cancel();
+
+      final overlayField = find.byType(TextField);
+      expect(overlayField, findsOneWidget);
       _expectOverlayWordSelection(tester, overlayField, 'alpha');
     },
     skip:

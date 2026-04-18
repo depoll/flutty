@@ -101,6 +101,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.backgroundOpacity = 1,
     this.focusNode,
     this.autofocus = false,
+    this.onTapDown,
     this.onTapUp,
     this.onDoubleTapDown,
     this.onLongPressStart,
@@ -159,6 +160,9 @@ class MonkeyTerminalView extends StatefulWidget {
   /// True if this widget will be selected as the initial focus when no other
   /// node in its scope is currently focused.
   final bool autofocus;
+
+  /// Callback for when the user taps down on the terminal.
+  final void Function(TapDownDetails, CellOffset)? onTapDown;
 
   /// Callback for when the user taps on the terminal.
   final void Function(TapUpDetails, CellOffset)? onTapUp;
@@ -522,7 +526,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
     widget.onTapUp?.call(details, offset);
   }
 
-  void _onTapDown(_) {
+  void _onTapDown(TapDownDetails details) {
     if (_controller.selection != null) {
       _controller.clearSelection();
     } else {
@@ -532,6 +536,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
         _focusNode.requestFocus();
       }
     }
+
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onTapDown?.call(details, offset);
   }
 
   void _onDoubleTapDown(TapDownDetails details) {
