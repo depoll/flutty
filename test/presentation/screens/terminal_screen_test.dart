@@ -16,7 +16,9 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
+import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
+import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
 
@@ -331,6 +333,249 @@ void main() {
         expect(find.byType(TerminalTextInputHandler), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'overlay long press reselects from the touch-down snapshot while output streams during the hold',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('alpha');
+        await tester.pumpAndSettle();
+
+        Offset cellCenter(CellOffset offset) {
+          final terminalViewState = tester.state<MonkeyTerminalViewState>(
+            find.byType(MonkeyTerminalView),
+          );
+          final renderTerminal = terminalViewState.renderTerminal;
+          return renderTerminal.localToGlobal(
+            renderTerminal.getOffset(offset) +
+                renderTerminal.cellSize.center(Offset.zero),
+          );
+        }
+
+        await tester.longPressAt(cellCenter(const CellOffset(2, 0)));
+        await tester.pumpAndSettle();
+
+        final overlayField = find.byType(TextField);
+        expect(overlayField, findsOneWidget);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.controller, isNotNull);
+        expect(terminalView.controller!.selection, isNull);
+        var overlayController = tester
+            .widget<TextField>(overlayField)
+            .controller;
+        expect(overlayController, isNotNull);
+        expect(overlayController!.selection.isCollapsed, isFalse);
+        expect(overlayController.text, contains('alpha'));
+
+        session.terminal!.write('\r\ncharlie');
+        await tester.pumpAndSettle();
+        expect(overlayController.text, isNot(contains('charlie')));
+
+        var streamIndex = 0;
+        final streamTimer = Timer.periodic(const Duration(milliseconds: 16), (
+          _,
+        ) {
+          session.terminal!.write('\r\nstream $streamIndex');
+          streamIndex += 1;
+        });
+        addTearDown(streamTimer.cancel);
+
+        final gesture = await tester.startGesture(
+          cellCenter(const CellOffset(2, 1)),
+        );
+        await tester.pump(const Duration(milliseconds: 650));
+        await tester.pumpAndSettle();
+        await gesture.up();
+        await tester.pumpAndSettle();
+
+        streamTimer.cancel();
+
+        expect(terminalView.controller!.selection, isNull);
+        overlayController = tester.widget<TextField>(overlayField).controller;
+        expect(overlayController, isNotNull);
+        expect(overlayController!.selection.isCollapsed, isFalse);
+        expect(
+          overlayController.selection.textInside(overlayController.text),
+          'charlie',
+        );
+        expect(overlayController.text, isNot(contains('stream')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'overlay scroll stays fixed while a native selection is active',
+      (tester) async {
+        await pumpScreen(tester);
+
+        final initialLines = List<String>.generate(
+          40,
+          (index) => index == 39 ? 'alpha' : 'line $index',
+        ).join('\r\n');
+        session.terminal!.write(initialLines);
+        await tester.pumpAndSettle();
+
+        Offset? tokenCenter(String token) {
+          final terminalViewState = tester.state<MonkeyTerminalViewState>(
+            find.byType(MonkeyTerminalView),
+          );
+          final renderTerminal = terminalViewState.renderTerminal;
+          final firstVisibleRow =
+              (session.terminal!.buffer.lines.length -
+                      session.terminal!.viewHeight)
+                  .clamp(0, session.terminal!.buffer.lines.length - 1);
+
+          for (
+            var row = firstVisibleRow;
+            row < session.terminal!.buffer.lines.length;
+            row += 1
+          ) {
+            final lineText = trimTerminalLinePadding(
+              session.terminal!.buffer.lines[row].getText(
+                0,
+                session.terminal!.buffer.viewWidth,
+              ),
+            );
+            final startColumn = lineText.indexOf(token);
+            if (startColumn == -1) {
+              continue;
+            }
+
+            final tapColumn = startColumn + (token.length ~/ 2);
+            final cellOffset = CellOffset(tapColumn, row);
+            return renderTerminal.localToGlobal(
+              renderTerminal.getOffset(cellOffset) +
+                  renderTerminal.cellSize.center(Offset.zero),
+            );
+          }
+
+          return null;
+        }
+
+        final alphaCenter = tokenCenter('alpha');
+        expect(alphaCenter, isNotNull);
+
+        await tester.longPressAt(alphaCenter!);
+        await tester.pumpAndSettle();
+
+        final overlayField = find.byType(TextField);
+        expect(overlayField, findsOneWidget);
+        final overlayTextField = tester.widget<TextField>(overlayField);
+        final overlayController = overlayTextField.controller;
+        final overlayScrollController = overlayTextField.scrollController;
+        expect(overlayController, isNotNull);
+        expect(overlayController!.selection.isCollapsed, isFalse);
+        expect(overlayScrollController, isNotNull);
+        expect(overlayScrollController!.hasClients, isTrue);
+
+        final initialOverlayOffset = overlayScrollController.offset;
+        expect(initialOverlayOffset, greaterThan(0));
+
+        session.terminal!.write('\r\ncharlie');
+        await tester.pumpAndSettle();
+
+        expect(overlayController.text, isNot(contains('charlie')));
+        expect(overlayScrollController.offset, initialOverlayOffset);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'link long press keeps the touched word selected while output streams during the hold',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('visit https://alpha.test');
+        await tester.pumpAndSettle();
+
+        ({CellOffset cellOffset, Offset center})? tokenHit(String token) {
+          final terminalViewState = tester.state<MonkeyTerminalViewState>(
+            find.byType(MonkeyTerminalView),
+          );
+          final renderTerminal = terminalViewState.renderTerminal;
+          final firstVisibleRow =
+              (session.terminal!.buffer.lines.length -
+                      session.terminal!.viewHeight)
+                  .clamp(0, session.terminal!.buffer.lines.length - 1);
+
+          for (
+            var row = firstVisibleRow;
+            row < session.terminal!.buffer.lines.length;
+            row += 1
+          ) {
+            final lineText = trimTerminalLinePadding(
+              session.terminal!.buffer.lines[row].getText(
+                0,
+                session.terminal!.buffer.viewWidth,
+              ),
+            );
+            final startColumn = lineText.indexOf(token);
+            if (startColumn == -1) {
+              continue;
+            }
+
+            final tapColumn = startColumn + (token.length ~/ 2);
+            final cellOffset = CellOffset(tapColumn, row);
+            return (
+              cellOffset: cellOffset,
+              center: renderTerminal.localToGlobal(
+                renderTerminal.getOffset(cellOffset) +
+                    renderTerminal.cellSize.center(Offset.zero),
+              ),
+            );
+          }
+
+          return null;
+        }
+
+        final hit = tokenHit('alpha');
+        expect(hit, isNotNull);
+        final wordRange = session.terminal!.buffer.getWordBoundary(
+          hit!.cellOffset,
+        );
+        expect(wordRange, isNotNull);
+        final expectedWord = session.terminal!.buffer.lines[wordRange!.begin.y]
+            .getText(wordRange.begin.x, wordRange.end.x);
+
+        var streamIndex = 0;
+        final streamTimer = Timer.periodic(const Duration(milliseconds: 16), (
+          _,
+        ) {
+          session.terminal!.write('\r\nstream $streamIndex');
+          streamIndex += 1;
+        });
+        addTearDown(streamTimer.cancel);
+
+        final gesture = await tester.startGesture(hit.center);
+        await tester.pump(const Duration(milliseconds: 650));
+        await tester.pumpAndSettle();
+        await gesture.up();
+        await tester.pumpAndSettle();
+
+        streamTimer.cancel();
+
+        final overlayField = find.byType(TextField);
+        expect(overlayField, findsOneWidget);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.controller, isNotNull);
+        expect(terminalView.controller!.selection, isNull);
+        final overlayController = tester
+            .widget<TextField>(overlayField)
+            .controller;
+        expect(overlayController, isNotNull);
+        expect(overlayController!.selection.isCollapsed, isFalse);
+        expect(
+          overlayController.selection.textInside(overlayController.text),
+          expectedWord,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
 
     testWidgets(

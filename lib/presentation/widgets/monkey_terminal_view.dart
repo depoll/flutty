@@ -138,8 +138,11 @@ class MonkeyTerminalView extends StatefulWidget {
     this.backgroundOpacity = 1,
     this.focusNode,
     this.autofocus = false,
+    this.onTapDown,
     this.onTapUp,
     this.onDoubleTapDown,
+    this.onLongPressStart,
+    this.suppressLongPressDragSelection = false,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
     this.resolveLinkTap,
@@ -195,11 +198,23 @@ class MonkeyTerminalView extends StatefulWidget {
   /// node in its scope is currently focused.
   final bool autofocus;
 
+  /// Callback for when the user taps down on the terminal.
+  final void Function(TapDownDetails, CellOffset)? onTapDown;
+
   /// Callback for when the user taps on the terminal.
   final void Function(TapUpDetails, CellOffset)? onTapUp;
 
   /// Callback for when the user double taps on the terminal.
   final void Function(TapDownDetails, CellOffset)? onDoubleTapDown;
+
+  /// Callback for when the user long presses on the terminal.
+  final void Function(LongPressStartDetails, CellOffset)? onLongPressStart;
+
+  /// When true, the terminal's built-in drag-to-extend selection on touch
+  /// long-press is suppressed. When no [onLongPressStart] override is
+  /// provided, the initial word selection on long-press start still occurs,
+  /// but subsequent move updates do not extend the selection.
+  final bool suppressLongPressDragSelection;
 
   /// Function called when the user taps on the terminal with a secondary
   /// button.
@@ -212,7 +227,7 @@ class MonkeyTerminalView extends StatefulWidget {
   final String? Function(CellOffset offset)? resolveLinkTap;
 
   /// Called when a primary tap is recognized as a pending link tap.
-  final VoidCallback? onLinkTapDown;
+  final void Function(TapDownDetails, CellOffset)? onLinkTapDown;
 
   /// Called when a primary tap should open a resolved terminal link.
   final ValueChanged<String>? onLinkTap;
@@ -514,6 +529,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
       onDoubleTapDown: widget.onDoubleTapDown != null ? _onDoubleTapDown : null,
+      onLongPressStart: widget.onLongPressStart != null
+          ? _onLongPressStart
+          : null,
+      suppressLongPressDragSelection: widget.suppressLongPressDragSelection,
       onSecondaryTapDown: widget.onSecondaryTapDown != null
           ? _onSecondaryTapDown
           : null,
@@ -525,7 +544,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           : (localPosition) => widget.resolveLinkTap!(
               renderTerminal.getCellOffset(localPosition),
             ),
-      onLinkTapDown: widget.onLinkTapDown,
+      onLinkTapDown: widget.onLinkTapDown == null ? null : _onLinkTapDown,
       onLinkTap: widget.onLinkTap,
       onTouchScrollStart: widget.touchScrollToTerminal
           ? _onTouchScrollStart
@@ -589,7 +608,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
     widget.onTapUp?.call(details, offset);
   }
 
-  void _onTapDown(_) {
+  void _onTapDown(TapDownDetails details) {
     if (_controller.selection != null) {
       _controller.clearSelection();
     } else {
@@ -599,11 +618,24 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
         _focusNode.requestFocus();
       }
     }
+
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onTapDown?.call(details, offset);
   }
 
   void _onDoubleTapDown(TapDownDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onDoubleTapDown?.call(details, offset);
+  }
+
+  void _onLinkTapDown(TapDownDetails details) {
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onLinkTapDown?.call(details, offset);
+  }
+
+  void _onLongPressStart(LongPressStartDetails details) {
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onLongPressStart?.call(details, offset);
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {

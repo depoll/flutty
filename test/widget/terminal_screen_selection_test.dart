@@ -1146,6 +1146,26 @@ void main() {
     });
   });
 
+  group('hasActiveNativeOverlaySelection', () {
+    test('recognizes expanded native overlay selections as active', () {
+      expect(
+        hasActiveNativeOverlaySelection(
+          const TextSelection(baseOffset: 2, extentOffset: 8),
+        ),
+        isTrue,
+      );
+    });
+
+    test('treats collapsed native overlay selections as inactive', () {
+      expect(
+        hasActiveNativeOverlaySelection(
+          const TextSelection.collapsed(offset: 8),
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('shouldShowNativeSelectionOverlay', () {
     test('keeps overlay hidden until native selection mode is entered', () {
       expect(
