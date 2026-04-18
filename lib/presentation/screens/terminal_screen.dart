@@ -5298,9 +5298,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final textLength = _nativeSelectionController.text.length;
     final collapsedOffset = _nativeSelectionController.selection.extentOffset
         .clamp(0, textLength);
+    _nativeOverlayCollapseTimer?.cancel();
     _nativeSelectionController.value = _nativeSelectionController.value
         .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
+    _terminalController.clearSelection();
     _nativeSelectionFocusNode.unfocus();
+    _hadNativeOverlaySelection = false;
     _clearNativeOverlayLongPressState();
     if (!mounted) {
       return;
