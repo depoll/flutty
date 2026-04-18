@@ -103,6 +103,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.autofocus = false,
     this.onTapUp,
     this.onDoubleTapDown,
+    this.onLongPressStart,
     this.suppressLongPressDragSelection = false,
     this.onSecondaryTapDown,
     this.onSecondaryTapUp,
@@ -165,10 +166,13 @@ class MonkeyTerminalView extends StatefulWidget {
   /// Callback for when the user double taps on the terminal.
   final void Function(TapDownDetails, CellOffset)? onDoubleTapDown;
 
+  /// Callback for when the user long presses on the terminal.
+  final void Function(LongPressStartDetails, CellOffset)? onLongPressStart;
+
   /// When true, the terminal's built-in drag-to-extend selection on touch
-  /// long-press is suppressed. The initial word selection on long-press
-  /// start still occurs (so the existing selection-changed listener can
-  /// react), but subsequent move updates do not extend the selection.
+  /// long-press is suppressed. When no [onLongPressStart] override is
+  /// provided, the initial word selection on long-press start still occurs,
+  /// but subsequent move updates do not extend the selection.
   final bool suppressLongPressDragSelection;
 
   /// Function called when the user taps on the terminal with a secondary
@@ -456,6 +460,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
       onTapUp: _onTapUp,
       onTapDown: _onTapDown,
       onDoubleTapDown: widget.onDoubleTapDown != null ? _onDoubleTapDown : null,
+      onLongPressStart: widget.onLongPressStart != null
+          ? _onLongPressStart
+          : null,
       suppressLongPressDragSelection: widget.suppressLongPressDragSelection,
       onSecondaryTapDown: widget.onSecondaryTapDown != null
           ? _onSecondaryTapDown
@@ -530,6 +537,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   void _onDoubleTapDown(TapDownDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onDoubleTapDown?.call(details, offset);
+  }
+
+  void _onLongPressStart(LongPressStartDetails details) {
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onLongPressStart?.call(details, offset);
   }
 
   void _onSecondaryTapDown(TapDownDetails details) {

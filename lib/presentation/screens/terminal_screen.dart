@@ -2675,6 +2675,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _handleTerminalLongPressStart(
+    LongPressStartDetails details,
+    CellOffset cellOffset,
+  ) {
+    _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    _selectNativeOverlayWordAtCellOffset(
+      cellOffset,
+      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+    );
+  }
+
   void _showTerminalInputIndicator(String label) {
     _terminalInputIndicatorTimer?.cancel();
     setState(() => _terminalInputIndicatorLabel = label);
@@ -4546,6 +4557,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _terminalTextInputController.suppressNextTouchKeyboardRequest,
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
+      onLongPressStart: isMobile ? _handleTerminalLongPressStart : null,
       suppressLongPressDragSelection: isMobile,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
@@ -5178,17 +5190,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
-  bool _isNativeOverlayTouchPointer(PointerDeviceKind kind) =>
-      kind == PointerDeviceKind.touch ||
-      kind == PointerDeviceKind.stylus ||
-      kind == PointerDeviceKind.invertedStylus;
+  bool _selectNativeOverlayWordAtCellOffset(
+    CellOffset cellOffset, {
+    bool revealOverlayInTouchScrollMode = false,
+  }) {
+    final wordRange = _terminal.buffer.getWordBoundary(cellOffset);
+    if (wordRange == null) {
+      return false;
+    }
 
-  ({CellOffset? cellOffset, bool pointsOutsideSnapshot})
-  _nativeSelectionCellOffsetForGlobalPosition(Offset globalPosition) {
-    final metrics = _nativeSelectionSnapshotMetrics;
+    _enterNativeSelectionMode(
+      initialRange: wordRange,
+      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
+    );
+    return true;
+  }
+
+  CellOffset? _terminalCellOffsetForGlobalPosition(Offset globalPosition) {
     final terminalViewState = _terminalViewKey.currentState;
-    if (metrics == null || terminalViewState == null) {
-      return (cellOffset: null, pointsOutsideSnapshot: false);
+    if (terminalViewState == null) {
+      return null;
     }
 
     final renderTerminal = terminalViewState.renderTerminal;
@@ -5197,15 +5218,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         localPosition.dy < 0 ||
         localPosition.dx > renderTerminal.size.width ||
         localPosition.dy > renderTerminal.size.height) {
-      return (cellOffset: null, pointsOutsideSnapshot: false);
+      return null;
     }
 
-    final cellOffset = renderTerminal.getCellOffset(localPosition);
-    if (cellOffset.y < 0 ||
-        cellOffset.y >= metrics.lineCount ||
-        cellOffset.x < 0 ||
+    return renderTerminal.getCellOffset(localPosition);
+  }
+
+  bool _isNativeOverlayTouchPointer(PointerDeviceKind kind) =>
+      kind == PointerDeviceKind.touch ||
+      kind == PointerDeviceKind.stylus ||
+      kind == PointerDeviceKind.invertedStylus;
+
+  ({CellOffset? cellOffset, bool pointsOutsideSnapshot})
+  _nativeSelectionSnapshotHitForGlobalPosition(Offset globalPosition) {
+    final metrics = _nativeSelectionSnapshotMetrics;
+    final cellOffset = _terminalCellOffsetForGlobalPosition(globalPosition);
+    if (metrics == null || cellOffset == null) {
+      return (cellOffset: cellOffset, pointsOutsideSnapshot: false);
+    }
+
+    if (cellOffset.y >= metrics.lineCount ||
         cellOffset.x >= metrics.viewWidth) {
-      return (cellOffset: null, pointsOutsideSnapshot: true);
+      return (cellOffset: cellOffset, pointsOutsideSnapshot: true);
     }
 
     return (cellOffset: cellOffset, pointsOutsideSnapshot: false);
@@ -5234,13 +5268,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return cellStart < protectedEnd && cellEnd > protectedStart;
   }
 
-  bool _shouldForwardNativeOverlayLongPress(Offset globalPosition) {
+  bool _shouldRefreshNativeOverlayLongPress(Offset globalPosition) {
     final selection = _nativeSelectionController.selection;
     if (!hasActiveNativeOverlaySelection(selection)) {
       return false;
     }
 
-    final hit = _nativeSelectionCellOffsetForGlobalPosition(globalPosition);
+    final hit = _nativeSelectionSnapshotHitForGlobalPosition(globalPosition);
     if (hit.pointsOutsideSnapshot) {
       return true;
     }
@@ -5276,10 +5310,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final globalPosition = _nativeOverlayPointerDownPosition;
       _clearNativeOverlayLongPressState();
       if (globalPosition == null ||
-          !_shouldForwardNativeOverlayLongPress(globalPosition)) {
+          !_shouldRefreshNativeOverlayLongPress(globalPosition)) {
         return;
       }
-      _forwardNativeOverlayLongPress(globalPosition);
+      _reselectNativeOverlayLongPress(globalPosition);
     });
   }
 
@@ -5308,29 +5342,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _forwardNativeOverlayLongPress(Offset globalPosition) {
+  void _reselectNativeOverlayLongPress(Offset globalPosition) {
     if (!mounted) {
       return;
     }
-    _dismissNativeSelectionOverlayForEditing();
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) {
-        return;
-      }
-      final terminalViewState = _terminalViewKey.currentState;
-      if (terminalViewState == null) {
-        return;
-      }
-      final renderTerminal = terminalViewState.renderTerminal;
-      final localPosition = renderTerminal.globalToLocal(globalPosition);
-      if (localPosition.dx < 0 ||
-          localPosition.dy < 0 ||
-          localPosition.dx > renderTerminal.size.width ||
-          localPosition.dy > renderTerminal.size.height) {
-        return;
-      }
-      renderTerminal.selectWord(localPosition);
-    });
+    final cellOffset = _terminalCellOffsetForGlobalPosition(globalPosition);
+    if (cellOffset == null) {
+      return;
+    }
+
+    _selectNativeOverlayWordAtCellOffset(
+      cellOffset,
+      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+    );
   }
 
   void _onNativeOverlayControllerChanged() {

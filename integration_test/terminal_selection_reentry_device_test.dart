@@ -230,6 +230,11 @@ void main() {
 
       final overlayField = find.byType(TextField);
       expect(overlayField, findsOneWidget);
+      final terminalView = tester.widget<MonkeyTerminalView>(
+        find.byType(MonkeyTerminalView),
+      );
+      expect(terminalView.controller, isNotNull);
+      expect(terminalView.controller!.selection, isNull);
       var overlayController = _expectOverlayWordSelection(
         tester,
         overlayField,
@@ -244,6 +249,7 @@ void main() {
       await tester.longPressAt(cellCenter(const CellOffset(2, 1)));
       await tester.pumpAndSettle();
 
+      expect(terminalView.controller!.selection, isNull);
       overlayController = _expectOverlayWordSelection(
         tester,
         overlayField,
