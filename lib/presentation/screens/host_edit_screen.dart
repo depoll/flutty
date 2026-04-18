@@ -39,7 +39,6 @@ extension _HostStartupModePresentation on _HostStartupMode {
   };
 }
 
-const _tmuxDisableStatusBarCommand = r'\; set status off';
 final _tmuxDisableStatusBarPattern = RegExp(
   r'(^|\s)\\;\s*set\s+status\s+off(?=\s|$)',
 );
@@ -72,12 +71,12 @@ String? _resolveTmuxExtraFlags({
     return normalized.isEmpty ? null : normalized;
   }
   if (normalized.isEmpty) {
-    return _tmuxDisableStatusBarCommand;
+    return tmuxDisableStatusBarCommand;
   }
   if (_hasTmuxDisableStatusBarCommand(normalized)) {
     return normalized;
   }
-  return '$normalized $_tmuxDisableStatusBarCommand';
+  return '$normalized $tmuxDisableStatusBarCommand';
 }
 
 /// Screen for adding or editing a host.
@@ -123,6 +122,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _isLoading = false;
   bool _showPassword = false;
   bool _disableTmuxStatusBar = false;
+  bool _disableAgentTmuxStatusBar = false;
 
   Host? _existingHost;
   List<PortForward> _portForwards = [];
@@ -187,6 +187,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
       _autoConnectCommandController.text = host.autoConnectCommand ?? '';
       _disableTmuxStatusBar = _hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
+      _disableAgentTmuxStatusBar = preset?.tmuxDisableStatusBar ?? false;
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
         command: host.autoConnectCommand,
         snippetId: host.autoConnectSnippetId,
@@ -854,7 +855,24 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
           autocorrect: false,
           onChanged: hasAgentPresetAccess
-              ? (_) => _syncAutoConnectCommandFromPreset()
+              ? (_) => _handleAgentPresetFieldChanged()
+              : null,
+        ),
+        const SizedBox(height: 12),
+        CheckboxListTile(
+          key: const Key('host-agent-disable-status-bar-checkbox'),
+          value: _disableAgentTmuxStatusBar,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text('Hide tmux status bar'),
+          subtitle: const Text(
+            'When a tmux session is set, append `\\; set status off` so Flutty\'s tmux bar is the only one shown.',
+          ),
+          onChanged: hasAgentPresetAccess
+              ? (value) {
+                  setState(() => _disableAgentTmuxStatusBar = value ?? false);
+                  _syncAutoConnectCommandFromPreset();
+                }
               : null,
         ),
         const SizedBox(height: 12),
@@ -869,7 +887,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
           autocorrect: false,
           onChanged: hasAgentPresetAccess
-              ? (_) => _syncAutoConnectCommandFromPreset()
+              ? (_) => _handleAgentPresetFieldChanged()
               : null,
         ),
         const SizedBox(height: 12),
@@ -1433,8 +1451,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       tool: _selectedAgentLaunchTool,
       workingDirectory: _agentWorkingDirectoryController.text.trim(),
       tmuxSessionName: _agentTmuxSessionController.text.trim(),
+      tmuxDisableStatusBar: _disableAgentTmuxStatusBar,
       additionalArguments: _agentArgumentsController.text.trim(),
     );
+  }
+
+  void _handleAgentPresetFieldChanged() {
+    setState(() {});
+    _syncAutoConnectCommandFromPreset();
   }
 
   void _syncAutoConnectCommandFromPreset() {

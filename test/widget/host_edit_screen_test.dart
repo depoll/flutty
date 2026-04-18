@@ -541,7 +541,7 @@ void main() {
     });
 
     testWidgets(
-      'prefers an existing agent preset over legacy tmux startup fields',
+      'shows and saves the tmux status bar checkbox for agent startup',
       (tester) async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         final encryptionService = SecretEncryptionService.forTesting();
@@ -552,9 +552,8 @@ void main() {
         final hostRepository = _FakeHostRepository(
           host: _testHost(
             id: 1,
-            label: 'Legacy Mixed Host',
+            label: 'Agent Host',
             autoConnectRequiresConfirmation: false,
-            tmuxSessionName: 'workspace',
           ),
           database: database,
           encryptionService: encryptionService,
@@ -619,7 +618,131 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
+        final checkboxFinder = find.byKey(
+          const Key('host-agent-disable-status-bar-checkbox'),
+        );
+        expect(checkboxFinder, findsOneWidget);
+        final checkbox = tester.widget<CheckboxListTile>(checkboxFinder);
+        expect(checkbox.value, isFalse);
+
+        checkbox.onChanged!(true);
+        await tester.pump();
+
+        final saveButton = find.byKey(
+          const Key('host-save-button'),
+          skipOffstage: false,
+        );
+        await tester.scrollUntilVisible(
+          saveButton,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(saveButton);
+        tester.widget<FilledButton>(saveButton).onPressed!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(hostRepository.updatedHost, isNotNull);
+        expect(
+          hostRepository.updatedHost!.autoConnectCommand,
+          contains(r'\; set status off'),
+        );
+
+        final savedPreset =
+            verify(
+                  () => presetService.setPresetForHost(1, captureAny()),
+                ).captured.single
+                as AgentLaunchPreset;
+        expect(savedPreset.tmuxDisableStatusBar, isTrue);
+      },
+    );
+
+    testWidgets(
+      'prefers an existing agent preset over legacy tmux startup fields',
+      (tester) async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        final encryptionService = SecretEncryptionService.forTesting();
+        addTearDown(database.close);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.binding.setSurfaceSize(const Size(420, 900));
+
+        final hostRepository = _FakeHostRepository(
+          host: _testHost(
+            id: 1,
+            label: 'Legacy Mixed Host',
+            autoConnectRequiresConfirmation: false,
+            tmuxSessionName: 'workspace',
+          ),
+          database: database,
+          encryptionService: encryptionService,
+        );
+        final presetService = _MockAgentLaunchPresetService();
+        const preset = AgentLaunchPreset(
+          tool: AgentLaunchTool.codex,
+          tmuxSessionName: 'agent-session',
+          tmuxDisableStatusBar: true,
+        );
+        when(
+          () => presetService.getPresetForHost(1),
+        ).thenAnswer((_) async => preset);
+        when(
+          () => presetService.setPresetForHost(1, any()),
+        ).thenAnswer((_) async {});
+        when(
+          () => presetService.deletePresetForHost(1),
+        ).thenAnswer((_) async {});
+
+        final router = GoRouter(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) =>
+                  const Scaffold(body: SizedBox.shrink()),
+            ),
+            GoRoute(
+              path: '/edit',
+              builder: (context, state) => const HostEditScreen(hostId: 1),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              databaseProvider.overrideWithValue(database),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+              keyRepositoryProvider.overrideWithValue(
+                _FakeKeyRepository(
+                  database: database,
+                  encryptionService: encryptionService,
+                ),
+              ),
+              snippetRepositoryProvider.overrideWithValue(
+                _FakeSnippetRepository(snippets: const [], database: database),
+              ),
+              portForwardRepositoryProvider.overrideWithValue(
+                _FakePortForwardRepository(database: database),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+
+        unawaited(router.push('/edit'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
         expect(find.byKey(const Key('host-agent-tool-field')), findsOneWidget);
+        final checkboxFinder = find.byKey(
+          const Key('host-agent-disable-status-bar-checkbox'),
+        );
+        expect(checkboxFinder, findsOneWidget);
+        expect(tester.widget<CheckboxListTile>(checkboxFinder).value, isTrue);
         expect(find.byKey(const Key('host-tmux-session-field')), findsNothing);
 
         final saveButton = find.byKey(
@@ -636,7 +759,17 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        verify(() => presetService.setPresetForHost(1, any())).called(1);
+        expect(hostRepository.updatedHost, isNotNull);
+        expect(
+          hostRepository.updatedHost!.autoConnectCommand,
+          contains(r'\; set status off'),
+        );
+        final savedPreset =
+            verify(
+                  () => presetService.setPresetForHost(1, captureAny()),
+                ).captured.single
+                as AgentLaunchPreset;
+        expect(savedPreset.tmuxDisableStatusBar, isTrue);
         verifyNever(() => presetService.deletePresetForHost(1));
       },
     );

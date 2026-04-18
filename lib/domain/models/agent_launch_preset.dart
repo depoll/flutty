@@ -1,3 +1,5 @@
+import 'tmux_state.dart';
+
 /// Supported coding-agent CLIs for host-scoped launch presets.
 enum AgentLaunchTool {
   /// Anthropic Claude Code.
@@ -59,6 +61,7 @@ class AgentLaunchPreset {
     required this.tool,
     this.workingDirectory,
     this.tmuxSessionName,
+    this.tmuxDisableStatusBar = false,
     this.additionalArguments,
   });
 
@@ -76,6 +79,7 @@ class AgentLaunchPreset {
       tool: tool,
       workingDirectory: _readTrimmedString(json['workingDirectory']),
       tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
+      tmuxDisableStatusBar: json['tmuxDisableStatusBar'] == true,
       additionalArguments: _readTrimmedString(json['additionalArguments']),
     );
   }
@@ -88,6 +92,9 @@ class AgentLaunchPreset {
 
   /// Optional tmux session to create or attach before launching the agent.
   final String? tmuxSessionName;
+
+  /// Whether tmux's built-in status bar should be disabled for this session.
+  final bool tmuxDisableStatusBar;
 
   /// Optional extra arguments passed to the CLI.
   final String? additionalArguments;
@@ -107,6 +114,7 @@ class AgentLaunchPreset {
       'workingDirectory': value.trim(),
     if (tmuxSessionName case final value? when value.trim().isNotEmpty)
       'tmuxSessionName': value.trim(),
+    if (tmuxDisableStatusBar) 'tmuxDisableStatusBar': true,
     if (additionalArguments case final value? when value.trim().isNotEmpty)
       'additionalArguments': value.trim(),
   };
@@ -116,11 +124,13 @@ class AgentLaunchPreset {
     AgentLaunchTool? tool,
     String? workingDirectory,
     String? tmuxSessionName,
+    bool? tmuxDisableStatusBar,
     String? additionalArguments,
   }) => AgentLaunchPreset(
     tool: tool ?? this.tool,
     workingDirectory: workingDirectory ?? this.workingDirectory,
     tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
+    tmuxDisableStatusBar: tmuxDisableStatusBar ?? this.tmuxDisableStatusBar,
     additionalArguments: additionalArguments ?? this.additionalArguments,
   );
 }
@@ -142,6 +152,7 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
       if (workingDirectory != null && workingDirectory.isNotEmpty)
         '-c ${_quoteShellPath(workingDirectory)}',
       _quoteShellArgument(baseCommand),
+      if (preset.tmuxDisableStatusBar) tmuxDisableStatusBarCommand,
     ];
     return commandParts.join(' ');
   }
