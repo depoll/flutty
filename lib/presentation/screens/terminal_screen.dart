@@ -2086,6 +2086,14 @@ bool shouldResolveTerminalTapLinks({
   required bool showsNativeSelectionOverlay,
 }) => !showsNativeSelectionOverlay;
 
+typedef _NativeSelectionSnapshotMetrics = ({
+  List<int> lineStarts,
+  List<List<int>> columnOffsets,
+  int lineCount,
+  int viewWidth,
+  int textLength,
+});
+
 /// How a native selection change should update the mobile overlay state.
 @visibleForTesting
 enum NativeSelectionOverlayChange {
@@ -2203,6 +2211,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
+  _NativeSelectionSnapshotMetrics? _nativeSelectionSnapshotMetrics;
   Timer? _nativeOverlayCollapseTimer;
   Timer? _nativeOverlayLongPressTimer;
   int? _nativeOverlayPointerId;
@@ -4972,6 +4981,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: snapshot.text,
       selection: selection,
     );
+    _nativeSelectionSnapshotMetrics = (
+      lineStarts: snapshot.lineStarts,
+      columnOffsets: snapshot.columnOffsets,
+      lineCount: snapshot.lineCount,
+      viewWidth: snapshot.viewWidth,
+      textLength: snapshot.text.length,
+    );
     _hadNativeOverlaySelection = hasActiveNativeOverlaySelection(selection);
     _nativeOverlayCollapseTimer?.cancel();
     _clearNativeOverlayLongPressState();
@@ -5010,6 +5026,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
+    _nativeSelectionSnapshotMetrics = null;
     _nativeOverlayCollapseTimer?.cancel();
     _clearNativeOverlayLongPressState();
     _terminalFocusNode.requestFocus();
@@ -5032,9 +5049,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: snapshot.text,
       selection: nextSelection,
     );
+    _nativeSelectionSnapshotMetrics = (
+      lineStarts: snapshot.lineStarts,
+      columnOffsets: snapshot.columnOffsets,
+      lineCount: snapshot.lineCount,
+      viewWidth: snapshot.viewWidth,
+      textLength: snapshot.text.length,
+    );
   }
 
-  ({String text, List<int> lineStarts, List<List<int>> columnOffsets})
+  ({
+    String text,
+    List<int> lineStarts,
+    List<List<int>> columnOffsets,
+    int lineCount,
+    int viewWidth,
+  })
   _buildNativeSelectionSnapshotData() {
     final buffer = _terminal.buffer;
     final builder = StringBuffer();
@@ -5058,6 +5088,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: builder.toString(),
       lineStarts: lineStarts,
       columnOffsets: lineColumnOffsets,
+      lineCount: buffer.height,
+      viewWidth: buffer.viewWidth,
     );
   }
 
@@ -5151,6 +5183,76 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       kind == PointerDeviceKind.stylus ||
       kind == PointerDeviceKind.invertedStylus;
 
+  ({CellOffset? cellOffset, bool pointsOutsideSnapshot})
+  _nativeSelectionCellOffsetForGlobalPosition(Offset globalPosition) {
+    final metrics = _nativeSelectionSnapshotMetrics;
+    final terminalViewState = _terminalViewKey.currentState;
+    if (metrics == null || terminalViewState == null) {
+      return (cellOffset: null, pointsOutsideSnapshot: false);
+    }
+
+    final renderTerminal = terminalViewState.renderTerminal;
+    final localPosition = renderTerminal.globalToLocal(globalPosition);
+    if (localPosition.dx < 0 ||
+        localPosition.dy < 0 ||
+        localPosition.dx > renderTerminal.size.width ||
+        localPosition.dy > renderTerminal.size.height) {
+      return (cellOffset: null, pointsOutsideSnapshot: false);
+    }
+
+    final cellOffset = renderTerminal.getCellOffset(localPosition);
+    if (cellOffset.y < 0 ||
+        cellOffset.y >= metrics.lineCount ||
+        cellOffset.x < 0 ||
+        cellOffset.x >= metrics.viewWidth) {
+      return (cellOffset: null, pointsOutsideSnapshot: true);
+    }
+
+    return (cellOffset: cellOffset, pointsOutsideSnapshot: false);
+  }
+
+  bool _isNativeSelectionCellWithinActiveSelection(CellOffset cellOffset) {
+    final metrics = _nativeSelectionSnapshotMetrics;
+    final selection = _nativeSelectionController.selection;
+    if (metrics == null || !hasActiveNativeOverlaySelection(selection)) {
+      return false;
+    }
+
+    final lineStart = metrics.lineStarts[cellOffset.y];
+    final cellStart =
+        lineStart + metrics.columnOffsets[cellOffset.y][cellOffset.x];
+    final cellEnd =
+        lineStart + metrics.columnOffsets[cellOffset.y][cellOffset.x + 1];
+    if (cellEnd <= cellStart) {
+      return false;
+    }
+
+    final selectionStart = min(selection.baseOffset, selection.extentOffset);
+    final selectionEnd = max(selection.baseOffset, selection.extentOffset);
+    final protectedStart = max(0, selectionStart - 1);
+    final protectedEnd = min(metrics.textLength, selectionEnd + 1);
+    return cellStart < protectedEnd && cellEnd > protectedStart;
+  }
+
+  bool _shouldForwardNativeOverlayLongPress(Offset globalPosition) {
+    final selection = _nativeSelectionController.selection;
+    if (!hasActiveNativeOverlaySelection(selection)) {
+      return false;
+    }
+
+    final hit = _nativeSelectionCellOffsetForGlobalPosition(globalPosition);
+    if (hit.pointsOutsideSnapshot) {
+      return true;
+    }
+
+    final cellOffset = hit.cellOffset;
+    if (cellOffset == null) {
+      return false;
+    }
+
+    return !_isNativeSelectionCellWithinActiveSelection(cellOffset);
+  }
+
   void _clearNativeOverlayLongPressState() {
     _nativeOverlayLongPressTimer?.cancel();
     _nativeOverlayLongPressTimer = null;
@@ -5173,7 +5275,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeOverlayLongPressTimer = Timer(kLongPressTimeout, () {
       final globalPosition = _nativeOverlayPointerDownPosition;
       _clearNativeOverlayLongPressState();
-      if (globalPosition == null) {
+      if (globalPosition == null ||
+          !_shouldForwardNativeOverlayLongPress(globalPosition)) {
         return;
       }
       _forwardNativeOverlayLongPress(globalPosition);
@@ -5335,6 +5438,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
+    _nativeSelectionSnapshotMetrics = null;
     _nativeOverlayCollapseTimer?.cancel();
     _clearNativeOverlayLongPressState();
     setState(() {

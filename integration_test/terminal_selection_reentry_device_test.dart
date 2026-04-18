@@ -257,6 +257,121 @@ void main() {
   );
 
   testWidgets(
+    'long press inside the active overlay keeps the current native selection',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(430, 932));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final hostRepository = _MockHostRepository();
+      final sshClient = _MockSshClient();
+      final shellChannel = _MockShellChannel();
+      final host = _buildHost(id: 10);
+      final shellDoneCompleter = Completer<void>();
+      final shellStdoutController = StreamController<Uint8List>.broadcast();
+      addTearDown(shellStdoutController.close);
+
+      when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
+      when(
+        () => sshClient.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shellChannel);
+      when(
+        () => shellChannel.stdout,
+      ).thenAnswer((_) => shellStdoutController.stream);
+      when(
+        () => shellChannel.stderr,
+      ).thenAnswer((_) => const Stream<Uint8List>.empty());
+      when(
+        () => shellChannel.done,
+      ).thenAnswer((_) => shellDoneCompleter.future);
+      when(() => shellChannel.write(any())).thenReturn(null);
+
+      final session = SshSession(
+        connectionId: 14,
+        hostId: host.id,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'terminal.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      )..getOrCreateTerminal();
+
+      final container = ProviderContainer(
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          hostRepositoryProvider.overrideWithValue(hostRepository),
+          sharedClipboardProvider.overrideWith((ref) async => false),
+          activeSessionsProvider.overrideWith(
+            () => _TestActiveSessionsNotifier(session),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: MaterialApp(
+            home: TerminalScreen(
+              hostId: host.id,
+              connectionId: session.connectionId,
+            ),
+          ),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+
+      Offset cellCenter(CellOffset offset) {
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        return renderTerminal.localToGlobal(
+          renderTerminal.getOffset(offset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+      }
+
+      session.terminal!.write('alpha');
+      await tester.pumpAndSettle();
+
+      final selectionOffset = cellCenter(const CellOffset(2, 0));
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      final overlayField = find.byType(TextField);
+      expect(overlayField, findsOneWidget);
+      var overlayController = _expectOverlayWordSelection(
+        tester,
+        overlayField,
+        'alpha',
+      );
+      expect(overlayController.text, contains('alpha'));
+
+      session.terminal!.write('\r\ncharlie');
+      await tester.pumpAndSettle();
+      expect(overlayController.text, isNot(contains('charlie')));
+
+      await tester.longPressAt(selectionOffset);
+      await tester.pumpAndSettle();
+
+      overlayController = _expectOverlayWordSelection(
+        tester,
+        overlayField,
+        'alpha',
+      );
+      expect(overlayController.text, isNot(contains('charlie')));
+    },
+    skip:
+        defaultTargetPlatform != TargetPlatform.android &&
+        defaultTargetPlatform != TargetPlatform.iOS,
+  );
+
+  testWidgets(
     'dismissing a selection still allows the next long press to select text',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 932));
