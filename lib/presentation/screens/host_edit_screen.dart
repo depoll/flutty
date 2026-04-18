@@ -66,6 +66,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   late TextEditingController _tmuxExtraFlagsController;
   late TextEditingController _agentWorkingDirectoryController;
   late TextEditingController _agentTmuxSessionController;
+  late TextEditingController _agentTmuxExtraFlagsController;
   late TextEditingController _agentArgumentsController;
 
   int? _selectedKeyId;
@@ -100,6 +101,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _tmuxExtraFlagsController = TextEditingController();
     _agentWorkingDirectoryController = TextEditingController();
     _agentTmuxSessionController = TextEditingController();
+    _agentTmuxExtraFlagsController = TextEditingController();
     _agentArgumentsController = TextEditingController();
 
     if (widget.hostId != null) {
@@ -155,6 +157,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _selectedAgentLaunchTool = preset.tool;
         _agentWorkingDirectoryController.text = preset.workingDirectory ?? '';
         _agentTmuxSessionController.text = preset.tmuxSessionName ?? '';
+        _agentTmuxExtraFlagsController.text = preset.tmuxExtraFlags ?? '';
         _agentArgumentsController.text = preset.additionalArguments ?? '';
         if (_selectedAutoConnectMode == AutoConnectCommandMode.custom ||
             host.autoConnectCommand == presetCommand) {
@@ -181,6 +184,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _tmuxExtraFlagsController.dispose();
     _agentWorkingDirectoryController.dispose();
     _agentTmuxSessionController.dispose();
+    _agentTmuxExtraFlagsController.dispose();
     _agentArgumentsController.dispose();
     super.dispose();
   }
@@ -795,6 +799,23 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ),
         const SizedBox(height: 12),
         TextFormField(
+          key: const Key('host-agent-tmux-extra-flags-field'),
+          controller: _agentTmuxExtraFlagsController,
+          readOnly: !hasAgentPresetAccess,
+          decoration: const InputDecoration(
+            labelText: 'Extra tmux flags (optional)',
+            hintText: '-f ~/.tmux-agent.conf',
+            prefixIcon: Icon(Icons.tune_outlined),
+            helperText:
+                'Used only when a tmux session is set for the coding agent launch.',
+          ),
+          autocorrect: false,
+          onChanged: hasAgentPresetAccess
+              ? (_) => _syncAutoConnectCommandFromPreset()
+              : null,
+        ),
+        const SizedBox(height: 12),
+        TextFormField(
           key: const Key('host-agent-arguments-field'),
           controller: _agentArgumentsController,
           readOnly: !hasAgentPresetAccess,
@@ -1366,6 +1387,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       tool: _selectedAgentLaunchTool,
       workingDirectory: _agentWorkingDirectoryController.text.trim(),
       tmuxSessionName: _agentTmuxSessionController.text.trim(),
+      tmuxExtraFlags: _agentTmuxExtraFlagsController.text.trim(),
       additionalArguments: _agentArgumentsController.text.trim(),
     );
   }

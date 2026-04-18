@@ -59,6 +59,7 @@ class AgentLaunchPreset {
     required this.tool,
     this.workingDirectory,
     this.tmuxSessionName,
+    this.tmuxExtraFlags,
     this.additionalArguments,
   });
 
@@ -76,6 +77,7 @@ class AgentLaunchPreset {
       tool: tool,
       workingDirectory: _readTrimmedString(json['workingDirectory']),
       tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
+      tmuxExtraFlags: _readTrimmedString(json['tmuxExtraFlags']),
       additionalArguments: _readTrimmedString(json['additionalArguments']),
     );
   }
@@ -88,6 +90,9 @@ class AgentLaunchPreset {
 
   /// Optional tmux session to create or attach before launching the agent.
   final String? tmuxSessionName;
+
+  /// Optional extra tmux flags passed before the agent command.
+  final String? tmuxExtraFlags;
 
   /// Optional extra arguments passed to the CLI.
   final String? additionalArguments;
@@ -107,6 +112,8 @@ class AgentLaunchPreset {
       'workingDirectory': value.trim(),
     if (tmuxSessionName case final value? when value.trim().isNotEmpty)
       'tmuxSessionName': value.trim(),
+    if (tmuxExtraFlags case final value? when value.trim().isNotEmpty)
+      'tmuxExtraFlags': value.trim(),
     if (additionalArguments case final value? when value.trim().isNotEmpty)
       'additionalArguments': value.trim(),
   };
@@ -116,11 +123,13 @@ class AgentLaunchPreset {
     AgentLaunchTool? tool,
     String? workingDirectory,
     String? tmuxSessionName,
+    String? tmuxExtraFlags,
     String? additionalArguments,
   }) => AgentLaunchPreset(
     tool: tool ?? this.tool,
     workingDirectory: workingDirectory ?? this.workingDirectory,
     tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
+    tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
     additionalArguments: additionalArguments ?? this.additionalArguments,
   );
 }
@@ -135,12 +144,14 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
   ].join(' ');
 
   final tmuxSessionName = preset.tmuxSessionName?.trim();
+  final tmuxExtraFlags = preset.tmuxExtraFlags?.trim();
   final workingDirectory = preset.workingDirectory?.trim();
   if (tmuxSessionName != null && tmuxSessionName.isNotEmpty) {
     final commandParts = <String>[
       'tmux new-session -A -s ${_quoteShellArgument(tmuxSessionName)}',
       if (workingDirectory != null && workingDirectory.isNotEmpty)
         '-c ${_quoteShellPath(workingDirectory)}',
+      if (tmuxExtraFlags != null && tmuxExtraFlags.isNotEmpty) tmuxExtraFlags,
       _quoteShellArgument(baseCommand),
     ];
     return commandParts.join(' ');

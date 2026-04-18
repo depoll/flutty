@@ -380,6 +380,7 @@ void main() {
         const preset = AgentLaunchPreset(
           tool: AgentLaunchTool.codex,
           tmuxSessionName: 'agent-session',
+          tmuxExtraFlags: '-f ~/.tmux-agent.conf',
         );
         when(
           () => presetService.getPresetForHost(1),
@@ -438,6 +439,24 @@ void main() {
 
         expect(find.byKey(const Key('host-agent-tool-field')), findsOneWidget);
         expect(find.byKey(const Key('host-tmux-session-field')), findsNothing);
+        expect(
+          find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+          findsOneWidget,
+        );
+        expect(
+          tester
+              .widget<TextFormField>(
+                find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+              )
+              .controller!
+              .text,
+          '-f ~/.tmux-agent.conf',
+        );
+
+        await tester.enterText(
+          find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+          '-f ~/.tmux-agent.custom.conf',
+        );
 
         await tester.scrollUntilVisible(
           find.byKey(const Key('host-save-button')),
@@ -448,7 +467,13 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        verify(() => presetService.setPresetForHost(1, any())).called(1);
+        final capturedPreset =
+            verify(
+                  () => presetService.setPresetForHost(1, captureAny()),
+                ).captured.single
+                as AgentLaunchPreset;
+        expect(capturedPreset.tmuxSessionName, 'agent-session');
+        expect(capturedPreset.tmuxExtraFlags, '-f ~/.tmux-agent.custom.conf');
         verifyNever(() => presetService.deletePresetForHost(1));
       },
     );

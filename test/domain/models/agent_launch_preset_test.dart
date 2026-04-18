@@ -23,15 +23,43 @@ void main() {
         tool: AgentLaunchTool.codex,
         workingDirectory: '~/src/app',
         tmuxSessionName: 'nightly review',
+        tmuxExtraFlags: '-f ~/.tmux-agent.conf',
         additionalArguments: '--yes-always',
       );
 
       expect(
         buildAgentLaunchCommand(preset),
         'tmux new-session -A -s \'nightly review\' -c '
-        '"\$HOME/src/app" \'codex --yes-always\'',
+        '"\$HOME/src/app" -f ~/.tmux-agent.conf \'codex --yes-always\'',
       );
     });
+
+    test('ignores tmux flags when no tmux session is configured', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+        additionalArguments: '--yes-always',
+      );
+
+      expect(buildAgentLaunchCommand(preset), 'codex --yes-always');
+    });
+
+    test(
+      'builds command for tmux with extra flags and no working directory',
+      () {
+        const preset = AgentLaunchPreset(
+          tool: AgentLaunchTool.geminiCli,
+          tmuxSessionName: 'nightly review',
+          tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+        );
+
+        expect(
+          buildAgentLaunchCommand(preset),
+          'tmux new-session -A -s \'nightly review\' '
+          '-f ~/.tmux-agent.conf \'gemini\'',
+        );
+      },
+    );
 
     test('builds command for codex tool', () {
       const preset = AgentLaunchPreset(
@@ -68,6 +96,7 @@ void main() {
       tool: AgentLaunchTool.copilotCli,
       workingDirectory: '~/src/flutty',
       tmuxSessionName: 'copilot',
+      tmuxExtraFlags: '-f ~/.tmux-agent.conf',
       additionalArguments: '--resume',
     );
 
@@ -76,6 +105,7 @@ void main() {
     expect(decoded.tool, preset.tool);
     expect(decoded.workingDirectory, preset.workingDirectory);
     expect(decoded.tmuxSessionName, preset.tmuxSessionName);
+    expect(decoded.tmuxExtraFlags, preset.tmuxExtraFlags);
     expect(decoded.additionalArguments, preset.additionalArguments);
   });
 
