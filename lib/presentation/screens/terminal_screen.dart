@@ -2094,7 +2094,17 @@ typedef _NativeSelectionSnapshotMetrics = ({
   int textLength,
 });
 
+typedef _NativeSelectionSnapshotData = ({
+  String text,
+  List<int> lineStarts,
+  List<List<int>> columnOffsets,
+  int lineCount,
+  int viewWidth,
+  int textLength,
+});
+
 typedef _PendingTouchSelectionSnapshot = ({
+  CellOffset originCellOffset,
   String text,
   TextSelection selection,
   List<int> lineStarts,
@@ -2223,7 +2233,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
   _PendingTouchSelectionSnapshot? _pendingTouchSelectionRange;
+  _PendingTouchSelectionSnapshot? _pendingNativeOverlayLongPressSelection;
   _NativeSelectionSnapshotMetrics? _nativeSelectionSnapshotMetrics;
+  _NativeSelectionSnapshotData? _nativeSelectionSnapshotCache;
   Timer? _nativeOverlayCollapseTimer;
   Timer? _nativeOverlayLongPressTimer;
   int? _nativeOverlayPointerId;
@@ -2296,6 +2308,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   bool get _isAndroidPlatform =>
       !kIsWeb && defaultTargetPlatform == TargetPlatform.android;
+
+  bool get _hasExpandedNativeOverlaySelection =>
+      _isNativeSelectionMode &&
+      hasActiveNativeOverlaySelection(_nativeSelectionController.selection);
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
@@ -2426,16 +2442,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _onTerminalStateChanged() {
-    if (_isNativeSelectionMode &&
-        !hasActiveNativeOverlaySelection(
-          _nativeSelectionController.selection,
-        )) {
+    _nativeSelectionSnapshotCache = null;
+    if (_isNativeSelectionMode && !_hasExpandedNativeOverlaySelection) {
       _refreshNativeOverlayText(preserveSelection: true);
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
 
-    if (_shouldFollowLiveOutput) {
+    if (_shouldFollowLiveOutput && !_hasExpandedNativeOverlaySelection) {
       _queueTerminalScrollToBottom();
     }
 
@@ -2688,11 +2702,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
   }
 
+  void _handleTerminalTapUp(TapUpDetails tapDetails, CellOffset cellOffset) {
+    _clearPendingTouchSelectionRange();
+  }
+
   void _handleTerminalTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
+    _cachePendingTouchSelectionSnapshot(tapDetails, cellOffset);
+  }
+
+  void _handleTerminalLinkTapDown(
+    TapDownDetails tapDetails,
+    CellOffset cellOffset,
+  ) {
+    _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    _cachePendingTouchSelectionSnapshot(tapDetails, cellOffset);
+  }
+
+  void _cachePendingTouchSelectionSnapshot(
+    TapDownDetails tapDetails,
+    CellOffset cellOffset,
+  ) {
     if (!_isMobilePlatform || _showsNativeSelectionOverlay) {
+      _clearPendingTouchSelectionRange();
       return;
     }
 
@@ -2702,33 +2736,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final wordRange = _terminal.buffer.getWordBoundary(cellOffset);
-    if (wordRange == null) {
-      _clearPendingTouchSelectionRange();
-      return;
-    }
-
-    final snapshot = _buildNativeSelectionSnapshotData();
-    final selection = _bufferRangeToTextSelection(
-      wordRange,
-      viewWidth: snapshot.viewWidth,
-      lineCount: snapshot.lineCount,
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      textLength: snapshot.text.length,
-    );
-
-    _clearPendingTouchSelectionRange();
-    _pendingTouchSelectionRange = (
-      text: snapshot.text,
-      selection: selection,
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      lineCount: snapshot.lineCount,
-      viewWidth: snapshot.viewWidth,
-      textLength: snapshot.text.length,
+    final snapshot = _buildPendingTouchSelectionSnapshot(
+      cellOffset,
       revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
     );
+    _clearPendingTouchSelectionRange();
+    if (snapshot == null) {
+      return;
+    }
+    _pendingTouchSelectionRange = snapshot;
   }
 
   void _handleTerminalLongPressStart(
@@ -2810,8 +2826,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     });
   }
 
-  void _syncNativeScrollFromTerminal() {
+  void _syncNativeScrollFromTerminal({bool force = false}) {
     if (!_showsNativeSelectionOverlay ||
+        (!force && _hasExpandedNativeOverlaySelection) ||
         _isSyncingNativeScroll ||
         !_terminalScrollController.hasClients ||
         !_nativeSelectionScrollController.hasClients) {
@@ -4616,8 +4633,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       scrollController: _terminalScrollController,
       resolveLinkTap: _resolveTerminalLinkTap,
       onTapDown: isMobile ? _handleTerminalTapDown : null,
-      onLinkTapDown:
-          _terminalTextInputController.suppressNextTouchKeyboardRequest,
+      onTapUp: isMobile ? _handleTerminalTapUp : null,
+      onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       onLongPressStart: isMobile ? _handleTerminalLongPressStart : null,
@@ -5050,16 +5067,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             lineCount: _terminal.buffer.height,
             lineStarts: snapshot.lineStarts,
             columnOffsets: snapshot.columnOffsets,
-            textLength: snapshot.text.length,
+            textLength: snapshot.textLength,
           );
     _enterNativeSelectionModeWithSnapshot((
+      originCellOffset:
+          initialRange?.normalized.begin ?? const CellOffset(0, 0),
       text: snapshot.text,
       selection: selection,
       lineStarts: snapshot.lineStarts,
       columnOffsets: snapshot.columnOffsets,
       lineCount: snapshot.lineCount,
       viewWidth: snapshot.viewWidth,
-      textLength: snapshot.text.length,
+      textLength: snapshot.textLength,
       revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
     ));
   }
@@ -5094,7 +5113,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted || !_isNativeSelectionMode) {
         return;
       }
-      _syncNativeScrollFromTerminal();
+      _syncNativeScrollFromTerminal(force: true);
       _nativeSelectionFocusNode.requestFocus();
       if (!_nativeSelectionController.selection.isCollapsed) {
         _nativeSelectionController.selection = snapshot.selection;
@@ -5131,7 +5150,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     final snapshot = _buildNativeSelectionSnapshotData();
     final previousSelection = _nativeSelectionController.selection;
-    final maxOffset = snapshot.text.length;
+    final maxOffset = snapshot.textLength;
     final nextSelection = preserveSelection
         ? TextSelection(
             baseOffset: previousSelection.baseOffset.clamp(0, maxOffset),
@@ -5147,18 +5166,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       columnOffsets: snapshot.columnOffsets,
       lineCount: snapshot.lineCount,
       viewWidth: snapshot.viewWidth,
-      textLength: snapshot.text.length,
+      textLength: snapshot.textLength,
     );
   }
 
-  ({
-    String text,
-    List<int> lineStarts,
-    List<List<int>> columnOffsets,
-    int lineCount,
-    int viewWidth,
-  })
-  _buildNativeSelectionSnapshotData() {
+  _NativeSelectionSnapshotData _buildNativeSelectionSnapshotData() {
+    final cachedSnapshot = _nativeSelectionSnapshotCache;
+    if (cachedSnapshot != null) {
+      return cachedSnapshot;
+    }
+
     final buffer = _terminal.buffer;
     final builder = StringBuffer();
     final lineStarts = <int>[];
@@ -5177,13 +5194,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
-    return (
+    final snapshot = (
       text: builder.toString(),
       lineStarts: lineStarts,
       columnOffsets: lineColumnOffsets,
       lineCount: buffer.height,
       viewWidth: buffer.viewWidth,
+      textLength: builder.length,
     );
+    _nativeSelectionSnapshotCache = snapshot;
+    return snapshot;
   }
 
   ({String text, List<int> columnOffsets}) _buildTerminalLineSnapshot(
@@ -5271,19 +5291,50 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
+  _PendingTouchSelectionSnapshot? _buildPendingTouchSelectionSnapshot(
+    CellOffset cellOffset, {
+    required bool revealOverlayInTouchScrollMode,
+  }) {
+    final wordRange = _terminal.buffer.getWordBoundary(cellOffset);
+    if (wordRange == null) {
+      return null;
+    }
+
+    final snapshot = _buildNativeSelectionSnapshotData();
+    final selection = _bufferRangeToTextSelection(
+      wordRange,
+      viewWidth: snapshot.viewWidth,
+      lineCount: snapshot.lineCount,
+      lineStarts: snapshot.lineStarts,
+      columnOffsets: snapshot.columnOffsets,
+      textLength: snapshot.textLength,
+    );
+    return (
+      originCellOffset: cellOffset,
+      text: snapshot.text,
+      selection: selection,
+      lineStarts: snapshot.lineStarts,
+      columnOffsets: snapshot.columnOffsets,
+      lineCount: snapshot.lineCount,
+      viewWidth: snapshot.viewWidth,
+      textLength: snapshot.textLength,
+      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
+    );
+  }
+
   bool _selectNativeOverlayWordAtCellOffset(
     CellOffset cellOffset, {
     bool revealOverlayInTouchScrollMode = false,
   }) {
-    final wordRange = _terminal.buffer.getWordBoundary(cellOffset);
-    if (wordRange == null) {
+    final snapshot = _buildPendingTouchSelectionSnapshot(
+      cellOffset,
+      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
+    );
+    if (snapshot == null) {
       return false;
     }
 
-    _enterNativeSelectionMode(
-      initialRange: wordRange,
-      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
-    );
+    _enterNativeSelectionModeWithSnapshot(snapshot);
     return true;
   }
 
@@ -5353,23 +5404,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return cellStart < protectedEnd && cellEnd > protectedStart;
   }
 
-  bool _shouldRefreshNativeOverlayLongPress(Offset globalPosition) {
+  _PendingTouchSelectionSnapshot? _buildPendingNativeOverlayLongPressSelection(
+    Offset globalPosition,
+  ) {
     final selection = _nativeSelectionController.selection;
     if (!hasActiveNativeOverlaySelection(selection)) {
-      return false;
+      return null;
     }
 
     final hit = _nativeSelectionSnapshotHitForGlobalPosition(globalPosition);
-    if (hit.pointsOutsideSnapshot) {
-      return true;
-    }
-
     final cellOffset = hit.cellOffset;
     if (cellOffset == null) {
-      return false;
+      return null;
     }
-
-    return !_isNativeSelectionCellWithinActiveSelection(cellOffset);
+    if (!hit.pointsOutsideSnapshot &&
+        _isNativeSelectionCellWithinActiveSelection(cellOffset)) {
+      return null;
+    }
+    return _buildPendingTouchSelectionSnapshot(
+      cellOffset,
+      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
+    );
   }
 
   void _clearNativeOverlayLongPressState() {
@@ -5377,6 +5432,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeOverlayLongPressTimer = null;
     _nativeOverlayPointerId = null;
     _nativeOverlayPointerDownPosition = null;
+    _pendingNativeOverlayLongPressSelection = null;
   }
 
   void _handleNativeOverlayPointerDown(PointerDownEvent event) {
@@ -5389,16 +5445,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     _clearNativeOverlayLongPressState();
+    final pendingSnapshot = _buildPendingNativeOverlayLongPressSelection(
+      event.position,
+    );
+    if (pendingSnapshot == null) {
+      return;
+    }
+    _pendingNativeOverlayLongPressSelection = pendingSnapshot;
     _nativeOverlayPointerId = event.pointer;
     _nativeOverlayPointerDownPosition = event.position;
     _nativeOverlayLongPressTimer = Timer(kLongPressTimeout, () {
-      final globalPosition = _nativeOverlayPointerDownPosition;
+      final longPressSnapshot = _pendingNativeOverlayLongPressSelection;
       _clearNativeOverlayLongPressState();
-      if (globalPosition == null ||
-          !_shouldRefreshNativeOverlayLongPress(globalPosition)) {
+      if (longPressSnapshot == null) {
         return;
       }
-      _reselectNativeOverlayLongPress(globalPosition);
+      _enterNativeSelectionModeWithSnapshot(longPressSnapshot);
     });
   }
 
@@ -5425,21 +5487,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (event.pointer == _nativeOverlayPointerId) {
       _clearNativeOverlayLongPressState();
     }
-  }
-
-  void _reselectNativeOverlayLongPress(Offset globalPosition) {
-    if (!mounted) {
-      return;
-    }
-    final cellOffset = _terminalCellOffsetForGlobalPosition(globalPosition);
-    if (cellOffset == null) {
-      return;
-    }
-
-    _selectNativeOverlayWordAtCellOffset(
-      cellOffset,
-      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
-    );
   }
 
   void _onNativeOverlayControllerChanged() {
@@ -6245,6 +6292,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalLinkTap(String link) {
+    _clearPendingTouchSelectionRange();
     _clearHoveredTerminalPathUnderline();
     if (link.startsWith(_terminalSftpPathPrefix)) {
       unawaited(

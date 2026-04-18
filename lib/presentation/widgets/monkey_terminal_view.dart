@@ -190,7 +190,7 @@ class MonkeyTerminalView extends StatefulWidget {
   final String? Function(CellOffset offset)? resolveLinkTap;
 
   /// Called when a primary tap is recognized as a pending link tap.
-  final VoidCallback? onLinkTapDown;
+  final void Function(TapDownDetails, CellOffset)? onLinkTapDown;
 
   /// Called when a primary tap should open a resolved terminal link.
   final ValueChanged<String>? onLinkTap;
@@ -479,7 +479,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
           : (localPosition) => widget.resolveLinkTap!(
               renderTerminal.getCellOffset(localPosition),
             ),
-      onLinkTapDown: widget.onLinkTapDown,
+      onLinkTapDown: widget.onLinkTapDown == null ? null : _onLinkTapDown,
       onLinkTap: widget.onLinkTap,
       onTouchScrollStart: widget.touchScrollToTerminal
           ? _onTouchScrollStart
@@ -544,6 +544,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView> {
   void _onDoubleTapDown(TapDownDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onDoubleTapDown?.call(details, offset);
+  }
+
+  void _onLinkTapDown(TapDownDetails details) {
+    final offset = renderTerminal.getCellOffset(details.localPosition);
+    widget.onLinkTapDown?.call(details, offset);
   }
 
   void _onLongPressStart(LongPressStartDetails details) {

@@ -76,7 +76,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final String? Function(Offset localPosition)? resolveLinkTap;
 
   /// Called when a primary tap is recognized as a pending link tap.
-  final VoidCallback? onLinkTapDown;
+  final GestureTapDownCallback? onLinkTapDown;
 
   /// Called when a primary tap should open a resolved link instead of sending
   /// mouse input to the terminal.
@@ -179,7 +179,7 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   void onTapDown(TapDownDetails details) {
     _pendingLinkTap = _resolveLinkTap(details.localPosition);
     if (_pendingLinkTap != null) {
-      widget.onLinkTapDown?.call();
+      widget.onLinkTapDown?.call(details);
       // Link taps are handled separately in onSingleTapUp and do not
       // trigger the generic tap-down callback here.
       return;
