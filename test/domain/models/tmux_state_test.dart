@@ -363,6 +363,13 @@ void main() {
       );
     });
 
+    test('supports tmux commands in extra flags', () {
+      expect(
+        buildTmuxCommand(sessionName: 'dev', extraFlags: r'\; set status off'),
+        r"tmux new-session -A -s 'dev' \; set status off",
+      );
+    });
+
     test('includes all options', () {
       expect(
         buildTmuxCommand(

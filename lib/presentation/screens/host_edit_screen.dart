@@ -39,6 +39,47 @@ extension _HostStartupModePresentation on _HostStartupMode {
   };
 }
 
+const _tmuxDisableStatusBarCommand = r'\; set status off';
+final _tmuxDisableStatusBarPattern = RegExp(
+  r'(^|\s)\\;\s*set\s+status\s+off(?=\s|$)',
+);
+
+bool _hasTmuxDisableStatusBarCommand(String? extraFlags) {
+  final normalized = extraFlags?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return false;
+  }
+  return _tmuxDisableStatusBarPattern.hasMatch(normalized);
+}
+
+String _stripTmuxDisableStatusBarCommand(String? extraFlags) {
+  final normalized = extraFlags?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return '';
+  }
+  return normalized
+      .replaceAll(_tmuxDisableStatusBarPattern, ' ')
+      .replaceAll(RegExp(r'\s{2,}'), ' ')
+      .trim();
+}
+
+String? _resolveTmuxExtraFlags({
+  required String extraFlags,
+  required bool disableStatusBar,
+}) {
+  final normalized = extraFlags.trim();
+  if (!disableStatusBar) {
+    return normalized.isEmpty ? null : normalized;
+  }
+  if (normalized.isEmpty) {
+    return _tmuxDisableStatusBarCommand;
+  }
+  if (_hasTmuxDisableStatusBarCommand(normalized)) {
+    return normalized;
+  }
+  return '$normalized $_tmuxDisableStatusBarCommand';
+}
+
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [HostEditScreen].
@@ -81,6 +122,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _isFavorite = false;
   bool _isLoading = false;
   bool _showPassword = false;
+  bool _disableTmuxStatusBar = false;
 
   Host? _existingHost;
   List<PortForward> _portForwards = [];
@@ -121,6 +163,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final preset = await ref
         .read(agentLaunchPresetServiceProvider)
         .getPresetForHost(host.id);
+    final tmuxExtraFlags = host.tmuxExtraFlags ?? '';
     if (!mounted) return;
     setState(() {
       _existingHost = host;
@@ -139,8 +182,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedFontFamily = host.terminalFontFamily;
       _tmuxSessionController.text = host.tmuxSessionName ?? '';
       _tmuxWorkingDirectoryController.text = host.tmuxWorkingDirectory ?? '';
-      _tmuxExtraFlagsController.text = host.tmuxExtraFlags ?? '';
+      _tmuxExtraFlagsController.text = _stripTmuxDisableStatusBarCommand(
+        tmuxExtraFlags,
+      );
       _autoConnectCommandController.text = host.autoConnectCommand ?? '';
+      _disableTmuxStatusBar = _hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
         command: host.autoConnectCommand,
         snippetId: host.autoConnectSnippetId,
@@ -644,12 +690,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   }
 
   Widget _buildTmuxStartupFields(BuildContext context) {
+    final effectiveTmuxExtraFlags = _resolveTmuxExtraFlags(
+      extraFlags: _tmuxExtraFlagsController.text,
+      disableStatusBar: _disableTmuxStatusBar,
+    );
     final preview = _tmuxSessionController.text.trim().isEmpty
         ? null
         : buildTmuxCommand(
             sessionName: _tmuxSessionController.text.trim(),
             workingDirectory: _tmuxWorkingDirectoryController.text.trim(),
-            extraFlags: _tmuxExtraFlagsController.text.trim(),
+            extraFlags: effectiveTmuxExtraFlags,
           );
 
     return Column(
@@ -701,6 +751,20 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
           autocorrect: false,
           onChanged: (_) => setState(() {}),
+        ),
+        const SizedBox(height: 4),
+        CheckboxListTile(
+          key: const Key('host-tmux-disable-status-bar-checkbox'),
+          value: _disableTmuxStatusBar,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text('Hide tmux status bar'),
+          subtitle: const Text(
+            'Append `\\; set status off` so Flutty\'s tmux bar is the only one shown.',
+          ),
+          onChanged: (value) {
+            setState(() => _disableTmuxStatusBar = value ?? false);
+          },
         ),
         if (preview != null) ...[
           const SizedBox(height: 12),
@@ -989,7 +1053,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _ => hasAutomationAccess ? null : _existingHost?.tmuxWorkingDirectory,
       };
       final normalizedTmuxExtraFlags = switch (_selectedStartupMode) {
-        _HostStartupMode.tmux => tmuxExtraFlags.isEmpty ? null : tmuxExtraFlags,
+        _HostStartupMode.tmux => _resolveTmuxExtraFlags(
+          extraFlags: tmuxExtraFlags,
+          disableStatusBar: _disableTmuxStatusBar,
+        ),
         _HostStartupMode.none => null,
         _ => hasAutomationAccess ? null : _existingHost?.tmuxExtraFlags,
       };
