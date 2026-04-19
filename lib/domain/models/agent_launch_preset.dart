@@ -61,6 +61,7 @@ class AgentLaunchPreset {
     required this.tool,
     this.workingDirectory,
     this.tmuxSessionName,
+    this.tmuxExtraFlags,
     this.tmuxDisableStatusBar = false,
     this.additionalArguments,
   });
@@ -79,6 +80,7 @@ class AgentLaunchPreset {
       tool: tool,
       workingDirectory: _readTrimmedString(json['workingDirectory']),
       tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
+      tmuxExtraFlags: _readTrimmedString(json['tmuxExtraFlags']),
       tmuxDisableStatusBar: json['tmuxDisableStatusBar'] == true,
       additionalArguments: _readTrimmedString(json['additionalArguments']),
     );
@@ -92,6 +94,9 @@ class AgentLaunchPreset {
 
   /// Optional tmux session to create or attach before launching the agent.
   final String? tmuxSessionName;
+
+  /// Optional `tmux new-session` flags passed before the agent command.
+  final String? tmuxExtraFlags;
 
   /// Whether tmux's built-in status bar should be disabled for this session.
   final bool tmuxDisableStatusBar;
@@ -114,6 +119,8 @@ class AgentLaunchPreset {
       'workingDirectory': value.trim(),
     if (tmuxSessionName case final value? when value.trim().isNotEmpty)
       'tmuxSessionName': value.trim(),
+    if (tmuxExtraFlags case final value? when value.trim().isNotEmpty)
+      'tmuxExtraFlags': value.trim(),
     if (tmuxDisableStatusBar) 'tmuxDisableStatusBar': true,
     if (additionalArguments case final value? when value.trim().isNotEmpty)
       'additionalArguments': value.trim(),
@@ -124,16 +131,24 @@ class AgentLaunchPreset {
     AgentLaunchTool? tool,
     String? workingDirectory,
     String? tmuxSessionName,
+    String? tmuxExtraFlags,
     bool? tmuxDisableStatusBar,
     String? additionalArguments,
   }) => AgentLaunchPreset(
     tool: tool ?? this.tool,
     workingDirectory: workingDirectory ?? this.workingDirectory,
     tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
+    tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
     tmuxDisableStatusBar: tmuxDisableStatusBar ?? this.tmuxDisableStatusBar,
     additionalArguments: additionalArguments ?? this.additionalArguments,
   );
 }
+
+enum _ShellQuoteMode { none, single, double }
+
+const _backslashCodeUnit = 0x5C;
+
+final _unquotedTmuxFlagTokenPattern = RegExp(r'^[A-Za-z0-9_./~:=,+-]+$');
 
 /// Builds the shell command for a saved agent launch preset.
 String buildAgentLaunchCommand(AgentLaunchPreset preset) {
@@ -147,10 +162,12 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
   final tmuxSessionName = preset.tmuxSessionName?.trim();
   final workingDirectory = preset.workingDirectory?.trim();
   if (tmuxSessionName != null && tmuxSessionName.isNotEmpty) {
+    final tmuxExtraFlags = _tokenizeTmuxNewSessionFlags(preset.tmuxExtraFlags);
     final commandParts = <String>[
       'tmux new-session -A -s ${_quoteShellArgument(tmuxSessionName)}',
       if (workingDirectory != null && workingDirectory.isNotEmpty)
         '-c ${_quoteShellPath(workingDirectory)}',
+      ...tmuxExtraFlags.map(_quoteTmuxFlagToken),
       _quoteShellArgument(baseCommand),
       if (preset.tmuxDisableStatusBar) tmuxDisableStatusBarCommand,
     ];
@@ -163,6 +180,123 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
 
   return baseCommand;
 }
+
+List<String> _tokenizeTmuxNewSessionFlags(String? value) {
+  final normalized = value?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return const [];
+  }
+  if (normalized.contains('\n') || normalized.contains('\r')) {
+    throw const FormatException(
+      'tmux new-session flags must stay on one line.',
+    );
+  }
+
+  final tokens = <String>[];
+  var currentToken = StringBuffer();
+  var tokenStarted = false;
+  var quoteMode = _ShellQuoteMode.none;
+
+  void commitToken() {
+    if (!tokenStarted) {
+      return;
+    }
+    final token = currentToken.toString();
+    if (_isTmuxCommandSeparatorToken(token)) {
+      throw const FormatException(
+        r'tmux new-session flags cannot include tmux command separators like \;.',
+      );
+    }
+    tokens.add(token);
+    currentToken = StringBuffer();
+    tokenStarted = false;
+  }
+
+  for (var index = 0; index < normalized.length; index++) {
+    final character = normalized[index];
+
+    if (quoteMode == _ShellQuoteMode.single) {
+      if (character == "'") {
+        quoteMode = _ShellQuoteMode.none;
+      } else {
+        tokenStarted = true;
+        currentToken.write(character);
+      }
+      continue;
+    }
+
+    if (quoteMode == _ShellQuoteMode.double) {
+      if (character == '"') {
+        quoteMode = _ShellQuoteMode.none;
+        continue;
+      }
+      if (character.codeUnitAt(0) == _backslashCodeUnit) {
+        if (index + 1 >= normalized.length) {
+          throw const FormatException(
+            'tmux new-session flags cannot end with an escape character.',
+          );
+        }
+        final nextCharacter = normalized[index + 1];
+        if (nextCharacter == '"' ||
+            nextCharacter.codeUnitAt(0) == _backslashCodeUnit ||
+            nextCharacter == r'$' ||
+            nextCharacter == '`') {
+          tokenStarted = true;
+          currentToken.write(nextCharacter);
+          index++;
+          continue;
+        }
+      }
+      tokenStarted = true;
+      currentToken.write(character);
+      continue;
+    }
+
+    if (character == ' ' || character == '\t') {
+      commitToken();
+      continue;
+    }
+    if (character == "'") {
+      tokenStarted = true;
+      quoteMode = _ShellQuoteMode.single;
+      continue;
+    }
+    if (character == '"') {
+      tokenStarted = true;
+      quoteMode = _ShellQuoteMode.double;
+      continue;
+    }
+    if (character.codeUnitAt(0) == _backslashCodeUnit) {
+      if (index + 1 >= normalized.length) {
+        throw const FormatException(
+          'tmux new-session flags cannot end with an escape character.',
+        );
+      }
+      tokenStarted = true;
+      currentToken.write(normalized[index + 1]);
+      index++;
+      continue;
+    }
+    tokenStarted = true;
+    currentToken.write(character);
+  }
+
+  if (quoteMode != _ShellQuoteMode.none) {
+    throw const FormatException(
+      'tmux new-session flags contain an unterminated quote.',
+    );
+  }
+
+  commitToken();
+  return tokens;
+}
+
+bool _isTmuxCommandSeparatorToken(String value) => value == ';';
+
+String _quoteTmuxFlagToken(String value) =>
+    _unquotedTmuxFlagTokenPattern.hasMatch(value)
+    ? value
+    : _quoteShellArgument(value);
 
 String _quoteShellPath(String value) {
   if (value == '~') {
