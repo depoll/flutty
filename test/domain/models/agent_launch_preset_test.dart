@@ -61,6 +61,38 @@ void main() {
       },
     );
 
+    test('quotes tmux flag values with spaces safely', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        tmuxSessionName: 'nightly review',
+        tmuxExtraFlags: '-n "review window"',
+      );
+
+      expect(
+        buildAgentLaunchCommand(preset),
+        "tmux new-session -A -s 'nightly review' -n 'review window' 'codex'",
+      );
+    });
+
+    test('rejects tmux command separators in extra flags', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        tmuxSessionName: 'nightly review',
+        tmuxExtraFlags: r'-x 160 \; set status off',
+      );
+
+      expect(
+        () => buildAgentLaunchCommand(preset),
+        throwsA(
+          isA<FormatException>().having(
+            (error) => error.message,
+            'message',
+            contains(r'\;'),
+          ),
+        ),
+      );
+    });
+
     test('can disable the tmux status bar for agent sessions', () {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.copilotCli,
@@ -73,6 +105,7 @@ void main() {
         r"tmux new-session -A -s 'copilot' 'copilot' \; set status off",
       );
     });
+
     test('builds command for codex tool', () {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.codex,

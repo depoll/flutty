@@ -200,14 +200,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         autoConnectMode: _selectedAutoConnectMode,
       );
       if (preset != null) {
-        final presetCommand = buildAgentLaunchCommand(preset);
+        final presetCommand = _tryBuildAgentLaunchCommand(preset);
         _selectedAgentLaunchTool = preset.tool;
         _agentWorkingDirectoryController.text = preset.workingDirectory ?? '';
         _agentTmuxSessionController.text = preset.tmuxSessionName ?? '';
         _agentTmuxExtraFlagsController.text = preset.tmuxExtraFlags ?? '';
         _agentArgumentsController.text = preset.additionalArguments ?? '';
-        if (_selectedAutoConnectMode == AutoConnectCommandMode.custom ||
-            host.autoConnectCommand == presetCommand) {
+        if (presetCommand != null &&
+            (_selectedAutoConnectMode == AutoConnectCommandMode.custom ||
+                host.autoConnectCommand == presetCommand)) {
           _autoConnectCommandController.text = presetCommand;
         }
       }
@@ -794,9 +795,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     BuildContext context, {
     required bool hasAgentPresetAccess,
   }) {
-    final generatedCommand = buildAgentLaunchCommand(
-      _buildCurrentAgentLaunchPreset()!,
-    );
+    final currentPreset = _buildCurrentAgentLaunchPreset()!;
+    String? generatedCommand;
+    String? generatedCommandError;
+    try {
+      generatedCommand = buildAgentLaunchCommand(currentPreset);
+    } on FormatException catch (error) {
+      generatedCommandError = _formatFormatExceptionMessage(error);
+    }
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -842,7 +848,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
           autocorrect: false,
           onChanged: hasAgentPresetAccess
-              ? (_) => _syncAutoConnectCommandFromPreset()
+              ? (_) => _handleAgentPresetFieldChanged()
               : null,
         ),
         const SizedBox(height: 12),
@@ -891,9 +897,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             helperText:
                 'Passed directly to `tmux new-session`. Used only when a tmux session is set for the coding agent launch.',
           ),
+          autovalidateMode: AutovalidateMode.onUserInteraction,
           autocorrect: false,
+          validator: _validateAgentTmuxExtraFlags,
           onChanged: hasAgentPresetAccess
-              ? (_) => _syncAutoConnectCommandFromPreset()
+              ? (_) => _handleAgentPresetFieldChanged()
               : null,
         ),
         const SizedBox(height: 12),
@@ -917,13 +925,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           style: Theme.of(context).textTheme.titleSmall,
         ),
         const SizedBox(height: 8),
-        SelectableText(
-          generatedCommand,
-          style: FluttyTheme.monoStyle.copyWith(
-            fontSize: 12,
-            color: Theme.of(context).textTheme.bodySmall?.color,
+        if (generatedCommand case final command?)
+          SelectableText(
+            command,
+            style: FluttyTheme.monoStyle.copyWith(
+              fontSize: 12,
+              color: Theme.of(context).textTheme.bodySmall?.color,
+            ),
+          )
+        else if (generatedCommandError case final error?)
+          Text(
+            error,
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.error,
+            ),
           ),
-        ),
       ],
     );
   }
@@ -1483,12 +1499,48 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _syncAutoConnectCommandFromPreset();
   }
 
+  String? _validateAgentTmuxExtraFlags(String? value) {
+    if (_agentTmuxSessionController.text.trim().isEmpty) {
+      return null;
+    }
+    try {
+      buildAgentLaunchCommand(
+        AgentLaunchPreset(
+          tool: AgentLaunchTool.claudeCode,
+          tmuxSessionName: 'preview',
+          tmuxExtraFlags: value,
+        ),
+      );
+      return null;
+    } on FormatException catch (error) {
+      return _formatFormatExceptionMessage(error);
+    }
+  }
+
+  String? _tryBuildAgentLaunchCommand(AgentLaunchPreset? preset) {
+    if (preset == null) {
+      return null;
+    }
+    try {
+      return buildAgentLaunchCommand(preset);
+    } on FormatException {
+      return null;
+    }
+  }
+
+  String _formatFormatExceptionMessage(FormatException error) => error.message;
+
   void _syncAutoConnectCommandFromPreset() {
     final preset = _buildCurrentAgentLaunchPreset();
     if (preset == null) {
       return;
     }
-    _autoConnectCommandController.text = buildAgentLaunchCommand(preset);
+    final command = _tryBuildAgentLaunchCommand(preset);
+    if (command == null) {
+      _autoConnectCommandController.clear();
+      return;
+    }
+    _autoConnectCommandController.text = command;
   }
 
   Future<void> _selectTheme({required bool isLight}) async {

@@ -639,6 +639,14 @@ void main() {
           find.byKey(const Key('host-agent-tmux-extra-flags-field')),
           '-x 200 -y 60',
         );
+        await tester.pump();
+        expect(
+          find.textContaining(
+            "tmux new-session -A -s 'agent-session' -x 200 -y 60",
+            findRichText: true,
+          ),
+          findsOneWidget,
+        );
         final checkboxFinder = find.byKey(
           const Key('host-agent-disable-status-bar-checkbox'),
         );
@@ -678,6 +686,110 @@ void main() {
         expect(savedPreset.tmuxExtraFlags, '-x 200 -y 60');
       },
     );
+
+    testWidgets('validates agent tmux flags before saving', (tester) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      final hostRepository = _FakeHostRepository(
+        host: _testHost(
+          id: 1,
+          label: 'Agent Host',
+          autoConnectRequiresConfirmation: false,
+        ),
+        database: database,
+        encryptionService: encryptionService,
+      );
+      final presetService = _MockAgentLaunchPresetService();
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        tmuxSessionName: 'agent-session',
+      );
+      when(
+        () => presetService.getPresetForHost(1),
+      ).thenAnswer((_) async => preset);
+      when(
+        () => presetService.setPresetForHost(1, any()),
+      ).thenAnswer((_) async {});
+      when(() => presetService.deletePresetForHost(1)).thenAnswer((_) async {});
+
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const Scaffold(body: SizedBox.shrink()),
+          ),
+          GoRoute(
+            path: '/edit',
+            builder: (context, state) => const HostEditScreen(hostId: 1),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+
+      unawaited(router.push('/edit'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      await tester.enterText(
+        find.byKey(const Key('host-agent-tmux-extra-flags-field')),
+        r'\; set status off',
+      );
+      await tester.pump();
+
+      expect(
+        find.text(
+          r'tmux new-session flags cannot include tmux command separators like \;.',
+        ),
+        findsWidgets,
+      );
+
+      final saveButton = find.byKey(
+        const Key('host-save-button'),
+        skipOffstage: false,
+      );
+      await tester.scrollUntilVisible(
+        saveButton,
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.ensureVisible(saveButton);
+      tester.widget<FilledButton>(saveButton).onPressed!();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      verifyNever(() => presetService.setPresetForHost(1, any()));
+    });
 
     testWidgets(
       'prefers an existing agent preset over legacy tmux startup fields',
