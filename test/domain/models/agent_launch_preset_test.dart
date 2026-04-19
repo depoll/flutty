@@ -61,6 +61,18 @@ void main() {
       },
     );
 
+    test('can disable the tmux status bar for agent sessions', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.copilotCli,
+        tmuxSessionName: 'copilot',
+        tmuxDisableStatusBar: true,
+      );
+
+      expect(
+        buildAgentLaunchCommand(preset),
+        r"tmux new-session -A -s 'copilot' 'copilot' \; set status off",
+      );
+    });
     test('builds command for codex tool', () {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.codex,
@@ -97,6 +109,7 @@ void main() {
       workingDirectory: '~/src/flutty',
       tmuxSessionName: 'copilot',
       tmuxExtraFlags: '-x 160 -y 48',
+      tmuxDisableStatusBar: true,
       additionalArguments: '--resume',
     );
 
@@ -106,6 +119,7 @@ void main() {
     expect(decoded.workingDirectory, preset.workingDirectory);
     expect(decoded.tmuxSessionName, preset.tmuxSessionName);
     expect(decoded.tmuxExtraFlags, preset.tmuxExtraFlags);
+    expect(decoded.tmuxDisableStatusBar, isTrue);
     expect(decoded.additionalArguments, preset.additionalArguments);
   });
 

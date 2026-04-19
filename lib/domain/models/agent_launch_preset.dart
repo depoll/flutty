@@ -1,3 +1,5 @@
+import 'tmux_state.dart';
+
 /// Supported coding-agent CLIs for host-scoped launch presets.
 enum AgentLaunchTool {
   /// Anthropic Claude Code.
@@ -60,6 +62,7 @@ class AgentLaunchPreset {
     this.workingDirectory,
     this.tmuxSessionName,
     this.tmuxExtraFlags,
+    this.tmuxDisableStatusBar = false,
     this.additionalArguments,
   });
 
@@ -78,6 +81,7 @@ class AgentLaunchPreset {
       workingDirectory: _readTrimmedString(json['workingDirectory']),
       tmuxSessionName: _readTrimmedString(json['tmuxSessionName']),
       tmuxExtraFlags: _readTrimmedString(json['tmuxExtraFlags']),
+      tmuxDisableStatusBar: json['tmuxDisableStatusBar'] == true,
       additionalArguments: _readTrimmedString(json['additionalArguments']),
     );
   }
@@ -93,6 +97,9 @@ class AgentLaunchPreset {
 
   /// Optional `tmux new-session` flags passed before the agent command.
   final String? tmuxExtraFlags;
+
+  /// Whether tmux's built-in status bar should be disabled for this session.
+  final bool tmuxDisableStatusBar;
 
   /// Optional extra arguments passed to the CLI.
   final String? additionalArguments;
@@ -114,6 +121,7 @@ class AgentLaunchPreset {
       'tmuxSessionName': value.trim(),
     if (tmuxExtraFlags case final value? when value.trim().isNotEmpty)
       'tmuxExtraFlags': value.trim(),
+    if (tmuxDisableStatusBar) 'tmuxDisableStatusBar': true,
     if (additionalArguments case final value? when value.trim().isNotEmpty)
       'additionalArguments': value.trim(),
   };
@@ -124,12 +132,14 @@ class AgentLaunchPreset {
     String? workingDirectory,
     String? tmuxSessionName,
     String? tmuxExtraFlags,
+    bool? tmuxDisableStatusBar,
     String? additionalArguments,
   }) => AgentLaunchPreset(
     tool: tool ?? this.tool,
     workingDirectory: workingDirectory ?? this.workingDirectory,
     tmuxSessionName: tmuxSessionName ?? this.tmuxSessionName,
     tmuxExtraFlags: tmuxExtraFlags ?? this.tmuxExtraFlags,
+    tmuxDisableStatusBar: tmuxDisableStatusBar ?? this.tmuxDisableStatusBar,
     additionalArguments: additionalArguments ?? this.additionalArguments,
   );
 }
@@ -153,6 +163,7 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
         '-c ${_quoteShellPath(workingDirectory)}',
       if (tmuxExtraFlags != null && tmuxExtraFlags.isNotEmpty) tmuxExtraFlags,
       _quoteShellArgument(baseCommand),
+      if (preset.tmuxDisableStatusBar) tmuxDisableStatusBarCommand,
     ];
     return commandParts.join(' ');
   }

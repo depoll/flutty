@@ -361,6 +361,9 @@ bool _isAsciiLetterOrDigit(int rune) =>
 
 // ── tmux command helpers ──────────────────────────────────────────────────
 
+/// tmux command fragment that disables tmux's built-in status bar.
+const tmuxDisableStatusBarCommand = r'\; set status off';
+
 /// Builds a `tmux new-session` command from structured configuration.
 ///
 /// Always uses `-A` (attach-or-create) so reconnecting reuses the session.
