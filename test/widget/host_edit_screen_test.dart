@@ -358,7 +358,7 @@ void main() {
     });
 
     testWidgets(
-      'prefers an existing agent preset over legacy tmux startup fields',
+      'adds the tmux status bar command when the checkbox is enabled',
       (tester) async {
         final database = AppDatabase.forTesting(NativeDatabase.memory());
         final encryptionService = SecretEncryptionService.forTesting();
@@ -369,9 +369,191 @@ void main() {
         final hostRepository = _FakeHostRepository(
           host: _testHost(
             id: 1,
-            label: 'Legacy Mixed Host',
+            label: 'Imported Host',
             autoConnectRequiresConfirmation: false,
-            tmuxSessionName: 'workspace',
+            tmuxSessionName: 'old-workspace',
+          ),
+          database: database,
+          encryptionService: encryptionService,
+        );
+        final router = GoRouter(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) =>
+                  const Scaffold(body: SizedBox.shrink()),
+            ),
+            GoRoute(
+              path: '/edit',
+              builder: (context, state) => const HostEditScreen(hostId: 1),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(database),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              keyRepositoryProvider.overrideWithValue(
+                _FakeKeyRepository(
+                  database: database,
+                  encryptionService: encryptionService,
+                ),
+              ),
+              snippetRepositoryProvider.overrideWithValue(
+                _FakeSnippetRepository(snippets: const [], database: database),
+              ),
+              portForwardRepositoryProvider.overrideWithValue(
+                _FakePortForwardRepository(database: database),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+
+        unawaited(router.push('/edit'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        await tester.enterText(
+          find.byKey(const Key('host-tmux-session-field')),
+          'workspace',
+        );
+        await tester.enterText(
+          find.byKey(const Key('host-tmux-extra-flags-field')),
+          '-f ~/.tmux.conf',
+        );
+        final statusBarCheckbox = tester.widget<CheckboxListTile>(
+          find.byKey(const Key('host-tmux-disable-status-bar-checkbox')),
+        );
+        statusBarCheckbox.onChanged!(true);
+        await tester.pump();
+
+        final saveButton = find.byKey(
+          const Key('host-save-button'),
+          skipOffstage: false,
+        );
+        await tester.scrollUntilVisible(
+          saveButton,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(saveButton);
+        tester.widget<FilledButton>(saveButton).onPressed!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(hostRepository.updatedHost, isNotNull);
+        expect(
+          hostRepository.updatedHost!.tmuxExtraFlags,
+          r'-f ~/.tmux.conf \; set status off',
+        );
+      },
+    );
+
+    testWidgets('loads an existing tmux status bar command into the checkbox', (
+      tester,
+    ) async {
+      final database = AppDatabase.forTesting(NativeDatabase.memory());
+      final encryptionService = SecretEncryptionService.forTesting();
+      addTearDown(database.close);
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.binding.setSurfaceSize(const Size(420, 900));
+
+      final hostRepository = _FakeHostRepository(
+        host: _testHost(
+          id: 1,
+          label: 'Imported Host',
+          autoConnectRequiresConfirmation: false,
+          tmuxSessionName: 'workspace',
+          tmuxExtraFlags: r'-f ~/.tmux.conf \; set status off',
+        ),
+        database: database,
+        encryptionService: encryptionService,
+      );
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) =>
+                const Scaffold(body: SizedBox.shrink()),
+          ),
+          GoRoute(
+            path: '/edit',
+            builder: (context, state) => const HostEditScreen(hostId: 1),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(database),
+            hostRepositoryProvider.overrideWithValue(hostRepository),
+            keyRepositoryProvider.overrideWithValue(
+              _FakeKeyRepository(
+                database: database,
+                encryptionService: encryptionService,
+              ),
+            ),
+            snippetRepositoryProvider.overrideWithValue(
+              _FakeSnippetRepository(snippets: const [], database: database),
+            ),
+            portForwardRepositoryProvider.overrideWithValue(
+              _FakePortForwardRepository(database: database),
+            ),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+
+      unawaited(router.push('/edit'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      final extraFlagsField = tester.widget<TextFormField>(
+        find.byKey(const Key('host-tmux-extra-flags-field')),
+      );
+      final statusBarCheckbox = tester.widget<CheckboxListTile>(
+        find.byKey(const Key('host-tmux-disable-status-bar-checkbox')),
+      );
+
+      expect(extraFlagsField.controller!.text, '-f ~/.tmux.conf');
+      expect(statusBarCheckbox.value, isTrue);
+
+      await tester.scrollUntilVisible(
+        find.byKey(const Key('host-save-button')),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.tap(find.byKey(const Key('host-save-button')));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(hostRepository.updatedHost, isNotNull);
+      expect(
+        hostRepository.updatedHost!.tmuxExtraFlags,
+        r'-f ~/.tmux.conf \; set status off',
+      );
+    });
+
+    testWidgets(
+      'shows and saves the tmux status bar checkbox for agent startup',
+      (tester) async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        final encryptionService = SecretEncryptionService.forTesting();
+        addTearDown(database.close);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.binding.setSurfaceSize(const Size(420, 900));
+
+        final hostRepository = _FakeHostRepository(
+          host: _testHost(
+            id: 1,
+            label: 'Agent Host',
+            autoConnectRequiresConfirmation: false,
           ),
           database: database,
           encryptionService: encryptionService,
@@ -436,19 +618,158 @@ void main() {
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        expect(find.byKey(const Key('host-agent-tool-field')), findsOneWidget);
-        expect(find.byKey(const Key('host-tmux-session-field')), findsNothing);
+        final checkboxFinder = find.byKey(
+          const Key('host-agent-disable-status-bar-checkbox'),
+        );
+        expect(checkboxFinder, findsOneWidget);
+        final checkbox = tester.widget<CheckboxListTile>(checkboxFinder);
+        expect(checkbox.value, isFalse);
 
+        checkbox.onChanged!(true);
+        await tester.pump();
+
+        final saveButton = find.byKey(
+          const Key('host-save-button'),
+          skipOffstage: false,
+        );
         await tester.scrollUntilVisible(
-          find.byKey(const Key('host-save-button')),
+          saveButton,
           200,
           scrollable: find.byType(Scrollable).first,
         );
-        await tester.tap(find.byKey(const Key('host-save-button')));
+        await tester.ensureVisible(saveButton);
+        tester.widget<FilledButton>(saveButton).onPressed!();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
-        verify(() => presetService.setPresetForHost(1, any())).called(1);
+        expect(hostRepository.updatedHost, isNotNull);
+        expect(
+          hostRepository.updatedHost!.autoConnectCommand,
+          contains(r'\; set status off'),
+        );
+
+        final savedPreset =
+            verify(
+                  () => presetService.setPresetForHost(1, captureAny()),
+                ).captured.single
+                as AgentLaunchPreset;
+        expect(savedPreset.tmuxDisableStatusBar, isTrue);
+      },
+    );
+
+    testWidgets(
+      'prefers an existing agent preset over legacy tmux startup fields',
+      (tester) async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        final encryptionService = SecretEncryptionService.forTesting();
+        addTearDown(database.close);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.binding.setSurfaceSize(const Size(420, 900));
+
+        final hostRepository = _FakeHostRepository(
+          host: _testHost(
+            id: 1,
+            label: 'Legacy Mixed Host',
+            autoConnectRequiresConfirmation: false,
+            tmuxSessionName: 'workspace',
+          ),
+          database: database,
+          encryptionService: encryptionService,
+        );
+        final presetService = _MockAgentLaunchPresetService();
+        const preset = AgentLaunchPreset(
+          tool: AgentLaunchTool.codex,
+          tmuxSessionName: 'agent-session',
+          tmuxDisableStatusBar: true,
+        );
+        when(
+          () => presetService.getPresetForHost(1),
+        ).thenAnswer((_) async => preset);
+        when(
+          () => presetService.setPresetForHost(1, any()),
+        ).thenAnswer((_) async {});
+        when(
+          () => presetService.deletePresetForHost(1),
+        ).thenAnswer((_) async {});
+
+        final router = GoRouter(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) =>
+                  const Scaffold(body: SizedBox.shrink()),
+            ),
+            GoRoute(
+              path: '/edit',
+              builder: (context, state) => const HostEditScreen(hostId: 1),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              databaseProvider.overrideWithValue(database),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+              keyRepositoryProvider.overrideWithValue(
+                _FakeKeyRepository(
+                  database: database,
+                  encryptionService: encryptionService,
+                ),
+              ),
+              snippetRepositoryProvider.overrideWithValue(
+                _FakeSnippetRepository(snippets: const [], database: database),
+              ),
+              portForwardRepositoryProvider.overrideWithValue(
+                _FakePortForwardRepository(database: database),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+
+        unawaited(router.push('/edit'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(find.byKey(const Key('host-agent-tool-field')), findsOneWidget);
+        final checkboxFinder = find.byKey(
+          const Key('host-agent-disable-status-bar-checkbox'),
+        );
+        expect(checkboxFinder, findsOneWidget);
+        expect(tester.widget<CheckboxListTile>(checkboxFinder).value, isTrue);
+        expect(find.byKey(const Key('host-tmux-session-field')), findsNothing);
+
+        final saveButton = find.byKey(
+          const Key('host-save-button'),
+          skipOffstage: false,
+        );
+        await tester.scrollUntilVisible(
+          saveButton,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(saveButton);
+        tester.widget<FilledButton>(saveButton).onPressed!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(hostRepository.updatedHost, isNotNull);
+        expect(
+          hostRepository.updatedHost!.autoConnectCommand,
+          contains(r'\; set status off'),
+        );
+        final savedPreset =
+            verify(
+                  () => presetService.setPresetForHost(1, captureAny()),
+                ).captured.single
+                as AgentLaunchPreset;
+        expect(savedPreset.tmuxDisableStatusBar, isTrue);
         verifyNever(() => presetService.deletePresetForHost(1));
       },
     );
