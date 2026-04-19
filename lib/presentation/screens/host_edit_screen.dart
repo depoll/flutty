@@ -803,11 +803,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           controller: _agentTmuxExtraFlagsController,
           readOnly: !hasAgentPresetAccess,
           decoration: const InputDecoration(
-            labelText: 'Extra tmux flags (optional)',
-            hintText: '-f ~/.tmux-agent.conf',
+            labelText: 'Extra tmux new-session flags (optional)',
+            hintText: '-x 160 -y 48',
             prefixIcon: Icon(Icons.tune_outlined),
             helperText:
-                'Used only when a tmux session is set for the coding agent launch.',
+                'Passed directly to `tmux new-session`. Used only when a tmux session is set for the coding agent launch.',
           ),
           autocorrect: false,
           onChanged: hasAgentPresetAccess

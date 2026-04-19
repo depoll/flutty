@@ -91,7 +91,7 @@ class AgentLaunchPreset {
   /// Optional tmux session to create or attach before launching the agent.
   final String? tmuxSessionName;
 
-  /// Optional extra tmux flags passed before the agent command.
+  /// Optional `tmux new-session` flags passed before the agent command.
   final String? tmuxExtraFlags;
 
   /// Optional extra arguments passed to the CLI.

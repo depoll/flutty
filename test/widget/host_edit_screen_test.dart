@@ -380,7 +380,7 @@ void main() {
         const preset = AgentLaunchPreset(
           tool: AgentLaunchTool.codex,
           tmuxSessionName: 'agent-session',
-          tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+          tmuxExtraFlags: '-x 160 -y 48',
         );
         when(
           () => presetService.getPresetForHost(1),
@@ -450,12 +450,12 @@ void main() {
               )
               .controller!
               .text,
-          '-f ~/.tmux-agent.conf',
+          '-x 160 -y 48',
         );
 
         await tester.enterText(
           find.byKey(const Key('host-agent-tmux-extra-flags-field')),
-          '-f ~/.tmux-agent.custom.conf',
+          '-x 200 -y 60',
         );
 
         await tester.scrollUntilVisible(
@@ -473,7 +473,7 @@ void main() {
                 ).captured.single
                 as AgentLaunchPreset;
         expect(capturedPreset.tmuxSessionName, 'agent-session');
-        expect(capturedPreset.tmuxExtraFlags, '-f ~/.tmux-agent.custom.conf');
+        expect(capturedPreset.tmuxExtraFlags, '-x 200 -y 60');
         verifyNever(() => presetService.deletePresetForHost(1));
       },
     );

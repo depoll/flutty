@@ -25,7 +25,7 @@ void main() {
       tool: AgentLaunchTool.claudeCode,
       workingDirectory: '~/src/flutty',
       tmuxSessionName: 'claude',
-      tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+      tmuxExtraFlags: '-x 160 -y 48',
       additionalArguments: '--resume',
     );
 

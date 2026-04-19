@@ -23,21 +23,21 @@ void main() {
         tool: AgentLaunchTool.codex,
         workingDirectory: '~/src/app',
         tmuxSessionName: 'nightly review',
-        tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+        tmuxExtraFlags: '-x 160 -y 48',
         additionalArguments: '--yes-always',
       );
 
       expect(
         buildAgentLaunchCommand(preset),
         'tmux new-session -A -s \'nightly review\' -c '
-        '"\$HOME/src/app" -f ~/.tmux-agent.conf \'codex --yes-always\'',
+        '"\$HOME/src/app" -x 160 -y 48 \'codex --yes-always\'',
       );
     });
 
     test('ignores tmux flags when no tmux session is configured', () {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.codex,
-        tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+        tmuxExtraFlags: '-x 160 -y 48',
         additionalArguments: '--yes-always',
       );
 
@@ -50,13 +50,13 @@ void main() {
         const preset = AgentLaunchPreset(
           tool: AgentLaunchTool.geminiCli,
           tmuxSessionName: 'nightly review',
-          tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+          tmuxExtraFlags: '-x 160 -y 48',
         );
 
         expect(
           buildAgentLaunchCommand(preset),
           'tmux new-session -A -s \'nightly review\' '
-          '-f ~/.tmux-agent.conf \'gemini\'',
+          '-x 160 -y 48 \'gemini\'',
         );
       },
     );
@@ -96,7 +96,7 @@ void main() {
       tool: AgentLaunchTool.copilotCli,
       workingDirectory: '~/src/flutty',
       tmuxSessionName: 'copilot',
-      tmuxExtraFlags: '-f ~/.tmux-agent.conf',
+      tmuxExtraFlags: '-x 160 -y 48',
       additionalArguments: '--resume',
     );
 
