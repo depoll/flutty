@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 void main() {
@@ -111,6 +112,89 @@ void main() {
         'parsed-session',
       );
       expect(resolvePreferredTmuxSessionName(), isNull);
+    });
+
+    test('prefers explicit and active tmux directories for new windows', () {
+      expect(
+        resolveTmuxWindowWorkingDirectory(
+          explicitWorkingDirectory: '/tmp/explicit',
+          currentPaneWorkingDirectory: '/tmp/current',
+          observedWorkingDirectory: '/tmp/observed',
+          launchWorkingDirectory: '/tmp/launch',
+          hostWorkingDirectory: '/tmp/host',
+        ),
+        '/tmp/explicit',
+      );
+      expect(
+        resolveTmuxWindowWorkingDirectory(
+          currentPaneWorkingDirectory: '/tmp/current',
+          observedWorkingDirectory: '/tmp/observed',
+          launchWorkingDirectory: '/tmp/launch',
+          hostWorkingDirectory: '/tmp/host',
+        ),
+        '/tmp/current',
+      );
+    });
+
+    test('falls back through observed, launch, and host tmux directories', () {
+      expect(
+        resolveTmuxWindowWorkingDirectory(
+          observedWorkingDirectory: '/tmp/observed',
+          launchWorkingDirectory: '/tmp/launch',
+          hostWorkingDirectory: '/tmp/host',
+        ),
+        '/tmp/observed',
+      );
+      expect(
+        resolveTmuxWindowWorkingDirectory(
+          launchWorkingDirectory: '/tmp/launch',
+          hostWorkingDirectory: '/tmp/host',
+        ),
+        '/tmp/launch',
+      );
+      expect(
+        resolveTmuxWindowWorkingDirectory(hostWorkingDirectory: '/tmp/host'),
+        '/tmp/host',
+      );
+      expect(resolveTmuxWindowWorkingDirectory(), isNull);
+    });
+
+    test('reattaches tmux window actions only when tmux lost foreground', () {
+      expect(
+        shouldReattachTmuxAfterWindowAction(
+          hasForegroundClient: true,
+          shellStatus: TerminalShellStatus.prompt,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReattachTmuxAfterWindowAction(
+          hasForegroundClient: false,
+          shellStatus: TerminalShellStatus.prompt,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReattachTmuxAfterWindowAction(
+          hasForegroundClient: false,
+          shellStatus: TerminalShellStatus.editingCommand,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReattachTmuxAfterWindowAction(
+          hasForegroundClient: false,
+          shellStatus: TerminalShellStatus.runningCommand,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReattachTmuxAfterWindowAction(
+          hasForegroundClient: false,
+          shellStatus: null,
+        ),
+        isTrue,
+      );
     });
   });
 
