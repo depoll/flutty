@@ -513,6 +513,45 @@ String? resolveGeminiProjectWorkingDirectory(
   return null;
 }
 
+/// Builds the CLI working-directory scopes Gemini should be queried from.
+///
+/// When no directory context is available, returns a single `null` scope so the
+/// CLI still runs once in the default shell cwd instead of being skipped.
+@visibleForTesting
+List<String?> buildGeminiCliSessionListScopes(
+  String? workingDirectory,
+  Iterable<String> relatedWorkingDirectories,
+) {
+  final scopes = <String?>{};
+  final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
+  if (trimmedWorkingDirectory != null) {
+    scopes.add(trimmedWorkingDirectory);
+  }
+
+  for (final directory in relatedWorkingDirectories) {
+    final trimmedDirectory = _trimWorkingDirectory(directory);
+    if (trimmedDirectory != null) {
+      scopes.add(trimmedDirectory);
+    }
+  }
+
+  if (scopes.isEmpty) {
+    return const <String?>[null];
+  }
+  return scopes.toList(growable: false);
+}
+
+/// Sorts merged discovery sessions by recency before applying a scan cap.
+@visibleForTesting
+List<ToolSessionInfo> sortAndLimitDiscoveredSessions(
+  Iterable<ToolSessionInfo> sessions,
+  int limit,
+) {
+  final sortedSessions = sessions.toList(growable: false)
+    ..sort(compareDiscoveredSessionsByRecency);
+  return sortedSessions.take(limit).toList(growable: false);
+}
+
 /// Discovers recent AI coding tool sessions on remote hosts by scanning
 /// known session storage locations.
 ///
@@ -955,28 +994,22 @@ class AgentSessionDiscoveryService {
     int max,
   ) async {
     try {
-      final searchDirectories = <String>{};
-      final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
-      if (trimmedWorkingDirectory != null) {
-        searchDirectories.add(trimmedWorkingDirectory);
-      }
-      searchDirectories
-        ..addAll(
-          relatedWorkingDirectories.map(normalizeWorkingDirectoryForComparison),
-        )
-        ..addAll(relatedWorkingDirectories);
+      final searchDirectories = buildGeminiCliSessionListScopes(
+        workingDirectory,
+        relatedWorkingDirectories,
+      );
 
       var hadError = false;
       final sessionsById = <String, ToolSessionInfo>{};
 
       for (final searchDirectory in searchDirectories) {
         try {
-          final cliOutput = await _exec(
-            session,
-            '[ -d ${_shellQuote(searchDirectory)} ] && '
-            'cd ${_shellQuote(searchDirectory)} && '
-            'gemini --list-sessions 2>/dev/null',
-          );
+          final cliCommand = searchDirectory == null
+              ? 'gemini --list-sessions 2>/dev/null'
+              : '[ -d ${_shellQuote(searchDirectory)} ] && '
+                    'cd ${_shellQuote(searchDirectory)} && '
+                    'gemini --list-sessions 2>/dev/null';
+          final cliOutput = await _exec(session, cliCommand);
           if (!cliOutput.contains('[') || !cliOutput.contains(']')) continue;
           final parsed = _parseGeminiCliOutput(cliOutput, searchDirectory);
           for (final info in parsed) {
@@ -1000,7 +1033,7 @@ class AgentSessionDiscoveryService {
 
       return _ToolDiscoveryResult.success(
         'Gemini CLI',
-        sessionsById.values.take(max * 5).toList(growable: false),
+        sortAndLimitDiscoveredSessions(sessionsById.values, max * 5),
         hadError: hadError,
       );
     } on Object {

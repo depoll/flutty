@@ -110,6 +110,47 @@ branch refs/heads/fix/session-resumption
     });
   });
 
+  group('buildGeminiCliSessionListScopes', () {
+    test('deduplicates related working directories without re-normalizing', () {
+      expect(
+        buildGeminiCliSessionListScopes('/Users/depoll/Code/flutty', const [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+          '/Users/depoll/Code/flutty',
+        ]),
+        [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ],
+      );
+    });
+
+    test('falls back to one default CLI scope when no directory is known', () {
+      expect(buildGeminiCliSessionListScopes(null, const []), [isNull]);
+    });
+  });
+
+  group('sortAndLimitDiscoveredSessions', () {
+    test('sorts by recency before applying the cap', () {
+      final limitedSessions = sortAndLimitDiscoveredSessions([
+        ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: 'older',
+          summary: 'older',
+          lastActive: DateTime(2026, 4, 12),
+        ),
+        ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: 'newer',
+          summary: 'newer',
+          lastActive: DateTime(2026, 4, 13),
+        ),
+      ], 1);
+
+      expect(limitedSessions.map((session) => session.sessionId), ['newer']);
+    });
+  });
+
   group('normalizeDiscoveredSessionInfo', () {
     test('drops unnamed sessions without usable fallback context', () {
       const info = ToolSessionInfo(
