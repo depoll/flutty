@@ -579,6 +579,51 @@ void main() {
     );
 
     testWidgets(
+      'prompt path underline tracks scroll without dropping a frame',
+      (tester) async {
+        await pumpScreen(tester);
+
+        final output = <String>[
+          for (var index = 0; index < 80; index++) 'line $index',
+          'metadata rows no longer get folded into the path',
+          '~/Code/flutty [⇢main]',
+        ].join('\r\n');
+        session.terminal!.write(output);
+        await tester.pumpAndSettle();
+
+        final underlineFinder = find.byWidgetPredicate((widget) {
+          final key = widget.key;
+          return key is ValueKey<String> &&
+              key.value.startsWith('terminal-path-underline:');
+        });
+
+        expect(underlineFinder, findsOneWidget);
+        final initialTop = tester.getTopLeft(underlineFinder).dy;
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        final scrollController = terminalView.scrollController;
+        final lineHeight = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal
+            .lineHeight;
+        expect(scrollController, isNotNull);
+        expect(scrollController!.position.maxScrollExtent, greaterThan(0));
+        scrollController.jumpTo(
+          (scrollController.offset - (lineHeight / 2)).clamp(
+            0.0,
+            scrollController.position.maxScrollExtent,
+          ),
+        );
+        await tester.pump();
+
+        expect(underlineFinder, findsOneWidget);
+        expect(tester.getTopLeft(underlineFinder).dy, isNot(initialTop));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'extra keys toggle uses distinct copy',
       (tester) async {
         await pumpScreen(tester);

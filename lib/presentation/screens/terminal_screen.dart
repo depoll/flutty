@@ -2711,7 +2711,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : 0,
     );
     _syncNativeScrollFromTerminal();
-    _queueVisibleTerminalPathUnderlineRefresh();
+    _refreshVisibleTerminalPathUnderlines();
   }
 
   void _followLiveOutput() {
@@ -4763,10 +4763,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fit: StackFit.expand,
           children: [
             terminalView,
-            for (final underline in _visibleTerminalPathUnderlines)
+            for (final entry in _visibleTerminalPathUnderlines.asMap().entries)
               Positioned(
-                left: underline.underlineRect.left,
-                top: underline.underlineRect.top,
+                left: entry.value.underlineRect.left,
+                top: entry.value.underlineRect.top,
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
@@ -4774,8 +4774,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: SizedBox(
-                      width: underline.underlineRect.width,
-                      height: underline.underlineRect.height,
+                      key: ValueKey<String>(
+                        'terminal-path-underline:${entry.key}:${entry.value.path}',
+                      ),
+                      width: entry.value.underlineRect.width,
+                      height: entry.value.underlineRect.height,
                     ),
                   ),
                 ),

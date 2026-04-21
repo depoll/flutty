@@ -613,6 +613,19 @@ void main() {
       );
     });
 
+    test('detects prompt-style explicit paths after ordinary prose rows', () {
+      const text =
+          'metadata rows no longer get folded into the path\n'
+          '~/Code/flutty [⇢main]';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('Code'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '~/Code/flutty');
+    });
+
     test('ignores branch-like slash paths without a file-like basename', () {
       expect(
         detectTerminalFilePathAtTextOffset(
@@ -1048,6 +1061,16 @@ void main() {
           previousLineText:
               '~/Code/flutty.worktrees/session-resumption-all-provide',
           nextLineText: '└ L330:390 (61 lines read)',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join ordinary prose rows to a following prompt path', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'metadata rows no longer get folded into the path',
+          nextLineText: '~/Code/flutty [⇢main]',
         ),
         isFalse,
       );
