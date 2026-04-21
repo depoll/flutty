@@ -21,6 +21,9 @@ const _profileSourcingPrefix =
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
     r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
+const _sessionDiscoveryCacheFreshTtl = Duration(seconds: 15);
+const _sessionDiscoveryCacheRetentionTtl = Duration(minutes: 2);
+const _relatedWorkingDirectoriesCacheTtl = Duration(minutes: 1);
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -894,7 +897,24 @@ List<ToolSessionInfo> scopeDiscoveredSessionsToWorkingDirectory(
 /// [ToolSessionInfo] entries.
 class AgentSessionDiscoveryService {
   /// Creates a new [AgentSessionDiscoveryService].
-  const AgentSessionDiscoveryService();
+  AgentSessionDiscoveryService({DateTime Function()? now})
+    : _now = now ?? DateTime.now;
+
+  final DateTime Function() _now;
+  final Map<_AgentSessionDiscoveryKey, _CachedDiscoveryResult> _discoveryCache =
+      <_AgentSessionDiscoveryKey, _CachedDiscoveryResult>{};
+  final Map<_AgentSessionDiscoveryKey, Stream<DiscoveredSessionsResult>>
+  _inFlightDiscoveries =
+      <_AgentSessionDiscoveryKey, Stream<DiscoveredSessionsResult>>{};
+  final Map<_AgentSessionDiscoveryKey, DiscoveredSessionsResult>
+  _inFlightDiscoverySnapshots =
+      <_AgentSessionDiscoveryKey, DiscoveredSessionsResult>{};
+  final Map<_AgentSessionDiscoveryScopeKey, _CachedRelatedWorkingDirectories>
+  _relatedWorkingDirectoriesCache =
+      <_AgentSessionDiscoveryScopeKey, _CachedRelatedWorkingDirectories>{};
+  final Map<_AgentSessionDiscoveryScopeKey, Future<List<String>>>
+  _inFlightRelatedWorkingDirectories =
+      <_AgentSessionDiscoveryScopeKey, Future<List<String>>>{};
 
   /// Discovers recent sessions across all supported tools for the given
   /// [workingDirectory] on the remote host.
@@ -914,68 +934,168 @@ class AgentSessionDiscoveryService {
     String? workingDirectory,
     int maxPerTool = 12,
   }) async {
-    final relatedWorkingDirectories = await _resolveRelatedWorkingDirectories(
+    DiscoveredSessionsResult? latestResult;
+    await for (final result in discoverSessionsStream(
       session,
-      workingDirectory,
-    );
-    final results = await Future.wait(
-      _startToolDiscoveries(
-        session,
-        workingDirectory: workingDirectory,
-        relatedWorkingDirectories: relatedWorkingDirectories,
-        maxPerTool: maxPerTool,
-      ),
-    );
-    return _buildDiscoveredSessionsResult(
-      results,
       workingDirectory: workingDirectory,
-      relatedWorkingDirectories: relatedWorkingDirectories,
       maxPerTool: maxPerTool,
-    );
+    )) {
+      latestResult = result;
+    }
+    return latestResult ?? DiscoveredSessionsResult(sessions: const []);
   }
 
   /// Discovers recent sessions and emits incremental updates as each tool
   /// finishes loading.
   ///
   /// This lets the UI render providers as they complete instead of waiting for
-  /// the slowest tool before showing anything.
+  /// the slowest tool before showing anything. Repeated loads for the same
+  /// connection and scope reuse a short-lived cached result, while concurrent
+  /// loads share the same in-flight discovery work.
   Stream<DiscoveredSessionsResult> discoverSessionsStream(
     SshSession session, {
     String? workingDirectory,
     int maxPerTool = 12,
   }) async* {
-    final relatedWorkingDirectories = await _resolveRelatedWorkingDirectories(
-      session,
-      workingDirectory,
-    );
-    final discoveries = _startToolDiscoveries(
+    _pruneExpiredCacheEntries();
+    final key = _AgentSessionDiscoveryKey.fromSession(
       session,
       workingDirectory: workingDirectory,
-      relatedWorkingDirectories: relatedWorkingDirectories,
       maxPerTool: maxPerTool,
     );
-    final pendingResults = <int, Future<_IndexedToolDiscoveryResult>>{
-      for (var index = 0; index < discoveries.length; index++)
-        index: discoveries[index].then(
-          (result) => _IndexedToolDiscoveryResult(index, result),
-        ),
-    };
-    final completedResults = List<_ToolDiscoveryResult?>.filled(
-      discoveries.length,
-      null,
-    );
 
-    while (pendingResults.isNotEmpty) {
-      final completed = await Future.any(pendingResults.values);
-      pendingResults.remove(completed.index)?.ignore();
-      completedResults[completed.index] = completed.result;
-      yield _buildDiscoveredSessionsResult(
-        completedResults.whereType<_ToolDiscoveryResult>(),
-        workingDirectory: workingDirectory,
-        relatedWorkingDirectories: relatedWorkingDirectories,
-        maxPerTool: maxPerTool,
-      );
+    final freshCachedResult = _lookupCachedDiscoveryResult(key);
+    if (freshCachedResult != null) {
+      yield freshCachedResult;
+      return;
     }
+
+    final inFlightStream = _inFlightDiscoveries[key];
+    if (inFlightStream != null) {
+      final inFlightSnapshot = _inFlightDiscoverySnapshots[key];
+      if (inFlightSnapshot != null) {
+        yield inFlightSnapshot;
+      } else {
+        final staleCachedResult = _lookupCachedDiscoveryResult(
+          key,
+          allowStale: true,
+        );
+        if (staleCachedResult != null) {
+          yield staleCachedResult;
+        }
+      }
+      yield* inFlightStream;
+      return;
+    }
+
+    final staleCachedResult = _lookupCachedDiscoveryResult(
+      key,
+      allowStale: true,
+    );
+    if (staleCachedResult != null) {
+      yield staleCachedResult;
+    }
+
+    yield* _startSharedDiscovery(
+      key,
+      session,
+      workingDirectory: workingDirectory,
+      maxPerTool: maxPerTool,
+    );
+  }
+
+  Stream<DiscoveredSessionsResult> _startSharedDiscovery(
+    _AgentSessionDiscoveryKey key,
+    SshSession session, {
+    required String? workingDirectory,
+    required int maxPerTool,
+  }) {
+    final controller = StreamController<DiscoveredSessionsResult>.broadcast();
+    _inFlightDiscoveries[key] = controller.stream;
+
+    unawaited(() async {
+      DiscoveredSessionsResult? latestResult;
+      try {
+        final relatedWorkingDirectories =
+            await _resolveRelatedWorkingDirectoriesCached(
+              session,
+              workingDirectory,
+            );
+        final discoveries = _startToolDiscoveries(
+          session,
+          workingDirectory: workingDirectory,
+          relatedWorkingDirectories: relatedWorkingDirectories,
+          maxPerTool: maxPerTool,
+        );
+        final pendingResults = <int, Future<_IndexedToolDiscoveryResult>>{
+          for (var index = 0; index < discoveries.length; index++)
+            index: discoveries[index].then(
+              (result) => _IndexedToolDiscoveryResult(index, result),
+            ),
+        };
+        final completedResults = List<_ToolDiscoveryResult?>.filled(
+          discoveries.length,
+          null,
+        );
+
+        while (pendingResults.isNotEmpty) {
+          final completed = await Future.any(pendingResults.values);
+          pendingResults.remove(completed.index)?.ignore();
+          completedResults[completed.index] = completed.result;
+          latestResult = _buildDiscoveredSessionsResult(
+            completedResults.whereType<_ToolDiscoveryResult>(),
+            workingDirectory: workingDirectory,
+            relatedWorkingDirectories: relatedWorkingDirectories,
+            maxPerTool: maxPerTool,
+          );
+          _inFlightDiscoverySnapshots[key] = latestResult;
+          controller.add(latestResult);
+        }
+
+        if (latestResult != null) {
+          _discoveryCache[key] = _CachedDiscoveryResult(
+            result: latestResult,
+            cachedAt: _now(),
+          );
+        }
+      } on Object catch (error, stackTrace) {
+        controller.addError(error, stackTrace);
+      } finally {
+        _inFlightDiscoveries.remove(key);
+        _inFlightDiscoverySnapshots.remove(key);
+        await controller.close();
+      }
+    }());
+
+    return controller.stream;
+  }
+
+  DiscoveredSessionsResult? _lookupCachedDiscoveryResult(
+    _AgentSessionDiscoveryKey key, {
+    bool allowStale = false,
+  }) {
+    final cached = _discoveryCache[key];
+    if (cached == null) return null;
+    final age = _now().difference(cached.cachedAt);
+    if (age < _sessionDiscoveryCacheFreshTtl) {
+      return cached.result;
+    }
+    if (allowStale && age < _sessionDiscoveryCacheRetentionTtl) {
+      return cached.result;
+    }
+    return null;
+  }
+
+  void _pruneExpiredCacheEntries() {
+    final now = _now();
+    _discoveryCache.removeWhere(
+      (_, entry) =>
+          now.difference(entry.cachedAt) >= _sessionDiscoveryCacheRetentionTtl,
+    );
+    _relatedWorkingDirectoriesCache.removeWhere(
+      (_, entry) =>
+          now.difference(entry.cachedAt) >= _relatedWorkingDirectoriesCacheTtl,
+    );
   }
 
   List<Future<_ToolDiscoveryResult>> _startToolDiscoveries(
@@ -2029,6 +2149,46 @@ class AgentSessionDiscoveryService {
     epoch > 9999999999 ? epoch : epoch * 1000,
   );
 
+  Future<List<String>> _resolveRelatedWorkingDirectoriesCached(
+    SshSession session,
+    String? workingDirectory,
+  ) {
+    final key = _AgentSessionDiscoveryScopeKey.fromSession(
+      session,
+      workingDirectory: workingDirectory,
+    );
+    if (key.workingDirectory == null) {
+      return Future<List<String>>.value(const <String>[]);
+    }
+
+    _pruneExpiredCacheEntries();
+    final cached = _relatedWorkingDirectoriesCache[key];
+    if (cached != null) {
+      return Future<List<String>>.value(cached.directories);
+    }
+
+    final inFlight = _inFlightRelatedWorkingDirectories[key];
+    if (inFlight != null) {
+      return inFlight;
+    }
+
+    final future =
+        _resolveRelatedWorkingDirectories(session, key.workingDirectory).then((
+          directories,
+        ) {
+          _relatedWorkingDirectoriesCache[key] =
+              _CachedRelatedWorkingDirectories(
+                directories: directories,
+                cachedAt: _now(),
+              );
+          return directories;
+        });
+    _inFlightRelatedWorkingDirectories[key] = future;
+    return future.whenComplete(
+      () => _inFlightRelatedWorkingDirectories.remove(key),
+    );
+  }
+
   Future<List<String>> _resolveRelatedWorkingDirectories(
     SshSession session,
     String? workingDirectory,
@@ -2112,6 +2272,98 @@ class AgentSessionDiscoveryService {
   }
 
   static String _truncateId(String id) => _truncateSessionIdValue(id);
+}
+
+@immutable
+class _AgentSessionDiscoveryKey {
+  const _AgentSessionDiscoveryKey({
+    required this.scopeKey,
+    required this.maxPerTool,
+  });
+
+  factory _AgentSessionDiscoveryKey.fromSession(
+    SshSession session, {
+    required String? workingDirectory,
+    required int maxPerTool,
+  }) => _AgentSessionDiscoveryKey(
+    scopeKey: _AgentSessionDiscoveryScopeKey.fromSession(
+      session,
+      workingDirectory: workingDirectory,
+    ),
+    maxPerTool: maxPerTool,
+  );
+
+  final _AgentSessionDiscoveryScopeKey scopeKey;
+  final int maxPerTool;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _AgentSessionDiscoveryKey &&
+          scopeKey == other.scopeKey &&
+          maxPerTool == other.maxPerTool;
+
+  @override
+  int get hashCode => Object.hash(scopeKey, maxPerTool);
+}
+
+@immutable
+class _AgentSessionDiscoveryScopeKey {
+  const _AgentSessionDiscoveryScopeKey({
+    required this.hostId,
+    required this.hostname,
+    required this.port,
+    required this.username,
+    required this.workingDirectory,
+  });
+
+  factory _AgentSessionDiscoveryScopeKey.fromSession(
+    SshSession session, {
+    required String? workingDirectory,
+  }) => _AgentSessionDiscoveryScopeKey(
+    hostId: session.hostId,
+    hostname: session.config.hostname,
+    port: session.config.port,
+    username: session.config.username,
+    workingDirectory: _trimWorkingDirectory(workingDirectory),
+  );
+
+  final int hostId;
+  final String hostname;
+  final int port;
+  final String username;
+  final String? workingDirectory;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _AgentSessionDiscoveryScopeKey &&
+          hostId == other.hostId &&
+          hostname == other.hostname &&
+          port == other.port &&
+          username == other.username &&
+          workingDirectory == other.workingDirectory;
+
+  @override
+  int get hashCode =>
+      Object.hash(hostId, hostname, port, username, workingDirectory);
+}
+
+class _CachedDiscoveryResult {
+  const _CachedDiscoveryResult({required this.result, required this.cachedAt});
+
+  final DiscoveredSessionsResult result;
+  final DateTime cachedAt;
+}
+
+class _CachedRelatedWorkingDirectories {
+  const _CachedRelatedWorkingDirectories({
+    required this.directories,
+    required this.cachedAt,
+  });
+
+  final List<String> directories;
+  final DateTime cachedAt;
 }
 
 class _ToolDiscoveryResult {
@@ -2293,5 +2545,5 @@ String? _resolveGeminiWorkingDirectory(
 /// Provider for [AgentSessionDiscoveryService].
 final agentSessionDiscoveryServiceProvider =
     Provider<AgentSessionDiscoveryService>(
-      (ref) => const AgentSessionDiscoveryService(),
+      (ref) => AgentSessionDiscoveryService(),
     );

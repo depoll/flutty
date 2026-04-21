@@ -1,6 +1,42 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
+
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockExecSession extends Mock implements SSHSession {}
+
+SshSession _buildDiscoverySession(SSHClient client) => SshSession(
+  connectionId: 1,
+  hostId: 1,
+  client: client,
+  config: const SshConnectionConfig(
+    hostname: 'example.com',
+    port: 22,
+    username: 'demo',
+  ),
+);
+
+Stream<Uint8List> _utf8Stream(String value) => value.isEmpty
+    ? const Stream<Uint8List>.empty()
+    : Stream<Uint8List>.value(Uint8List.fromList(utf8.encode(value)));
+
+void _ignoreInvocation(Invocation _) {}
+
+SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
+  final session = _MockExecSession();
+  when(() => session.stdout).thenAnswer((_) => _utf8Stream(stdout));
+  when(() => session.stderr).thenAnswer((_) => _utf8Stream(stderr));
+  when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
 
 void main() {
   group('normalizeWorkingDirectoryForComparison', () {
@@ -650,5 +686,112 @@ cwd: /tmp/demo
       expect(metadata.summary, 'can i rename this session?');
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
     });
+  });
+
+  group('discoverSessionsStream caching', () {
+    test('reuses fresh results for repeated loads in the same scope', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('opencode session list --format json')) {
+          return _buildExecSession(
+            stdout:
+                '[{"id":"session-1","title":"Cache result","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final firstResults = await discovery
+          .discoverSessionsStream(session)
+          .toList();
+      final firstCommandCount = commands.length;
+      final secondResults = await discovery
+          .discoverSessionsStream(session)
+          .toList();
+
+      expect(firstResults, isNotEmpty);
+      expect(firstResults.last.sessions.map((session) => session.sessionId), [
+        'session-1',
+      ]);
+      expect(secondResults, hasLength(1));
+      expect(
+        secondResults.single.sessions.map((session) => session.sessionId),
+        ['session-1'],
+      );
+      expect(commands.length, firstCommandCount);
+    });
+
+    test(
+      'reuses related worktree lookups across max-per-tool refreshes',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('worktree list --porcelain')) {
+            return _buildExecSession(
+              stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+            );
+          }
+          if (command.contains('opencode session list --format json')) {
+            return _buildExecSession(
+              stdout:
+                  '[{"id":"session-1","title":"Scoped cache result","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+
+        final firstResults = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: '/Users/depoll/Code/flutty',
+            )
+            .toList();
+        final secondResults = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: '/Users/depoll/Code/flutty',
+              maxPerTool: 24,
+            )
+            .toList();
+
+        expect(firstResults.last.sessions.map((session) => session.sessionId), [
+          'session-1',
+        ]);
+        expect(
+          secondResults.last.sessions.map((session) => session.sessionId),
+          ['session-1'],
+        );
+        expect(
+          commands.where(
+            (command) => command.contains('worktree list --porcelain'),
+          ),
+          hasLength(1),
+        );
+        expect(
+          commands.where(
+            (command) =>
+                command.contains('opencode session list --format json'),
+          ),
+          hasLength(2),
+        );
+      },
+    );
   });
 }
