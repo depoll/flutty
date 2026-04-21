@@ -13,10 +13,12 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/monetization_service.dart';
@@ -2347,6 +2349,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   Set<String> _attemptedSessionTools = const <String>{};
+  String? _preferredSessionToolName;
   final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   String? _sessionLoadError;
@@ -2366,7 +2369,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   @override
   void initState() {
     super.initState();
+    unawaited(_loadPreferredSessionToolName());
     _queryTmux();
+  }
+
+  @override
+  void didUpdateWidget(covariant _TmuxConnectionBadge oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.connectionId != widget.connectionId) {
+      unawaited(_loadPreferredSessionToolName());
+    }
   }
 
   @override
@@ -2374,6 +2386,25 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     unawaited(_sessionDiscoverySubscription?.cancel());
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
+  }
+
+  Future<void> _loadPreferredSessionToolName([int? hostId]) async {
+    final resolvedHostId =
+        hostId ??
+        ref
+            .read(activeSessionsProvider.notifier)
+            .getSession(widget.connectionId)
+            ?.hostId;
+    if (resolvedHostId == null) return;
+
+    final preset = await ref
+        .read(agentLaunchPresetServiceProvider)
+        .getPresetForHost(resolvedHostId);
+    if (!mounted) return;
+
+    final preferredToolName = preset?.tool.discoveredSessionToolName;
+    if (_preferredSessionToolName == preferredToolName) return;
+    setState(() => _preferredSessionToolName = preferredToolName);
   }
 
   @override
@@ -2687,6 +2718,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     return orderedDiscoveredSessionTools(
                       grouped,
                       _attemptedSessionTools,
+                      preferredToolName: _preferredSessionToolName,
                     ).map(
                       (toolName) => _buildSessionGroup(
                         theme,
@@ -2822,6 +2854,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       }
       return;
     }
+    unawaited(_loadPreferredSessionToolName(session.hostId));
 
     try {
       final discovery = ref.read(agentSessionDiscoveryServiceProvider);

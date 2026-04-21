@@ -408,6 +408,19 @@ branch refs/heads/fix/session-resumption
         expect(ordered, ['Claude Code', 'Codex', 'Gemini CLI', 'OpenCode']);
       },
     );
+
+    test('moves the preferred tool to the front when present', () {
+      final ordered = orderedDiscoveredSessionTools(
+        {
+          'Claude Code': const <ToolSessionInfo>[],
+          'Codex': const <ToolSessionInfo>[],
+        },
+        const ['Gemini CLI'],
+        preferredToolName: 'Codex',
+      );
+
+      expect(ordered, ['Codex', 'Claude Code', 'Gemini CLI']);
+    });
   });
 
   group('normalizeDiscoveredSessionInfo', () {

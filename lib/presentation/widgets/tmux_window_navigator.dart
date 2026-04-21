@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
@@ -20,6 +21,27 @@ const _tmuxNavigatorMaxHeightFactor = 0.48;
 const _tmuxNavigatorMaxHeightCap = 440.0;
 const _tmuxToolPickerMaxHeightFactor = 0.36;
 const _tmuxToolPickerMaxHeightCap = 320.0;
+
+List<AgentLaunchTool> _orderedAgentLaunchTools(
+  Iterable<AgentLaunchTool> tools, {
+  AgentLaunchTool? preferredTool,
+}) {
+  final ordered = tools.toList(growable: false);
+  if (preferredTool == null) {
+    return ordered;
+  }
+
+  final preferredIndex = ordered.indexOf(preferredTool);
+  if (preferredIndex <= 0) {
+    return ordered;
+  }
+
+  return <AgentLaunchTool>[
+    ordered[preferredIndex],
+    ...ordered.take(preferredIndex),
+    ...ordered.skip(preferredIndex + 1),
+  ];
+}
 
 /// Shows the tmux window navigator bottom sheet.
 ///
@@ -117,6 +139,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   Set<String> _attemptedSessionTools = const <String>{};
+  AgentLaunchTool? _preferredLaunchTool;
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
@@ -138,6 +161,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   @override
   void initState() {
     super.initState();
+    unawaited(_loadPreferredLaunchTool());
     _installedToolsFuture = _tmux.detectInstalledAgentTools(widget.session);
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
@@ -149,10 +173,30 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   @override
+  void didUpdateWidget(covariant _TmuxNavigatorSheet oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.session.hostId != widget.session.hostId) {
+      unawaited(_loadPreferredLaunchTool());
+    }
+  }
+
+  @override
   void dispose() {
     unawaited(_sessionDiscoverySubscription?.cancel());
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
+  }
+
+  Future<void> _loadPreferredLaunchTool() async {
+    final hostId = widget.session.hostId;
+    final preset = await widget.ref
+        .read(agentLaunchPresetServiceProvider)
+        .getPresetForHost(hostId);
+    if (!mounted || widget.session.hostId != hostId) return;
+
+    final preferredLaunchTool = preset?.tool;
+    if (_preferredLaunchTool == preferredLaunchTool) return;
+    setState(() => _preferredLaunchTool = preferredLaunchTool);
   }
 
   Future<void> _loadWindows() async {
@@ -278,6 +322,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       builder: (context) => TmuxToolPickerSheet(
         isProUser: widget.isProUser,
         installedToolsFuture: _installedToolsFuture,
+        preferredTool: _preferredLaunchTool,
         onToolSelected: (tool) {
           Navigator.pop(context);
           _createNewWindow(command: tool.commandName, name: tool.commandName);
@@ -562,6 +607,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
             ...orderedDiscoveredSessionTools(
               groupedSessions,
               _attemptedSessionTools,
+              preferredToolName:
+                  _preferredLaunchTool?.discoveredSessionToolName,
             ).map(
               (toolName) => _buildSessionGroup(
                 theme,
@@ -724,6 +771,7 @@ class TmuxToolPickerSheet extends StatelessWidget {
     required this.onToolSelected,
     required this.onEmptyWindow,
     this.installedToolsFuture,
+    this.preferredTool,
     super.key,
   });
 
@@ -737,6 +785,9 @@ class TmuxToolPickerSheet extends StatelessWidget {
   /// empty set (or fails), no CLI tools are shown but "Empty window"
   /// remains available.
   final Future<Set<AgentLaunchTool>>? installedToolsFuture;
+
+  /// Host-configured preferred tool, if one exists.
+  final AgentLaunchTool? preferredTool;
 
   /// Called when the user selects a tool.
   final void Function(AgentLaunchTool tool) onToolSelected;
@@ -801,9 +852,12 @@ class TmuxToolPickerSheet extends StatelessWidget {
                     );
                   }
                   final installed = snapshot.data;
-                  final tools = installed != null
-                      ? _allTools.where(installed.contains).toList()
-                      : _allTools;
+                  final tools = _orderedAgentLaunchTools(
+                    installed != null
+                        ? _allTools.where(installed.contains)
+                        : _allTools,
+                    preferredTool: preferredTool,
+                  );
                   if (tools.isEmpty) {
                     return Padding(
                       padding: const EdgeInsets.symmetric(

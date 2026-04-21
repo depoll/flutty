@@ -70,8 +70,9 @@ int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
 /// attempted providers that yielded no sessions, alphabetized.
 List<String> orderedDiscoveredSessionTools(
   Map<String, List<ToolSessionInfo>> grouped,
-  Iterable<String> attemptedTools,
-) {
+  Iterable<String> attemptedTools, {
+  String? preferredToolName,
+}) {
   final ordered = <String>[...grouped.keys];
   final emptyAttempts =
       attemptedTools
@@ -79,6 +80,13 @@ List<String> orderedDiscoveredSessionTools(
           .toSet()
           .toList()
         ..sort();
+  if (preferredToolName case final preferred? when preferred.isNotEmpty) {
+    if (ordered.remove(preferred)) {
+      ordered.insert(0, preferred);
+    } else if (emptyAttempts.remove(preferred)) {
+      ordered.insert(0, preferred);
+    }
+  }
   ordered.addAll(emptyAttempts);
   return ordered;
 }

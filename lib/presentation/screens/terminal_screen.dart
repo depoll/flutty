@@ -29,6 +29,7 @@ import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
+import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
@@ -302,6 +303,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   Set<String> _attemptedSessionTools = const <String>{};
+  AgentLaunchTool? _preferredLaunchTool;
   final Set<String> _expandedSessionTools = <String>{};
   final Set<int> _seenAlertWindows = <int>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
@@ -341,6 +343,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ]).animate(
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
+    unawaited(_loadPreferredLaunchTool());
     if (widget.isProUser) {
       unawaited(_prefetchRecentSessions());
     }
@@ -357,6 +360,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
+    unawaited(_loadPreferredLaunchTool());
     if (widget.isProUser) {
       unawaited(_prefetchRecentSessions());
     }
@@ -372,6 +376,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     _bounceController.dispose();
     super.dispose();
+  }
+
+  Future<void> _loadPreferredLaunchTool() async {
+    final hostId = widget.session.hostId;
+    final preset = await widget.ref
+        .read(agentLaunchPresetServiceProvider)
+        .getPresetForHost(hostId);
+    if (!mounted || widget.session.hostId != hostId) return;
+
+    final preferredLaunchTool = preset?.tool;
+    if (_preferredLaunchTool == preferredLaunchTool) return;
+    setState(() => _preferredLaunchTool = preferredLaunchTool);
   }
 
   void _subscribeToWindowChanges() {
@@ -788,6 +804,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 builder: (ctx) => TmuxToolPickerSheet(
                   isProUser: widget.isProUser,
                   installedToolsFuture: installedToolsFuture,
+                  preferredTool: _preferredLaunchTool,
                   onToolSelected: (tool) => Navigator.pop(ctx, tool),
                   onEmptyWindow: () {
                     Navigator.pop(ctx);
@@ -895,6 +912,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             return orderedDiscoveredSessionTools(
               grouped,
               _attemptedSessionTools,
+              preferredToolName:
+                  _preferredLaunchTool?.discoveredSessionToolName,
             ).map(
               (toolName) => _buildSessionGroup(
                 theme,
