@@ -945,6 +945,34 @@ class AgentSessionDiscoveryService {
     return latestResult ?? DiscoveredSessionsResult(sessions: const []);
   }
 
+  /// Warms the discovery cache for the given scope without changing UI state.
+  ///
+  /// This is useful for preloading likely session views ahead of user
+  /// interaction so later visible loads can return from cache or join the
+  /// in-flight discovery work.
+  Future<void> prefetchSessions(
+    SshSession session, {
+    String? workingDirectory,
+    int maxPerTool = 12,
+  }) async {
+    try {
+      await discoverSessionsStream(
+        session,
+        workingDirectory: workingDirectory,
+        maxPerTool: maxPerTool,
+      ).drain<void>();
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'agent_session_discovery_service',
+          context: ErrorDescription('while prefetching recent AI sessions'),
+        ),
+      );
+    }
+  }
+
   /// Discovers recent sessions and emits incremental updates as each tool
   /// finishes loading.
   ///

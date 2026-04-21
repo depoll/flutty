@@ -689,6 +689,34 @@ cwd: /tmp/demo
   });
 
   group('discoverSessionsStream caching', () {
+    test('prefetchSessions warms the cache for the next visible load', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('opencode session list --format json')) {
+          return _buildExecSession(
+            stdout:
+                '[{"id":"session-1","title":"Prefetched result","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      await discovery.prefetchSessions(session);
+      final commandCountAfterPrefetch = commands.length;
+      final results = await discovery.discoverSessionsStream(session).toList();
+
+      expect(results.single.sessions.map((session) => session.sessionId), [
+        'session-1',
+      ]);
+      expect(commands.length, commandCountAfterPrefetch);
+    });
+
     test('reuses fresh results for repeated loads in the same scope', () async {
       final client = _MockSshClient();
       final commands = <String>[];

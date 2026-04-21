@@ -321,6 +321,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
+  AgentSessionDiscoveryService get _discovery =>
+      widget.ref.read(agentSessionDiscoveryServiceProvider);
+
   @override
   void initState() {
     super.initState();
@@ -373,6 +376,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         });
   }
 
+  String? _resolveRecentSessionScopeWorkingDirectory([
+    List<TmuxWindow>? windows,
+  ]) {
+    final activeWindow = (windows ?? _windows)
+        ?.where((window) => window.isActive)
+        .firstOrNull;
+    return widget.scopeWorkingDirectory ??
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: activeWindow?.currentPath,
+          sessionWorkingDirectory: widget.session.workingDirectory,
+        );
+  }
+
+  Future<void> _prefetchRecentSessions([List<TmuxWindow>? windows]) =>
+      _discovery.prefetchSessions(
+        widget.session,
+        workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
+        maxPerTool: _sessionFetchLimit,
+      );
+
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
       _pendingWindowReload = true;
@@ -421,6 +444,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         _windows = windows;
         _isLoading = false;
       });
+      if (widget.isProUser) {
+        unawaited(_prefetchRecentSessions(windows));
+      }
     } on Object {
       if (!mounted) return;
       if (_isLoading) setState(() => _isLoading = false);
@@ -446,18 +472,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     });
 
     try {
-      final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
-      final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final scopeWorkingDirectory =
-          widget.scopeWorkingDirectory ??
-          resolveAgentSessionScopeWorkingDirectory(
-            activeWorkingDirectory: activeWindow?.currentPath,
-            sessionWorkingDirectory: widget.session.workingDirectory,
-          );
-      _sessionDiscoverySubscription = discovery
+      _sessionDiscoverySubscription = _discovery
           .discoverSessionsStream(
             widget.session,
-            workingDirectory: scopeWorkingDirectory,
+            workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
             maxPerTool: _sessionFetchLimit,
           )
           .listen(
@@ -656,7 +674,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       final wasExpanded = _expanded;
       setState(() => _expanded = !_expanded);
       // Refresh window list when expanding to get current active state.
-      if (!wasExpanded) _loadWindows();
+      if (!wasExpanded) {
+        _loadWindows();
+        if (widget.isProUser) {
+          unawaited(_prefetchRecentSessions());
+        }
+      }
     },
     child: SizedBox(
       height: _TmuxExpandableBar.handleHeight,
