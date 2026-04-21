@@ -2346,6 +2346,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
+  Set<String> _attemptedSessionTools = const <String>{};
   final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   String? _sessionLoadError;
@@ -2658,7 +2659,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                       ),
                     ),
                   )
-                else if (_recentSessions != null && _recentSessions!.isEmpty)
+                else if (_recentSessions != null &&
+                    _recentSessions!.isEmpty &&
+                    _attemptedSessionTools.isEmpty)
                   Padding(
                     padding: const EdgeInsets.symmetric(vertical: 4),
                     child: Text(
@@ -2679,10 +2682,16 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                         ),
                       ),
                     ),
-                  ..._groupSessions(_recentSessions!).entries.map(
-                    (entry) =>
-                        _buildSessionGroup(theme, entry.key, entry.value),
-                  ),
+                  ...() {
+                    final grouped = _groupSessions(_recentSessions!);
+                    return _orderedSessionTools(grouped).map(
+                      (toolName) => _buildSessionGroup(
+                        theme,
+                        toolName,
+                        grouped[toolName] ?? const <ToolSessionInfo>[],
+                      ),
+                    );
+                  }(),
                   if (_isLoadingSessions)
                     const Padding(
                       padding: EdgeInsets.symmetric(vertical: 8),
@@ -2831,6 +2840,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
               setState(() {
                 _recentSessions = result.sessions;
+                _attemptedSessionTools = result.attemptedTools;
                 _sessionLoadError = result.failureMessage;
               });
             },
@@ -2928,27 +2938,46 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     return grouped;
   }
 
+  /// Returns the ordered set of tool names to render: tools with sessions
+  /// first (in their natural grouping order), followed by attempted tools
+  /// that returned no sessions, sorted alphabetically.
+  List<String> _orderedSessionTools(
+    Map<String, List<ToolSessionInfo>> grouped,
+  ) {
+    final ordered = <String>[...grouped.keys];
+    final emptyAttempts =
+        _attemptedSessionTools
+            .where((tool) => !grouped.containsKey(tool))
+            .toList()
+          ..sort();
+    ordered.addAll(emptyAttempts);
+    return ordered;
+  }
+
   Widget _buildSessionGroup(
     ThemeData theme,
     String toolName,
     List<ToolSessionInfo> sessions,
   ) {
-    final isExpanded = _expandedSessionTools.contains(toolName);
+    final isEmpty = sessions.isEmpty;
+    final isExpanded = !isEmpty && _expandedSessionTools.contains(toolName);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
       children: [
         InkWell(
-          onTap: () {
-            setState(() {
-              if (isExpanded) {
-                _expandedSessionTools.remove(toolName);
-              } else {
-                _expandedSessionTools.add(toolName);
-              }
-            });
-            _persistUiState();
-          },
+          onTap: isEmpty
+              ? null
+              : () {
+                  setState(() {
+                    if (isExpanded) {
+                      _expandedSessionTools.remove(toolName);
+                    } else {
+                      _expandedSessionTools.add(toolName);
+                    }
+                  });
+                  _persistUiState();
+                },
           borderRadius: BorderRadius.circular(6),
           child: Padding(
             padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
@@ -2957,7 +2986,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 Icon(
                   _toolIconData(toolName),
                   size: 14,
-                  color: theme.colorScheme.primary,
+                  color: isEmpty
+                      ? theme.colorScheme.onSurfaceVariant
+                      : theme.colorScheme.primary,
                 ),
                 const SizedBox(width: 6),
                 Expanded(
@@ -2966,23 +2997,27 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface,
+                      color: isEmpty
+                          ? theme.colorScheme.onSurfaceVariant
+                          : theme.colorScheme.onSurface,
                       fontWeight: FontWeight.w600,
                     ),
                   ),
                 ),
                 Text(
-                  '${sessions.length}',
+                  isEmpty ? 'no recent' : '${sessions.length}',
                   style: theme.textTheme.labelSmall?.copyWith(
                     color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(width: 4),
-                Icon(
-                  isExpanded ? Icons.expand_less : Icons.expand_more,
-                  size: 14,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
+                if (!isEmpty) ...[
+                  const SizedBox(width: 4),
+                  Icon(
+                    isExpanded ? Icons.expand_less : Icons.expand_more,
+                    size: 14,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+                ],
               ],
             ),
           ),

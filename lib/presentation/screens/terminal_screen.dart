@@ -260,6 +260,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
+  Set<String> _attemptedSessionTools = const <String>{};
   final Set<String> _expandedSessionTools = <String>{};
   final Set<int> _seenAlertWindows = <int>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
@@ -422,6 +423,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
               setState(() {
                 _recentSessions = result.sessions;
+                _attemptedSessionTools = result.attemptedTools;
                 _sessionLoadError = result.failureMessage;
               });
             },
@@ -783,7 +785,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               ),
             ),
           )
-        else if (_recentSessions != null && _recentSessions!.isEmpty)
+        else if (_recentSessions != null &&
+            _recentSessions!.isEmpty &&
+            _attemptedSessionTools.isEmpty)
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
             child: Text(
@@ -804,9 +808,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 ),
               ),
             ),
-          ..._groupSessions(_recentSessions!).entries.map(
-            (entry) => _buildSessionGroup(theme, entry.key, entry.value),
-          ),
+          ...() {
+            final grouped = _groupSessions(_recentSessions!);
+            return _orderedSessionTools(grouped).map(
+              (toolName) => _buildSessionGroup(
+                theme,
+                toolName,
+                grouped[toolName] ?? const <ToolSessionInfo>[],
+              ),
+            );
+          }(),
           if (_isLoadingSessions)
             const Padding(
               padding: EdgeInsets.symmetric(vertical: 8),
@@ -843,12 +854,29 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     return grouped;
   }
 
+  /// Returns the ordered set of tool names to render: tools with sessions
+  /// first, then attempted tools that returned no sessions, sorted
+  /// alphabetically.
+  List<String> _orderedSessionTools(
+    Map<String, List<ToolSessionInfo>> grouped,
+  ) {
+    final ordered = <String>[...grouped.keys];
+    final emptyAttempts =
+        _attemptedSessionTools
+            .where((tool) => !grouped.containsKey(tool))
+            .toList()
+          ..sort();
+    ordered.addAll(emptyAttempts);
+    return ordered;
+  }
+
   Widget _buildSessionGroup(
     ThemeData theme,
     String toolName,
     List<ToolSessionInfo> sessions,
   ) {
-    final isExpanded = _expandedSessionTools.contains(toolName);
+    final isEmpty = sessions.isEmpty;
+    final isExpanded = !isEmpty && _expandedSessionTools.contains(toolName);
     final iconData = switch (toolName) {
       'Claude Code' => Icons.auto_awesome,
       'Codex' => Icons.code,
@@ -868,27 +896,46 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           contentPadding: _groupTilePadding,
           horizontalTitleGap: 12,
           minLeadingWidth: 18,
-          leading: Icon(iconData, size: 16, color: theme.colorScheme.primary),
-          title: Text(toolName),
+          leading: Icon(
+            iconData,
+            size: 16,
+            color: isEmpty
+                ? theme.colorScheme.onSurfaceVariant
+                : theme.colorScheme.primary,
+          ),
+          title: Text(
+            toolName,
+            style: isEmpty
+                ? theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  )
+                : null,
+          ),
           subtitle: Text(
-            '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
+            isEmpty
+                ? 'No recent sessions for this project'
+                : '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-          trailing: Icon(
-            isExpanded ? Icons.expand_less : Icons.expand_more,
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-          onTap: () {
-            setState(() {
-              if (isExpanded) {
-                _expandedSessionTools.remove(toolName);
-              } else {
-                _expandedSessionTools.add(toolName);
-              }
-            });
-          },
+          trailing: isEmpty
+              ? null
+              : Icon(
+                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+          onTap: isEmpty
+              ? null
+              : () {
+                  setState(() {
+                    if (isExpanded) {
+                      _expandedSessionTools.remove(toolName);
+                    } else {
+                      _expandedSessionTools.add(toolName);
+                    }
+                  });
+                },
         ),
         if (isExpanded)
           for (final session in sessions)

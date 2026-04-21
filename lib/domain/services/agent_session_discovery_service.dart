@@ -68,14 +68,24 @@ class DiscoveredSessionsResult {
   DiscoveredSessionsResult({
     required Iterable<ToolSessionInfo> sessions,
     Iterable<String> failedTools = const <String>[],
+    Iterable<String> attemptedTools = const <String>[],
   }) : sessions = List<ToolSessionInfo>.unmodifiable(sessions),
-       failedTools = Set<String>.unmodifiable(failedTools);
+       failedTools = Set<String>.unmodifiable(failedTools),
+       attemptedTools = Set<String>.unmodifiable(attemptedTools);
 
   /// The sessions that were discovered successfully.
   final List<ToolSessionInfo> sessions;
 
   /// Tool names whose session history could not be loaded.
   final Set<String> failedTools;
+
+  /// Tool names that the discovery service attempted to query during this
+  /// stream tick, regardless of whether any sessions were ultimately returned.
+  ///
+  /// The UI uses this to render a placeholder row for tools that completed
+  /// without errors but produced no matching sessions, so users can see at a
+  /// glance which providers were checked.
+  final Set<String> attemptedTools;
 
   /// Whether any tool histories failed to load.
   bool get hasFailures => failedTools.isNotEmpty;
@@ -868,6 +878,7 @@ class AgentSessionDiscoveryService {
           ),
         )
         .map((result) => result.toolName);
+    final attemptedTools = results.map((result) => result.toolName);
 
     if (workingDirectory != null && workingDirectory.isNotEmpty) {
       return DiscoveredSessionsResult(
@@ -880,12 +891,14 @@ class AgentSessionDiscoveryService {
           maxPerTool,
         ),
         failedTools: failedTools,
+        attemptedTools: attemptedTools,
       );
     }
 
     return DiscoveredSessionsResult(
       sessions: _limitDiscoveredSessionsPerTool(all, maxPerTool),
       failedTools: failedTools,
+      attemptedTools: attemptedTools,
     );
   }
 

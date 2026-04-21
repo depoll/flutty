@@ -112,6 +112,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
+  Set<String> _attemptedSessionTools = const <String>{};
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
@@ -209,6 +210,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
               setState(() {
                 _recentSessions = result.sessions;
+                _attemptedSessionTools = result.attemptedTools;
                 _sessionLoadError = result.failureMessage;
               });
             },
@@ -525,7 +527,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                 ),
               ),
             )
-          else if (_recentSessions != null && _recentSessions!.isEmpty)
+          else if (_recentSessions != null &&
+              _recentSessions!.isEmpty &&
+              _attemptedSessionTools.isEmpty)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
               child: Text(
@@ -549,8 +553,12 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   ),
                 ),
               ),
-            ...groupedSessions.entries.map(
-              (entry) => _buildSessionGroup(theme, entry.key, entry.value),
+            ..._orderedSessionTools(groupedSessions).map(
+              (toolName) => _buildSessionGroup(
+                theme,
+                toolName,
+                groupedSessions[toolName] ?? const <ToolSessionInfo>[],
+              ),
             ),
             if (_isLoadingSessions)
               const Padding(
@@ -567,6 +575,23 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         ],
       ],
     );
+  }
+
+  /// Returns the ordered set of tool names to render: tools with sessions
+  /// first (in their natural grouping order), followed by attempted tools
+  /// that returned no sessions, sorted alphabetically. This makes it visible
+  /// when a provider was queried but produced no matches.
+  List<String> _orderedSessionTools(
+    Map<String, List<ToolSessionInfo>> grouped,
+  ) {
+    final ordered = <String>[...grouped.keys];
+    final emptyAttempts =
+        _attemptedSessionTools
+            .where((tool) => !grouped.containsKey(tool))
+            .toList()
+          ..sort();
+    ordered.addAll(emptyAttempts);
+    return ordered;
   }
 
   Map<String, List<ToolSessionInfo>> _groupSessions(
@@ -587,6 +612,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     String toolName,
     List<ToolSessionInfo> sessions,
   ) {
+    final isEmpty = sessions.isEmpty;
     final isExpanded = _expandedSessionTools.contains(toolName);
 
     return Column(
@@ -600,28 +626,41 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           horizontalTitleGap: 12,
           minLeadingWidth: 20,
           leading: _toolIcon(toolName, theme),
-          title: Text(toolName),
+          title: Text(
+            toolName,
+            style: isEmpty
+                ? theme.textTheme.bodyMedium?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
+                  )
+                : null,
+          ),
           subtitle: Text(
-            '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
+            isEmpty
+                ? 'No recent sessions for this project'
+                : '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
             style: theme.textTheme.bodySmall?.copyWith(
               color: theme.colorScheme.onSurfaceVariant,
             ),
           ),
-          trailing: Icon(
-            isExpanded ? Icons.expand_less : Icons.expand_more,
-            color: theme.colorScheme.onSurfaceVariant,
-          ),
-          onTap: () {
-            setState(() {
-              if (isExpanded) {
-                _expandedSessionTools.remove(toolName);
-              } else {
-                _expandedSessionTools.add(toolName);
-              }
-            });
-          },
+          trailing: isEmpty
+              ? null
+              : Icon(
+                  isExpanded ? Icons.expand_less : Icons.expand_more,
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+          onTap: isEmpty
+              ? null
+              : () {
+                  setState(() {
+                    if (isExpanded) {
+                      _expandedSessionTools.remove(toolName);
+                    } else {
+                      _expandedSessionTools.add(toolName);
+                    }
+                  });
+                },
         ),
-        if (isExpanded)
+        if (isExpanded && !isEmpty)
           ...sessions.map(
             (session) => _buildSessionTile(
               session,
