@@ -2340,7 +2340,7 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 }
 
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
-  static const _initialSessionFetchLimit = 12;
+  static const _initialSessionFetchLimit = 24;
   static const _sessionFetchStep = 12;
   static const _tmuxQueryRetryDelay = Duration(seconds: 2);
 

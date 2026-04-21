@@ -320,6 +320,43 @@ cwd: /tmp/demo
     });
   });
 
+  group('parseClaudeSessionMetadata', () {
+    test('extracts the first real user prompt and ignores slash commands', () {
+      final metadata = parseClaudeSessionMetadata('''
+{"type":"user","isMeta":false,"message":{"role":"user","content":"/exit"}}
+{"type":"user","isMeta":false,"message":{"role":"user","content":"Fix the tmux session list loading bug"}}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.userSummary, 'Fix the tmux session list loading bug');
+    });
+
+    test('preserves explicit metadata fields when present', () {
+      final metadata = parseClaudeSessionMetadata('''
+{"customTitle":"Investigate slow AI session loading","agentName":"Opus","lastPrompt":"ignored"}
+''');
+
+      expect(metadata.customTitle, 'Investigate slow AI session loading');
+      expect(metadata.agentName, 'Opus');
+      expect(metadata.lastPrompt, 'ignored');
+    });
+
+    test(
+      'prefers the latest metadata fields while keeping the first prompt',
+      () {
+        final metadata = parseClaudeSessionMetadata('''
+{"type":"user","isMeta":false,"message":{"role":"user","content":"Original prompt"}}
+{"customTitle":"Initial title","lastPrompt":"older"}
+{"customTitle":"Renamed title","lastPrompt":"newer"}
+''');
+
+        expect(metadata.userSummary, 'Original prompt');
+        expect(metadata.customTitle, 'Renamed title');
+        expect(metadata.lastPrompt, 'newer');
+      },
+    );
+  });
+
   group('parseGeminiSessionMetadata', () {
     test('uses stored summary and lastUpdated for main sessions', () {
       final metadata = parseGeminiSessionMetadata('''
