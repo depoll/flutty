@@ -6693,7 +6693,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted || verifiedPath == null) {
           return;
         }
-        setState(() {});
+        setState(() {
+          _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
+        });
       } finally {
         _verifyingTerminalPathCacheKeys.remove(cacheKey);
       }

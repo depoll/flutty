@@ -28,6 +28,8 @@ class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockShellChannel extends Mock implements SSHSession {}
 
+class _MockSftpClient extends Mock implements SftpClient {}
+
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier(this.session);
 
@@ -619,6 +621,51 @@ void main() {
 
         expect(underlineFinder, findsOneWidget);
         expect(tester.getTopLeft(underlineFinder).dy, isNot(initialTop));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'verified relative paths gain an underline after verification completes',
+      (tester) async {
+        const relativePath = 'lib/presentation/screens/terminal_screen.dart';
+        const workingDirectory = '/Users/tester/project';
+        final sftp = _MockSftpClient();
+        final statCompleter = Completer<SftpFileAttrs>();
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(
+          () => sftp.stat('$workingDirectory/$relativePath'),
+        ).thenAnswer((_) => statCompleter.future);
+
+        await pumpScreen(tester);
+        shellStdoutController.add(
+          Uint8List.fromList(
+            utf8.encode(
+              '\u001b]7;file://remote.example.com$workingDirectory\u0007',
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        session.terminal!.write('git add $relativePath');
+        await tester.pump();
+
+        final underlineFinder = find.byWidgetPredicate((widget) {
+          final key = widget.key;
+          return key is ValueKey<String> &&
+              key.value.contains('terminal-path-underline:') &&
+              key.value.contains(relativePath);
+        });
+
+        expect(underlineFinder, findsNothing);
+
+        statCompleter.complete(
+          SftpFileAttrs(mode: const SftpFileMode.value(1 << 14)),
+        );
+        await tester.pumpAndSettle();
+
+        expect(underlineFinder, findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
