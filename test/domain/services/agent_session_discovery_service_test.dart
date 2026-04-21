@@ -111,16 +111,37 @@ branch refs/heads/fix/session-resumption
   });
 
   group('buildGeminiCliSessionListScopes', () {
-    test('deduplicates related working directories without re-normalizing', () {
+    test('limits CLI scopes to the active worktree root and main checkout', () {
       expect(
-        buildGeminiCliSessionListScopes('/Users/depoll/Code/flutty', const [
-          '/Users/depoll/Code/flutty',
+        buildGeminiCliSessionListScopes(
           '/Users/depoll/Code/flutty.worktrees/feature-other',
-          '/Users/depoll/Code/flutty',
-        ]),
+          const [
+            '/Users/depoll/Code/flutty',
+            '/Users/depoll/Code/flutty.worktrees/feature-other',
+            '/Users/depoll/Code/flutty.worktrees/fix-another-branch',
+          ],
+        ),
         [
-          '/Users/depoll/Code/flutty',
           '/Users/depoll/Code/flutty.worktrees/feature-other',
+          '/Users/depoll/Code/flutty',
+        ],
+      );
+    });
+
+    test('uses project roots instead of active subdirectories', () {
+      expect(
+        buildGeminiCliSessionListScopes(
+          '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
+          const [
+            '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
+            '/Users/depoll/Code/flutty/lib',
+            '/Users/depoll/Code/flutty.worktrees/feature-other',
+            '/Users/depoll/Code/flutty',
+          ],
+        ),
+        [
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+          '/Users/depoll/Code/flutty',
         ],
       );
     });

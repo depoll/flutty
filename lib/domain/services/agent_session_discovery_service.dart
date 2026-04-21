@@ -581,7 +581,48 @@ String? resolveGeminiProjectWorkingDirectory(
   return null;
 }
 
+/// Resolves the best Gemini CLI project root for the active working directory.
+///
+/// Prefers the shortest related directory that still contains the active path,
+/// which typically corresponds to the current worktree root.
+@visibleForTesting
+String? resolveGeminiCliProjectRoot(
+  String? workingDirectory,
+  Iterable<String> relatedWorkingDirectories,
+) {
+  final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
+  if (trimmedWorkingDirectory == null) return null;
+
+  String? projectRoot;
+  for (final candidate in <String>[
+    trimmedWorkingDirectory,
+    ...relatedWorkingDirectories,
+  ]) {
+    final trimmedCandidate = _trimWorkingDirectory(candidate);
+    if (trimmedCandidate == null ||
+        !_workingDirectoriesOverlap(
+          trimmedWorkingDirectory,
+          trimmedCandidate,
+        ) ||
+        !(trimmedWorkingDirectory == trimmedCandidate ||
+            trimmedWorkingDirectory.startsWith('$trimmedCandidate/'))) {
+      continue;
+    }
+
+    if (projectRoot == null || trimmedCandidate.length < projectRoot.length) {
+      projectRoot = trimmedCandidate;
+    }
+  }
+
+  return projectRoot ?? trimmedWorkingDirectory;
+}
+
 /// Builds the CLI working-directory scopes Gemini should be queried from.
+///
+/// Gemini CLI calls are relatively expensive, so keep them bounded to the
+/// active project root plus its canonical non-worktree equivalent. Broader
+/// sibling-worktree coverage comes from the file-based fallback, which is much
+/// cheaper to scan.
 ///
 /// When no directory context is available, returns a single `null` scope so the
 /// CLI still runs once in the default shell cwd instead of being skipped.
@@ -590,22 +631,22 @@ List<String?> buildGeminiCliSessionListScopes(
   String? workingDirectory,
   Iterable<String> relatedWorkingDirectories,
 ) {
-  final scopes = <String?>{};
-  final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
-  if (trimmedWorkingDirectory != null) {
-    scopes.add(trimmedWorkingDirectory);
-  }
-
-  for (final directory in relatedWorkingDirectories) {
-    final trimmedDirectory = _trimWorkingDirectory(directory);
-    if (trimmedDirectory != null) {
-      scopes.add(trimmedDirectory);
-    }
-  }
-
-  if (scopes.isEmpty) {
+  final projectRoot = resolveGeminiCliProjectRoot(
+    workingDirectory,
+    relatedWorkingDirectories,
+  );
+  if (projectRoot == null) {
     return const <String?>[null];
   }
+
+  final scopes = <String?>{projectRoot};
+  final normalizedProjectRoot = normalizeWorkingDirectoryForComparison(
+    projectRoot,
+  );
+  if (normalizedProjectRoot != projectRoot) {
+    scopes.add(normalizedProjectRoot);
+  }
+
   return scopes.toList(growable: false);
 }
 
