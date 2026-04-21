@@ -288,6 +288,14 @@ branch refs/heads/fix/session-resumption
     });
   });
 
+  group('calculateRecentSessionMetadataReadLimit', () {
+    test('caps other provider metadata reads to a smaller recent window', () {
+      expect(calculateRecentSessionMetadataReadLimit(6), 24);
+      expect(calculateRecentSessionMetadataReadLimit(12), 36);
+      expect(calculateRecentSessionMetadataReadLimit(24), 48);
+    });
+  });
+
   group('buildGeminiProjectDirectoryNames', () {
     test('keeps only worktree roots and ignores nested subdirectories', () {
       expect(
@@ -707,11 +715,11 @@ cwd: /tmp/demo
       final discovery = AgentSessionDiscoveryService();
       final session = _buildDiscoverySession(client);
 
-      await discovery.prefetchSessions(session);
+      await discovery.prefetchSessions(session, maxPerTool: 6);
       final commandCountAfterPrefetch = commands.length;
-      final results = await discovery.discoverSessionsStream(session).toList();
+      final result = await discovery.discoverSessionsStream(session).first;
 
-      expect(results.single.sessions.map((session) => session.sessionId), [
+      expect(result.sessions.map((session) => session.sessionId), [
         'session-1',
       ]);
       expect(commands.length, commandCountAfterPrefetch);

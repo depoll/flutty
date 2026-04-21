@@ -296,6 +296,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
   static const _sessionTilePadding = EdgeInsets.only(left: 68, right: 12);
   static const _initialSessionFetchLimit = 12;
+  static const _prefetchSessionFetchLimit = 6;
   static const _sessionFetchStep = 12;
 
   List<TmuxWindow>? _windows;
@@ -340,6 +341,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ]).animate(
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
+    if (widget.isProUser) {
+      unawaited(_prefetchRecentSessions());
+    }
     _loadWindows();
     _subscribeToWindowChanges();
   }
@@ -353,6 +357,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
+    if (widget.isProUser) {
+      unawaited(_prefetchRecentSessions());
+    }
     _loadWindows();
   }
 
@@ -389,12 +396,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         );
   }
 
-  Future<void> _prefetchRecentSessions([List<TmuxWindow>? windows]) =>
-      _discovery.prefetchSessions(
-        widget.session,
-        workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
-        maxPerTool: _sessionFetchLimit,
-      );
+  Future<void> _prefetchRecentSessions({
+    List<TmuxWindow>? windows,
+    int maxPerTool = _prefetchSessionFetchLimit,
+  }) => _discovery.prefetchSessions(
+    widget.session,
+    workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
+    maxPerTool: maxPerTool,
+  );
 
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
@@ -445,7 +454,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         _isLoading = false;
       });
       if (widget.isProUser) {
-        unawaited(_prefetchRecentSessions(windows));
+        unawaited(_prefetchRecentSessions(windows: windows));
       }
     } on Object {
       if (!mounted) return;

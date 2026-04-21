@@ -773,6 +773,17 @@ int calculateClaudeMetadataSnapshotLimit(int maxPerTool) =>
       maximum: 80,
     );
 
+/// Limits how many recent session files should be metadata-read after the
+/// provider has already listed candidates in descending update order.
+@visibleForTesting
+int calculateRecentSessionMetadataReadLimit(int maxPerTool) =>
+    _calculateDiscoveryScanLimit(
+      maxPerTool,
+      multiplier: 3,
+      minimum: 24,
+      maximum: 48,
+    );
+
 /// Builds the Gemini chat project directory names associated with the active
 /// worktree family.
 @visibleForTesting
@@ -998,16 +1009,22 @@ class AgentSessionDiscoveryService {
       return;
     }
 
+    final scopedFreshCachedResult = _lookupScopedCachedDiscoveryResult(
+      key.scopeKey,
+    );
+    if (scopedFreshCachedResult != null) {
+      yield scopedFreshCachedResult;
+    }
+
     final inFlightStream = _inFlightDiscoveries[key];
     if (inFlightStream != null) {
       final inFlightSnapshot = _inFlightDiscoverySnapshots[key];
       if (inFlightSnapshot != null) {
         yield inFlightSnapshot;
       } else {
-        final staleCachedResult = _lookupCachedDiscoveryResult(
-          key,
-          allowStale: true,
-        );
+        final staleCachedResult =
+            _lookupCachedDiscoveryResult(key, allowStale: true) ??
+            _lookupScopedCachedDiscoveryResult(key.scopeKey, allowStale: true);
         if (staleCachedResult != null) {
           yield staleCachedResult;
         }
@@ -1016,10 +1033,16 @@ class AgentSessionDiscoveryService {
       return;
     }
 
-    final staleCachedResult = _lookupCachedDiscoveryResult(
-      key,
-      allowStale: true,
+    final scopedInFlightSnapshot = _lookupScopedInFlightDiscoverySnapshot(
+      key.scopeKey,
     );
+    if (scopedInFlightSnapshot != null) {
+      yield scopedInFlightSnapshot;
+    }
+
+    final staleCachedResult =
+        _lookupCachedDiscoveryResult(key, allowStale: true) ??
+        _lookupScopedCachedDiscoveryResult(key.scopeKey, allowStale: true);
     if (staleCachedResult != null) {
       yield staleCachedResult;
     }
@@ -1114,6 +1137,46 @@ class AgentSessionDiscoveryService {
     return null;
   }
 
+  DiscoveredSessionsResult? _lookupScopedCachedDiscoveryResult(
+    _AgentSessionDiscoveryScopeKey scopeKey, {
+    bool allowStale = false,
+  }) {
+    final now = _now();
+    _AgentSessionDiscoveryKey? bestKey;
+    _CachedDiscoveryResult? bestResult;
+    for (final entry in _discoveryCache.entries) {
+      if (entry.key.scopeKey != scopeKey) continue;
+      final age = now.difference(entry.value.cachedAt);
+      if (age >= _sessionDiscoveryCacheFreshTtl &&
+          (!allowStale || age >= _sessionDiscoveryCacheRetentionTtl)) {
+        continue;
+      }
+      if (bestKey == null ||
+          entry.key.maxPerTool > bestKey.maxPerTool ||
+          (entry.key.maxPerTool == bestKey.maxPerTool &&
+              entry.value.cachedAt.isAfter(bestResult!.cachedAt))) {
+        bestKey = entry.key;
+        bestResult = entry.value;
+      }
+    }
+    return bestResult?.result;
+  }
+
+  DiscoveredSessionsResult? _lookupScopedInFlightDiscoverySnapshot(
+    _AgentSessionDiscoveryScopeKey scopeKey,
+  ) {
+    _AgentSessionDiscoveryKey? bestKey;
+    DiscoveredSessionsResult? bestSnapshot;
+    for (final entry in _inFlightDiscoverySnapshots.entries) {
+      if (entry.key.scopeKey != scopeKey) continue;
+      if (bestKey == null || entry.key.maxPerTool > bestKey.maxPerTool) {
+        bestKey = entry.key;
+        bestSnapshot = entry.value;
+      }
+    }
+    return bestSnapshot;
+  }
+
   void _pruneExpiredCacheEntries() {
     final now = _now();
     _discoveryCache.removeWhere(
@@ -1132,7 +1195,7 @@ class AgentSessionDiscoveryService {
     required List<String> relatedWorkingDirectories,
     required int maxPerTool,
   }) => [
-    _discoverClaudeSessions(
+    _discoverOpenCodeSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -1151,7 +1214,7 @@ class AgentSessionDiscoveryService {
       relatedWorkingDirectories,
       maxPerTool,
     ),
-    _discoverOpenCodeSessions(
+    _discoverClaudeSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
@@ -1399,6 +1462,7 @@ class AgentSessionDiscoveryService {
         multiplier: 10,
         maximum: 120,
       );
+      final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
       final output = await _exec(
         session,
         'find ~/.codex/sessions -name "rollout-*.jsonl" -type f '
@@ -1408,22 +1472,28 @@ class AgentSessionDiscoveryService {
         return const _ToolDiscoveryResult.success('Codex', []);
       }
 
-      final sessionIndex = await _readCodexSessionIndex(session, scanLimit);
       final rolloutPaths = output
           .trim()
           .split('\n')
           .map((line) => line.trim())
           .where((line) => line.isNotEmpty)
           .toList(growable: false);
+      final recentRolloutPaths = rolloutPaths
+          .take(metadataReadLimit)
+          .toList(growable: false);
+      final sessionIndex = await _readCodexSessionIndex(
+        session,
+        metadataReadLimit,
+      );
       final rolloutSnapshots = await _readRemoteFileSnapshots(
         session,
-        rolloutPaths,
+        recentRolloutPaths,
         maxLines: 80,
       );
       final sessions = <ToolSessionInfo>[];
       var hadError = sessionIndex.hadError;
 
-      for (final filePath in rolloutPaths) {
+      for (final filePath in recentRolloutPaths) {
         final fileName = filePath.split('/').last.replaceAll('.jsonl', '');
         final threadId = _extractCodexThreadId(fileName);
         final threadInfo = threadId != null
@@ -1537,6 +1607,7 @@ class AgentSessionDiscoveryService {
         minimum: 120,
         maximum: 240,
       );
+      final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
       final workspacePaths = await _listCopilotWorkspacePaths(
         session,
         scanLimit,
@@ -1545,10 +1616,13 @@ class AgentSessionDiscoveryService {
       if (workspacePaths.isEmpty) {
         return const _ToolDiscoveryResult.success('Copilot CLI', []);
       }
+      final recentWorkspacePaths = workspacePaths
+          .take(metadataReadLimit)
+          .toList(growable: false);
 
       final workspaceSnapshots = await _readRemoteFileSnapshots(
         session,
-        workspacePaths,
+        recentWorkspacePaths,
       );
       final planPathsNeedingFallback = <String>[];
       final metadataByWorkspacePath =
@@ -1558,7 +1632,7 @@ class AgentSessionDiscoveryService {
           >{};
       var hadError = false;
 
-      for (final workspacePath in workspacePaths) {
+      for (final workspacePath in recentWorkspacePaths) {
         final dirPath = workspacePath.replaceFirst(
           RegExp(r'/workspace\.yaml$'),
           '/',
@@ -1599,7 +1673,7 @@ class AgentSessionDiscoveryService {
       );
       final sessions = <ToolSessionInfo>[];
 
-      for (final workspacePath in workspacePaths) {
+      for (final workspacePath in recentWorkspacePaths) {
         final metadata = metadataByWorkspacePath[workspacePath];
         final snapshot = workspaceSnapshots[workspacePath];
         if (metadata == null) {
@@ -1673,6 +1747,7 @@ class AgentSessionDiscoveryService {
       multiplier: 10,
       maximum: 120,
     );
+    final metadataReadLimit = calculateRecentSessionMetadataReadLimit(max);
     final globalCommand =
         r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
         '-path "*/chats/*" -type f '
@@ -1713,14 +1788,17 @@ class AgentSessionDiscoveryService {
         .map((line) => line.trim())
         .where((line) => line.isNotEmpty)
         .toList(growable: false);
+    final recentSessionPaths = sessionPaths
+        .take(metadataReadLimit)
+        .toList(growable: false);
     final sessionSnapshots = await _readRemoteFileSnapshots(
       session,
-      sessionPaths,
+      recentSessionPaths,
     );
 
     var hadError = false;
     final sessions = <ToolSessionInfo>[];
-    for (final filePath in sessionPaths) {
+    for (final filePath in recentSessionPaths) {
       final fileName = filePath
           .split('/')
           .last
