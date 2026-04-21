@@ -1037,6 +1037,9 @@ final _terminalLinkPattern = RegExp(
 final _terminalFilePathPattern = RegExp(
   r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
+final _terminalFilePathLineSuffixPattern = RegExp(
+  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)$''',
+);
 final _terminalFilePathStackTraceSuffixPattern = RegExp(
   r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
 );
@@ -1044,6 +1047,9 @@ final _terminalFilePathShellOperatorSuffixPattern = RegExp(
   r'(?:&&|\|\||[&;|])+$',
 );
 final _terminalWrappedCountSuffixPattern = RegExp(r'\d+$');
+final _terminalStandalonePathMetadataPattern = RegExp(
+  r'^(?:L\d+(?::\d+)?|:\d+(?::\d+)?)(?:\s|\(|$)',
+);
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
 const _terminalInputIndicatorDuration = Duration(milliseconds: 700);
@@ -1676,36 +1682,42 @@ String _trimTerminalPathContinuationPrefix(String text) {
   return text.substring(index);
 }
 
+bool _startsFreshTerminalFilePathLine(String text) =>
+    text == '~' ||
+    text.startsWith('~/') ||
+    text.startsWith('./') ||
+    text.startsWith('../');
+
+bool _hasLeadingTerminalPathFragment(String text) =>
+    text.isNotEmpty && _isTerminalFilePathBodyCharacter(text[0]);
+
+bool _looksLikeTerminalPathContinuationAcrossRenderedLines({
+  required String previousText,
+  required String nextText,
+}) {
+  final trimmedPreviousText = trimTerminalLinePadding(previousText);
+  final trimmedNextText = trimTerminalLinePadding(nextText);
+  if (trimmedPreviousText.isEmpty || trimmedNextText.isEmpty) {
+    return false;
+  }
+  if (_terminalStandalonePathMetadataPattern.hasMatch(trimmedNextText) ||
+      _startsFreshTerminalFilePathLine(trimmedNextText)) {
+    return false;
+  }
+  return _terminalFilePathLineSuffixPattern.hasMatch(trimmedPreviousText) &&
+      (_terminalFilePathPattern.matchAsPrefix(trimmedNextText) != null ||
+          _hasLeadingTerminalPathFragment(trimmedNextText));
+}
+
 /// Whether adjacent rendered lines should be treated as one file-path span.
 @visibleForTesting
 bool isTerminalPathContinuationAcrossLines({
   required String previousLineText,
   required String nextLineText,
-}) {
-  final previousText = trimTerminalLinePadding(previousLineText);
-  final nextText = trimTerminalLinePadding(nextLineText);
-  if (previousText.isEmpty || nextText.isEmpty) {
-    return false;
-  }
-
-  final nextWithoutIndentation = _trimTerminalPathContinuationPrefix(nextText);
-  if (nextWithoutIndentation.isNotEmpty &&
-      nextWithoutIndentation.length != nextText.length &&
-      _isTerminalFilePathBodyCharacter(previousText[previousText.length - 1]) &&
-      _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0])) {
-    return true;
-  }
-
-  final combinedText = '$previousText\n$nextText';
-  final splitOffset = previousText.length;
-  for (final detectedPath in _detectTerminalFilePathMatches(combinedText)) {
-    if (detectedPath.start < splitOffset &&
-        detectedPath.end > splitOffset + 1) {
-      return true;
-    }
-  }
-  return false;
-}
+}) => _looksLikeTerminalPathContinuationAcrossRenderedLines(
+  previousText: previousLineText,
+  nextText: _trimTerminalPathContinuationPrefix(nextLineText),
+);
 
 _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   String text,
@@ -1715,6 +1727,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   final normalizedToOriginalStarts = <int>[];
   final normalizedToOriginalEnds = <int>[];
   var index = 0;
+  var lineStart = 0;
 
   while (index < text.length) {
     final character = text[index];
@@ -1734,17 +1747,19 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
         continuationEnd++;
       }
 
-      final previousCharacter = normalizedCharacters.isEmpty
-          ? null
-          : normalizedCharacters.last;
-      final nextCharacter = continuationEnd < text.length
-          ? text[continuationEnd]
-          : null;
+      var nextLineEnd = continuationEnd;
+      while (nextLineEnd < text.length &&
+          text[nextLineEnd] != '\r' &&
+          text[nextLineEnd] != '\n') {
+        nextLineEnd++;
+      }
+
       final isPathContinuation =
-          previousCharacter != null &&
-          nextCharacter != null &&
-          _isTerminalFilePathBodyCharacter(previousCharacter) &&
-          _isTerminalFilePathBodyCharacter(nextCharacter);
+          continuationEnd < text.length &&
+          _looksLikeTerminalPathContinuationAcrossRenderedLines(
+            previousText: text.substring(lineStart, index),
+            nextText: text.substring(continuationEnd, nextLineEnd),
+          );
       if (isPathContinuation) {
         for (
           var skippedIndex = index;
@@ -1754,6 +1769,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
           originalToNormalizedOffsets[skippedIndex] =
               normalizedCharacters.length;
         }
+        lineStart = lineBreakEnd;
         index = continuationEnd;
         continue;
       }
@@ -1765,6 +1781,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
       normalizedCharacters.add('\n');
       normalizedToOriginalStarts.add(index);
       normalizedToOriginalEnds.add(lineBreakEnd);
+      lineStart = lineBreakEnd;
       index = lineBreakEnd;
       continue;
     }

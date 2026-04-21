@@ -591,6 +591,28 @@ void main() {
       );
     });
 
+    test('ignores separate view metadata rows after wrapped worktree paths', () {
+      const text =
+          'Read terminal_screen.dart\n'
+          '~/Code/flutty.worktrees/session-resumption-all-provide\n'
+          'rs/lib/presentation/screens/terminal_screen.dart\n'
+          '└ L330:390 (61 lines read)';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('session-resumption'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/session-resumption-all-providers/lib/presentation/screens/terminal_screen.dart',
+      );
+      expect(
+        detectTerminalFilePathAtTextOffset(text, text.indexOf('L330')),
+        isNull,
+      );
+    });
+
     test('ignores branch-like slash paths without a file-like basename', () {
       expect(
         detectTerminalFilePathAtTextOffset(
@@ -1004,6 +1026,28 @@ void main() {
         isTerminalPathContinuationAcrossLines(
           previousLineText: 'Read terminal_screen.dart',
           nextLineText: 'Read sftp_screen.dart',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join file labels to a following explicit path row', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Read terminal_screen.dart',
+          nextLineText:
+              '~/Code/flutty.worktrees/session-resumption-all-provide',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join standalone view metadata rows after a path', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText:
+              '~/Code/flutty.worktrees/session-resumption-all-provide',
+          nextLineText: '└ L330:390 (61 lines read)',
         ),
         isFalse,
       );
