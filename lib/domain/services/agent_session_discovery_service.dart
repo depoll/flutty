@@ -182,12 +182,18 @@ String _truncateSessionIdValue(String id) {
 }
 
 bool _isLikelyToolStateWorkingDirectory(String directory) =>
-    directory.contains('/.copilot/session-state/') ||
-    directory.contains('/.claude/projects/') ||
+    directory == '/tmp' ||
+    directory.endsWith('/.copilot') ||
+    directory.contains('/.copilot/') ||
+    directory.endsWith('/.claude') ||
+    directory.contains('/.claude/') ||
+    directory.endsWith('/.codex') ||
     directory.contains('/.codex/') ||
-    directory.contains('/.gemini/tmp/') ||
+    directory.endsWith('/.gemini') ||
+    directory.contains('/.gemini/') ||
     directory.contains('/.local/share/opencode/') ||
     directory.startsWith('/tmp/') ||
+    directory.startsWith('/private/tmp/') ||
     directory.startsWith('/var/folders/');
 
 /// Chooses the best working directory to scope AI session discovery.

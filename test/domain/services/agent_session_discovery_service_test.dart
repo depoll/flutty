@@ -136,6 +136,27 @@ branch refs/heads/fix/session-resumption
       );
     });
 
+    test('falls back from AI tool home directories to the terminal cwd', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/.copilot',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/.gemini',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
     test('drops temp-only paths when there is no terminal cwd fallback', () {
       expect(
         resolveAgentSessionScopeWorkingDirectory(
