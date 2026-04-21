@@ -583,6 +583,21 @@ String? resolveGeminiProjectWorkingDirectory(
   return null;
 }
 
+/// Reads the Claude history working directory using only string-typed fields.
+@visibleForTesting
+String? readClaudeHistoryWorkingDirectory(Map<String, dynamic> entry) =>
+    _readStringField(entry, 'directory') ?? _readStringField(entry, 'project');
+
+/// Limits how many Claude session files should be snapshot-read for metadata.
+@visibleForTesting
+int calculateClaudeMetadataSnapshotLimit(int maxPerTool) =>
+    _calculateDiscoveryScanLimit(
+      maxPerTool,
+      multiplier: 4,
+      minimum: 40,
+      maximum: 80,
+    );
+
 /// Builds the Gemini chat project directory names associated with the active
 /// worktree family.
 @visibleForTesting
@@ -909,8 +924,7 @@ class AgentSessionDiscoveryService {
                 .where(
                   (entry) => matchesDiscoveredSessionWorkingDirectory(
                     workingDirectory,
-                    entry['directory'] as String? ??
-                        entry['project'] as String?,
+                    readClaudeHistoryWorkingDirectory(entry),
                     relatedWorkingDirectories: relatedWorkingDirectories,
                   ),
                 )
@@ -919,10 +933,13 @@ class AgentSessionDiscoveryService {
       final relevantHistoryEntries = scopedHistoryEntries.isNotEmpty
           ? scopedHistoryEntries
           : historyEntries;
+      final snapshotHistoryEntries = relevantHistoryEntries
+          .take(calculateClaudeMetadataSnapshotLimit(max))
+          .toList(growable: false);
       final sessionFilesById = await _findClaudeSessionFiles(
         session,
-        relevantHistoryEntries.map(
-          (entry) => entry['sessionId'] as String? ?? '',
+        snapshotHistoryEntries.map(
+          (entry) => _readStringField(entry, 'sessionId') ?? '',
         ),
       );
       final sessionFileHeadSnapshots = await _readRemoteFileSnapshots(
@@ -940,7 +957,7 @@ class AgentSessionDiscoveryService {
       var hadError = false;
       for (final decoded in relevantHistoryEntries) {
         try {
-          final sessionId = decoded['sessionId'] as String? ?? '';
+          final sessionId = _readStringField(decoded, 'sessionId') ?? '';
           if (sessionId.isEmpty) continue;
 
           // timestamp may be int (epoch ms) or String (ISO 8601).
@@ -981,19 +998,17 @@ class AgentSessionDiscoveryService {
           }
 
           // Fall back to history index fields.
-          final display = decoded['display'] as String?;
+          final display = _readStringField(decoded, 'display');
           summary ??=
-              decoded['title'] as String? ??
-              decoded['query'] as String? ??
+              _readStringField(decoded, 'title') ??
+              _readStringField(decoded, 'query') ??
               (display != null && !display.startsWith('/') ? display : null);
 
           sessions.add(
             ToolSessionInfo(
               toolName: 'Claude Code',
               sessionId: sessionId,
-              workingDirectory:
-                  decoded['directory'] as String? ??
-                  decoded['project'] as String?,
+              workingDirectory: readClaudeHistoryWorkingDirectory(decoded),
               lastActive: lastActive,
               summary: summary,
             ),
@@ -1610,7 +1625,10 @@ class AgentSessionDiscoveryService {
         '~/.copilot/session-state/*/workspace.yaml 2>/dev/null); '
         r'rm -f "$pattern_file"; '
         r'if [ -n "$matching_paths" ]; then '
-        r'printf "%s\n" "$matching_paths" | xargs ls -1t 2>/dev/null '
+        r'printf "%s\n" "$matching_paths" '
+        '| while IFS= read -r path; do '
+        r'[ -n "$path" ] && printf "%s\0" "$path"; '
+        'done | xargs -0 ls -1t 2>/dev/null '
         '| head -n $scanLimit; '
         'fi',
       );

@@ -110,6 +110,34 @@ branch refs/heads/fix/session-resumption
     });
   });
 
+  group('readClaudeHistoryWorkingDirectory', () {
+    test('ignores malformed non-string directory metadata', () {
+      expect(
+        readClaudeHistoryWorkingDirectory({
+          'directory': {'path': '/Users/depoll/Code/flutty'},
+          'project': 42,
+        }),
+        isNull,
+      );
+
+      expect(
+        readClaudeHistoryWorkingDirectory({
+          'directory': 42,
+          'project': '/Users/depoll/Code/flutty',
+        }),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+  });
+
+  group('calculateClaudeMetadataSnapshotLimit', () {
+    test('caps Claude metadata snapshots to a smaller recent window', () {
+      expect(calculateClaudeMetadataSnapshotLimit(6), 40);
+      expect(calculateClaudeMetadataSnapshotLimit(24), 80);
+      expect(calculateClaudeMetadataSnapshotLimit(48), 80);
+    });
+  });
+
   group('buildGeminiProjectDirectoryNames', () {
     test('keeps only worktree roots and ignores nested subdirectories', () {
       expect(

@@ -145,8 +145,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   @override
   void dispose() {
-    _sessionDiscoverySubscription?.cancel();
-    _windowChangeSubscription?.cancel();
+    unawaited(_sessionDiscoverySubscription?.cancel());
+    unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
   }
 

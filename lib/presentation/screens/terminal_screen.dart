@@ -307,15 +307,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         oldWidget.tmuxSessionName == widget.tmuxSessionName) {
       return;
     }
-    _windowChangeSubscription?.cancel();
+    unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     _loadWindows();
   }
 
   @override
   void dispose() {
-    _sessionDiscoverySubscription?.cancel();
-    _windowChangeSubscription?.cancel();
+    unawaited(_sessionDiscoverySubscription?.cancel());
+    unawaited(_windowChangeSubscription?.cancel());
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
     }
