@@ -7,6 +7,20 @@ import 'package:monkeyssh/presentation/widgets/monkey_terminal_gesture_detector.
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart';
 
+int _countOccurrences(String text, String pattern) {
+  var count = 0;
+  var start = 0;
+
+  while (true) {
+    final index = text.indexOf(pattern, start);
+    if (index == -1) {
+      return count;
+    }
+    count += 1;
+    start = index + pattern.length;
+  }
+}
+
 void main() {
   testWidgets('touch scroll falls back to arrow keys in alt buffer', (
     tester,
@@ -70,6 +84,104 @@ void main() {
     expect(output.join(), contains('\u001b[<65;'));
     expect(output.join(), isNot(contains('\u001b[B')));
   });
+
+  testWidgets(
+    'mouse-reporting apps require more drag distance per touch scroll step',
+    (tester) async {
+      final expectedOutput = <String>[];
+      Terminal()
+        ..onOutput = expectedOutput.add
+        ..keyInput(TerminalKey.arrowDown);
+      final expectedArrowDown = expectedOutput.join();
+
+      final arrowTerminal = Terminal()..useAltBuffer();
+      final arrowOutput = <String>[];
+      arrowTerminal.onOutput = arrowOutput.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              arrowTerminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+            ),
+          ),
+        ),
+      );
+
+      var detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: const Offset(150, 10),
+          localPosition: const Offset(150, 10),
+          delta: const Offset(0, -240),
+        ),
+      );
+      await tester.pump();
+
+      final arrowCount = _countOccurrences(
+        arrowOutput.join(),
+        expectedArrowDown,
+      );
+      expect(arrowCount, greaterThan(0));
+
+      final wheelTerminal = Terminal()
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+      final wheelOutput = <String>[];
+      wheelTerminal.onOutput = wheelOutput.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              wheelTerminal,
+              hardwareKeyboardOnly: true,
+              touchScrollToTerminal: true,
+            ),
+          ),
+        ),
+      );
+
+      detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      detector.onTouchScrollStart!(
+        DragStartDetails(
+          kind: PointerDeviceKind.touch,
+          localPosition: const Offset(150, 100),
+        ),
+      );
+      detector.onTouchScrollUpdate!(
+        DragUpdateDetails(
+          kind: PointerDeviceKind.touch,
+          globalPosition: const Offset(150, 10),
+          localPosition: const Offset(150, 10),
+          delta: const Offset(0, -240),
+        ),
+      );
+      await tester.pump();
+
+      final wheelCount = _countOccurrences(wheelOutput.join(), '\u001b[<65;');
+      expect(wheelCount, greaterThan(0));
+      expect(wheelCount, lessThan(arrowCount));
+    },
+  );
 
   testWidgets('touch scroll keeps moving with inertia after lift-off', (
     tester,

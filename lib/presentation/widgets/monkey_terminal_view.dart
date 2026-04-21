@@ -297,6 +297,8 @@ class MonkeyTerminalView extends StatefulWidget {
 
 class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     with SingleTickerProviderStateMixin {
+  static const _touchScrollReportedWheelLinesPerEvent = 3.0;
+
   late FocusNode _focusNode;
 
   late final ShortcutManager _shortcutManager;
@@ -362,6 +364,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         _scrollController.dispose();
       }
       _scrollController = widget.scrollController ?? ScrollController();
+    }
+    if (oldWidget.simulateScroll != widget.simulateScroll) {
+      _stopTouchScrollInertia();
+      _touchScrollRemainder = 0;
     }
     if (oldWidget.touchScrollToTerminal && !widget.touchScrollToTerminal) {
       _stopTouchScrollInertia();
@@ -693,15 +699,26 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     );
   }
 
+  double get _touchScrollStepHeight {
+    final lineHeight = renderTerminal.lineHeight;
+    if (lineHeight <= 0) {
+      return 0;
+    }
+    if (widget.terminal.mouseMode.reportScroll) {
+      return lineHeight * _touchScrollReportedWheelLinesPerEvent;
+    }
+    return lineHeight;
+  }
+
   void _applyTouchScrollDelta(double delta) {
     _touchScrollRemainder += delta;
 
-    final lineHeight = renderTerminal.lineHeight;
-    if (lineHeight <= 0) {
+    final stepHeight = _touchScrollStepHeight;
+    if (stepHeight <= 0) {
       return;
     }
 
-    while (_touchScrollRemainder.abs() >= lineHeight) {
+    while (_touchScrollRemainder.abs() >= stepHeight) {
       final scrollUp = _touchScrollRemainder > 0;
       final handled = _sendTouchScrollMouseInput(
         scrollUp ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
@@ -714,7 +731,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         );
       }
 
-      _touchScrollRemainder += scrollUp ? -lineHeight : lineHeight;
+      _touchScrollRemainder += scrollUp ? -stepHeight : stepHeight;
     }
   }
 
