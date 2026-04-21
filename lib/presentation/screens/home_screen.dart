@@ -2684,7 +2684,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                     ),
                   ...() {
                     final grouped = _groupSessions(_recentSessions!);
-                    return _orderedSessionTools(grouped).map(
+                    return orderedDiscoveredSessionTools(
+                      grouped,
+                      _attemptedSessionTools,
+                    ).map(
                       (toolName) => _buildSessionGroup(
                         theme,
                         toolName,
@@ -2936,22 +2939,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           .add(session);
     }
     return grouped;
-  }
-
-  /// Returns the ordered set of tool names to render: tools with sessions
-  /// first (in their natural grouping order), followed by attempted tools
-  /// that returned no sessions, sorted alphabetically.
-  List<String> _orderedSessionTools(
-    Map<String, List<ToolSessionInfo>> grouped,
-  ) {
-    final ordered = <String>[...grouped.keys];
-    final emptyAttempts =
-        _attemptedSessionTools
-            .where((tool) => !grouped.containsKey(tool))
-            .toList()
-          ..sort();
-    ordered.addAll(emptyAttempts);
-    return ordered;
   }
 
   Widget _buildSessionGroup(

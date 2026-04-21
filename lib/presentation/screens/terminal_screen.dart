@@ -221,6 +221,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.isProUser,
     required this.ref,
     required this.onAction,
+    this.scopeWorkingDirectory,
   });
 
   /// The active SSH session.
@@ -240,6 +241,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  /// Best-known project working directory for AI session scoping.
+  final String? scopeWorkingDirectory;
 
   /// Height of the collapsed handle bar. The terminal adds this as
   /// bottom padding so the handle sits over empty space.
@@ -408,10 +412,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     try {
       final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final scopeWorkingDirectory = resolveAgentSessionScopeWorkingDirectory(
-        activeWorkingDirectory: activeWindow?.currentPath,
-        sessionWorkingDirectory: widget.session.workingDirectory,
-      );
+      final scopeWorkingDirectory =
+          widget.scopeWorkingDirectory ??
+          resolveAgentSessionScopeWorkingDirectory(
+            activeWorkingDirectory: activeWindow?.currentPath,
+            sessionWorkingDirectory: widget.session.workingDirectory,
+          );
       _sessionDiscoverySubscription = discovery
           .discoverSessionsStream(
             widget.session,
@@ -421,6 +427,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           .listen(
             (result) {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              final counts = <String, int>{};
+              for (final session in result.sessions) {
+                counts.update(
+                  session.toolName,
+                  (count) => count + 1,
+                  ifAbsent: () => 1,
+                );
+              }
               setState(() {
                 _recentSessions = result.sessions;
                 _attemptedSessionTools = result.attemptedTools;
@@ -810,7 +824,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             ),
           ...() {
             final grouped = _groupSessions(_recentSessions!);
-            return _orderedSessionTools(grouped).map(
+            return orderedDiscoveredSessionTools(
+              grouped,
+              _attemptedSessionTools,
+            ).map(
               (toolName) => _buildSessionGroup(
                 theme,
                 toolName,
@@ -852,22 +869,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           .add(session);
     }
     return grouped;
-  }
-
-  /// Returns the ordered set of tool names to render: tools with sessions
-  /// first, then attempted tools that returned no sessions, sorted
-  /// alphabetically.
-  List<String> _orderedSessionTools(
-    Map<String, List<ToolSessionInfo>> grouped,
-  ) {
-    final ordered = <String>[...grouped.keys];
-    final emptyAttempts =
-        _attemptedSessionTools
-            .where((tool) => !grouped.containsKey(tool))
-            .toList()
-          ..sort();
-    ordered.addAll(emptyAttempts);
-    return ordered;
   }
 
   Widget _buildSessionGroup(
@@ -2426,12 +2427,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Uri? get _workingDirectory => _observedSession?.workingDirectory;
 
+  String? get _liveWorkingDirectoryPath =>
+      resolveTerminalWorkingDirectoryPath(_workingDirectory);
+
   String? get _workingDirectoryLabel =>
       formatTerminalWorkingDirectoryLabel(_workingDirectory);
 
   String? get _workingDirectoryPath =>
-      resolveTerminalWorkingDirectoryPath(_workingDirectory) ??
-      _tmuxWorkingDirectory;
+      _liveWorkingDirectoryPath ?? _tmuxWorkingDirectory;
 
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
@@ -3692,6 +3695,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isProUser: isProUser,
       ref: ref,
       onAction: _handleTmuxAction,
+      scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
+        liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
+        tmuxWorkingDirectory: _tmuxWorkingDirectory,
+        sessionWorkingDirectory: session.workingDirectory,
+      ),
     );
   }
 
@@ -3743,6 +3751,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       tmuxSessionName: _tmuxSessionName!,
       isProUser: isProUser,
+      scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
+        liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
+        tmuxWorkingDirectory: _tmuxWorkingDirectory,
+        sessionWorkingDirectory: session.workingDirectory,
+      ),
     );
 
     if (!mounted || action == null) return;

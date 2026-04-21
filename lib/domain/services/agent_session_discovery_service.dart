@@ -17,8 +17,9 @@ const _genericSessionSummaries = <String>{
 };
 
 const _profileSourcingPrefix =
-    '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
-    '>/dev/null 2>&1; ';
+    r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; '
+    '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } >/dev/null 2>&1; '
+    r'export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin${PATH:+:$PATH}"; ';
 const _remoteFileSnapshotBatchSize = 40;
 
 /// Filters noisy discovered sessions and fills in a better display summary
@@ -60,6 +61,23 @@ int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
   final toolCompare = a.toolName.compareTo(b.toolName);
   if (toolCompare != 0) return toolCompare;
   return (a.summary ?? '').compareTo(b.summary ?? '');
+}
+
+/// Orders tool groups for UI rendering: providers with sessions first, then
+/// attempted providers that yielded no sessions, alphabetized.
+List<String> orderedDiscoveredSessionTools(
+  Map<String, List<ToolSessionInfo>> grouped,
+  Iterable<String> attemptedTools,
+) {
+  final ordered = <String>[...grouped.keys];
+  final emptyAttempts =
+      attemptedTools
+          .where((tool) => !grouped.containsKey(tool))
+          .toSet()
+          .toList()
+        ..sort();
+  ordered.addAll(emptyAttempts);
+  return ordered;
 }
 
 /// Discovered session results plus any tool histories that could not be read.
@@ -112,6 +130,31 @@ bool shouldSurfaceDiscoveryFailure({
   required bool hadError,
   required int loadedSessionCount,
 }) => hadError && loadedSessionCount == 0;
+
+/// Builds the SQL predicate used to scope session directories to the active
+/// project root or its descendants without relying on `LIKE` wildcards.
+String? buildSqlWorkingDirectoryScopeClause(
+  Iterable<String> directories, {
+  required String columnName,
+}) {
+  final scopedDirectories = directories
+      .map(_trimWorkingDirectory)
+      .whereType<String>()
+      .toSet()
+      .toList(growable: false);
+  if (scopedDirectories.isEmpty) {
+    return null;
+  }
+
+  return scopedDirectories
+      .map(
+        (directory) => _buildSqlWorkingDirectoryPrefixPredicate(
+          directory,
+          columnName: columnName,
+        ),
+      )
+      .join(' OR ');
+}
 
 String? _normalizeDiscoveredSessionSummary(
   ToolSessionInfo info, {
@@ -201,6 +244,7 @@ bool _isLikelyToolStateWorkingDirectory(String directory) =>
     directory.contains('/.codex/') ||
     directory.endsWith('/.gemini') ||
     directory.contains('/.gemini/') ||
+    directory.endsWith('/.local/share/opencode') ||
     directory.contains('/.local/share/opencode/') ||
     directory.startsWith('/tmp/') ||
     directory.startsWith('/private/tmp/') ||
@@ -209,9 +253,12 @@ bool _isLikelyToolStateWorkingDirectory(String directory) =>
 /// Chooses the best working directory to scope AI session discovery.
 ///
 /// Tmux panes can temporarily report tool-state or temp directories while the
-/// user is still effectively working in a project. In those cases, prefer the
-/// terminal session's working directory when available, or skip scoping
-/// entirely instead of hiding project sessions behind a transient tool path.
+/// user is still effectively working in a project. Tmux window metadata can
+/// also lag behind the active pane's live OSC 7 working directory, especially
+/// after changing directories inside an existing tmux window. In those cases,
+/// prefer the terminal session's working directory when it is more specific or
+/// conflicts with the pane snapshot, or skip scoping entirely instead of
+/// hiding project sessions behind a stale or transient tool path.
 String? resolveAgentSessionScopeWorkingDirectory({
   String? activeWorkingDirectory,
   Uri? sessionWorkingDirectory,
@@ -223,10 +270,54 @@ String? resolveAgentSessionScopeWorkingDirectory({
   if (trimmedActive == null) {
     return fallbackWorkingDirectory;
   }
+  if (fallbackWorkingDirectory == null) {
+    return _isLikelyToolStateWorkingDirectory(trimmedActive)
+        ? null
+        : trimmedActive;
+  }
   if (_isLikelyToolStateWorkingDirectory(trimmedActive)) {
     return fallbackWorkingDirectory;
   }
+  if (_isLikelyToolStateWorkingDirectory(fallbackWorkingDirectory)) {
+    return trimmedActive;
+  }
+
+  final comparableActive = normalizeWorkingDirectoryForComparison(
+    trimmedActive,
+  );
+  final comparableFallback = normalizeWorkingDirectoryForComparison(
+    fallbackWorkingDirectory,
+  );
+  if (!_workingDirectoriesOverlap(comparableActive, comparableFallback)) {
+    return fallbackWorkingDirectory;
+  }
+  if (comparableFallback.startsWith('$comparableActive/')) {
+    return fallbackWorkingDirectory;
+  }
   return trimmedActive;
+}
+
+/// Chooses the best tmux AI-session scope, preferring the live terminal cwd and
+/// using tmux metadata only as a last resort when no live cwd is available.
+String? resolveTmuxAiSessionScopeWorkingDirectory({
+  String? liveTerminalWorkingDirectory,
+  String? tmuxWorkingDirectory,
+  Uri? sessionWorkingDirectory,
+}) {
+  final liveScope = resolveAgentSessionScopeWorkingDirectory(
+    activeWorkingDirectory: liveTerminalWorkingDirectory,
+    sessionWorkingDirectory: sessionWorkingDirectory,
+  );
+  if (liveScope != null) return liveScope;
+
+  final trimmedTmuxWorkingDirectory = _trimWorkingDirectory(
+    tmuxWorkingDirectory,
+  );
+  if (trimmedTmuxWorkingDirectory == null) return null;
+  return resolveAgentSessionScopeWorkingDirectory(
+    activeWorkingDirectory: trimmedTmuxWorkingDirectory,
+    sessionWorkingDirectory: sessionWorkingDirectory,
+  );
 }
 
 String _summarizeSessionText(String value, {int maxLength = 80}) {
@@ -269,6 +360,8 @@ parseCopilotWorkspaceYamlMetadata(String raw) {
   String? summary;
   String? workingDirectory;
   DateTime? updatedAt;
+  String? repository;
+  String? branch;
 
   for (var index = 0; index < lines.length; index++) {
     final line = lines[index];
@@ -286,6 +379,22 @@ parseCopilotWorkspaceYamlMetadata(String raw) {
       ).firstMatch(line);
       if (updatedAtMatch != null) {
         updatedAt = DateTime.tryParse(updatedAtMatch.group(1)!.trim());
+      }
+    }
+
+    if (repository == null) {
+      final repositoryMatch = RegExp(
+        r'^repository:\s*(.+)\s*$',
+      ).firstMatch(line);
+      if (repositoryMatch != null) {
+        repository = repositoryMatch.group(1)!.trim();
+      }
+    }
+
+    if (branch == null) {
+      final branchMatch = RegExp(r'^branch:\s*(.+)\s*$').firstMatch(line);
+      if (branchMatch != null) {
+        branch = branchMatch.group(1)!.trim();
       }
     }
 
@@ -316,6 +425,21 @@ parseCopilotWorkspaceYamlMetadata(String raw) {
     final normalizedInlineValue = inlineValue.trim();
     if (normalizedInlineValue.isNotEmpty) {
       summary = _summarizeSessionText(normalizedInlineValue);
+    }
+  }
+
+  if (summary == null) {
+    final repositorySummary = repository?.trim();
+    final branchSummary = branch?.trim();
+    if (repositorySummary != null &&
+        repositorySummary.isNotEmpty &&
+        branchSummary != null &&
+        branchSummary.isNotEmpty) {
+      summary = _summarizeSessionText('$repositorySummary ($branchSummary)');
+    } else if (repositorySummary != null && repositorySummary.isNotEmpty) {
+      summary = _summarizeSessionText(repositorySummary);
+    } else if (branchSummary != null && branchSummary.isNotEmpty) {
+      summary = _summarizeSessionText(branchSummary);
     }
   }
 
@@ -672,6 +796,39 @@ List<String> buildGeminiProjectDirectoryNames(
       .toList(growable: false);
 }
 
+/// Builds the narrow Gemini project directory names that should be preferred
+/// for the active scope before falling back to the broader worktree family.
+@visibleForTesting
+List<String> buildScopedGeminiProjectDirectoryNames(
+  String activeWorkingDirectory,
+  Iterable<String> relatedWorkingDirectories,
+) {
+  final trimmedActive = _trimWorkingDirectory(activeWorkingDirectory);
+  if (trimmedActive == null) {
+    return const <String>[];
+  }
+
+  final activeRootCandidates =
+      relatedWorkingDirectories
+          .map(_trimWorkingDirectory)
+          .whereType<String>()
+          .where(
+            (directory) =>
+                directory == trimmedActive ||
+                trimmedActive.startsWith('$directory/'),
+          )
+          .toList(growable: false)
+        ..sort((a, b) => a.length.compareTo(b.length));
+  final activeRoot = activeRootCandidates.firstOrNull ?? trimmedActive;
+
+  return <String>{
+        _pathLastSegment(activeRoot),
+        _pathLastSegment(normalizeWorkingDirectoryForComparison(activeRoot)),
+      }
+      .where((name) => name.isNotEmpty && name != '.' && name != '~')
+      .toList(growable: false);
+}
+
 /// Sorts merged discovery sessions by recency before applying a scan cap.
 @visibleForTesting
 List<ToolSessionInfo> sortAndLimitDiscoveredSessions(
@@ -810,7 +967,7 @@ class AgentSessionDiscoveryService {
 
     while (pendingResults.isNotEmpty) {
       final completed = await Future.any(pendingResults.values);
-      unawaited(pendingResults.remove(completed.index));
+      pendingResults.remove(completed.index)?.ignore();
       completedResults[completed.index] = completed.result;
       yield _buildDiscoveredSessionsResult(
         completedResults.whereType<_ToolDiscoveryResult>(),
@@ -1374,9 +1531,13 @@ class AgentSessionDiscoveryService {
         '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit';
     var output = '';
 
-    final projectDirectoryNames = buildGeminiProjectDirectoryNames(
-      relatedWorkingDirectories,
-    );
+    final projectDirectoryNames =
+        workingDirectory != null && workingDirectory.isNotEmpty
+        ? buildScopedGeminiProjectDirectoryNames(
+            workingDirectory,
+            relatedWorkingDirectories,
+          )
+        : buildGeminiProjectDirectoryNames(relatedWorkingDirectories);
     if (workingDirectory != null &&
         workingDirectory.isNotEmpty &&
         projectDirectoryNames.isNotEmpty) {
@@ -1485,6 +1646,24 @@ class AgentSessionDiscoveryService {
         maximum: 120,
       );
       var hadError = false;
+
+      if (workingDirectory != null && workingDirectory.isNotEmpty) {
+        final scopedDbOutput = await _queryOpenCodeDb(
+          session,
+          scanLimit,
+          scopedDirectories: relatedWorkingDirectories,
+        );
+        if (scopedDbOutput.trim().isNotEmpty) {
+          return _ToolDiscoveryResult.success(
+            'OpenCode',
+            sortAndLimitDiscoveredSessions(
+              _parseOpenCodeDbOutput(scopedDbOutput),
+              scanLimit,
+            ),
+          );
+        }
+      }
+
       // Preferred: use the CLI's own JSON output.
       final cliOutput = await _exec(
         session,
@@ -1521,17 +1700,7 @@ class AgentSessionDiscoveryService {
       // Fallback: query the SQLite database directly.
       // Use ASCII Unit Separator (\x1f) to avoid collision with pipes
       // in session titles or directory paths.
-      final dbOutput = await _exec(
-        session,
-        r'SEP=$(printf "\037"); sqlite3 -separator "$SEP" '
-        '~/.local/share/opencode/opencode.db '
-        "'SELECT id, title, directory, time_updated "
-        'FROM session '
-        'WHERE parent_id IS NULL '
-        'AND time_archived IS NULL '
-        'ORDER BY time_updated DESC '
-        "LIMIT $scanLimit;' 2>/dev/null",
-      );
+      final dbOutput = await _queryOpenCodeDb(session, scanLimit);
       if (dbOutput.trim().isNotEmpty) {
         final sessions = _parseOpenCodeDbOutput(dbOutput);
         final scopedSessions =
@@ -1618,6 +1787,35 @@ class AgentSessionDiscoveryService {
       );
     }
     return sessions;
+  }
+
+  Future<String> _queryOpenCodeDb(
+    SshSession session,
+    int scanLimit, {
+    Iterable<String> scopedDirectories = const <String>[],
+  }) {
+    final directoryScopeClause = buildSqlWorkingDirectoryScopeClause(
+      scopedDirectories,
+      columnName: 'directory',
+    );
+    final sql = StringBuffer()
+      ..write('SELECT id, title, directory, time_updated ')
+      ..write('FROM session ')
+      ..write('WHERE parent_id IS NULL ')
+      ..write('AND time_archived IS NULL ');
+    if (directoryScopeClause != null) {
+      sql.write('AND ($directoryScopeClause) ');
+    }
+    sql
+      ..write('ORDER BY time_updated DESC ')
+      ..write('LIMIT $scanLimit;');
+
+    return _exec(
+      session,
+      r'SEP=$(printf "\037"); sqlite3 -separator "$SEP" '
+      '~/.local/share/opencode/opencode.db '
+      '${_shellQuote(sql.toString())} 2>/dev/null',
+    );
   }
 
   // ── Helpers ────────────────────────────────────────────────────────────
@@ -1721,24 +1919,43 @@ class AgentSessionDiscoveryService {
           .toList(growable: false);
       final command = StringBuffer()
         ..write(r'SEP=$(printf "\037"); ')
+        ..write(
+          r'STAT_BIN=/usr/bin/stat; [ -x "$STAT_BIN" ] || STAT_BIN=stat; ',
+        )
+        ..write(
+          r'HEAD_BIN=/usr/bin/head; [ -x "$HEAD_BIN" ] || HEAD_BIN=head; ',
+        )
+        ..write(
+          r'BASE64_BIN=/usr/bin/base64; [ -x "$BASE64_BIN" ] || BASE64_BIN=base64; ',
+        )
+        ..write(r'TR_BIN=/usr/bin/tr; [ -x "$TR_BIN" ] || TR_BIN=tr; ')
+        ..write(r'CAT_BIN=/bin/cat; [ -x "$CAT_BIN" ] || CAT_BIN=cat; ')
+        ..write(r'SED_BIN=/usr/bin/sed; [ -x "$SED_BIN" ] || SED_BIN=sed; ')
+        ..write(
+          r'TAIL_BIN=/usr/bin/tail; [ -x "$TAIL_BIN" ] || TAIL_BIN=tail; ',
+        )
         ..write('for path in ')
         ..write(batchPaths.map(_shellQuote).join(' '))
         ..write(r'; do [ -f "$path" ] || continue; ')
         ..write(
-          r'mtime=$( (stat -c %Y "$path" 2>/dev/null || '
-          r'stat -f %m "$path" 2>/dev/null) | head -1); ',
+          r'mtime=$( ($STAT_BIN -c %Y "$path" 2>/dev/null || '
+          r'$STAT_BIN -f %m "$path" 2>/dev/null) | $HEAD_BIN -n 1); ',
         )
         ..write(r'printf "%s%s%s%s" "$path" "$SEP" "${mtime:-}" "$SEP"; ');
 
       if (maxLines == null) {
-        command.write(r'cat "$path" 2>/dev/null | base64 | tr -d "\n"; ');
+        command.write(
+          r'$CAT_BIN "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; ',
+        );
       } else {
         command.write(
           tail
-              ? 'tail -n $maxLines '
-                    r'"$path" 2>/dev/null | base64 | tr -d "\n"; '
-              : "sed -n '1,${maxLines}p' "
-                    r'"$path" 2>/dev/null | base64 | tr -d "\n"; ',
+              ? r'$TAIL_BIN -n '
+                    '$maxLines'
+                    r' "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; '
+              : r'''$SED_BIN -n '1,'''
+                    '$maxLines'
+                    r'''p' "$path" 2>/dev/null | $BASE64_BIN | $TR_BIN -d "\n"; ''',
         );
       }
 
@@ -1969,6 +2186,19 @@ Map<String, dynamic>? _decodeJsonOrJsonlObject(String raw) {
   }
   return lastObject;
 }
+
+String _buildSqlWorkingDirectoryPrefixPredicate(
+  String directory, {
+  required String columnName,
+}) {
+  final quotedDirectory = _sqliteQuote(directory);
+  final quotedDirectoryPrefix = _sqliteQuote('$directory/');
+  return '($columnName = $quotedDirectory OR '
+      'substr($columnName, 1, length($quotedDirectory) + 1) = '
+      '$quotedDirectoryPrefix)';
+}
+
+String _sqliteQuote(String value) => "'${value.replaceAll("'", "''")}'";
 
 Map<String, dynamic>? _readMapField(Map<String, dynamic>? map, String key) {
   final value = map?[key];

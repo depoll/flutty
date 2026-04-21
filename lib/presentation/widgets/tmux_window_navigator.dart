@@ -30,6 +30,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required SshSession session,
   required String tmuxSessionName,
   required bool isProUser,
+  String? scopeWorkingDirectory,
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
   isScrollControlled: true,
@@ -38,6 +39,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
     tmuxSessionName: tmuxSessionName,
     isProUser: isProUser,
     ref: ref,
+    scopeWorkingDirectory: scopeWorkingDirectory,
   ),
 );
 
@@ -95,12 +97,14 @@ class _TmuxNavigatorSheet extends StatefulWidget {
     required this.tmuxSessionName,
     required this.isProUser,
     required this.ref,
+    this.scopeWorkingDirectory,
   });
 
   final SshSession session;
   final String tmuxSessionName;
   final bool isProUser;
   final WidgetRef ref;
+  final String? scopeWorkingDirectory;
 
   @override
   State<_TmuxNavigatorSheet> createState() => _TmuxNavigatorSheetState();
@@ -195,10 +199,12 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     try {
       // Get working directory from the active window if available.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final scopeWorkingDirectory = resolveAgentSessionScopeWorkingDirectory(
-        activeWorkingDirectory: activeWindow?.currentPath,
-        sessionWorkingDirectory: widget.session.workingDirectory,
-      );
+      final scopeWorkingDirectory =
+          widget.scopeWorkingDirectory ??
+          resolveAgentSessionScopeWorkingDirectory(
+            activeWorkingDirectory: activeWindow?.currentPath,
+            sessionWorkingDirectory: widget.session.workingDirectory,
+          );
       _sessionDiscoverySubscription = _discovery
           .discoverSessionsStream(
             widget.session,
@@ -553,7 +559,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   ),
                 ),
               ),
-            ..._orderedSessionTools(groupedSessions).map(
+            ...orderedDiscoveredSessionTools(
+              groupedSessions,
+              _attemptedSessionTools,
+            ).map(
               (toolName) => _buildSessionGroup(
                 theme,
                 toolName,
@@ -575,23 +584,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         ],
       ],
     );
-  }
-
-  /// Returns the ordered set of tool names to render: tools with sessions
-  /// first (in their natural grouping order), followed by attempted tools
-  /// that returned no sessions, sorted alphabetically. This makes it visible
-  /// when a provider was queried but produced no matches.
-  List<String> _orderedSessionTools(
-    Map<String, List<ToolSessionInfo>> grouped,
-  ) {
-    final ordered = <String>[...grouped.keys];
-    final emptyAttempts =
-        _attemptedSessionTools
-            .where((tool) => !grouped.containsKey(tool))
-            .toList()
-          ..sort();
-    ordered.addAll(emptyAttempts);
-    return ordered;
   }
 
   Map<String, List<ToolSessionInfo>> _groupSessions(

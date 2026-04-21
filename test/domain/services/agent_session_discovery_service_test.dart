@@ -148,7 +148,40 @@ branch refs/heads/fix/session-resumption
       );
       expect(
         resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/.local/share/opencode',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
           activeWorkingDirectory: '/Users/depoll/.gemini',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('prefers a more specific terminal cwd over a broader pane cwd', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('prefers the live terminal cwd when tmux metadata disagrees', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/Code/another-project',
           sessionWorkingDirectory: Uri.parse(
             'file:///Users/depoll/Code/flutty',
           ),
@@ -163,6 +196,30 @@ branch refs/heads/fix/session-resumption
           activeWorkingDirectory: '/var/folders/demo/output',
         ),
         isNull,
+      );
+    });
+  });
+
+  group('resolveTmuxAiSessionScopeWorkingDirectory', () {
+    test('prefers the live terminal cwd over stale tmux metadata', () {
+      expect(
+        resolveTmuxAiSessionScopeWorkingDirectory(
+          liveTerminalWorkingDirectory: '/Users/depoll/Code/flutty',
+          tmuxWorkingDirectory: '/Users/depoll/Code/another-project',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('falls back to tmux metadata only when no live cwd exists', () {
+      expect(
+        resolveTmuxAiSessionScopeWorkingDirectory(
+          tmuxWorkingDirectory: '/Users/depoll/Code/flutty',
+        ),
+        '/Users/depoll/Code/flutty',
       );
     });
   });
@@ -205,6 +262,22 @@ branch refs/heads/fix/session-resumption
           '/Users/depoll/Code/flutty',
         ]),
         ['feature-other', 'flutty'],
+      );
+    });
+  });
+
+  group('buildScopedGeminiProjectDirectoryNames', () {
+    test('keeps the active worktree name plus the canonical checkout name', () {
+      expect(
+        buildScopedGeminiProjectDirectoryNames(
+          '/Users/depoll/Code/flutty.worktrees/session-resumption-all-providers',
+          const [
+            '/Users/depoll/Code/flutty',
+            '/Users/depoll/Code/flutty.worktrees/session-resumption-all-providers',
+            '/Users/depoll/Code/flutty.worktrees/feature-other',
+          ],
+        ),
+        ['session-resumption-all-providers', 'flutty'],
       );
     });
   });
@@ -274,6 +347,23 @@ branch refs/heads/fix/session-resumption
 
       expect(limitedSessions.map((session) => session.sessionId), ['newer']);
     });
+  });
+
+  group('orderedDiscoveredSessionTools', () {
+    test(
+      'lists grouped tools first and appends empty attempts alphabetically',
+      () {
+        final ordered = orderedDiscoveredSessionTools(
+          {
+            'Claude Code': const <ToolSessionInfo>[],
+            'Codex': const <ToolSessionInfo>[],
+          },
+          const ['OpenCode', 'Gemini CLI', 'Codex'],
+        );
+
+        expect(ordered, ['Claude Code', 'Codex', 'Gemini CLI', 'OpenCode']);
+      },
+    );
   });
 
   group('normalizeDiscoveredSessionInfo', () {
@@ -388,6 +478,20 @@ updated_at: 2026-04-14T01:02:03.000Z
       expect(metadata.updatedAt, DateTime.parse('2026-04-14T01:02:03.000Z'));
     });
 
+    test('falls back to repository and branch when summary is missing', () {
+      final metadata = parseCopilotWorkspaceYamlMetadata('''
+id: example
+cwd: /Users/depoll/Code/flutty
+repository: depollsoft/MonkeySSH
+branch: main
+updated_at: 2026-04-14T01:02:03.000Z
+''');
+
+      expect(metadata.summary, 'depollsoft/MonkeySSH (main)');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-14T01:02:03.000Z'));
+    });
+
     test('normalizes inline summary text to a single display line', () {
       final metadata = parseCopilotWorkspaceYamlMetadata('''
 summary:   Add   PR preview   commit list   
@@ -397,6 +501,23 @@ cwd: /tmp/demo
       expect(metadata.summary, 'Add PR preview commit list');
       expect(metadata.workingDirectory, '/tmp/demo');
       expect(metadata.updatedAt, isNull);
+    });
+  });
+
+  group('buildSqlWorkingDirectoryScopeClause', () {
+    test('uses exact prefix predicates instead of LIKE wildcards', () {
+      final clause = buildSqlWorkingDirectoryScopeClause(const [
+        '/Users/depoll/Code/my_repo',
+      ], columnName: 'directory');
+
+      expect(clause, isNotNull);
+      expect(clause, isNot(contains('LIKE')));
+      expect(
+        clause,
+        contains(
+          "substr(directory, 1, length('/Users/depoll/Code/my_repo') + 1) = '/Users/depoll/Code/my_repo/'",
+        ),
+      );
     });
   });
 
