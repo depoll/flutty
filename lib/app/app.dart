@@ -3,7 +3,10 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../data/database/database.dart';
+import '../data/repositories/host_repository.dart';
 import '../domain/services/background_ssh_service.dart';
+import '../domain/services/home_screen_shortcut_service.dart';
 import '../domain/services/monetization_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
@@ -51,6 +54,12 @@ class _BackgroundLifecycleBridgeState
     extends ConsumerState<_BackgroundLifecycleBridge>
     with WidgetsBindingObserver {
   late final AppLifecycleCoordinator _lifecycleCoordinator;
+  StreamSubscription<List<Host>>? _homeScreenShortcutHostsSubscription;
+  StreamSubscription<Set<int>>? _pinnedHomeScreenShortcutHostsSubscription;
+  List<Host> _latestHomeScreenShortcutHosts = const <Host>[];
+  Set<int> _latestPinnedHomeScreenShortcutHostIds = const <int>{};
+  bool _hasLoadedHomeScreenShortcutHosts = false;
+  bool _hasLoadedPinnedHomeScreenShortcutHostIds = false;
 
   @override
   void initState() {
@@ -61,6 +70,13 @@ class _BackgroundLifecycleBridgeState
       syncForegroundBackgroundStatus: _syncForegroundBackgroundStatus,
       syncBackgroundState: () =>
           BackgroundSshService.setForegroundState(isForeground: false),
+    );
+    _listenForHomeScreenShortcutChanges();
+    _runLifecycleSync(
+      () => ref.read(homeScreenShortcutServiceProvider).initialize(),
+      errorContext:
+          'while initializing home-screen shortcuts during app startup',
+      defer: true,
     );
     _runLifecycleSync(
       _refreshMonetizationOnStartup,
@@ -77,7 +93,39 @@ class _BackgroundLifecycleBridgeState
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    unawaited(_homeScreenShortcutHostsSubscription?.cancel());
+    unawaited(_pinnedHomeScreenShortcutHostsSubscription?.cancel());
     super.dispose();
+  }
+
+  void _listenForHomeScreenShortcutChanges() {
+    final hostRepository = ref.read(hostRepositoryProvider);
+    _homeScreenShortcutHostsSubscription = hostRepository.watchAll().listen((
+      hosts,
+    ) {
+      _latestHomeScreenShortcutHosts = hosts;
+      _hasLoadedHomeScreenShortcutHosts = true;
+      _runLifecycleSync(
+        _syncHomeScreenShortcuts,
+        errorContext:
+            'while syncing home-screen shortcuts after the host list changed',
+      );
+    });
+
+    final preferencesService = ref.read(
+      homeScreenShortcutPreferencesServiceProvider,
+    );
+    _pinnedHomeScreenShortcutHostsSubscription = preferencesService
+        .watchPinnedHostIds()
+        .listen((hostIds) {
+          _latestPinnedHomeScreenShortcutHostIds = hostIds;
+          _hasLoadedPinnedHomeScreenShortcutHostIds = true;
+          _runLifecycleSync(
+            _syncHomeScreenShortcuts,
+            errorContext:
+                'while syncing home-screen shortcuts after pinned hosts changed',
+          );
+        });
   }
 
   Future<void> _syncForegroundBackgroundStatus() async {
@@ -87,6 +135,20 @@ class _BackgroundLifecycleBridgeState
 
   Future<void> _refreshMonetizationOnStartup() async {
     await ref.read(monetizationServiceProvider).initialize();
+  }
+
+  Future<void> _syncHomeScreenShortcuts() async {
+    if (!_hasLoadedHomeScreenShortcutHosts ||
+        !_hasLoadedPinnedHomeScreenShortcutHostIds) {
+      return;
+    }
+
+    await ref
+        .read(homeScreenShortcutServiceProvider)
+        .updateShortcuts(
+          hosts: _latestHomeScreenShortcutHosts,
+          pinnedHostIds: _latestPinnedHomeScreenShortcutHostIds,
+        );
   }
 
   Future<void> _syncAuthLifecycle(AppLifecycleState state) => ref

@@ -80,6 +80,9 @@ abstract final class SettingKeys {
   /// Saved host-scoped coding-agent launch presets.
   static const agentLaunchPresets = 'agent_launch_presets';
 
+  /// Saved host IDs pinned into the app's home-screen shortcut set.
+  static const homeScreenShortcutHostIds = 'home_screen_shortcut_host_ids';
+
   /// Enable shared clipboard between device and remote session.
   ///
   /// The terminal can sync through OSC 52 and remote clipboard utilities when
