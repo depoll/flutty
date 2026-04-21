@@ -102,6 +102,24 @@ void main() {
     });
   });
 
+  group('tmux window action helpers', () {
+    test('parses the current pane path from display-message output', () {
+      expect(parseTmuxCurrentPanePath('/tmp/project\n'), '/tmp/project');
+      expect(
+        parseTmuxCurrentPanePath('\n  /tmp/workspace  \n'),
+        '/tmp/workspace',
+      );
+      expect(parseTmuxCurrentPanePath(' \n \n'), isNull);
+    });
+
+    test('detects only non-control tmux clients as foreground clients', () {
+      expect(hasForegroundTmuxClient('1\n1\n'), isFalse);
+      expect(hasForegroundTmuxClient('1\n0\n'), isTrue);
+      expect(hasForegroundTmuxClient('\n0\n'), isTrue);
+      expect(hasForegroundTmuxClient(' \n \n'), isFalse);
+    });
+  });
+
   group('decideTmuxHeartbeatAction', () {
     const heartbeat = Duration(seconds: 5);
     const maxSilence = Duration(seconds: 30);
