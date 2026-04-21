@@ -2816,10 +2816,14 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       // Scope sessions to the active tmux window's working directory
       // so results match the current project context.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final scopeWorkingDirectory = resolveAgentSessionScopeWorkingDirectory(
+        activeWorkingDirectory: activeWindow?.currentPath,
+        sessionWorkingDirectory: session.workingDirectory,
+      );
       _sessionDiscoverySubscription = discovery
           .discoverSessionsStream(
             session,
-            workingDirectory: activeWindow?.currentPath,
+            workingDirectory: scopeWorkingDirectory,
             maxPerTool: _sessionFetchLimit,
           )
           .listen(

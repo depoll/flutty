@@ -407,10 +407,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     try {
       final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final scopeWorkingDirectory = resolveAgentSessionScopeWorkingDirectory(
+        activeWorkingDirectory: activeWindow?.currentPath,
+        sessionWorkingDirectory: widget.session.workingDirectory,
+      );
       _sessionDiscoverySubscription = discovery
           .discoverSessionsStream(
             widget.session,
-            workingDirectory: activeWindow?.currentPath,
+            workingDirectory: scopeWorkingDirectory,
             maxPerTool: _sessionFetchLimit,
           )
           .listen(

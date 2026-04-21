@@ -194,10 +194,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     try {
       // Get working directory from the active window if available.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+      final scopeWorkingDirectory = resolveAgentSessionScopeWorkingDirectory(
+        activeWorkingDirectory: activeWindow?.currentPath,
+        sessionWorkingDirectory: widget.session.workingDirectory,
+      );
       _sessionDiscoverySubscription = _discovery
           .discoverSessionsStream(
             widget.session,
-            workingDirectory: activeWindow?.currentPath,
+            workingDirectory: scopeWorkingDirectory,
             maxPerTool: _maxSessionsPerTool,
           )
           .listen(
@@ -497,7 +501,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           },
         ),
         if (_showRecentSessions) ...[
-          if (_isLoadingSessions)
+          if (_isLoadingSessions &&
+              (_recentSessions == null || _recentSessions!.isEmpty))
             const Padding(
               padding: EdgeInsets.all(16),
               child: Center(
@@ -547,6 +552,17 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
             ...groupedSessions.entries.map(
               (entry) => _buildSessionGroup(theme, entry.key, entry.value),
             ),
+            if (_isLoadingSessions)
+              const Padding(
+                padding: EdgeInsets.symmetric(vertical: 8),
+                child: Center(
+                  child: SizedBox(
+                    width: 16,
+                    height: 16,
+                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                  ),
+                ),
+              ),
           ],
         ],
       ],

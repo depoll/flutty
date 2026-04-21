@@ -181,6 +181,38 @@ String _truncateSessionIdValue(String id) {
   return '${id.substring(0, 8)}…';
 }
 
+bool _isLikelyToolStateWorkingDirectory(String directory) =>
+    directory.contains('/.copilot/session-state/') ||
+    directory.contains('/.claude/projects/') ||
+    directory.contains('/.codex/') ||
+    directory.contains('/.gemini/tmp/') ||
+    directory.contains('/.local/share/opencode/') ||
+    directory.startsWith('/tmp/') ||
+    directory.startsWith('/var/folders/');
+
+/// Chooses the best working directory to scope AI session discovery.
+///
+/// Tmux panes can temporarily report tool-state or temp directories while the
+/// user is still effectively working in a project. In those cases, prefer the
+/// terminal session's working directory when available, or skip scoping
+/// entirely instead of hiding project sessions behind a transient tool path.
+String? resolveAgentSessionScopeWorkingDirectory({
+  String? activeWorkingDirectory,
+  Uri? sessionWorkingDirectory,
+}) {
+  final trimmedActive = _trimWorkingDirectory(activeWorkingDirectory);
+  final fallbackWorkingDirectory = _trimWorkingDirectory(
+    resolveTerminalWorkingDirectoryPath(sessionWorkingDirectory),
+  );
+  if (trimmedActive == null) {
+    return fallbackWorkingDirectory;
+  }
+  if (_isLikelyToolStateWorkingDirectory(trimmedActive)) {
+    return fallbackWorkingDirectory;
+  }
+  return trimmedActive;
+}
+
 String _summarizeSessionText(String value, {int maxLength = 80}) {
   final firstMeaningfulLine = value
       .split('\n')

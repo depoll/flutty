@@ -110,6 +110,42 @@ branch refs/heads/fix/session-resumption
     });
   });
 
+  group('resolveAgentSessionScopeWorkingDirectory', () {
+    test('keeps the active project path when it already looks valid', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/Code/flutty',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('falls back from Copilot state paths to the terminal cwd', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory:
+              '/Users/depoll/.copilot/session-state/970e4099-a97c-456a-a6c2-408095060f72',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('drops temp-only paths when there is no terminal cwd fallback', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/var/folders/demo/output',
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('readClaudeHistoryWorkingDirectory', () {
     test('ignores malformed non-string directory metadata', () {
       expect(
