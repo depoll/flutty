@@ -110,44 +110,63 @@ branch refs/heads/fix/session-resumption
     });
   });
 
-  group('buildGeminiCliSessionListScopes', () {
-    test('limits CLI scopes to the active worktree root and main checkout', () {
+  group('buildGeminiProjectDirectoryNames', () {
+    test('keeps only worktree roots and ignores nested subdirectories', () {
       expect(
-        buildGeminiCliSessionListScopes(
-          '/Users/depoll/Code/flutty.worktrees/feature-other',
-          const [
-            '/Users/depoll/Code/flutty',
-            '/Users/depoll/Code/flutty.worktrees/feature-other',
-            '/Users/depoll/Code/flutty.worktrees/fix-another-branch',
-          ],
-        ),
-        [
-          '/Users/depoll/Code/flutty.worktrees/feature-other',
-          '/Users/depoll/Code/flutty',
-        ],
-      );
-    });
-
-    test('uses project roots instead of active subdirectories', () {
-      expect(
-        buildGeminiCliSessionListScopes(
+        buildGeminiProjectDirectoryNames(const [
           '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
-          const [
-            '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
-            '/Users/depoll/Code/flutty/lib',
-            '/Users/depoll/Code/flutty.worktrees/feature-other',
-            '/Users/depoll/Code/flutty',
-          ],
-        ),
+          '/Users/depoll/Code/flutty/lib',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+          '/Users/depoll/Code/flutty',
+        ]),
+        ['feature-other', 'flutty'],
+      );
+    });
+  });
+
+  group('scopeDiscoveredSessionsToWorkingDirectory', () {
+    test('keeps providers that have no matching cwd metadata', () {
+      final scopedSessions = scopeDiscoveredSessionsToWorkingDirectory(
         [
+          ToolSessionInfo(
+            toolName: 'Claude Code',
+            sessionId: 'claude-match',
+            workingDirectory: '/Users/depoll/Code/flutty',
+            summary: 'Fix tmux filtering',
+            lastActive: DateTime(2026, 4, 20, 12),
+          ),
+          ToolSessionInfo(
+            toolName: 'Claude Code',
+            sessionId: 'claude-other',
+            workingDirectory: '/tmp/another-repo',
+            summary: 'Other project',
+            lastActive: DateTime(2026, 4, 20, 11),
+          ),
+          ToolSessionInfo(
+            toolName: 'Codex',
+            sessionId: 'codex-no-cwd',
+            summary: 'Investigate session loading',
+            lastActive: DateTime(2026, 4, 20, 10),
+          ),
+          ToolSessionInfo(
+            toolName: 'Copilot CLI',
+            sessionId: 'copilot-no-cwd',
+            summary: 'Review recent tmux fixes',
+            lastActive: DateTime(2026, 4, 20, 9),
+          ),
+        ],
+        '/Users/depoll/Code/flutty.worktrees/feature-other',
+        relatedWorkingDirectories: const [
           '/Users/depoll/Code/flutty.worktrees/feature-other',
           '/Users/depoll/Code/flutty',
         ],
       );
-    });
 
-    test('falls back to one default CLI scope when no directory is known', () {
-      expect(buildGeminiCliSessionListScopes(null, const []), [isNull]);
+      expect(scopedSessions.map((session) => session.sessionId), [
+        'claude-match',
+        'codex-no-cwd',
+        'copilot-no-cwd',
+      ]);
     });
   });
 

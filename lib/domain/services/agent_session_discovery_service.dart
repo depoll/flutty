@@ -18,6 +18,7 @@ const _genericSessionSummaries = <String>{
 const _profileSourcingPrefix =
     '{ . ~/.profile; . ~/.bash_profile; . ~/.zprofile; } '
     '>/dev/null 2>&1; ';
+const _remoteFileSnapshotBatchSize = 40;
 
 /// Filters noisy discovered sessions and fills in a better display summary
 /// when the tool only exposes a working directory.
@@ -581,73 +582,30 @@ String? resolveGeminiProjectWorkingDirectory(
   return null;
 }
 
-/// Resolves the best Gemini CLI project root for the active working directory.
-///
-/// Prefers the shortest related directory that still contains the active path,
-/// which typically corresponds to the current worktree root.
+/// Builds the Gemini chat project directory names associated with the active
+/// worktree family.
 @visibleForTesting
-String? resolveGeminiCliProjectRoot(
-  String? workingDirectory,
+List<String> buildGeminiProjectDirectoryNames(
   Iterable<String> relatedWorkingDirectories,
 ) {
-  final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
-  if (trimmedWorkingDirectory == null) return null;
+  final directories = relatedWorkingDirectories
+      .map(_trimWorkingDirectory)
+      .whereType<String>()
+      .toSet()
+      .toList(growable: false);
+  final rootDirectories = directories
+      .where(
+        (directory) => !directories.any(
+          (other) => other != directory && directory.startsWith('$other/'),
+        ),
+      )
+      .toList(growable: false);
 
-  String? projectRoot;
-  for (final candidate in <String>[
-    trimmedWorkingDirectory,
-    ...relatedWorkingDirectories,
-  ]) {
-    final trimmedCandidate = _trimWorkingDirectory(candidate);
-    if (trimmedCandidate == null ||
-        !_workingDirectoriesOverlap(
-          trimmedWorkingDirectory,
-          trimmedCandidate,
-        ) ||
-        !(trimmedWorkingDirectory == trimmedCandidate ||
-            trimmedWorkingDirectory.startsWith('$trimmedCandidate/'))) {
-      continue;
-    }
-
-    if (projectRoot == null || trimmedCandidate.length < projectRoot.length) {
-      projectRoot = trimmedCandidate;
-    }
-  }
-
-  return projectRoot ?? trimmedWorkingDirectory;
-}
-
-/// Builds the CLI working-directory scopes Gemini should be queried from.
-///
-/// Gemini CLI calls are relatively expensive, so keep them bounded to the
-/// active project root plus its canonical non-worktree equivalent. Broader
-/// sibling-worktree coverage comes from the file-based fallback, which is much
-/// cheaper to scan.
-///
-/// When no directory context is available, returns a single `null` scope so the
-/// CLI still runs once in the default shell cwd instead of being skipped.
-@visibleForTesting
-List<String?> buildGeminiCliSessionListScopes(
-  String? workingDirectory,
-  Iterable<String> relatedWorkingDirectories,
-) {
-  final projectRoot = resolveGeminiCliProjectRoot(
-    workingDirectory,
-    relatedWorkingDirectories,
-  );
-  if (projectRoot == null) {
-    return const <String?>[null];
-  }
-
-  final scopes = <String?>{projectRoot};
-  final normalizedProjectRoot = normalizeWorkingDirectoryForComparison(
-    projectRoot,
-  );
-  if (normalizedProjectRoot != projectRoot) {
-    scopes.add(normalizedProjectRoot);
-  }
-
-  return scopes.toList(growable: false);
+  return rootDirectories
+      .map(_pathLastSegment)
+      .where((name) => name.isNotEmpty && name != '.' && name != '~')
+      .toSet()
+      .toList(growable: false);
 }
 
 /// Sorts merged discovery sessions by recency before applying a scan cap.
@@ -659,6 +617,52 @@ List<ToolSessionInfo> sortAndLimitDiscoveredSessions(
   final sortedSessions = sessions.toList(growable: false)
     ..sort(compareDiscoveredSessionsByRecency);
   return sortedSessions.take(limit).toList(growable: false);
+}
+
+/// Scopes discovered sessions to the active working directory on a per-tool
+/// basis, preserving a tool's unscoped results when it lacks matching cwd
+/// metadata instead of dropping that provider entirely.
+@visibleForTesting
+List<ToolSessionInfo> scopeDiscoveredSessionsToWorkingDirectory(
+  Iterable<ToolSessionInfo> sessions,
+  String workingDirectory, {
+  Iterable<String> relatedWorkingDirectories = const <String>[],
+}) {
+  final sessionsByTool = <String, List<ToolSessionInfo>>{};
+  for (final session in sessions) {
+    sessionsByTool
+        .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
+        .add(session);
+  }
+
+  final scopedSessions = <ToolSessionInfo>[];
+  for (final toolSessions in sessionsByTool.values) {
+    final matchingSessions = toolSessions
+        .where(
+          (session) => matchesDiscoveredSessionWorkingDirectory(
+            workingDirectory,
+            session.workingDirectory,
+            relatedWorkingDirectories: relatedWorkingDirectories,
+          ),
+        )
+        .toList(growable: false);
+    if (matchingSessions.isNotEmpty) {
+      scopedSessions.addAll(matchingSessions);
+      continue;
+    }
+
+    final sessionsWithoutWorkingDirectory = toolSessions
+        .where(
+          (session) =>
+              session.workingDirectory == null ||
+              session.workingDirectory!.isEmpty,
+        )
+        .toList(growable: false);
+    scopedSessions.addAll(sessionsWithoutWorkingDirectory);
+  }
+
+  scopedSessions.sort(compareDiscoveredSessionsByRecency);
+  return scopedSessions;
 }
 
 /// Discovers recent AI coding tool sessions on remote hosts by scanning
@@ -735,33 +739,24 @@ class AgentSessionDiscoveryService {
     // Filter to sessions matching the working directory if provided.
     if (workingDirectory != null && workingDirectory.isNotEmpty) {
       final filtered = _limitDiscoveredSessionsPerTool(
-        all
-            .where(
-              (s) => matchesDiscoveredSessionWorkingDirectory(
-                workingDirectory,
-                s.workingDirectory,
-                relatedWorkingDirectories: relatedWorkingDirectories,
-              ),
-            )
-            .toList(),
+        scopeDiscoveredSessionsToWorkingDirectory(
+          all,
+          workingDirectory,
+          relatedWorkingDirectories: relatedWorkingDirectories,
+        ),
         maxPerTool,
       );
-      // Return filtered results if any match; otherwise return all so the UI
-      // still has a fallback when the remote tool doesn't persist directory
-      // metadata for its sessions.
-      if (filtered.isNotEmpty) {
-        return DiscoveredSessionsResult(
-          sessions: filtered,
-          failedTools: results
-              .where(
-                (r) => shouldSurfaceDiscoveryFailure(
-                  hadError: r.hadError,
-                  loadedSessionCount: r.sessions.length,
-                ),
-              )
-              .map((r) => r.toolName),
-        );
-      }
+      return DiscoveredSessionsResult(
+        sessions: filtered,
+        failedTools: results
+            .where(
+              (r) => shouldSurfaceDiscoveryFailure(
+                hadError: r.hadError,
+                loadedSessionCount: r.sessions.length,
+              ),
+            )
+            .map((r) => r.toolName),
+      );
     }
 
     return DiscoveredSessionsResult(
@@ -1210,10 +1205,9 @@ class AgentSessionDiscoveryService {
   }
 
   // ── Gemini CLI ─────────────────────────────────────────────────────────
-  // `gemini --list-sessions` outputs a human-readable list scoped to
-  // the current project. Each line looks like:
-  //   1. Title text (time ago) [session-uuid]
-  // Falls back to scanning chat JSON files if the CLI is unavailable.
+  // Sessions: ~/.gemini/tmp/**/chats/session-*.json*
+  // File-based discovery is substantially faster than `gemini --list-sessions`
+  // on large worktree families, so prefer the stored chat files directly.
 
   Future<_ToolDiscoveryResult> _discoverGeminiSessions(
     SshSession session,
@@ -1222,83 +1216,15 @@ class AgentSessionDiscoveryService {
     int max,
   ) async {
     try {
-      final searchDirectories = buildGeminiCliSessionListScopes(
-        workingDirectory,
-        relatedWorkingDirectories,
-      );
-
-      var hadError = false;
-      final sessionsById = <String, ToolSessionInfo>{};
-
-      for (final searchDirectory in searchDirectories) {
-        try {
-          final cliCommand = searchDirectory == null
-              ? 'gemini --list-sessions 2>/dev/null'
-              : '[ -d ${_shellQuote(searchDirectory)} ] && '
-                    'cd ${_shellQuote(searchDirectory)} && '
-                    'gemini --list-sessions 2>/dev/null';
-          final cliOutput = await _exec(session, cliCommand);
-          if (!cliOutput.contains('[') || !cliOutput.contains(']')) continue;
-          final parsed = _parseGeminiCliOutput(cliOutput, searchDirectory);
-          for (final info in parsed) {
-            _mergeToolSessionInfo(sessionsById, info);
-          }
-        } on Object {
-          hadError = true;
-        }
-      }
-
-      final fallback = await _discoverGeminiSessionsFromFiles(
+      return await _discoverGeminiSessionsFromFiles(
         session,
         workingDirectory,
         relatedWorkingDirectories,
         max,
       );
-      hadError = hadError || fallback.hadError;
-      for (final info in fallback.sessions) {
-        _mergeToolSessionInfo(sessionsById, info);
-      }
-
-      return _ToolDiscoveryResult.success(
-        'Gemini CLI',
-        sortAndLimitDiscoveredSessions(sessionsById.values, max * 5),
-        hadError: hadError,
-      );
     } on Object {
       return const _ToolDiscoveryResult.failure('Gemini CLI');
     }
-  }
-
-  /// Parses Gemini CLI `--list-sessions` text output.
-  ///
-  /// Each session line matches:
-  ///   `N. Title text (time ago) [session-uuid]`
-  static final _geminiSessionLinePattern = RegExp(
-    r'^\s*\d+\.\s+(.+?)\s+\([^)]+\)\s+\[([0-9a-f-]+)\]\s*$',
-  );
-
-  List<ToolSessionInfo> _parseGeminiCliOutput(
-    String output,
-    String? workingDirectory,
-  ) {
-    final sessions = <ToolSessionInfo>[];
-    for (final line in output.split('\n')) {
-      final match = _geminiSessionLinePattern.firstMatch(line);
-      if (match == null) continue;
-
-      final title = match.group(1)!.trim();
-      final id = match.group(2)!.trim();
-
-      sessions.add(
-        ToolSessionInfo(
-          toolName: 'Gemini CLI',
-          sessionId: id,
-          workingDirectory: workingDirectory,
-          summary: title.length > 80 ? '${title.substring(0, 77)}...' : title,
-        ),
-      );
-    }
-    return sessions;
   }
 
   Future<_ToolDiscoveryResult> _discoverGeminiSessionsFromFiles(
@@ -1312,12 +1238,32 @@ class AgentSessionDiscoveryService {
       multiplier: 10,
       maximum: 120,
     );
-    final output = await _exec(
-      session,
-      r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
-      '-path "*/chats/*" -type f '
-      '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+    final globalCommand =
+        r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
+        '-path "*/chats/*" -type f '
+        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit';
+    var output = '';
+
+    final projectDirectoryNames = buildGeminiProjectDirectoryNames(
+      relatedWorkingDirectories,
     );
+    if (workingDirectory != null &&
+        workingDirectory.isNotEmpty &&
+        projectDirectoryNames.isNotEmpty) {
+      final scopedPathFilters = projectDirectoryNames
+          .map((name) => '-path ${_shellQuote('*/$name/chats/*')}')
+          .join(' -o ');
+      output = await _exec(
+        session,
+        r'find ~/.gemini/tmp \( -name "session-*.json" -o -name "session-*.jsonl" \) '
+        '-type f '
+        '\\( $scopedPathFilters \\) '
+        '-exec ls -1t {} + 2>/dev/null | head -n $scanLimit',
+      );
+    }
+    if (output.trim().isEmpty) {
+      output = await _exec(session, globalCommand);
+    }
     if (output.trim().isEmpty) {
       return const _ToolDiscoveryResult.success('Gemini CLI', []);
     }
@@ -1630,56 +1576,65 @@ class AgentSessionDiscoveryService {
     if (uniquePaths.isEmpty) {
       return const <String, _RemoteFileSnapshot>{};
     }
-
-    final command = StringBuffer()
-      ..write(r'SEP=$(printf "\037"); ')
-      ..write('for path in ')
-      ..write(uniquePaths.map(_shellQuote).join(' '))
-      ..write(r'; do [ -f "$path" ] || continue; ')
-      ..write(
-        r'mtime=$( (stat -c %Y "$path" 2>/dev/null || '
-        r'stat -f %m "$path" 2>/dev/null) | head -1); ',
-      )
-      ..write(r'printf "%s%s%s%s" "$path" "$SEP" "${mtime:-}" "$SEP"; ');
-
-    if (maxLines == null) {
-      command.write(r'cat "$path" 2>/dev/null | base64 | tr -d "\n"; ');
-    } else {
-      command.write(
-        tail
-            ? 'tail -n $maxLines '
-                  r'"$path" 2>/dev/null | base64 | tr -d "\n"; '
-            : "sed -n '1,${maxLines}p' "
-                  r'"$path" 2>/dev/null | base64 | tr -d "\n"; ',
-      );
-    }
-
-    command.write(r'''printf "\n"; done''');
-
-    final output = await _exec(session, command.toString());
     final snapshots = <String, _RemoteFileSnapshot>{};
-    for (final line in output.split('\n')) {
-      if (line.trim().isEmpty) continue;
-      final parts = line.split('\x1f');
-      if (parts.length < 3) continue;
+    for (
+      var start = 0;
+      start < uniquePaths.length;
+      start += _remoteFileSnapshotBatchSize
+    ) {
+      final batchPaths = uniquePaths
+          .skip(start)
+          .take(_remoteFileSnapshotBatchSize)
+          .toList(growable: false);
+      final command = StringBuffer()
+        ..write(r'SEP=$(printf "\037"); ')
+        ..write('for path in ')
+        ..write(batchPaths.map(_shellQuote).join(' '))
+        ..write(r'; do [ -f "$path" ] || continue; ')
+        ..write(
+          r'mtime=$( (stat -c %Y "$path" 2>/dev/null || '
+          r'stat -f %m "$path" 2>/dev/null) | head -1); ',
+        )
+        ..write(r'printf "%s%s%s%s" "$path" "$SEP" "${mtime:-}" "$SEP"; ');
 
-      final path = parts[0].trim();
-      if (path.isEmpty) continue;
-
-      DateTime? modifiedAt;
-      final epoch = int.tryParse(parts[1].trim());
-      if (epoch != null && epoch > 0) {
-        modifiedAt = _dateTimeFromEpoch(epoch);
+      if (maxLines == null) {
+        command.write(r'cat "$path" 2>/dev/null | base64 | tr -d "\n"; ');
+      } else {
+        command.write(
+          tail
+              ? 'tail -n $maxLines '
+                    r'"$path" 2>/dev/null | base64 | tr -d "\n"; '
+              : "sed -n '1,${maxLines}p' "
+                    r'"$path" 2>/dev/null | base64 | tr -d "\n"; ',
+        );
       }
 
-      try {
-        final content = utf8.decode(base64Decode(parts[2].trim()));
-        snapshots[path] = _RemoteFileSnapshot(
-          content: content,
-          modifiedAt: modifiedAt,
-        );
-      } on FormatException {
-        continue;
+      command.write(r'''printf "\n"; done''');
+
+      final output = await _exec(session, command.toString());
+      for (final line in output.split('\n')) {
+        if (line.trim().isEmpty) continue;
+        final parts = line.split('\x1f');
+        if (parts.length < 3) continue;
+
+        final path = parts[0].trim();
+        if (path.isEmpty) continue;
+
+        DateTime? modifiedAt;
+        final epoch = int.tryParse(parts[1].trim());
+        if (epoch != null && epoch > 0) {
+          modifiedAt = _dateTimeFromEpoch(epoch);
+        }
+
+        try {
+          final content = utf8.decode(base64Decode(parts[2].trim()));
+          snapshots[path] = _RemoteFileSnapshot(
+            content: content,
+            modifiedAt: modifiedAt,
+          );
+        } on FormatException {
+          continue;
+        }
       }
     }
     return snapshots;
@@ -1768,25 +1723,6 @@ class AgentSessionDiscoveryService {
 
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
-
-  void _mergeToolSessionInfo(
-    Map<String, ToolSessionInfo> sessionsById,
-    ToolSessionInfo info,
-  ) {
-    final existing = sessionsById[info.sessionId];
-    if (existing == null) {
-      sessionsById[info.sessionId] = info;
-      return;
-    }
-
-    sessionsById[info.sessionId] = ToolSessionInfo(
-      toolName: existing.toolName,
-      sessionId: existing.sessionId,
-      workingDirectory: existing.workingDirectory ?? info.workingDirectory,
-      lastActive: existing.lastActive ?? info.lastActive,
-      summary: existing.summary ?? info.summary,
-    );
-  }
 
   List<ToolSessionInfo> _limitDiscoveredSessionsPerTool(
     List<ToolSessionInfo> sessions,
