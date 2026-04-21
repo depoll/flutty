@@ -262,6 +262,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
   final Set<int> _seenAlertWindows = <int>{};
+  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   String? _sessionLoadError;
   bool _expanded = false;
   bool _isLoading = true;
@@ -270,6 +271,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _showSessions = false;
   double _dragOffset = 0;
   int _sessionFetchLimit = _initialSessionFetchLimit;
+  int _sessionLoadGeneration = 0;
   StreamSubscription<void>? _windowChangeSubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
@@ -312,6 +314,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   @override
   void dispose() {
+    _sessionDiscoverySubscription?.cancel();
     _windowChangeSubscription?.cancel();
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
@@ -392,39 +395,68 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Future<void> _loadRecentSessions({bool forceReload = false}) async {
     if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
     final previousCount = _recentSessions?.length ?? 0;
+    final loadGeneration = ++_sessionLoadGeneration;
+    await _sessionDiscoverySubscription?.cancel();
+    _sessionDiscoverySubscription = null;
     setState(() {
       _isLoadingSessions = true;
       _sessionLoadError = null;
+      _canLoadMoreSessions = false;
     });
 
     try {
       final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final result = await discovery.discoverSessions(
-        widget.session,
-        workingDirectory: activeWindow?.currentPath,
-        maxPerTool: _sessionFetchLimit,
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentSessions = result.sessions;
-        _sessionLoadError = result.failureMessage;
-        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
-          _expandedSessionTools.add(result.sessions.first.toolName);
-        }
-        _canLoadMoreSessions =
-            result.sessions.length > previousCount &&
-            _hasSessionGroupAtLimit(result.sessions);
-        _isLoadingSessions = false;
-      });
+      _sessionDiscoverySubscription = discovery
+          .discoverSessionsStream(
+            widget.session,
+            workingDirectory: activeWindow?.currentPath,
+            maxPerTool: _sessionFetchLimit,
+          )
+          .listen(
+            (result) {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              setState(() {
+                _recentSessions = result.sessions;
+                _sessionLoadError = result.failureMessage;
+                if (_expandedSessionTools.isEmpty &&
+                    result.sessions.isNotEmpty) {
+                  _expandedSessionTools.add(result.sessions.first.toolName);
+                }
+              });
+            },
+            onError: (Object _) {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              setState(() {
+                _recentSessions ??= const [];
+                _sessionLoadError = 'Could not load recent AI sessions.';
+                _canLoadMoreSessions = false;
+                _isLoadingSessions = false;
+              });
+              _sessionDiscoverySubscription = null;
+            },
+            onDone: () {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              final sessions = _recentSessions ?? const <ToolSessionInfo>[];
+              setState(() {
+                _canLoadMoreSessions =
+                    sessions.length > previousCount &&
+                    _hasSessionGroupAtLimit(sessions);
+                _isLoadingSessions = false;
+              });
+              _sessionDiscoverySubscription = null;
+            },
+            cancelOnError: true,
+          );
     } on Exception {
-      if (!mounted) return;
+      if (!mounted || loadGeneration != _sessionLoadGeneration) return;
       setState(() {
-        _recentSessions = const [];
+        _recentSessions ??= const [];
         _sessionLoadError = 'Could not load recent AI sessions.';
         _canLoadMoreSessions = false;
         _isLoadingSessions = false;
       });
+      _sessionDiscoverySubscription = null;
     }
   }
 

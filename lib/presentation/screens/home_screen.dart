@@ -2347,6 +2347,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   final Set<String> _expandedSessionTools = <String>{};
+  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   String? _sessionLoadError;
   String? _sessionName;
   bool _queried = false;
@@ -2355,6 +2356,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _isLoadingSessions = false;
   bool _canLoadMoreSessions = false;
   int _sessionFetchLimit = _initialSessionFetchLimit;
+  int _sessionLoadGeneration = 0;
   bool _restoredUiState = false;
   StreamSubscription<void>? _windowChangeSubscription;
   bool _loadingWindows = false;
@@ -2368,6 +2370,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   @override
   void dispose() {
+    unawaited(_sessionDiscoverySubscription?.cancel());
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
   }
@@ -2785,16 +2788,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }
     if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
     final previousCount = _recentSessions?.length ?? 0;
+    final loadGeneration = ++_sessionLoadGeneration;
+    await _sessionDiscoverySubscription?.cancel();
+    _sessionDiscoverySubscription = null;
     setState(() {
       _isLoadingSessions = true;
       _sessionLoadError = null;
+      _canLoadMoreSessions = false;
     });
 
     final session = ref
         .read(activeSessionsProvider.notifier)
         .getSession(widget.connectionId);
     if (session == null) {
-      if (mounted) {
+      if (mounted && loadGeneration == _sessionLoadGeneration) {
         setState(() {
           _recentSessions = const [];
           _canLoadMoreSessions = false;
@@ -2809,32 +2816,63 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       // Scope sessions to the active tmux window's working directory
       // so results match the current project context.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final result = await discovery.discoverSessions(
-        session,
-        workingDirectory: activeWindow?.currentPath,
-        maxPerTool: _sessionFetchLimit,
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentSessions = result.sessions;
-        _sessionLoadError = result.failureMessage;
-        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
-          _expandedSessionTools.add(result.sessions.first.toolName);
-        }
-        _canLoadMoreSessions =
-            result.sessions.length > previousCount &&
-            _hasSessionGroupAtLimit(result.sessions);
-        _isLoadingSessions = false;
-      });
-      _persistUiState();
+      _sessionDiscoverySubscription = discovery
+          .discoverSessionsStream(
+            session,
+            workingDirectory: activeWindow?.currentPath,
+            maxPerTool: _sessionFetchLimit,
+          )
+          .listen(
+            (result) {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              final shouldPersistUiState =
+                  _expandedSessionTools.isEmpty && result.sessions.isNotEmpty;
+              setState(() {
+                _recentSessions = result.sessions;
+                _sessionLoadError = result.failureMessage;
+                if (_expandedSessionTools.isEmpty &&
+                    result.sessions.isNotEmpty) {
+                  _expandedSessionTools.add(result.sessions.first.toolName);
+                }
+              });
+              if (shouldPersistUiState) {
+                _persistUiState();
+              }
+            },
+            onError: (Object _) {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              setState(() {
+                _recentSessions ??= const [];
+                _sessionLoadError = 'Could not load recent AI sessions.';
+                _canLoadMoreSessions = false;
+                _isLoadingSessions = false;
+              });
+              _sessionDiscoverySubscription = null;
+              _persistUiState();
+            },
+            onDone: () {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              final sessions = _recentSessions ?? const <ToolSessionInfo>[];
+              setState(() {
+                _canLoadMoreSessions =
+                    sessions.length > previousCount &&
+                    _hasSessionGroupAtLimit(sessions);
+                _isLoadingSessions = false;
+              });
+              _sessionDiscoverySubscription = null;
+              _persistUiState();
+            },
+            cancelOnError: true,
+          );
     } on Exception {
-      if (!mounted) return;
+      if (!mounted || loadGeneration != _sessionLoadGeneration) return;
       setState(() {
-        _recentSessions = const [];
+        _recentSessions ??= const [];
         _sessionLoadError = 'Could not load recent AI sessions.';
         _canLoadMoreSessions = false;
         _isLoadingSessions = false;
       });
+      _sessionDiscoverySubscription = null;
       _persistUiState();
     }
   }

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/foundation.dart';
@@ -697,34 +698,105 @@ class AgentSessionDiscoveryService {
       session,
       workingDirectory,
     );
-    final results = await Future.wait([
-      _discoverClaudeSessions(
+    final results = await Future.wait(
+      _startToolDiscoveries(
         session,
-        workingDirectory,
-        relatedWorkingDirectories,
-        maxPerTool,
+        workingDirectory: workingDirectory,
+        relatedWorkingDirectories: relatedWorkingDirectories,
+        maxPerTool: maxPerTool,
       ),
-      _discoverCodexSessions(
-        session,
-        workingDirectory,
-        relatedWorkingDirectories,
-        maxPerTool,
-      ),
-      _discoverCopilotSessions(session, relatedWorkingDirectories, maxPerTool),
-      _discoverGeminiSessions(
-        session,
-        workingDirectory,
-        relatedWorkingDirectories,
-        maxPerTool,
-      ),
-      _discoverOpenCodeSessions(
-        session,
-        workingDirectory,
-        relatedWorkingDirectories,
-        maxPerTool,
-      ),
-    ]);
+    );
+    return _buildDiscoveredSessionsResult(
+      results,
+      workingDirectory: workingDirectory,
+      relatedWorkingDirectories: relatedWorkingDirectories,
+      maxPerTool: maxPerTool,
+    );
+  }
 
+  /// Discovers recent sessions and emits incremental updates as each tool
+  /// finishes loading.
+  ///
+  /// This lets the UI render providers as they complete instead of waiting for
+  /// the slowest tool before showing anything.
+  Stream<DiscoveredSessionsResult> discoverSessionsStream(
+    SshSession session, {
+    String? workingDirectory,
+    int maxPerTool = 12,
+  }) async* {
+    final relatedWorkingDirectories = await _resolveRelatedWorkingDirectories(
+      session,
+      workingDirectory,
+    );
+    final discoveries = _startToolDiscoveries(
+      session,
+      workingDirectory: workingDirectory,
+      relatedWorkingDirectories: relatedWorkingDirectories,
+      maxPerTool: maxPerTool,
+    );
+    final pendingResults = <int, Future<_IndexedToolDiscoveryResult>>{
+      for (var index = 0; index < discoveries.length; index++)
+        index: discoveries[index].then(
+          (result) => _IndexedToolDiscoveryResult(index, result),
+        ),
+    };
+    final completedResults = List<_ToolDiscoveryResult?>.filled(
+      discoveries.length,
+      null,
+    );
+
+    while (pendingResults.isNotEmpty) {
+      final completed = await Future.any(pendingResults.values);
+      unawaited(pendingResults.remove(completed.index));
+      completedResults[completed.index] = completed.result;
+      yield _buildDiscoveredSessionsResult(
+        completedResults.whereType<_ToolDiscoveryResult>(),
+        workingDirectory: workingDirectory,
+        relatedWorkingDirectories: relatedWorkingDirectories,
+        maxPerTool: maxPerTool,
+      );
+    }
+  }
+
+  List<Future<_ToolDiscoveryResult>> _startToolDiscoveries(
+    SshSession session, {
+    required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
+    required int maxPerTool,
+  }) => [
+    _discoverClaudeSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    _discoverCodexSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    _discoverCopilotSessions(session, relatedWorkingDirectories, maxPerTool),
+    _discoverGeminiSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    _discoverOpenCodeSessions(
+      session,
+      workingDirectory,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+  ];
+
+  DiscoveredSessionsResult _buildDiscoveredSessionsResult(
+    Iterable<_ToolDiscoveryResult> results, {
+    required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
+    required int maxPerTool,
+  }) {
     final all = results
         .expand((result) => result.sessions)
         .map(
@@ -734,41 +806,33 @@ class AgentSessionDiscoveryService {
           ),
         )
         .whereType<ToolSessionInfo>()
-        .toList();
+        .toList(growable: false);
+    final failedTools = results
+        .where(
+          (result) => shouldSurfaceDiscoveryFailure(
+            hadError: result.hadError,
+            loadedSessionCount: result.sessions.length,
+          ),
+        )
+        .map((result) => result.toolName);
 
-    // Filter to sessions matching the working directory if provided.
     if (workingDirectory != null && workingDirectory.isNotEmpty) {
-      final filtered = _limitDiscoveredSessionsPerTool(
-        scopeDiscoveredSessionsToWorkingDirectory(
-          all,
-          workingDirectory,
-          relatedWorkingDirectories: relatedWorkingDirectories,
-        ),
-        maxPerTool,
-      );
       return DiscoveredSessionsResult(
-        sessions: filtered,
-        failedTools: results
-            .where(
-              (r) => shouldSurfaceDiscoveryFailure(
-                hadError: r.hadError,
-                loadedSessionCount: r.sessions.length,
-              ),
-            )
-            .map((r) => r.toolName),
+        sessions: _limitDiscoveredSessionsPerTool(
+          scopeDiscoveredSessionsToWorkingDirectory(
+            all,
+            workingDirectory,
+            relatedWorkingDirectories: relatedWorkingDirectories,
+          ),
+          maxPerTool,
+        ),
+        failedTools: failedTools,
       );
     }
 
     return DiscoveredSessionsResult(
       sessions: _limitDiscoveredSessionsPerTool(all, maxPerTool),
-      failedTools: results
-          .where(
-            (r) => shouldSurfaceDiscoveryFailure(
-              hadError: r.hadError,
-              loadedSessionCount: r.sessions.length,
-            ),
-          )
-          .map((r) => r.toolName),
+      failedTools: failedTools,
     );
   }
 
@@ -1778,6 +1842,13 @@ class _ToolDiscoveryResult {
   final String toolName;
   final List<ToolSessionInfo> sessions;
   final bool hadError;
+}
+
+class _IndexedToolDiscoveryResult {
+  const _IndexedToolDiscoveryResult(this.index, this.result);
+
+  final int index;
+  final _ToolDiscoveryResult result;
 }
 
 class _CodexSessionIndexResult {

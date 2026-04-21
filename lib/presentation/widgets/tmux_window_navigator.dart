@@ -114,12 +114,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   List<ToolSessionInfo>? _recentSessions;
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   final Set<String> _expandedSessionTools = <String>{};
+  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   StreamSubscription<void>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   bool _isLoadingSessions = false;
   bool _showRecentSessions = false;
   String? _sessionLoadError;
   String? _error;
+  int _sessionLoadGeneration = 0;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
 
@@ -143,6 +145,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   @override
   void dispose() {
+    _sessionDiscoverySubscription?.cancel();
     _windowChangeSubscription?.cancel();
     super.dispose();
   }
@@ -180,6 +183,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   Future<void> _loadRecentSessions() async {
     if (_isLoadingSessions || _recentSessions != null) return;
+    final loadGeneration = ++_sessionLoadGeneration;
+    await _sessionDiscoverySubscription?.cancel();
+    _sessionDiscoverySubscription = null;
     setState(() {
       _isLoadingSessions = true;
       _sessionLoadError = null;
@@ -188,27 +194,50 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     try {
       // Get working directory from the active window if available.
       final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final result = await _discovery.discoverSessions(
-        widget.session,
-        workingDirectory: activeWindow?.currentPath,
-        maxPerTool: _maxSessionsPerTool,
-      );
-      if (!mounted) return;
-      setState(() {
-        _recentSessions = result.sessions;
-        _sessionLoadError = result.failureMessage;
-        if (_expandedSessionTools.isEmpty && result.sessions.isNotEmpty) {
-          _expandedSessionTools.add(result.sessions.first.toolName);
-        }
-        _isLoadingSessions = false;
-      });
+      _sessionDiscoverySubscription = _discovery
+          .discoverSessionsStream(
+            widget.session,
+            workingDirectory: activeWindow?.currentPath,
+            maxPerTool: _maxSessionsPerTool,
+          )
+          .listen(
+            (result) {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              setState(() {
+                _recentSessions = result.sessions;
+                _sessionLoadError = result.failureMessage;
+                if (_expandedSessionTools.isEmpty &&
+                    result.sessions.isNotEmpty) {
+                  _expandedSessionTools.add(result.sessions.first.toolName);
+                }
+              });
+            },
+            onError: (Object _) {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              setState(() {
+                _recentSessions ??= const [];
+                _sessionLoadError = 'Could not load recent AI sessions.';
+                _isLoadingSessions = false;
+              });
+              _sessionDiscoverySubscription = null;
+            },
+            onDone: () {
+              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
+              setState(() {
+                _isLoadingSessions = false;
+              });
+              _sessionDiscoverySubscription = null;
+            },
+            cancelOnError: true,
+          );
     } on Exception {
-      if (!mounted) return;
+      if (!mounted || loadGeneration != _sessionLoadGeneration) return;
       setState(() {
-        _recentSessions = const [];
+        _recentSessions ??= const [];
         _sessionLoadError = 'Could not load recent AI sessions.';
         _isLoadingSessions = false;
       });
+      _sessionDiscoverySubscription = null;
     }
   }
 
