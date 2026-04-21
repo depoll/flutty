@@ -419,10 +419,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               setState(() {
                 _recentSessions = result.sessions;
                 _sessionLoadError = result.failureMessage;
-                if (_expandedSessionTools.isEmpty &&
-                    result.sessions.isNotEmpty) {
-                  _expandedSessionTools.add(result.sessions.first.toolName);
-                }
               });
             },
             onError: (Object _) {

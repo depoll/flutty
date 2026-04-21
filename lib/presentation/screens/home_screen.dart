@@ -2825,19 +2825,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           .listen(
             (result) {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              final shouldPersistUiState =
-                  _expandedSessionTools.isEmpty && result.sessions.isNotEmpty;
               setState(() {
                 _recentSessions = result.sessions;
                 _sessionLoadError = result.failureMessage;
-                if (_expandedSessionTools.isEmpty &&
-                    result.sessions.isNotEmpty) {
-                  _expandedSessionTools.add(result.sessions.first.toolName);
-                }
               });
-              if (shouldPersistUiState) {
-                _persistUiState();
-              }
             },
             onError: (Object _) {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
