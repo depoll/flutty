@@ -3,6 +3,113 @@ import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 
 void main() {
+  group('normalizeWorkingDirectoryForComparison', () {
+    test('strips worktree branch segments from comparable paths', () {
+      expect(
+        normalizeWorkingDirectoryForComparison(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption/lib',
+        ),
+        '/Users/depoll/Code/flutty/lib',
+      );
+    });
+  });
+
+  group('parseGitWorktreeRoots', () {
+    test('extracts worktree paths from porcelain output', () {
+      expect(
+        parseGitWorktreeRoots('''
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+
+worktree /Users/depoll/Code/flutty.worktrees/fix-session-resumption
+HEAD 1234567
+branch refs/heads/fix/session-resumption
+'''),
+        [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        ],
+      );
+    });
+  });
+
+  group('buildRelatedWorkingDirectories', () {
+    test('maps the active subdirectory across git worktrees', () {
+      expect(
+        buildRelatedWorkingDirectories(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption/lib',
+          gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+          gitWorktreeRoots: const [
+            '/Users/depoll/Code/flutty',
+            '/Users/depoll/Code/flutty.worktrees/feature-other',
+          ],
+        ),
+        containsAll(<String>[
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption/lib',
+          '/Users/depoll/Code/flutty/lib',
+          '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ]),
+      );
+    });
+  });
+
+  group('matchesDiscoveredSessionWorkingDirectory', () {
+    test('matches the main checkout from a sibling worktree', () {
+      final relatedDirectories = buildRelatedWorkingDirectories(
+        '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitWorktreeRoots: const [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ],
+      );
+
+      expect(
+        matchesDiscoveredSessionWorkingDirectory(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+          '/Users/depoll/Code/flutty',
+          relatedWorkingDirectories: relatedDirectories,
+        ),
+        isTrue,
+      );
+      expect(
+        matchesDiscoveredSessionWorkingDirectory(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+          '/tmp/another-repo/flutty',
+          relatedWorkingDirectories: relatedDirectories,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('resolveGeminiProjectWorkingDirectory', () {
+    test('maps project folder names back to the right worktree paths', () {
+      final relatedDirectories = buildRelatedWorkingDirectories(
+        '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitWorktreeRoots: const [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ],
+      );
+
+      expect(
+        resolveGeminiProjectWorkingDirectory('flutty', relatedDirectories),
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        resolveGeminiProjectWorkingDirectory(
+          'feature-other',
+          relatedDirectories,
+        ),
+        '/Users/depoll/Code/flutty.worktrees/feature-other',
+      );
+    });
+  });
+
   group('normalizeDiscoveredSessionInfo', () {
     test('drops unnamed sessions without usable fallback context', () {
       const info = ToolSessionInfo(

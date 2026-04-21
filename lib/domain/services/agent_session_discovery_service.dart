@@ -349,6 +349,170 @@ parseGeminiSessionMetadata(
   );
 }
 
+String? _trimWorkingDirectory(String? value) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+  final withoutTrailingSlash = trimmed.length > 1 && trimmed.endsWith('/')
+      ? trimmed.replaceFirst(RegExp(r'/+$'), '')
+      : trimmed;
+  return withoutTrailingSlash.replaceAll(RegExp('/+'), '/');
+}
+
+/// Normalizes a working directory for cross-worktree comparisons.
+///
+/// Paths under `repo.worktrees/<branch>/...` are normalized to `repo/...` so
+/// sessions from sibling checkouts can still match the active project scope.
+@visibleForTesting
+String normalizeWorkingDirectoryForComparison(String value) {
+  final trimmed = _trimWorkingDirectory(value);
+  if (trimmed == null) return value.trim();
+
+  final segments = trimmed.split('/');
+  final normalizedSegments = <String>[];
+  for (var index = 0; index < segments.length; index++) {
+    final segment = segments[index];
+    if (segment.endsWith('.worktrees') && index + 1 < segments.length) {
+      normalizedSegments.add(
+        segment.substring(0, segment.length - '.worktrees'.length),
+      );
+      index += 1;
+      continue;
+    }
+    normalizedSegments.add(segment);
+  }
+
+  final normalized = normalizedSegments.join('/');
+  return trimmed.startsWith('/') && !normalized.startsWith('/')
+      ? '/$normalized'
+      : normalized;
+}
+
+String? _relativeWorkingDirectoryPath(String child, String root) {
+  if (child == root) return '';
+  final prefix = '$root/';
+  if (!child.startsWith(prefix)) return null;
+  return child.substring(prefix.length);
+}
+
+String _joinWorkingDirectoryPath(String root, String relativePath) =>
+    relativePath.isEmpty ? root : '$root/$relativePath';
+
+bool _workingDirectoriesOverlap(String a, String b) =>
+    a == b || a.startsWith('$b/') || b.startsWith('$a/');
+
+/// Parses `git worktree list --porcelain` output into root paths.
+@visibleForTesting
+List<String> parseGitWorktreeRoots(String raw) {
+  final roots = <String>[];
+  for (final line in const LineSplitter().convert(raw)) {
+    if (!line.startsWith('worktree ')) continue;
+    final root = _trimWorkingDirectory(line.substring('worktree '.length));
+    if (root != null) roots.add(root);
+  }
+  return roots;
+}
+
+/// Builds all directories that should be treated as the active project scope.
+///
+/// This includes the active directory itself, the normalized `.worktrees`
+/// equivalent, the git worktree roots when available, and corresponding
+/// subdirectories across sibling worktrees.
+@visibleForTesting
+List<String> buildRelatedWorkingDirectories(
+  String activeWorkingDirectory, {
+  String? gitRoot,
+  Iterable<String> gitWorktreeRoots = const <String>[],
+}) {
+  final trimmedActive = _trimWorkingDirectory(activeWorkingDirectory);
+  if (trimmedActive == null) return const <String>[];
+
+  final directories = <String>{};
+
+  void addDirectory(String? directory) {
+    final trimmed = _trimWorkingDirectory(directory);
+    if (trimmed == null) return;
+    directories
+      ..add(trimmed)
+      ..add(normalizeWorkingDirectoryForComparison(trimmed));
+  }
+
+  addDirectory(trimmedActive);
+
+  final trimmedGitRoot = _trimWorkingDirectory(gitRoot);
+  final relativePath = trimmedGitRoot == null
+      ? null
+      : _relativeWorkingDirectoryPath(trimmedActive, trimmedGitRoot);
+
+  addDirectory(trimmedGitRoot);
+
+  if (relativePath != null && relativePath.isNotEmpty) {
+    for (final root in gitWorktreeRoots) {
+      final trimmedRoot = _trimWorkingDirectory(root);
+      if (trimmedRoot == null) continue;
+      addDirectory(_joinWorkingDirectoryPath(trimmedRoot, relativePath));
+    }
+  }
+
+  for (final root in gitWorktreeRoots) {
+    addDirectory(root);
+  }
+
+  return directories.toList(growable: false);
+}
+
+/// Whether a discovered session directory belongs to the active project scope.
+@visibleForTesting
+bool matchesDiscoveredSessionWorkingDirectory(
+  String expectedWorkingDirectory,
+  String? sessionDirectory, {
+  Iterable<String> relatedWorkingDirectories = const <String>[],
+}) {
+  final trimmedSessionDirectory = _trimWorkingDirectory(sessionDirectory);
+  if (trimmedSessionDirectory == null) return false;
+  final comparableSessionDirectory = normalizeWorkingDirectoryForComparison(
+    trimmedSessionDirectory,
+  );
+  final candidates = relatedWorkingDirectories.isNotEmpty
+      ? relatedWorkingDirectories
+      : <String>[expectedWorkingDirectory];
+  for (final candidate in candidates) {
+    final trimmedCandidate = _trimWorkingDirectory(candidate);
+    if (trimmedCandidate == null) continue;
+    final comparableCandidate = normalizeWorkingDirectoryForComparison(
+      trimmedCandidate,
+    );
+    if (_workingDirectoriesOverlap(
+      comparableCandidate,
+      comparableSessionDirectory,
+    )) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/// Resolves a Gemini project directory label to a concrete worktree path.
+@visibleForTesting
+String? resolveGeminiProjectWorkingDirectory(
+  String? projectDirectoryName,
+  Iterable<String> relatedWorkingDirectories,
+) {
+  final trimmedProjectDirectoryName = projectDirectoryName?.trim();
+  if (trimmedProjectDirectoryName == null ||
+      trimmedProjectDirectoryName.isEmpty) {
+    return null;
+  }
+
+  for (final directory in relatedWorkingDirectories) {
+    final trimmedDirectory = _trimWorkingDirectory(directory);
+    if (trimmedDirectory == null) continue;
+    if (_pathLastSegment(trimmedDirectory) == trimmedProjectDirectoryName) {
+      return trimmedDirectory;
+    }
+  }
+  return null;
+}
+
 /// Discovers recent AI coding tool sessions on remote hosts by scanning
 /// known session storage locations.
 ///
@@ -377,11 +541,20 @@ class AgentSessionDiscoveryService {
     String? workingDirectory,
     int maxPerTool = 12,
   }) async {
+    final relatedWorkingDirectories = await _resolveRelatedWorkingDirectories(
+      session,
+      workingDirectory,
+    );
     final results = await Future.wait([
       _discoverClaudeSessions(session, workingDirectory, maxPerTool),
       _discoverCodexSessions(session, maxPerTool),
       _discoverCopilotSessions(session, maxPerTool),
-      _discoverGeminiSessions(session, workingDirectory, maxPerTool),
+      _discoverGeminiSessions(
+        session,
+        workingDirectory,
+        relatedWorkingDirectories,
+        maxPerTool,
+      ),
       _discoverOpenCodeSessions(session, maxPerTool),
     ]);
 
@@ -401,9 +574,10 @@ class AgentSessionDiscoveryService {
       final filtered = _limitDiscoveredSessionsPerTool(
         all
             .where(
-              (s) => _matchesWorkingDirectory(
+              (s) => matchesDiscoveredSessionWorkingDirectory(
                 workingDirectory,
                 s.workingDirectory,
+                relatedWorkingDirectories: relatedWorkingDirectories,
               ),
             )
             .toList(),
@@ -777,29 +951,58 @@ class AgentSessionDiscoveryService {
   Future<_ToolDiscoveryResult> _discoverGeminiSessions(
     SshSession session,
     String? workingDirectory,
+    List<String> relatedWorkingDirectories,
     int max,
   ) async {
     try {
-      // Preferred: use the CLI's own session list.
-      final cdPrefix = workingDirectory != null && workingDirectory.isNotEmpty
-          ? 'cd ${_shellQuote(workingDirectory)} && '
-          : '';
-      final cliOutput = await _exec(
-        session,
-        '${cdPrefix}gemini --list-sessions 2>/dev/null',
-      );
-      if (cliOutput.contains('[') && cliOutput.contains(']')) {
-        final parsed = _parseGeminiCliOutput(cliOutput, workingDirectory);
-        if (parsed.isNotEmpty) {
-          return _ToolDiscoveryResult.success(
-            'Gemini CLI',
-            parsed.take(max * 5).toList(),
+      final searchDirectories = <String>{};
+      final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
+      if (trimmedWorkingDirectory != null) {
+        searchDirectories.add(trimmedWorkingDirectory);
+      }
+      searchDirectories
+        ..addAll(
+          relatedWorkingDirectories.map(normalizeWorkingDirectoryForComparison),
+        )
+        ..addAll(relatedWorkingDirectories);
+
+      var hadError = false;
+      final sessionsById = <String, ToolSessionInfo>{};
+
+      for (final searchDirectory in searchDirectories) {
+        try {
+          final cliOutput = await _exec(
+            session,
+            '[ -d ${_shellQuote(searchDirectory)} ] && '
+            'cd ${_shellQuote(searchDirectory)} && '
+            'gemini --list-sessions 2>/dev/null',
           );
+          if (!cliOutput.contains('[') || !cliOutput.contains(']')) continue;
+          final parsed = _parseGeminiCliOutput(cliOutput, searchDirectory);
+          for (final info in parsed) {
+            _mergeToolSessionInfo(sessionsById, info);
+          }
+        } on Object {
+          hadError = true;
         }
       }
 
-      // Fallback: scan chat JSON files directly.
-      return _discoverGeminiSessionsFromFiles(session, workingDirectory, max);
+      final fallback = await _discoverGeminiSessionsFromFiles(
+        session,
+        workingDirectory,
+        relatedWorkingDirectories,
+        max,
+      );
+      hadError = hadError || fallback.hadError;
+      for (final info in fallback.sessions) {
+        _mergeToolSessionInfo(sessionsById, info);
+      }
+
+      return _ToolDiscoveryResult.success(
+        'Gemini CLI',
+        sessionsById.values.take(max * 5).toList(growable: false),
+        hadError: hadError,
+      );
     } on Object {
       return const _ToolDiscoveryResult.failure('Gemini CLI');
     }
@@ -840,6 +1043,7 @@ class AgentSessionDiscoveryService {
   Future<_ToolDiscoveryResult> _discoverGeminiSessionsFromFiles(
     SshSession session,
     String? workingDirectory,
+    List<String> relatedWorkingDirectories,
     int max,
   ) async {
     final scanLimit = max * 5;
@@ -872,12 +1076,10 @@ class AgentSessionDiscoveryService {
         final pathParts = filePath.split('/');
         final chatsIdx = pathParts.indexOf('chats');
         final projectDir = chatsIdx > 0 ? pathParts[chatsIdx - 1] : null;
-        final fallbackWorkingDirectory =
-            projectDir != null &&
-                workingDirectory != null &&
-                _pathLastSegment(workingDirectory) == projectDir
-            ? workingDirectory
-            : null;
+        final fallbackWorkingDirectory = resolveGeminiProjectWorkingDirectory(
+          projectDir,
+          relatedWorkingDirectories,
+        );
 
         String? summary;
         var sessionWorkingDirectory = fallbackWorkingDirectory;
@@ -1158,8 +1360,69 @@ END {
     epoch > 9999999999 ? epoch : epoch * 1000,
   );
 
+  Future<List<String>> _resolveRelatedWorkingDirectories(
+    SshSession session,
+    String? workingDirectory,
+  ) async {
+    final trimmedWorkingDirectory = _trimWorkingDirectory(workingDirectory);
+    if (trimmedWorkingDirectory == null) return const <String>[];
+
+    try {
+      final gitOutput = await _exec(
+        session,
+        r'ROOT=$(git -C '
+        '${_shellQuote(trimmedWorkingDirectory)}'
+        ' rev-parse --show-toplevel 2>/dev/null) && '
+        r'[ -n "$ROOT" ] && printf "root=%s\n" "$ROOT" && '
+        'git -C '
+        '${_shellQuote(trimmedWorkingDirectory)}'
+        ' worktree list --porcelain 2>/dev/null',
+      );
+      if (gitOutput.trim().isEmpty) {
+        return buildRelatedWorkingDirectories(trimmedWorkingDirectory);
+      }
+
+      String? gitRoot;
+      final worktreeLines = StringBuffer();
+      for (final line in const LineSplitter().convert(gitOutput)) {
+        if (gitRoot == null && line.startsWith('root=')) {
+          gitRoot = _trimWorkingDirectory(line.substring('root='.length));
+          continue;
+        }
+        worktreeLines.writeln(line);
+      }
+
+      return buildRelatedWorkingDirectories(
+        trimmedWorkingDirectory,
+        gitRoot: gitRoot,
+        gitWorktreeRoots: parseGitWorktreeRoots(worktreeLines.toString()),
+      );
+    } on Object {
+      return buildRelatedWorkingDirectories(trimmedWorkingDirectory);
+    }
+  }
+
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
+
+  void _mergeToolSessionInfo(
+    Map<String, ToolSessionInfo> sessionsById,
+    ToolSessionInfo info,
+  ) {
+    final existing = sessionsById[info.sessionId];
+    if (existing == null) {
+      sessionsById[info.sessionId] = info;
+      return;
+    }
+
+    sessionsById[info.sessionId] = ToolSessionInfo(
+      toolName: existing.toolName,
+      sessionId: existing.sessionId,
+      workingDirectory: existing.workingDirectory ?? info.workingDirectory,
+      lastActive: existing.lastActive ?? info.lastActive,
+      summary: existing.summary ?? info.summary,
+    );
+  }
 
   List<ToolSessionInfo> _limitDiscoveredSessionsPerTool(
     List<ToolSessionInfo> sessions,
