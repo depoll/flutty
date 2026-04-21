@@ -82,29 +82,30 @@ class TmuxService {
   /// Detects which supported coding-agent CLIs are available on the
   /// remote host's `PATH`.
   ///
-  /// Resolves binaries via `command -v`, sourcing the user's login
-  /// shell profile so Homebrew/nvm/asdf-installed CLIs are found over
-  /// SSH exec channels (which start with a minimal `PATH`).
+  /// Resolves binaries via `command -v` inside an interactive instance of
+  /// the user's `$SHELL` (`zsh -ic` / `bash -ic` / …). This is necessary
+  /// because many users add agent CLIs (Claude, npm-global bins, etc.)
+  /// to `PATH` from their interactive rc file (`~/.zshrc`, `~/.bashrc`)
+  /// rather than from a login profile, and SSH exec channels otherwise
+  /// only see the minimal system `PATH` plus what we source from
+  /// `~/.profile` / `~/.bash_profile` / `~/.zprofile`. The detection
+  /// command is built per-binary so it also works on POSIX-strict
+  /// `/bin/sh` (dash), where `command -v` rejects multiple operands.
   ///
-  /// Results are cached per connection. Returns an empty set on any
-  /// detection error so callers can render a sensible fallback rather
-  /// than blocking the user.
+  /// Successful detections are cached per connection. Empty results
+  /// (typically a transient detection failure) are intentionally not
+  /// cached, so a later call can recover.
   Future<Set<AgentLaunchTool>> detectInstalledAgentTools(
     SshSession session,
   ) async {
     final cached = _installedAgentToolsCache[session.connectionId];
     if (cached != null) return cached;
     try {
-      final binaries = AgentLaunchTool.values
-          .map((t) => t.commandName)
-          .toSet()
-          .join(' ');
-      final output = await _exec(
-        session,
-        'command -v $binaries 2>/dev/null || true',
-      );
+      final output = await _exec(session, buildAgentToolDetectionCommand());
       final installed = parseInstalledAgentTools(output);
-      _installedAgentToolsCache[session.connectionId] = installed;
+      if (installed.isNotEmpty) {
+        _installedAgentToolsCache[session.connectionId] = installed;
+      }
       return installed;
     } on Object {
       return const <AgentLaunchTool>{};
@@ -758,7 +759,38 @@ AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
       _ => null,
     };
 
-/// Parses the output of `command -v <bins...>` into the set of supported
+/// Builds the shell command used by [TmuxService.detectInstalledAgentTools]
+/// to resolve agent CLI binaries on a remote host.
+///
+/// The command:
+///
+/// - Loops one binary at a time so it works on POSIX-strict shells like
+///   `dash`, where `command -v a b c` rejects the extra operands and
+///   prints nothing.
+/// - Re-invokes the user's interactive `$SHELL` (`zsh -ic`, `bash -ic`,
+///   …) so PATH additions made from `~/.zshrc` / `~/.bashrc` (where
+///   tools like `claude` and other npm-global / asdf / mise / pyenv
+///   installs are commonly added) are picked up. Login-only profile
+///   sourcing — what SSH exec channels otherwise see — misses these.
+/// - Falls back to `/bin/sh` if `$SHELL` is unset, and tolerates the
+///   inner `command -v` exiting non-zero when a binary is missing.
+@visibleForTesting
+String buildAgentToolDetectionCommand() {
+  final binaries =
+      AgentLaunchTool.values.map((t) => t.commandName).toSet().toList()..sort();
+  final inner =
+      'for c in ${binaries.join(' ')}; do '
+      r'command -v "$c" 2>/dev/null; '
+      'done';
+  // Single-quote the inner snippet for the outer shell, then escape any
+  // single quotes inside it. There are none today, but this keeps the
+  // builder safe if someone adds a binary name containing a quote.
+  final quotedInner = "'${inner.replaceAll("'", "'\"'\"'")}'";
+  return r'SH="${SHELL:-/bin/sh}"; "$SH" -ic '
+      '$quotedInner '
+      '2>/dev/null || true';
+}
+
 /// agent CLIs that resolved to an absolute path.
 ///
 /// Lines that do not start with `/` are ignored, so shell function names,
