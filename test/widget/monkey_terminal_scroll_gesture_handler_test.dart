@@ -73,4 +73,68 @@ void main() {
       }
     },
   );
+
+  testWidgets(
+    'trackpad reversal waits for a full line before sending a reverse step',
+    (tester) async {
+      final terminal = Terminal()
+        ..useAltBuffer()
+        ..setMouseMode(MouseMode.upDownScroll)
+        ..setMouseReportMode(MouseReportMode.sgr);
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Directionality(
+            textDirection: TextDirection.ltr,
+            child: Center(
+              child: SizedBox(
+                width: 200,
+                height: 200,
+                child: MonkeyTerminalScrollGestureHandler(
+                  terminal: terminal,
+                  simulateScroll: false,
+                  getCellOffset: (_) => const CellOffset(1, 1),
+                  getLineHeight: () => 10,
+                  child: const ColoredBox(
+                    key: ValueKey('reverse-threshold-target'),
+                    color: Colors.black,
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      final center = tester.getCenter(
+        find.byKey(const ValueKey('reverse-threshold-target')),
+      );
+      final gesture = await tester.createGesture(
+        kind: PointerDeviceKind.trackpad,
+      );
+
+      await gesture.panZoomStart(center);
+      await tester.pump();
+      await gesture.panZoomUpdate(
+        center + const Offset(0, -10),
+        pan: const Offset(0, -10),
+      );
+      await tester.pump();
+
+      expect(output, hasLength(1));
+
+      await gesture.panZoomUpdate(
+        center + const Offset(0, -4),
+        pan: const Offset(0, -4),
+      );
+      await tester.pump();
+
+      expect(output, hasLength(1));
+
+      await gesture.panZoomEnd();
+      await tester.pump();
+    },
+  );
 }
