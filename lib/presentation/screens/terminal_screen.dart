@@ -105,6 +105,42 @@ String? resolvePreferredTmuxSessionName({
   String? autoConnectCommand,
 }) => structuredSessionName ?? parseTmuxSessionName(autoConnectCommand);
 
+/// Resolves the working directory to use when creating a new tmux window.
+@visibleForTesting
+String? resolveTmuxWindowWorkingDirectory({
+  String? explicitWorkingDirectory,
+  String? currentPaneWorkingDirectory,
+  String? observedWorkingDirectory,
+  String? launchWorkingDirectory,
+  String? hostWorkingDirectory,
+}) {
+  for (final candidate in <String?>[
+    explicitWorkingDirectory,
+    currentPaneWorkingDirectory,
+    observedWorkingDirectory,
+    launchWorkingDirectory,
+    hostWorkingDirectory,
+  ]) {
+    final trimmed = candidate?.trim();
+    if (trimmed != null && trimmed.isNotEmpty) {
+      return trimmed;
+    }
+  }
+  return null;
+}
+
+/// Returns whether a tmux window action should reattach the visible terminal.
+@visibleForTesting
+bool shouldReattachTmuxAfterWindowAction({
+  required bool hasForegroundClient,
+  required TerminalShellStatus? shellStatus,
+}) {
+  if (hasForegroundClient) {
+    return false;
+  }
+  return shellStatus != TerminalShellStatus.runningCommand;
+}
+
 /// Resolves the safe-area insets the tmux bar should stay within.
 @visibleForTesting
 EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
@@ -3712,7 +3748,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     switch (action) {
       case TmuxSwitchWindowAction(:final windowIndex):
-        _switchTmuxWindow(session, windowIndex);
+        await _switchTmuxWindow(session, windowIndex);
       case TmuxNewWindowAction(:final command, :final windowName):
         await _createTmuxWindow(session, command: command, name: windowName);
       case TmuxResumeSessionAction(
@@ -3762,7 +3798,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     switch (action) {
       case TmuxSwitchWindowAction(:final windowIndex):
-        _switchTmuxWindow(session, windowIndex);
+        await _switchTmuxWindow(session, windowIndex);
       case TmuxNewWindowAction(:final command, :final windowName):
         await _createTmuxWindow(session, command: command, name: windowName);
       case TmuxResumeSessionAction(
@@ -3785,7 +3821,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// `tmux select-window` is a server operation — the tmux server
   /// notifies all attached clients of the change. Writing to the PTY
   /// would inject the command as input to whatever program is running.
-  void _switchTmuxWindow(SshSession session, int windowIndex) {
+  Future<void> _switchTmuxWindow(SshSession session, int windowIndex) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
@@ -3796,14 +3832,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
     _tmuxWorkingDirectory = null;
+    await _reattachTmuxIfNeeded(session, sessionName);
   }
 
-  /// Creates a new tmux window via exec channel, then switches to it.
+  /// Creates a new tmux window via exec channel, then reattaches the visible
+  /// terminal if tmux is no longer in the foreground there.
   ///
-  /// Only passes `-c` when an explicit [workingDirectory] is provided
-  /// (e.g. resuming an AI session). Otherwise tmux uses its own
-  /// `default-directory` (where the session was started), matching
-  /// native `Ctrl+b, c` behavior.
+  /// Prefers the tmux session's current pane directory so "new window" starts
+  /// where the user is actually working, while still preserving explicit
+  /// working-directory overrides (e.g. resuming an AI session).
   Future<void> _createTmuxWindow(
     SshSession session, {
     String? command,
@@ -3814,11 +3851,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) return;
 
     final tmux = ref.read(tmuxServiceProvider);
-    final resolvedWorkingDirectory =
-        workingDirectory ??
-        (command != null && command.trim().isNotEmpty
-            ? (_tmuxLaunchWorkingDirectory ?? _host?.tmuxWorkingDirectory)
-            : null);
+    String? currentPaneWorkingDirectory;
+    if (!(workingDirectory?.trim().isNotEmpty ?? false)) {
+      currentPaneWorkingDirectory = await tmux.currentPanePath(
+        session,
+        sessionName,
+      );
+    }
+    if (!mounted) return;
+    final resolvedWorkingDirectory = resolveTmuxWindowWorkingDirectory(
+      explicitWorkingDirectory: workingDirectory,
+      currentPaneWorkingDirectory: currentPaneWorkingDirectory,
+      observedWorkingDirectory: _tmuxWorkingDirectory ?? _workingDirectoryPath,
+      launchWorkingDirectory: _tmuxLaunchWorkingDirectory,
+      hostWorkingDirectory: _host?.tmuxWorkingDirectory,
+    );
     await tmux.createWindow(
       session,
       sessionName,
@@ -3826,6 +3873,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       name: name,
       workingDirectory: resolvedWorkingDirectory,
     );
+    _tmuxWorkingDirectory = resolvedWorkingDirectory;
+    await _reattachTmuxIfNeeded(session, sessionName);
   }
 
   /// Closes a tmux window via exec channel.
@@ -3834,6 +3883,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (sessionName == null) return;
 
     ref.read(tmuxServiceProvider).killWindow(session, sessionName, windowIndex);
+  }
+
+  Future<void> _reattachTmuxIfNeeded(
+    SshSession session,
+    String sessionName,
+  ) async {
+    final tmux = ref.read(tmuxServiceProvider);
+    final hasForegroundClient = await tmux.hasForegroundClient(
+      session,
+      sessionName,
+    );
+    if (!mounted || hasForegroundClient) {
+      return;
+    }
+
+    if (!shouldReattachTmuxAfterWindowAction(
+      hasForegroundClient: hasForegroundClient,
+      shellStatus: _shellStatus,
+    )) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'tmux updated $sessionName, but this terminal is outside tmux '
+            'while a command is still running.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    final shell = _shell;
+    if (shell == null) {
+      return;
+    }
+
+    final host = _host;
+    final reattachCommand = buildTmuxCommand(
+      sessionName: sessionName,
+      workingDirectory: host?.tmuxWorkingDirectory,
+      extraFlags: host?.tmuxExtraFlags,
+    );
+    shell.write(utf8.encode(formatAutoConnectCommandForShell(reattachCommand)));
   }
 
   void _handleTrackedConnectionStateChange(

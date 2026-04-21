@@ -198,6 +198,45 @@ class TmuxService {
     }
   }
 
+  /// Returns the active pane working directory for [sessionName], if tmux
+  /// reports one.
+  Future<String?> currentPanePath(
+    SshSession session,
+    String sessionName,
+  ) async {
+    try {
+      final output = await _exec(
+        session,
+        'tmux display-message -p -t ${_shellQuote('$sessionName:')} '
+        "'#{pane_current_path}'",
+      );
+      return parseTmuxCurrentPanePath(output);
+    } on Exception {
+      return null;
+    }
+  }
+
+  /// Returns whether [sessionName] still has a non-control tmux client
+  /// attached in the foreground.
+  ///
+  /// Control-mode observers are excluded because MonkeySSH uses one for live
+  /// window updates even after the visible interactive shell has left tmux.
+  Future<bool> hasForegroundClient(
+    SshSession session,
+    String sessionName,
+  ) async {
+    try {
+      final output = await _exec(
+        session,
+        'tmux list-clients -t ${_shellQuote(sessionName)} '
+        "-F '#{client_control_mode}' 2>/dev/null",
+      );
+      return hasForegroundTmuxClient(output);
+    } on Exception {
+      return false;
+    }
+  }
+
   /// Watches tmux control-mode notifications that indicate window state
   /// has changed for [sessionName].
   Stream<void> watchWindowChanges(SshSession session, String sessionName) {
@@ -418,6 +457,30 @@ class TmuxService {
   /// Single-quotes a value for safe use in shell commands.
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
+}
+
+/// Parses the current pane path reported by `tmux display-message`.
+@visibleForTesting
+String? parseTmuxCurrentPanePath(String output) {
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trim();
+    if (line.isNotEmpty) {
+      return line;
+    }
+  }
+  return null;
+}
+
+/// Returns whether `tmux list-clients` output includes a non-control client.
+@visibleForTesting
+bool hasForegroundTmuxClient(String output) {
+  for (final rawLine in output.split('\n')) {
+    final line = rawLine.trim();
+    if (line == '0') {
+      return true;
+    }
+  }
+  return false;
 }
 
 const _tmuxWindowSubscriptionFormat =

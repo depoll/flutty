@@ -41,9 +41,12 @@ class _MonkeyTerminalScrollGestureHandlerState
   /// widget does nothing.
   var isAltBuffer = false;
 
-  /// The variable that tracks the line offset in last scroll event. Used to
-  /// determine how many the scroll events should be sent to the terminal.
-  var lastLineOffset = 0;
+  /// Tracks the last scroll offset reported by [InfiniteScrollView].
+  var lastScrollOffset = 0.0;
+
+  /// Accumulates partial scroll deltas so reversing direction still requires a
+  /// full line-height of movement before another terminal wheel event is sent.
+  var scrollRemainder = 0.0;
 
   /// This variable tracks the last offset where the scroll gesture started.
   /// Used to calculate the cell offset of the terminal mouse event.
@@ -68,6 +71,7 @@ class _MonkeyTerminalScrollGestureHandlerState
       oldWidget.terminal.removeListener(_onTerminalUpdated);
       widget.terminal.addListener(_onTerminalUpdated);
       isAltBuffer = widget.terminal.isUsingAltBuffer;
+      _resetScrollTracking();
     }
     super.didUpdateWidget(oldWidget);
   }
@@ -75,6 +79,7 @@ class _MonkeyTerminalScrollGestureHandlerState
   void _onTerminalUpdated() {
     if (isAltBuffer != widget.terminal.isUsingAltBuffer) {
       isAltBuffer = widget.terminal.isUsingAltBuffer;
+      _resetScrollTracking();
       setState(() {});
     }
   }
@@ -98,16 +103,25 @@ class _MonkeyTerminalScrollGestureHandlerState
     }
   }
 
+  void _resetScrollTracking() {
+    lastScrollOffset = 0;
+    scrollRemainder = 0;
+  }
+
   void _onScroll(double offset) {
-    final currentLineOffset = offset ~/ widget.getLineHeight();
-
-    final delta = currentLineOffset - lastLineOffset;
-
-    for (var i = 0; i < delta.abs(); i++) {
-      _sendScrollEvent(delta < 0);
+    final lineHeight = widget.getLineHeight();
+    if (lineHeight <= 0) {
+      return;
     }
 
-    lastLineOffset = currentLineOffset;
+    scrollRemainder += offset - lastScrollOffset;
+    lastScrollOffset = offset;
+
+    while (scrollRemainder.abs() >= lineHeight) {
+      final scrollUp = scrollRemainder < 0;
+      _sendScrollEvent(scrollUp);
+      scrollRemainder += scrollUp ? lineHeight : -lineHeight;
+    }
   }
 
   void _rememberPointerPosition(Offset position) {
