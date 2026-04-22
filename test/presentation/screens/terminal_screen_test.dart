@@ -93,6 +93,7 @@ void main() {
     late Host host;
     late Completer<void> shellDoneCompleter;
     late StreamController<Uint8List> shellStdoutController;
+    late List<List<int>> shellWrites;
 
     setUp(() {
       db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -102,6 +103,7 @@ void main() {
       host = _buildHost(id: 1);
       shellDoneCompleter = Completer<void>();
       shellStdoutController = StreamController<Uint8List>.broadcast();
+      shellWrites = <List<int>>[];
 
       when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
       when(
@@ -116,7 +118,12 @@ void main() {
       when(
         () => shellChannel.done,
       ).thenAnswer((_) => shellDoneCompleter.future);
-      when(() => shellChannel.write(any())).thenReturn(null);
+      when(() => shellChannel.write(any())).thenAnswer((invocation) {
+        final value = invocation.positionalArguments.single;
+        if (value is List<int>) {
+          shellWrites.add(List<int>.from(value));
+        }
+      });
 
       session = SshSession(
         connectionId: 7,
@@ -297,6 +304,30 @@ void main() {
           hasLength(greaterThanOrEqualTo(1)),
         );
         await tester.pump(const Duration(milliseconds: 200));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'running shell commands bypass keyboard paste review',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('\u001b]133;C\u0007');
+        await tester.pump();
+
+        expect(session.shellStatus, TerminalShellStatus.runningCommand);
+
+        shellWrites.clear();
+        const suspiciousText = 'echo ready; rm -rf /';
+        tester.testTextInput.updateEditingValue(
+          _editingValue(suspiciousText, selectionOffset: suspiciousText.length),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(find.text('Review keyboard paste'), findsNothing);
+        expect(shellWrites.map(utf8.decode).join(), suspiciousText);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
