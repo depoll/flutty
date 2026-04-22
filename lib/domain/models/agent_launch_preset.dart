@@ -53,6 +53,17 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.geminiCli => true,
   };
 
+  /// Matching discovered-session provider name, if this tool supports recent
+  /// session discovery.
+  String? get discoveredSessionToolName => switch (this) {
+    AgentLaunchTool.claudeCode => 'Claude Code',
+    AgentLaunchTool.copilotCli => 'Copilot CLI',
+    AgentLaunchTool.aider => null,
+    AgentLaunchTool.codex => 'Codex',
+    AgentLaunchTool.openCode => 'OpenCode',
+    AgentLaunchTool.geminiCli => 'Gemini CLI',
+  };
+
   /// Whether this tool supports launching directly into YOLO mode.
   bool get supportsYoloMode => yoloArgument != null;
 

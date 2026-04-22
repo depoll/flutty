@@ -123,5 +123,30 @@ void main() {
       await tester.tap(find.text('Claude Code'));
       expect(chosen, AgentLaunchTool.claudeCode);
     });
+
+    testWidgets('moves the preferred tool to the top of the list', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        _wrap(
+          TmuxToolPickerSheet(
+            isProUser: true,
+            installedToolsFuture: Future.value({
+              AgentLaunchTool.claudeCode,
+              AgentLaunchTool.codex,
+            }),
+            preferredTool: AgentLaunchTool.codex,
+            onToolSelected: (_) {},
+            onEmptyWindow: () {},
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(
+        tester.getTopLeft(find.text('Codex')).dy,
+        lessThan(tester.getTopLeft(find.text('Claude Code')).dy),
+      );
+    });
   });
 }

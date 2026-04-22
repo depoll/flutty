@@ -1,8 +1,435 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
+
+class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockExecSession extends Mock implements SSHSession {}
+
+SshSession _buildDiscoverySession(SSHClient client) => SshSession(
+  connectionId: 1,
+  hostId: 1,
+  client: client,
+  config: const SshConnectionConfig(
+    hostname: 'example.com',
+    port: 22,
+    username: 'demo',
+  ),
+);
+
+Stream<Uint8List> _utf8Stream(String value) => value.isEmpty
+    ? const Stream<Uint8List>.empty()
+    : Stream<Uint8List>.value(Uint8List.fromList(utf8.encode(value)));
+
+void _ignoreInvocation(Invocation _) {}
+
+SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
+  final session = _MockExecSession();
+  when(() => session.stdout).thenAnswer((_) => _utf8Stream(stdout));
+  when(() => session.stderr).thenAnswer((_) => _utf8Stream(stderr));
+  when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
 
 void main() {
+  group('normalizeWorkingDirectoryForComparison', () {
+    test('strips worktree branch segments from comparable paths', () {
+      expect(
+        normalizeWorkingDirectoryForComparison(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption/lib',
+        ),
+        '/Users/depoll/Code/flutty/lib',
+      );
+    });
+  });
+
+  group('parseGitWorktreeRoots', () {
+    test('extracts worktree paths from porcelain output', () {
+      expect(
+        parseGitWorktreeRoots('''
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+
+worktree /Users/depoll/Code/flutty.worktrees/fix-session-resumption
+HEAD 1234567
+branch refs/heads/fix/session-resumption
+'''),
+        [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        ],
+      );
+    });
+  });
+
+  group('buildRelatedWorkingDirectories', () {
+    test('maps the active subdirectory across git worktrees', () {
+      expect(
+        buildRelatedWorkingDirectories(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption/lib',
+          gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+          gitWorktreeRoots: const [
+            '/Users/depoll/Code/flutty',
+            '/Users/depoll/Code/flutty.worktrees/feature-other',
+          ],
+        ),
+        containsAll(<String>[
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption/lib',
+          '/Users/depoll/Code/flutty/lib',
+          '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ]),
+      );
+    });
+  });
+
+  group('matchesDiscoveredSessionWorkingDirectory', () {
+    test('matches the main checkout from a sibling worktree', () {
+      final relatedDirectories = buildRelatedWorkingDirectories(
+        '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitWorktreeRoots: const [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ],
+      );
+
+      expect(
+        matchesDiscoveredSessionWorkingDirectory(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+          '/Users/depoll/Code/flutty',
+          relatedWorkingDirectories: relatedDirectories,
+        ),
+        isTrue,
+      );
+      expect(
+        matchesDiscoveredSessionWorkingDirectory(
+          '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+          '/tmp/another-repo/flutty',
+          relatedWorkingDirectories: relatedDirectories,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('resolveGeminiProjectWorkingDirectory', () {
+    test('maps project folder names back to the right worktree paths', () {
+      final relatedDirectories = buildRelatedWorkingDirectories(
+        '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitRoot: '/Users/depoll/Code/flutty.worktrees/fix-session-resumption',
+        gitWorktreeRoots: const [
+          '/Users/depoll/Code/flutty',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+        ],
+      );
+
+      expect(
+        resolveGeminiProjectWorkingDirectory('flutty', relatedDirectories),
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        resolveGeminiProjectWorkingDirectory(
+          'feature-other',
+          relatedDirectories,
+        ),
+        '/Users/depoll/Code/flutty.worktrees/feature-other',
+      );
+    });
+  });
+
+  group('resolveAgentSessionScopeWorkingDirectory', () {
+    test('keeps the active project path when it already looks valid', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/Code/flutty',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('falls back from Copilot state paths to the terminal cwd', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory:
+              '/Users/depoll/.copilot/session-state/970e4099-a97c-456a-a6c2-408095060f72',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('falls back from AI tool home directories to the terminal cwd', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/.copilot',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/.local/share/opencode',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/.gemini',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('prefers a more specific terminal cwd over a broader pane cwd', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('prefers the live terminal cwd when tmux metadata disagrees', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/Users/depoll/Code/another-project',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('drops temp-only paths when there is no terminal cwd fallback', () {
+      expect(
+        resolveAgentSessionScopeWorkingDirectory(
+          activeWorkingDirectory: '/var/folders/demo/output',
+        ),
+        isNull,
+      );
+    });
+  });
+
+  group('resolveTmuxAiSessionScopeWorkingDirectory', () {
+    test('prefers the live terminal cwd over stale tmux metadata', () {
+      expect(
+        resolveTmuxAiSessionScopeWorkingDirectory(
+          liveTerminalWorkingDirectory: '/Users/depoll/Code/flutty',
+          tmuxWorkingDirectory: '/Users/depoll/Code/another-project',
+          sessionWorkingDirectory: Uri.parse(
+            'file:///Users/depoll/Code/flutty',
+          ),
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+
+    test('falls back to tmux metadata only when no live cwd exists', () {
+      expect(
+        resolveTmuxAiSessionScopeWorkingDirectory(
+          tmuxWorkingDirectory: '/Users/depoll/Code/flutty',
+        ),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+  });
+
+  group('readClaudeHistoryWorkingDirectory', () {
+    test('ignores malformed non-string directory metadata', () {
+      expect(
+        readClaudeHistoryWorkingDirectory({
+          'directory': {'path': '/Users/depoll/Code/flutty'},
+          'project': 42,
+        }),
+        isNull,
+      );
+
+      expect(
+        readClaudeHistoryWorkingDirectory({
+          'directory': 42,
+          'project': '/Users/depoll/Code/flutty',
+        }),
+        '/Users/depoll/Code/flutty',
+      );
+    });
+  });
+
+  group('calculateClaudeMetadataSnapshotLimit', () {
+    test('caps Claude metadata snapshots to a smaller recent window', () {
+      expect(calculateClaudeMetadataSnapshotLimit(6), 40);
+      expect(calculateClaudeMetadataSnapshotLimit(24), 80);
+      expect(calculateClaudeMetadataSnapshotLimit(48), 80);
+    });
+  });
+
+  group('calculateRecentSessionMetadataReadLimit', () {
+    test('caps other provider metadata reads to a smaller recent window', () {
+      expect(calculateRecentSessionMetadataReadLimit(6), 24);
+      expect(calculateRecentSessionMetadataReadLimit(12), 36);
+      expect(calculateRecentSessionMetadataReadLimit(24), 48);
+    });
+  });
+
+  group('buildGeminiProjectDirectoryNames', () {
+    test('keeps only worktree roots and ignores nested subdirectories', () {
+      expect(
+        buildGeminiProjectDirectoryNames(const [
+          '/Users/depoll/Code/flutty.worktrees/feature-other/lib',
+          '/Users/depoll/Code/flutty/lib',
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+          '/Users/depoll/Code/flutty',
+        ]),
+        ['feature-other', 'flutty'],
+      );
+    });
+  });
+
+  group('buildScopedGeminiProjectDirectoryNames', () {
+    test('keeps the active worktree name plus the canonical checkout name', () {
+      expect(
+        buildScopedGeminiProjectDirectoryNames(
+          '/Users/depoll/Code/flutty.worktrees/session-resumption-all-providers',
+          const [
+            '/Users/depoll/Code/flutty',
+            '/Users/depoll/Code/flutty.worktrees/session-resumption-all-providers',
+            '/Users/depoll/Code/flutty.worktrees/feature-other',
+          ],
+        ),
+        ['session-resumption-all-providers', 'flutty'],
+      );
+    });
+  });
+
+  group('scopeDiscoveredSessionsToWorkingDirectory', () {
+    test('keeps providers that have no matching cwd metadata', () {
+      final scopedSessions = scopeDiscoveredSessionsToWorkingDirectory(
+        [
+          ToolSessionInfo(
+            toolName: 'Claude Code',
+            sessionId: 'claude-match',
+            workingDirectory: '/Users/depoll/Code/flutty',
+            summary: 'Fix tmux filtering',
+            lastActive: DateTime(2026, 4, 20, 12),
+          ),
+          ToolSessionInfo(
+            toolName: 'Claude Code',
+            sessionId: 'claude-other',
+            workingDirectory: '/tmp/another-repo',
+            summary: 'Other project',
+            lastActive: DateTime(2026, 4, 20, 11),
+          ),
+          ToolSessionInfo(
+            toolName: 'Codex',
+            sessionId: 'codex-no-cwd',
+            summary: 'Investigate session loading',
+            lastActive: DateTime(2026, 4, 20, 10),
+          ),
+          ToolSessionInfo(
+            toolName: 'Copilot CLI',
+            sessionId: 'copilot-no-cwd',
+            summary: 'Review recent tmux fixes',
+            lastActive: DateTime(2026, 4, 20, 9),
+          ),
+        ],
+        '/Users/depoll/Code/flutty.worktrees/feature-other',
+        relatedWorkingDirectories: const [
+          '/Users/depoll/Code/flutty.worktrees/feature-other',
+          '/Users/depoll/Code/flutty',
+        ],
+      );
+
+      expect(scopedSessions.map((session) => session.sessionId), [
+        'claude-match',
+        'codex-no-cwd',
+        'copilot-no-cwd',
+      ]);
+    });
+  });
+
+  group('sortAndLimitDiscoveredSessions', () {
+    test('sorts by recency before applying the cap', () {
+      final limitedSessions = sortAndLimitDiscoveredSessions([
+        ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: 'older',
+          summary: 'older',
+          lastActive: DateTime(2026, 4, 12),
+        ),
+        ToolSessionInfo(
+          toolName: 'Gemini CLI',
+          sessionId: 'newer',
+          summary: 'newer',
+          lastActive: DateTime(2026, 4, 13),
+        ),
+      ], 1);
+
+      expect(limitedSessions.map((session) => session.sessionId), ['newer']);
+    });
+  });
+
+  group('orderedDiscoveredSessionTools', () {
+    test('includes all known providers in a stable order', () {
+      final ordered = orderedDiscoveredSessionTools(
+        {
+          'Claude Code': const <ToolSessionInfo>[],
+          'Codex': const <ToolSessionInfo>[],
+        },
+        const ['Gemini CLI'],
+      );
+
+      expect(ordered, [
+        'Claude Code',
+        'Copilot CLI',
+        'Codex',
+        'Gemini CLI',
+        'OpenCode',
+      ]);
+    });
+
+    test('moves the preferred tool to the front and appends unknown tools', () {
+      final ordered = orderedDiscoveredSessionTools(
+        const {'Custom Tool': <ToolSessionInfo>[]},
+        const ['Custom Tool'],
+        preferredToolName: 'Codex',
+      );
+
+      expect(ordered, [
+        'Codex',
+        'Claude Code',
+        'Copilot CLI',
+        'Gemini CLI',
+        'OpenCode',
+        'Custom Tool',
+      ]);
+    });
+  });
+
   group('normalizeDiscoveredSessionInfo', () {
     test('drops unnamed sessions without usable fallback context', () {
       const info = ToolSessionInfo(
@@ -115,6 +542,20 @@ updated_at: 2026-04-14T01:02:03.000Z
       expect(metadata.updatedAt, DateTime.parse('2026-04-14T01:02:03.000Z'));
     });
 
+    test('falls back to repository and branch when summary is missing', () {
+      final metadata = parseCopilotWorkspaceYamlMetadata('''
+id: example
+cwd: /Users/depoll/Code/flutty
+repository: depollsoft/MonkeySSH
+branch: main
+updated_at: 2026-04-14T01:02:03.000Z
+''');
+
+      expect(metadata.summary, 'depollsoft/MonkeySSH (main)');
+      expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
+      expect(metadata.updatedAt, DateTime.parse('2026-04-14T01:02:03.000Z'));
+    });
+
     test('normalizes inline summary text to a single display line', () {
       final metadata = parseCopilotWorkspaceYamlMetadata('''
 summary:   Add   PR preview   commit list   
@@ -124,6 +565,23 @@ cwd: /tmp/demo
       expect(metadata.summary, 'Add PR preview commit list');
       expect(metadata.workingDirectory, '/tmp/demo');
       expect(metadata.updatedAt, isNull);
+    });
+  });
+
+  group('buildSqlWorkingDirectoryScopeClause', () {
+    test('uses exact prefix predicates instead of LIKE wildcards', () {
+      final clause = buildSqlWorkingDirectoryScopeClause(const [
+        '/Users/depoll/Code/my_repo',
+      ], columnName: 'directory');
+
+      expect(clause, isNotNull);
+      expect(clause, isNot(contains('LIKE')));
+      expect(
+        clause,
+        contains(
+          "substr(directory, 1, length('/Users/depoll/Code/my_repo') + 1) = '/Users/depoll/Code/my_repo/'",
+        ),
+      );
     });
   });
 
@@ -170,6 +628,43 @@ cwd: /tmp/demo
       expect(metadata.summary, 'rename this session');
       expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:07:44.781Z'));
     });
+  });
+
+  group('parseClaudeSessionMetadata', () {
+    test('extracts the first real user prompt and ignores slash commands', () {
+      final metadata = parseClaudeSessionMetadata('''
+{"type":"user","isMeta":false,"message":{"role":"user","content":"/exit"}}
+{"type":"user","isMeta":false,"message":{"role":"user","content":"Fix the tmux session list loading bug"}}
+''');
+
+      expect(metadata.parsedAny, isTrue);
+      expect(metadata.userSummary, 'Fix the tmux session list loading bug');
+    });
+
+    test('preserves explicit metadata fields when present', () {
+      final metadata = parseClaudeSessionMetadata('''
+{"customTitle":"Investigate slow AI session loading","agentName":"Opus","lastPrompt":"ignored"}
+''');
+
+      expect(metadata.customTitle, 'Investigate slow AI session loading');
+      expect(metadata.agentName, 'Opus');
+      expect(metadata.lastPrompt, 'ignored');
+    });
+
+    test(
+      'prefers the latest metadata fields while keeping the first prompt',
+      () {
+        final metadata = parseClaudeSessionMetadata('''
+{"type":"user","isMeta":false,"message":{"role":"user","content":"Original prompt"}}
+{"customTitle":"Initial title","lastPrompt":"older"}
+{"customTitle":"Renamed title","lastPrompt":"newer"}
+''');
+
+        expect(metadata.userSummary, 'Original prompt');
+        expect(metadata.customTitle, 'Renamed title');
+        expect(metadata.lastPrompt, 'newer');
+      },
+    );
   });
 
   group('parseGeminiSessionMetadata', () {
@@ -219,5 +714,181 @@ cwd: /tmp/demo
       expect(metadata.summary, 'can i rename this session?');
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
     });
+  });
+
+  group('discoverSessionsStream caching', () {
+    test('toolName limits discovery to the requested provider', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('opencode session list --format json')) {
+          return _buildExecSession(
+            stdout:
+                '[{"id":"session-1","title":"OpenCode only","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+          );
+        }
+        if (command.contains('find ~/.codex/sessions')) {
+          return _buildExecSession(stdout: '/tmp/rollout-should-not-run.jsonl');
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'OpenCode',
+      );
+
+      expect(result.sessions.map((session) => session.toolName), ['OpenCode']);
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-1',
+      ]);
+      expect(
+        commands.where(
+          (command) => command.contains('opencode session list --format json'),
+        ),
+        hasLength(1),
+      );
+      expect(
+        commands.where((command) => command.contains('find ~/.codex/sessions')),
+        isEmpty,
+      );
+    });
+
+    test('prefetchSessions warms the cache for the next visible load', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('opencode session list --format json')) {
+          return _buildExecSession(
+            stdout:
+                '[{"id":"session-1","title":"Prefetched result","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      await discovery.prefetchSessions(session, maxPerTool: 6);
+      final commandCountAfterPrefetch = commands.length;
+      final result = await discovery.discoverSessionsStream(session).first;
+
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-1',
+      ]);
+      expect(commands.length, commandCountAfterPrefetch);
+    });
+
+    test('reuses fresh results for repeated loads in the same scope', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('opencode session list --format json')) {
+          return _buildExecSession(
+            stdout:
+                '[{"id":"session-1","title":"Cache result","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+          );
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+
+      final firstResults = await discovery
+          .discoverSessionsStream(session)
+          .toList();
+      final firstCommandCount = commands.length;
+      final secondResults = await discovery
+          .discoverSessionsStream(session)
+          .toList();
+
+      expect(firstResults, isNotEmpty);
+      expect(firstResults.last.sessions.map((session) => session.sessionId), [
+        'session-1',
+      ]);
+      expect(secondResults, hasLength(1));
+      expect(
+        secondResults.single.sessions.map((session) => session.sessionId),
+        ['session-1'],
+      );
+      expect(commands.length, firstCommandCount);
+    });
+
+    test(
+      'reuses related worktree lookups across max-per-tool refreshes',
+      () async {
+        final client = _MockSshClient();
+        final commands = <String>[];
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          commands.add(command);
+          if (command.contains('worktree list --porcelain')) {
+            return _buildExecSession(
+              stdout: '''
+root=/Users/depoll/Code/flutty
+worktree /Users/depoll/Code/flutty
+HEAD afdab6c
+branch refs/heads/main
+''',
+            );
+          }
+          if (command.contains('opencode session list --format json')) {
+            return _buildExecSession(
+              stdout:
+                  '[{"id":"session-1","title":"Scoped cache result","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+
+        final firstResults = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: '/Users/depoll/Code/flutty',
+            )
+            .toList();
+        final secondResults = await discovery
+            .discoverSessionsStream(
+              session,
+              workingDirectory: '/Users/depoll/Code/flutty',
+              maxPerTool: 24,
+            )
+            .toList();
+
+        expect(firstResults.last.sessions.map((session) => session.sessionId), [
+          'session-1',
+        ]);
+        expect(
+          secondResults.last.sessions.map((session) => session.sessionId),
+          ['session-1'],
+        );
+        expect(
+          commands.where(
+            (command) => command.contains('worktree list --porcelain'),
+          ),
+          hasLength(1),
+        );
+        expect(
+          commands.where(
+            (command) =>
+                command.contains('opencode session list --format json'),
+          ),
+          hasLength(2),
+        );
+      },
+    );
   });
 }
