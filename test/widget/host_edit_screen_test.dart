@@ -341,7 +341,12 @@ void main() {
         200,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.byKey(const Key('host-save-button')));
+      final saveButton = find.byKey(
+        const Key('host-save-button'),
+        skipOffstage: false,
+      );
+      await tester.ensureVisible(saveButton);
+      tester.widget<FilledButton>(saveButton).onPressed!();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -529,7 +534,12 @@ void main() {
         200,
         scrollable: find.byType(Scrollable).first,
       );
-      await tester.tap(find.byKey(const Key('host-save-button')));
+      final saveButton = find.byKey(
+        const Key('host-save-button'),
+        skipOffstage: false,
+      );
+      await tester.ensureVisible(saveButton);
+      tester.widget<FilledButton>(saveButton).onPressed!();
       await tester.pump();
       await tester.pump(const Duration(milliseconds: 300));
 
@@ -684,6 +694,118 @@ void main() {
         expect(savedPreset.tmuxDisableStatusBar, isTrue);
         expect(savedPreset.tmuxSessionName, 'agent-session');
         expect(savedPreset.tmuxExtraFlags, '-x 200 -y 60');
+      },
+    );
+
+    testWidgets(
+      'uses the host CLI yolo mode setting in generated agent commands',
+      (tester) async {
+        final database = AppDatabase.forTesting(NativeDatabase.memory());
+        final encryptionService = SecretEncryptionService.forTesting();
+        addTearDown(database.close);
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        await tester.binding.setSurfaceSize(const Size(420, 900));
+
+        final hostRepository = _FakeHostRepository(
+          host: _testHost(
+            id: 1,
+            label: 'Agent Host',
+            autoConnectRequiresConfirmation: false,
+          ),
+          database: database,
+          encryptionService: encryptionService,
+        );
+        final presetService = _MockAgentLaunchPresetService();
+        const preset = AgentLaunchPreset(tool: AgentLaunchTool.codex);
+        when(
+          () => presetService.getPresetForHost(1),
+        ).thenAnswer((_) async => preset);
+        when(
+          () => presetService.setPresetForHost(1, any()),
+        ).thenAnswer((_) async {});
+        when(
+          () => presetService.deletePresetForHost(1),
+        ).thenAnswer((_) async {});
+
+        final router = GoRouter(
+          routes: [
+            GoRoute(
+              path: '/',
+              builder: (context, state) =>
+                  const Scaffold(body: SizedBox.shrink()),
+            ),
+            GoRoute(
+              path: '/edit',
+              builder: (context, state) => const HostEditScreen(hostId: 1),
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              databaseProvider.overrideWithValue(database),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+              keyRepositoryProvider.overrideWithValue(
+                _FakeKeyRepository(
+                  database: database,
+                  encryptionService: encryptionService,
+                ),
+              ),
+              snippetRepositoryProvider.overrideWithValue(
+                _FakeSnippetRepository(snippets: const [], database: database),
+              ),
+              portForwardRepositoryProvider.overrideWithValue(
+                _FakePortForwardRepository(database: database),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+
+        unawaited(router.push('/edit'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        final yoloFinder = find.byKey(const Key('host-cli-yolo-mode-checkbox'));
+        expect(yoloFinder, findsOneWidget);
+        expect(tester.widget<CheckboxListTile>(yoloFinder).value, isFalse);
+
+        await tester.tap(yoloFinder);
+        await tester.pump();
+
+        expect(
+          find.textContaining(
+            'codex --approval-mode never',
+            findRichText: true,
+          ),
+          findsOneWidget,
+        );
+
+        final saveButton = find.byKey(
+          const Key('host-save-button'),
+          skipOffstage: false,
+        );
+        await tester.scrollUntilVisible(
+          saveButton,
+          200,
+          scrollable: find.byType(Scrollable).first,
+        );
+        await tester.ensureVisible(saveButton);
+        tester.widget<FilledButton>(saveButton).onPressed!();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+
+        expect(hostRepository.updatedHost, isNotNull);
+        expect(
+          hostRepository.updatedHost!.autoConnectCommand,
+          contains('--approval-mode never'),
+        );
       },
     );
 

@@ -11,8 +11,13 @@ import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
+import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 
 void main() {
   late AppDatabase db;
@@ -176,6 +181,58 @@ void main() {
         db.hosts,
       )..where((h) => h.id.equals(imported.id))).getSingle();
       expect(stored.password, startsWith('ENCv1:'));
+    });
+
+    test('importHostPayload preserves host CLI launch preferences', () async {
+      final settingsService = SettingsService(db);
+      final cliLaunchPreferencesService = HostCliLaunchPreferencesService(
+        settingsService,
+      );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Imported Host',
+              hostname: 'imported.example.com',
+              username: 'root',
+            ),
+          );
+      await cliLaunchPreferencesService.setPreferencesForHost(
+        hostId,
+        const HostCliLaunchPreferences(startInYoloMode: true),
+      );
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(hostId))).getSingle();
+
+      final encodedPayload = await transferService.createHostPayload(
+        host: host,
+        transferPassphrase: '1234',
+      );
+      final decryptedPayload = await transferService.decryptPayload(
+        encodedPayload: encodedPayload,
+        transferPassphrase: '1234',
+      );
+
+      final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(importedDb.close);
+      final importedEncryptionService = SecretEncryptionService.forTesting();
+      final importedTransferService = SecureTransferService(
+        importedDb,
+        KeyRepository(importedDb, importedEncryptionService),
+        HostRepository(importedDb, importedEncryptionService),
+      );
+      final importedSettingsService = SettingsService(importedDb);
+      final importedCliLaunchPreferencesService =
+          HostCliLaunchPreferencesService(importedSettingsService);
+
+      final importedHost = await importedTransferService.importHostPayload(
+        decryptedPayload,
+      );
+      final importedPreferences = await importedCliLaunchPreferencesService
+          .getPreferencesForHost(importedHost.id);
+
+      expect(importedPreferences.startInYoloMode, isTrue);
     });
 
     test(
@@ -711,6 +768,105 @@ void main() {
             .getSingle();
         expect(importedHost.createdAt.toUtc(), createdAt);
         expect(importedHost.updatedAt.toUtc(), updatedAt);
+      },
+    );
+
+    test(
+      'merge import remaps and preserves host-scoped launch settings',
+      () async {
+        final sourceSettingsService = SettingsService(db);
+        final sourcePresetService = AgentLaunchPresetService(
+          sourceSettingsService,
+        );
+        final sourceCliLaunchPreferencesService =
+            HostCliLaunchPreferencesService(sourceSettingsService);
+        final sourceHostId = await hostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Imported Host',
+            hostname: 'imported.example.com',
+            username: 'root',
+          ),
+        );
+        await sourcePresetService.setPresetForHost(
+          sourceHostId,
+          const AgentLaunchPreset(
+            tool: AgentLaunchTool.codex,
+            additionalArguments: '--model gpt-5.4',
+          ),
+        );
+        await sourceCliLaunchPreferencesService.setPreferencesForHost(
+          sourceHostId,
+          const HostCliLaunchPreferences(startInYoloMode: true),
+        );
+        final migrationData = await transferService.createMigrationData(
+          includeKnownHosts: false,
+        );
+
+        final importedDb = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(importedDb.close);
+        final importedEncryptionService = SecretEncryptionService.forTesting();
+        final importedHostRepository = HostRepository(
+          importedDb,
+          importedEncryptionService,
+        );
+        final importedTransferService = SecureTransferService(
+          importedDb,
+          KeyRepository(importedDb, importedEncryptionService),
+          importedHostRepository,
+        );
+        final importedSettingsService = SettingsService(importedDb);
+        final importedPresetService = AgentLaunchPresetService(
+          importedSettingsService,
+        );
+        final importedCliLaunchPreferencesService =
+            HostCliLaunchPreferencesService(importedSettingsService);
+
+        final localHostId = await importedHostRepository.insert(
+          HostsCompanion.insert(
+            label: 'Local Host',
+            hostname: 'local.example.com',
+            username: 'root',
+          ),
+        );
+        await importedPresetService.setPresetForHost(
+          localHostId,
+          const AgentLaunchPreset(
+            tool: AgentLaunchTool.claudeCode,
+            additionalArguments: '--resume',
+          ),
+        );
+        await importedCliLaunchPreferencesService.setPreferencesForHost(
+          localHostId,
+          const HostCliLaunchPreferences(startInYoloMode: true),
+        );
+
+        await importedTransferService.importMigrationData(
+          data: migrationData,
+          mode: MigrationImportMode.merge,
+          includeKnownHosts: false,
+        );
+
+        final importedHost = await (importedDb.select(
+          importedDb.hosts,
+        )..where((host) => host.label.equals('Imported Host'))).getSingle();
+        final localPreset = await importedPresetService.getPresetForHost(
+          localHostId,
+        );
+        final importedPreset = await importedPresetService.getPresetForHost(
+          importedHost.id,
+        );
+        final localPreferences = await importedCliLaunchPreferencesService
+            .getPreferencesForHost(localHostId);
+        final importedPreferences = await importedCliLaunchPreferencesService
+            .getPreferencesForHost(importedHost.id);
+
+        expect(importedHost.id, isNot(localHostId));
+        expect(localPreset?.tool, AgentLaunchTool.claudeCode);
+        expect(localPreset?.additionalArguments, '--resume');
+        expect(importedPreset?.tool, AgentLaunchTool.codex);
+        expect(importedPreset?.additionalArguments, '--model gpt-5.4');
+        expect(localPreferences.startInYoloMode, isTrue);
+        expect(importedPreferences.startInYoloMode, isTrue);
       },
     );
 

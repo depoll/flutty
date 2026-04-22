@@ -9,7 +9,10 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../models/auto_connect_command.dart';
+import '../models/host_cli_launch_preferences.dart';
+import 'host_cli_launch_preferences_service.dart';
 import 'host_key_verification.dart';
+import 'settings_service.dart';
 
 /// Supported transfer payload types.
 enum TransferPayloadType {
@@ -155,6 +158,10 @@ class SecureTransferService {
   static const _nonceBytes = 12;
   static const _pbkdf2Iterations = 120000;
   static const _maxPbkdf2Iterations = 1000000;
+  static const _hostScopedSettingsKeys = {
+    SettingKeys.agentLaunchPresets,
+    SettingKeys.hostCliLaunchPreferences,
+  };
 
   /// Creates an encrypted host transfer payload.
   Future<String> createHostPayload({
@@ -166,6 +173,8 @@ class SecureTransferService {
     if (includeReferencedKey && host.keyId != null) {
       referencedKey = await _keyRepository.getById(host.keyId!);
     }
+    final cliLaunchPreferences = await _hostCliLaunchPreferencesService
+        .getPreferencesForHost(host.id);
 
     final hostData = Map<String, dynamic>.from(host.toJson())
       ..['keyId'] = referencedKey == null ? null : host.keyId
@@ -177,7 +186,12 @@ class SecureTransferService {
       type: TransferPayloadType.host,
       schemaVersion: _schemaVersion,
       createdAt: DateTime.now().toUtc(),
-      data: {'host': hostData, 'referencedKey': referencedKey?.toJson()},
+      data: {
+        'host': hostData,
+        'referencedKey': referencedKey?.toJson(),
+        if (!cliLaunchPreferences.isEmpty)
+          'hostCliLaunchPreferences': cliLaunchPreferences.toJson(),
+      },
     );
     return _encryptPayload(payload, transferPassphrase);
   }
@@ -404,6 +418,18 @@ class SecureTransferService {
           autoConnectRequiresConfirmation: Value(requiresAutoConnectReview),
         ),
       );
+      final rawCliLaunchPreferences = payload.data['hostCliLaunchPreferences'];
+      if (rawCliLaunchPreferences is Map) {
+        final cliLaunchPreferences = HostCliLaunchPreferences.fromJson(
+          Map<String, dynamic>.from(rawCliLaunchPreferences),
+        );
+        if (!cliLaunchPreferences.isEmpty) {
+          await _hostCliLaunchPreferencesService.setPreferencesForHost(
+            hostId,
+            cliLaunchPreferences,
+          );
+        }
+      }
 
       final createdHost = await _hostRepository.getById(hostId);
       if (createdHost == null) {
@@ -519,6 +545,7 @@ class SecureTransferService {
           _settingsFromData(data),
           clearExisting: mode == MigrationImportMode.replace,
           allowedSettingsKeys: allowedSettingsKeys,
+          hostMapping: hostMapping,
         );
       } finally {
         if (deferForeignKeysEnabled) {
@@ -1025,9 +1052,13 @@ class SecureTransferService {
   Future<void> _importSettings(
     Map<String, String> settings, {
     required bool clearExisting,
+    required Map<int, int> hostMapping,
     Set<String>? allowedSettingsKeys,
   }) async {
-    final filteredSettings = _filterSettings(settings, allowedSettingsKeys);
+    final filteredSettings = _prepareImportedSettings(
+      _filterSettings(settings, allowedSettingsKeys),
+      hostMapping: hostMapping,
+    );
     if (clearExisting) {
       if (allowedSettingsKeys == null) {
         await _db.customStatement('DELETE FROM settings');
@@ -1040,10 +1071,14 @@ class SecureTransferService {
       }
     }
     for (final entry in filteredSettings.entries) {
+      final value =
+          !clearExisting && _hostScopedSettingsKeys.contains(entry.key)
+          ? await _mergeHostScopedSettingValue(entry.key, entry.value)
+          : entry.value;
       await _db
           .into(_db.settings)
           .insertOnConflictUpdate(
-            SettingsCompanion.insert(key: entry.key, value: entry.value),
+            SettingsCompanion.insert(key: entry.key, value: value),
           );
     }
   }
@@ -1096,11 +1131,92 @@ class SecureTransferService {
     );
   }
 
+  Map<String, String> _prepareImportedSettings(
+    Map<String, String> settings, {
+    required Map<int, int> hostMapping,
+  }) {
+    final preparedSettings = <String, String>{};
+    for (final entry in settings.entries) {
+      if (!_hostScopedSettingsKeys.contains(entry.key)) {
+        preparedSettings[entry.key] = entry.value;
+        continue;
+      }
+
+      final remappedValue = _remapHostScopedSettingValue(
+        entry.value,
+        hostMapping,
+      );
+      if (remappedValue != null) {
+        preparedSettings[entry.key] = remappedValue;
+      }
+    }
+    return _sortedStringMap(preparedSettings);
+  }
+
+  String? _remapHostScopedSettingValue(
+    String rawValue,
+    Map<int, int> hostMapping,
+  ) {
+    final decodedSetting = _decodeHostScopedSettingValue(rawValue);
+    final remappedSetting = <String, dynamic>{};
+    for (final entry in decodedSetting.entries) {
+      final oldHostId = int.tryParse(entry.key);
+      if (oldHostId == null) {
+        remappedSetting[entry.key] = entry.value;
+        continue;
+      }
+
+      final mappedHostId = hostMapping[oldHostId];
+      if (mappedHostId != null) {
+        remappedSetting[mappedHostId.toString()] = entry.value;
+      }
+    }
+
+    if (remappedSetting.isEmpty) {
+      return null;
+    }
+    return jsonEncode(_canonicalizeJsonValue(remappedSetting));
+  }
+
+  Future<String> _mergeHostScopedSettingValue(
+    String key,
+    String importedValue,
+  ) async {
+    final existingSetting = await (_db.select(
+      _db.settings,
+    )..where((s) => s.key.equals(key))).getSingleOrNull();
+    if (existingSetting == null) {
+      return importedValue;
+    }
+
+    final mergedSetting = <String, dynamic>{
+      ..._decodeHostScopedSettingValue(existingSetting.value),
+      ..._decodeHostScopedSettingValue(importedValue),
+    };
+    return jsonEncode(_canonicalizeJsonValue(mergedSetting));
+  }
+
+  Map<String, dynamic> _decodeHostScopedSettingValue(String rawValue) {
+    final decodedValue = jsonDecode(rawValue);
+    if (decodedValue is! Map) {
+      throw const FormatException('Invalid host-scoped setting payload');
+    }
+    return {
+      for (final entry in decodedValue.entries)
+        '${entry.key}': _canonicalizeJsonValue(entry.value),
+    };
+  }
+
   Map<String, String> _sortedStringMap(Map<String, String> settings) =>
       Map<String, String>.fromEntries(
         settings.entries.toList(growable: false)
           ..sort((first, second) => first.key.compareTo(second.key)),
       );
+
+  SettingsService get _settingsService => SettingsService(_db);
+
+  HostCliLaunchPreferencesService get _hostCliLaunchPreferencesService =>
+      HostCliLaunchPreferencesService(_settingsService);
 
   List<Map<String, dynamic>> _sortedJsonRecords(
     Iterable<Map<String, dynamic>> records,

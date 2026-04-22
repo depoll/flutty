@@ -83,6 +83,9 @@ abstract final class SettingKeys {
   /// Saved host IDs pinned into the app's home-screen shortcut set.
   static const homeScreenShortcutHostIds = 'home_screen_shortcut_host_ids';
 
+  /// Saved host-scoped coding CLI launch preferences.
+  static const hostCliLaunchPreferences = 'host_cli_launch_preferences';
+
   /// Enable shared clipboard between device and remote session.
   ///
   /// The terminal can sync through OSC 52 and remote clipboard utilities when
