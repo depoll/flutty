@@ -162,6 +162,12 @@ enum _ShellQuoteMode { none, single, double }
 const _backslashCodeUnit = 0x5C;
 
 final _unquotedTmuxFlagTokenPattern = RegExp(r'^[A-Za-z0-9_./~:=,+-]+$');
+final _codexApprovalModeEqualsPattern = RegExp(
+  r'''(?<!\S)--approval-mode=(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexApprovalModeSeparatedPattern = RegExp(
+  r'''(?<!\S)--approval-mode\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
 
 /// Builds the shell command for a saved agent launch preset.
 String buildAgentLaunchCommand(
@@ -202,20 +208,61 @@ String buildAgentToolCommand(
   String? additionalArguments,
   bool startInYoloMode = false,
 }) {
-  final trimmedAdditionalArguments = additionalArguments?.trim();
   final commandParts = <String>[tool.commandName];
-  final yoloArgument = tool.yoloArgument;
-  if (startInYoloMode &&
-      yoloArgument != null &&
-      (trimmedAdditionalArguments == null ||
-          !trimmedAdditionalArguments.contains(yoloArgument))) {
-    commandParts.add(yoloArgument);
-  }
-  if (trimmedAdditionalArguments != null &&
-      trimmedAdditionalArguments.isNotEmpty) {
-    commandParts.add(trimmedAdditionalArguments);
+  final normalizedArguments = _normalizeAgentToolArguments(
+    tool: tool,
+    additionalArguments: additionalArguments,
+    startInYoloMode: startInYoloMode,
+  );
+  if (normalizedArguments != null && normalizedArguments.isNotEmpty) {
+    commandParts.add(normalizedArguments);
   }
   return commandParts.join(' ');
+}
+
+String? _normalizeAgentToolArguments({
+  required AgentLaunchTool tool,
+  required String? additionalArguments,
+  required bool startInYoloMode,
+}) {
+  final yoloArgument = tool.yoloArgument;
+  final trimmedAdditionalArguments = additionalArguments?.trim();
+  if (!startInYoloMode || yoloArgument == null) {
+    return trimmedAdditionalArguments;
+  }
+
+  final sanitizedAdditionalArguments = switch (tool) {
+    AgentLaunchTool.codex => _stripCodexApprovalModeArguments(
+      trimmedAdditionalArguments,
+    ),
+    _ => trimmedAdditionalArguments,
+  };
+
+  if (sanitizedAdditionalArguments == null ||
+      sanitizedAdditionalArguments.isEmpty) {
+    return yoloArgument;
+  }
+
+  if (sanitizedAdditionalArguments.contains(yoloArgument)) {
+    return sanitizedAdditionalArguments;
+  }
+
+  return '$yoloArgument $sanitizedAdditionalArguments';
+}
+
+String? _stripCodexApprovalModeArguments(String? additionalArguments) {
+  final trimmedAdditionalArguments = additionalArguments?.trim();
+  if (trimmedAdditionalArguments == null ||
+      trimmedAdditionalArguments.isEmpty) {
+    return null;
+  }
+
+  final normalizedArguments = trimmedAdditionalArguments
+      .replaceAll(_codexApprovalModeEqualsPattern, ' ')
+      .replaceAll(_codexApprovalModeSeparatedPattern, ' ')
+      .replaceAll(RegExp(r'\s+'), ' ')
+      .trim();
+  return normalizedArguments.isEmpty ? null : normalizedArguments;
 }
 
 List<String> _tokenizeTmuxNewSessionFlags(String? value) {

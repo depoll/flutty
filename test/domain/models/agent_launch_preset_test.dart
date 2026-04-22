@@ -196,6 +196,18 @@ void main() {
         'codex --approval-mode never --model gpt-5.4',
       );
     });
+
+    test('replaces conflicting codex approval-mode arguments in yolo mode', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        additionalArguments: '--approval-mode auto --model gpt-5.4',
+      );
+
+      expect(
+        buildAgentLaunchCommand(preset, startInYoloMode: true),
+        'codex --approval-mode never --model gpt-5.4',
+      );
+    });
   });
 
   test('round-trips preset json', () {
