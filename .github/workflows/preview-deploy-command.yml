@@ -40,7 +40,9 @@ jobs:
             const workflowId = 'deploy-testflight.yml';
             const noPreviewCommentUrl = '__NO_PREVIEW_COMMENT__';
             const activeLockTimeoutMs = 4 * 60 * 60 * 1000;
-            const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+             const allowedAssociations = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);
+             const managedReactionContents = new Set(['eyes', 'rocket', '-1']);
+             const activeWorkflowStatuses = new Set(['queued', 'in_progress', 'requested', 'waiting']);
 
             if (commandBody !== '/deploy') {
               core.info(`Ignoring PR comment without exact /deploy command: ${commandBody}`);
@@ -59,27 +61,54 @@ jobs:
                return body.match(pattern)?.[1] ?? '';
              };
 
-             const findStatusComment = (comments, targetRequestKey) =>
-               [...comments].reverse().find(
-                 (comment) =>
-                   comment.body?.includes(statusMarker) &&
-                   readMeta(comment.body, 'preview-deploy-request-key') === targetRequestKey,
+              const findStatusComment = (comments, targetRequestKey) =>
+                [...comments].reverse().find(
+                  (comment) =>
+                    comment.body?.includes(statusMarker) &&
+                    readMeta(comment.body, 'preview-deploy-request-key') === targetRequestKey,
+                );
+
+              const listCommentReactions = async (commentId) =>
+                github.paginate('GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
+                  owner,
+                  repo,
+                  comment_id: Number(commentId),
+                  per_page: 100,
+                  headers: {accept: 'application/vnd.github+json'},
+                });
+
+             const clearManagedCommentReactions = async (commentId) => {
+               const commentIdNumber = Number(commentId);
+               if (!Number.isInteger(commentIdNumber) || commentIdNumber <= 0) {
+                 return;
+               }
+
+               const reactions = await listCommentReactions(commentIdNumber);
+               const botReactionsToDelete = reactions.filter(
+                 (reaction) =>
+                   managedReactionContents.has(reaction.content) &&
+                   reaction.user?.login === 'github-actions[bot]',
                );
 
-             const listRequestCommentReactions = async () =>
-               github.paginate('GET /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions', {
-                 owner,
-                 repo,
-                 comment_id: requestCommentNumber,
-                 per_page: 100,
-                headers: {accept: 'application/vnd.github+json'},
-              });
+               for (const reaction of botReactionsToDelete) {
+                 await github.request(
+                   'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
+                   {
+                     owner,
+                     repo,
+                     comment_id: commentIdNumber,
+                     reaction_id: reaction.id,
+                     headers: {accept: 'application/vnd.github+json'},
+                   },
+                 );
+               }
+             };
 
-            const ensureRequestCommentReaction = async (content) => {
-              const reactions = await listRequestCommentReactions();
-              if (
-                reactions.some(
-                  (reaction) =>
+             const ensureRequestCommentReaction = async (content) => {
+               const reactions = await listCommentReactions(requestCommentNumber);
+               if (
+                 reactions.some(
+                   (reaction) =>
                     reaction.content === content && reaction.user?.login === 'github-actions[bot]',
                 )
               ) {
@@ -98,29 +127,8 @@ jobs:
               );
             };
 
-            const removeRequestCommentReaction = async (content) => {
-              const reactions = await listRequestCommentReactions();
-              const botReactionsToDelete = reactions.filter(
-                (reaction) =>
-                  reaction.content === content && reaction.user?.login === 'github-actions[bot]',
-              );
-
-              for (const reaction of botReactionsToDelete) {
-                await github.request(
-                  'DELETE /repos/{owner}/{repo}/issues/comments/{comment_id}/reactions/{reaction_id}',
-                  {
-                    owner,
-                    repo,
-                    comment_id: requestCommentNumber,
-                    reaction_id: reaction.id,
-                    headers: {accept: 'application/vnd.github+json'},
-                  },
-                );
-              }
-            };
-
-             const upsertStatusComment = async (comments, body, targetRequestKey) => {
-               const existing = findStatusComment(comments, targetRequestKey);
+              const upsertStatusComment = async (comments, body, targetRequestKey) => {
+                const existing = findStatusComment(comments, targetRequestKey);
 
                if (existing) {
                  await github.rest.issues.updateComment({
@@ -137,46 +145,122 @@ jobs:
                  repo,
                  issue_number: issueNumber,
                  body,
-              });
-              return created.id;
-            };
+               });
+               return created.id;
+             };
 
-             const renderStatusComment = ({
-               status,
-               workflow,
-               workflowUrl = '',
+              const formatBuildDisplay = (buildName, buildCodename) => {
+                if (!buildName) {
+                  return '';
+                }
+
+                return buildCodename ? `${buildName} "${buildCodename}"` : buildName;
+              };
+
+              const parseWorkflowRunId = (workflowUrl) => {
+                const match = workflowUrl.match(/\/actions\/runs\/(\d+)(?:\/|$)/);
+                return match ? Number(match[1]) : null;
+              };
+
+              let cachedDeployWorkflowRuns = null;
+
+              const listDeployWorkflowRuns = async ({refresh = false} = {}) => {
+                if (cachedDeployWorkflowRuns && !refresh) {
+                  return cachedDeployWorkflowRuns;
+                }
+
+                cachedDeployWorkflowRuns = await github.paginate(
+                  github.rest.actions.listWorkflowRuns,
+                  {
+                    owner,
+                    repo,
+                    workflow_id: workflowId,
+                    branch: defaultBranch,
+                    event: 'workflow_dispatch',
+                    per_page: 100,
+                  },
+                );
+
+                return cachedDeployWorkflowRuns;
+              };
+
+              const findDeployWorkflowRun = async (
+                requestCommentIdValue,
+                {refresh = false} = {},
+              ) => {
+                if (!requestCommentIdValue) {
+                  return null;
+                }
+
+                const expectedTitle =
+                  `Deploy PR #${issueNumber} from /deploy comment ${requestCommentIdValue}`;
+                const workflowRuns = await listDeployWorkflowRuns({refresh});
+                return (
+                  workflowRuns.find(
+                    (workflowRun) => (workflowRun.display_title ?? '') === expectedTitle,
+                  ) ?? null
+                );
+              };
+
+              const waitForDeployWorkflowRun = async (requestCommentIdValue) => {
+                for (let attempt = 0; attempt < 6; attempt += 1) {
+                  const workflowRun = await findDeployWorkflowRun(requestCommentIdValue, {
+                    refresh: attempt > 0,
+                  });
+                  if (workflowRun) {
+                    return workflowRun;
+                  }
+
+                  await new Promise((resolve) => setTimeout(resolve, 2000));
+                }
+
+                return null;
+              };
+
+              const renderStatusComment = ({
+                status,
+                workflow,
+                workflowUrl = '',
                previewSha = '',
                previewCommentUrl = '',
-               state,
-               note,
-               requestKey,
-             }) =>
-               [
-                 '## 🚀 Preview Deploy',
+                state,
+                note,
+                requestKey,
+                requestedBy = requester,
+                requestedAt = requestCreatedAt,
+                requestUrl = requestCommentUrl,
+                requestCommentIdValue = requestCommentId,
+                buildDisplay = '',
+                buildNumber = '',
+              }) =>
+                [
+                  '## 🚀 Preview Deploy',
                  '',
                  '| | Details |',
-                '|---|---|',
-                `| **Status** | ${status} |`,
-                `| **Requested by** | @${requester} via \`/deploy\` comment |`,
-                previewSha ? `| **Preview SHA** | \`${previewSha}\` |` : null,
-                `| **Request** | [View /deploy comment](${requestCommentUrl}) |`,
-                previewCommentUrl
-                  ? `| **Preview Comment** | [View preview artifacts](${previewCommentUrl}) |`
-                  : null,
-                `| **Requested at** | ${requestCreatedAt} |`,
-                `| **Workflow** | ${workflow} |`,
-                '',
-                note,
-                 statusMarker,
-                 `<!-- preview-deploy-state:${state} -->`,
-                 `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
-                 `<!-- preview-deploy-request-key:${requestKey} -->`,
-                 `<!-- preview-deploy-requested-by:${requester} -->`,
-                 `<!-- preview-deploy-requested-at:${requestCreatedAt} -->`,
-                 `<!-- preview-deploy-request-comment-url:${requestCommentUrl} -->`,
-                 `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
-                 `<!-- preview-deploy-workflow-url:${workflowUrl} -->`,
-                 `<!-- preview-deploy-source-sha:${previewSha} -->`,
+                 '|---|---|',
+                 `| **Status** | ${status} |`,
+                 `| **Requested by** | @${requestedBy} via \`/deploy\` comment |`,
+                 previewSha ? `| **Preview SHA** | \`${previewSha}\` |` : null,
+                 buildDisplay ? `| **Version** | \`${buildDisplay}\` |` : null,
+                 buildNumber ? `| **Build** | \`${buildNumber}\` |` : null,
+                 requestUrl ? `| **Request** | [View /deploy comment](${requestUrl}) |` : null,
+                 previewCommentUrl
+                   ? `| **Preview Comment** | [View preview artifacts](${previewCommentUrl}) |`
+                   : null,
+                 requestedAt ? `| **Requested at** | ${requestedAt} |` : null,
+                 `| **Workflow** | ${workflow} |`,
+                 '',
+                  note,
+                   statusMarker,
+                   `<!-- preview-deploy-state:${state} -->`,
+                   `<!-- preview-deploy-last-command-comment-id:${requestCommentIdValue} -->`,
+                   `<!-- preview-deploy-request-key:${requestKey} -->`,
+                   `<!-- preview-deploy-requested-by:${requestedBy} -->`,
+                   `<!-- preview-deploy-requested-at:${requestedAt} -->`,
+                  `<!-- preview-deploy-request-comment-url:${requestUrl} -->`,
+                  `<!-- preview-deploy-preview-comment-url:${previewCommentUrl} -->`,
+                  `<!-- preview-deploy-workflow-url:${workflowUrl} -->`,
+                  `<!-- preview-deploy-source-sha:${previewSha} -->`,
                ]
                  .filter(Boolean)
                  .join('\n');
@@ -232,10 +316,10 @@ jobs:
              const previewCommentBody = previewComment?.body ?? '';
              const previewCommentSha = readMeta(previewCommentBody, 'preview-build-source-sha');
              const previousDeploySha = readMeta(statusBody, 'preview-deploy-source-sha');
-             const activeStatusComment = [...comments].reverse().find((comment) => {
-               if (!comment.body?.includes(statusMarker)) {
-                 return false;
-               }
+              const activeStatusComments = [...comments].filter((comment) => {
+                if (!comment.body?.includes(statusMarker)) {
+                  return false;
+                }
 
                if (readMeta(comment.body, 'preview-deploy-request-key') === requestKey) {
                  return false;
@@ -246,9 +330,8 @@ jobs:
                  return false;
                }
 
-               const updatedAt = new Date(comment.updated_at ?? comment.created_at);
-               return Date.now() - updatedAt.getTime() <= activeLockTimeoutMs;
-             });
+                return true;
+              });
              let buildName =
                previewCommentSha === previewSha
                  ? readMeta(previewCommentBody, 'preview-build-name')
@@ -288,40 +371,133 @@ jobs:
                buildNumber = String(Math.floor(Date.now() / 1000 / 10));
              }
 
-             if (activeStatusComment) {
-               const activeLockState = readMeta(activeStatusComment.body ?? '', 'preview-deploy-state');
-               const activeLockWorkflowUrl = readMeta(
-                 activeStatusComment.body ?? '',
-                 'preview-deploy-workflow-url',
-               );
-               const body = renderStatusComment({
-                 status:
-                   activeLockState === 'queued'
-                     ? '⏭️ Ignored — another deploy request is already queued'
-                     : '⏭️ Ignored — another deploy request is already running',
-                 workflow: activeLockWorkflowUrl
-                   ? `[View active deploy](${activeLockWorkflowUrl})`
-                   : 'Another deploy request already owns the lock',
-                 workflowUrl: activeLockWorkflowUrl,
-                 previewSha,
-                 previewCommentUrl,
-                 state: 'ignored',
-                 note: '> Wait for the active deploy to finish, then add a new `/deploy` comment.',
-                 requestKey,
-               });
-               await upsertStatusComment(comments, body, requestKey);
-               return;
-             }
+              const supersedeActiveRequest = async (comment) => {
+                const commentBody = comment.body ?? '';
+                const previousRequestKey = readMeta(commentBody, 'preview-deploy-request-key');
+                const previousRequestedBy =
+                  readMeta(commentBody, 'preview-deploy-requested-by') || requester;
+                const previousRequestedAt =
+                  readMeta(commentBody, 'preview-deploy-requested-at') ||
+                  comment.created_at;
+                const previousRequestCommentIdValue = readMeta(
+                  commentBody,
+                  'preview-deploy-last-command-comment-id',
+                );
+                const previousRequestUrl = readMeta(
+                  commentBody,
+                  'preview-deploy-request-comment-url',
+                );
+                const previousPreviewCommentUrl = readMeta(
+                  commentBody,
+                  'preview-deploy-preview-comment-url',
+                );
+                const previousWorkflowUrl = readMeta(commentBody, 'preview-deploy-workflow-url');
+                const previousPreviewSha = readMeta(commentBody, 'preview-deploy-source-sha');
+                const previousBuildDisplay = formatBuildDisplay(
+                  readMeta(commentBody, 'preview-deploy-build-name'),
+                  readMeta(commentBody, 'preview-deploy-build-codename'),
+                );
+                const previousBuildNumber = readMeta(commentBody, 'preview-deploy-build-number');
+                const previousRequestCommentId = Number(previousRequestCommentIdValue);
+                let resolvedWorkflowUrl = previousWorkflowUrl;
+                let workflowRun =
+                  previousRequestCommentIdValue
+                    ? await findDeployWorkflowRun(previousRequestCommentIdValue)
+                    : null;
 
-             const queuedBody = renderStatusComment({
-               status: '🔒 Lock acquired — queued for deploy',
-               workflow: 'Waiting for `Deploy PR Preview` to start',
-               previewSha,
-               previewCommentUrl,
-               state: 'queued',
-               note: '> Duplicate requests stay locked out while this deploy is queued or running. The deploy workflow waits for matching unsigned preview intermediates for this SHA, then signs and uploads them without recompiling source when they are available.',
-               requestKey,
-             });
+                if (!resolvedWorkflowUrl && workflowRun?.html_url) {
+                  resolvedWorkflowUrl = workflowRun.html_url;
+                }
+
+                const previousRunId =
+                  parseWorkflowRunId(resolvedWorkflowUrl) ||
+                  (workflowRun ? Number(workflowRun.id) : null);
+
+                if (previousRunId) {
+                  if (!workflowRun) {
+                    const {data: loadedWorkflowRun} = await github.rest.actions.getWorkflowRun({
+                      owner,
+                      repo,
+                      run_id: previousRunId,
+                    });
+                    workflowRun = loadedWorkflowRun;
+                  }
+
+                  if (workflowRun.status === 'completed') {
+                    return;
+                  }
+
+                  if (activeWorkflowStatuses.has(workflowRun.status)) {
+                    await github.rest.actions.cancelWorkflowRun({
+                      owner,
+                      repo,
+                      run_id: previousRunId,
+                    });
+                  }
+                }
+
+                const body = renderStatusComment({
+                  status: '⛔ Cancelled — superseded by a newer deploy request',
+                  workflow: resolvedWorkflowUrl
+                    ? `[View cancelled deploy](${resolvedWorkflowUrl})`
+                    : 'Cancelled before deploy start',
+                  workflowUrl: resolvedWorkflowUrl,
+                  previewSha: previousPreviewSha,
+                  previewCommentUrl: previousPreviewCommentUrl,
+                  state: 'cancelled',
+                  note:
+                    `> Superseded by [a newer \`/deploy\` comment](${requestCommentUrl}). ` +
+                    'Only the latest deploy request for this PR keeps running.',
+                  requestKey: previousRequestKey,
+                  requestedBy: previousRequestedBy,
+                  requestedAt: previousRequestedAt,
+                  requestUrl: previousRequestUrl,
+                  requestCommentIdValue: previousRequestCommentIdValue,
+                  buildDisplay: previousBuildDisplay,
+                  buildNumber: previousBuildNumber,
+                });
+
+                await github.rest.issues.updateComment({
+                  owner,
+                  repo,
+                  comment_id: comment.id,
+                  body,
+                });
+
+                if (
+                  Number.isInteger(previousRequestCommentId) &&
+                  previousRequestCommentId > 0 &&
+                  previousRequestCommentId !== requestCommentNumber
+                ) {
+                  await clearManagedCommentReactions(previousRequestCommentId);
+                }
+              };
+
+              for (const comment of activeStatusComments) {
+                try {
+                  await supersedeActiveRequest(comment);
+                } catch (error) {
+                  core.warning(
+                    `Failed to supersede prior deploy request from comment ${comment.id}: ${String(error)}`,
+                  );
+                }
+              }
+
+              const renderQueuedBody = (workflowUrl = '') =>
+                renderStatusComment({
+                  status: '⏳ Queued for deploy',
+                  workflow: workflowUrl
+                    ? `[View deploy run](${workflowUrl})`
+                    : 'Waiting for `Deploy PR Preview` to start',
+                  workflowUrl,
+                  previewSha,
+                  previewCommentUrl,
+                  state: 'queued',
+                  note:
+                    '> A newer `/deploy` comment cancels any earlier deploy request for this PR. ' +
+                    'The deploy workflow waits for matching unsigned preview intermediates for this SHA, then signs and uploads them without recompiling source when they are available.',
+                  requestKey,
+                });
 
             try {
               await ensureRequestCommentReaction('eyes');
@@ -347,17 +523,19 @@ jobs:
                   'request-comment-url': requestCommentUrl,
                   'request-preview-comment-url': previewCommentUrl || noPreviewCommentUrl,
                 },
-               });
-               dispatched = true;
+                });
+                dispatched = true;
 
-               await upsertStatusComment(comments, queuedBody, requestKey);
-             } catch (error) {
-               if (!dispatched) {
-                 try {
-                   await removeRequestCommentReaction('eyes');
-                 } catch (reactionError) {
-                  core.warning(`Failed to clear deploy reaction: ${String(reactionError)}`);
-                }
+                const dispatchedWorkflowRun = await waitForDeployWorkflowRun(requestCommentId);
+                const queuedBody = renderQueuedBody(dispatchedWorkflowRun?.html_url ?? '');
+                await upsertStatusComment(comments, queuedBody, requestKey);
+              } catch (error) {
+                if (!dispatched) {
+                  try {
+                    await clearManagedCommentReactions(requestCommentNumber);
+                  } catch (reactionError) {
+                   core.warning(`Failed to clear deploy reaction: ${String(reactionError)}`);
+                 }
               }
 
               const failureBody = renderStatusComment({
