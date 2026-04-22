@@ -32,10 +32,6 @@ void main() {
         buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
         'gemini --yolo',
       );
-      expect(
-        buildAgentToolCommand(AgentLaunchTool.aider, startInYoloMode: true),
-        'aider --yes',
-      );
     });
   });
 
@@ -224,18 +220,6 @@ void main() {
         );
       },
     );
-
-    test('normalizes legacy aider yolo flags', () {
-      const preset = AgentLaunchPreset(
-        tool: AgentLaunchTool.aider,
-        additionalArguments: '--yes-always --model sonnet',
-      );
-
-      expect(
-        buildAgentLaunchCommand(preset, startInYoloMode: true),
-        'aider --yes --model sonnet',
-      );
-    });
   });
 
   test('round-trips preset json', () {

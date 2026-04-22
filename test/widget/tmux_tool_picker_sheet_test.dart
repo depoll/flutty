@@ -55,7 +55,6 @@ void main() {
       expect(find.text('Claude Code'), findsOneWidget);
       expect(find.text('Codex'), findsOneWidget);
       // Tools that aren't installed must not appear.
-      expect(find.text('Aider'), findsNothing);
       expect(find.text('Copilot CLI'), findsNothing);
       expect(find.text('Gemini CLI'), findsNothing);
       expect(find.text('OpenCode'), findsNothing);

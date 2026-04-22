@@ -8,9 +8,6 @@ enum AgentLaunchTool {
   /// GitHub Copilot CLI.
   copilotCli,
 
-  /// Aider.
-  aider,
-
   /// OpenAI Codex CLI.
   codex,
 
@@ -27,7 +24,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get label => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => 'Aider',
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
@@ -37,7 +33,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get commandName => switch (this) {
     AgentLaunchTool.claudeCode => 'claude',
     AgentLaunchTool.copilotCli => 'copilot',
-    AgentLaunchTool.aider => 'aider',
     AgentLaunchTool.codex => 'codex',
     AgentLaunchTool.openCode => 'opencode',
     AgentLaunchTool.geminiCli => 'gemini',
@@ -47,7 +42,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   bool get supportsResume => switch (this) {
     AgentLaunchTool.claudeCode => true,
     AgentLaunchTool.copilotCli => true,
-    AgentLaunchTool.aider => true,
     AgentLaunchTool.codex => true,
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
@@ -58,7 +52,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String? get discoveredSessionToolName => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => null,
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
@@ -72,7 +65,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   List<String> get yoloArguments => switch (this) {
     AgentLaunchTool.claudeCode => const ['--dangerously-skip-permissions'],
     AgentLaunchTool.copilotCli => const ['--yolo'],
-    AgentLaunchTool.aider => const ['--yes'],
     AgentLaunchTool.codex => const ['--yolo'],
     AgentLaunchTool.openCode => const [],
     AgentLaunchTool.geminiCli => const ['--yolo'],
@@ -102,10 +94,7 @@ class AgentLaunchPreset {
     final rawTool = _readTrimmedString(json['tool']);
     final tool = AgentLaunchTool.values.firstWhere(
       (value) => value.name == rawTool,
-      orElse: () => switch (rawTool) {
-        'aider' => AgentLaunchTool.aider,
-        _ => AgentLaunchTool.claudeCode,
-      },
+      orElse: () => AgentLaunchTool.claudeCode,
     );
     return AgentLaunchPreset(
       tool: tool,
@@ -227,8 +216,6 @@ final _copilotAllowAllPathsPattern = RegExp(
   r'(?<!\S)--allow-all-paths(?=\s|$)',
 );
 final _copilotAllowAllUrlsPattern = RegExp(r'(?<!\S)--allow-all-urls(?=\s|$)');
-final _aiderYesPattern = RegExp(r'(?<!\S)--yes(?=\s|$)');
-final _aiderYesAlwaysPattern = RegExp(r'(?<!\S)--yes-always(?=\s|$)');
 final _geminiYoloPattern = RegExp(r'(?<!\S)(?:--yolo|-y)(?=\s|$)');
 final _openCodeDangerouslySkipPermissionsPattern = RegExp(
   r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
@@ -316,10 +303,6 @@ String? _normalizeAgentToolArguments({
         _copilotAllowAllPathsPattern,
         _copilotAllowAllUrlsPattern,
       ]),
-    AgentLaunchTool.aider => _stripArgumentPatterns(
-      trimmedAdditionalArguments,
-      [_aiderYesPattern, _aiderYesAlwaysPattern],
-    ),
     AgentLaunchTool.codex => _stripCodexYoloConflicts(
       trimmedAdditionalArguments,
     ),

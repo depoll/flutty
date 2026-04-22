@@ -34,7 +34,6 @@ class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockShellChannel extends Mock implements SSHSession {}
 
-<<<<<<< HEAD
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
