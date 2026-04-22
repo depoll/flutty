@@ -41,9 +41,7 @@ class AiSessionProviderEntry {
   /// Full status text for roomy list tiles.
   String get statusLabel {
     if (hasFailure) return 'Could not load recent sessions';
-    if (hasSessions) {
-      return '${sessions.length} session${sessions.length == 1 ? '' : 's'}';
-    }
+    if (hasSessions) return 'Recent sessions available';
     if (isLoading) return 'Loading recent sessions…';
     if (wasAttempted) return 'No recent sessions for this project';
     return 'Tap to view recent sessions';
@@ -52,7 +50,7 @@ class AiSessionProviderEntry {
   /// Compact status text for tighter provider rows.
   String get compactStatusLabel {
     if (hasFailure) return 'error';
-    if (hasSessions) return '${sessions.length}';
+    if (hasSessions) return 'ready';
     if (isLoading) return 'loading';
     if (wasAttempted) return 'no recent';
     return '';
@@ -383,6 +381,9 @@ class AiSessionPickerDialog extends StatefulWidget {
 }
 
 class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
+  static const _loadMoreScrollThreshold = 240.0;
+
+  final ScrollController _scrollController = ScrollController();
   StreamSubscription<DiscoveredSessionsResult>? _subscription;
   List<ToolSessionInfo>? _sessions;
   String? _error;
@@ -396,11 +397,13 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
   void initState() {
     super.initState();
     _maxSessions = widget.initialMaxSessions;
+    _scrollController.addListener(_maybeLoadMoreForScrollPosition);
     unawaited(_loadSessions());
   }
 
   @override
   void dispose() {
+    _scrollController.dispose();
     unawaited(_subscription?.cancel());
     super.dispose();
   }
@@ -459,6 +462,13 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
     unawaited(_loadSessions());
   }
 
+  void _maybeLoadMoreForScrollPosition() {
+    if (_isLoading || !_canLoadMore || !_scrollController.hasClients) return;
+    if (_scrollController.position.extentAfter <= _loadMoreScrollThreshold) {
+      _loadMore();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -489,6 +499,7 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
                   Expanded(
                     child: Scrollbar(
                       child: ListView.separated(
+                        controller: _scrollController,
                         itemCount: sessions.length,
                         separatorBuilder: (_, _) => const Divider(height: 1),
                         itemBuilder: (context, index) => _AiSessionPickerTile(
@@ -524,8 +535,6 @@ class _AiSessionPickerDialogState extends State<AiSessionPickerDialog> {
               ),
             ),
       actions: [
-        if (_canLoadMore)
-          TextButton(onPressed: _loadMore, child: const Text('Load more')),
         if (!_isLoading && !hasSessions)
           TextButton(
             onPressed: () => unawaited(_loadSessions()),

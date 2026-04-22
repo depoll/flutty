@@ -30,12 +30,12 @@ void main() {
       expect(entries[0].hasFailure, isTrue);
       expect(entries[0].statusLabel, 'Could not load recent sessions');
       expect(entries[1].hasSessions, isTrue);
-      expect(entries[1].statusLabel, '1 session');
+      expect(entries[1].statusLabel, 'Recent sessions available');
       expect(entries[2].isLoading, isTrue);
       expect(entries[2].compactStatusLabel, 'loading');
     });
 
-    test('keeps the discovered count visible while refreshing', () {
+    test('keeps provider availability visible while refreshing', () {
       const entry = AiSessionProviderEntry(
         toolName: 'Codex',
         sessions: <ToolSessionInfo>[
@@ -50,8 +50,8 @@ void main() {
         isLoading: true,
       );
 
-      expect(entry.statusLabel, '1 session');
-      expect(entry.compactStatusLabel, '1');
+      expect(entry.statusLabel, 'Recent sessions available');
+      expect(entry.compactStatusLabel, 'ready');
     });
   });
 
@@ -105,13 +105,13 @@ void main() {
       );
       await tester.pump();
 
-      expect(find.text('Codex|1|idle|ok'), findsOneWidget);
+      expect(find.text('Codex|ready|idle|ok'), findsOneWidget);
       expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
 
       await codexController.close();
       await tester.pump();
 
-      expect(find.text('Codex|1|idle|ok'), findsOneWidget);
+      expect(find.text('Codex|ready|idle|ok'), findsOneWidget);
       expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
 
       claudeController.add(
@@ -191,6 +191,55 @@ void main() {
   });
 
   group('AiSessionPickerDialog', () {
+    testWidgets('loads more sessions while scrolling', (tester) async {
+      final requests = <int>[];
+      final allSessions = List.generate(
+        24,
+        (index) => ToolSessionInfo(
+          toolName: 'Codex',
+          sessionId: 'session-$index',
+          summary: 'Session $index',
+        ),
+      );
+
+      await tester.pumpWidget(
+        _wrap(
+          Builder(
+            builder: (context) => TextButton(
+              onPressed: () {
+                unawaited(
+                  showAiSessionPickerDialog(
+                    context: context,
+                    toolName: 'Codex',
+                    loadSessions: (maxSessions) {
+                      requests.add(maxSessions);
+                      return Stream<DiscoveredSessionsResult>.value(
+                        DiscoveredSessionsResult(
+                          sessions: allSessions.take(maxSessions).toList(),
+                          attemptedTools: const <String>{'Codex'},
+                        ),
+                      );
+                    },
+                  ),
+                );
+              },
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(requests, [12]);
+
+      await tester.drag(find.byType(ListView), const Offset(0, -1200));
+      await tester.pumpAndSettle();
+
+      expect(requests, [12, 24]);
+    });
+
     testWidgets('returns the tapped session', (tester) async {
       const selectedSession = ToolSessionInfo(
         toolName: 'Codex',
