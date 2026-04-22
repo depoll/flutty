@@ -357,7 +357,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
   double _dragOffset = 0;
-  StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
   bool _loadingWindows = false;
@@ -430,10 +430,62 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void _subscribeToWindowChanges() {
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
-        .listen((_) {
-          if (!mounted) return;
-          _loadWindows();
-        });
+        .listen(_handleWindowChangeEvent);
+  }
+
+  void _handleWindowChangeEvent(TmuxWindowChangeEvent event) {
+    if (!mounted) return;
+    if (event is TmuxWindowReloadEvent) {
+      _loadWindows();
+      return;
+    }
+    final currentWindows = _windows;
+    if (currentWindows == null) {
+      _loadWindows();
+      return;
+    }
+    final windows = applyTmuxWindowChangeEvent(currentWindows, event);
+    _applyWindows(windows);
+    if (widget.isProUser) {
+      unawaited(_prefetchPreferredSessionProvider(windows: windows));
+    }
+  }
+
+  void _applyWindows(List<TmuxWindow> windows) {
+    // Detect new alerts that weren't in the previous window list.
+    final newAlerts = windows.where(
+      (w) => w.hasAlert && !w.isActive && !_seenAlertWindows.contains(w.index),
+    );
+    if (newAlerts.isNotEmpty) {
+      unawaited(_bounceController.forward(from: 0));
+      for (final w in newAlerts) {
+        _seenAlertWindows.add(w.index);
+        _sendAlertNotification(w);
+      }
+    }
+
+    final activeAlerts = _seenAlertWindows
+        .where(
+          (idx) =>
+              windows.any((w) => w.index == idx && w.hasAlert && w.isActive),
+        )
+        .toList(growable: false);
+    for (final windowIndex in activeAlerts) {
+      _clearAlertNotification(windowIndex);
+    }
+
+    final clearedAlerts = _seenAlertWindows
+        .where((idx) => !windows.any((w) => w.index == idx && w.hasAlert))
+        .toList(growable: false);
+    for (final windowIndex in clearedAlerts) {
+      _seenAlertWindows.remove(windowIndex);
+      _clearAlertNotification(windowIndex);
+    }
+
+    setState(() {
+      _windows = windows;
+      _isLoading = false;
+    });
   }
 
   String? _resolveRecentSessionScopeWorkingDirectory([
@@ -475,42 +527,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         widget.tmuxSessionName,
       );
       if (!mounted) return;
-
-      // Detect new alerts that weren't in the previous window list.
-      final newAlerts = windows.where(
-        (w) =>
-            w.hasAlert && !w.isActive && !_seenAlertWindows.contains(w.index),
-      );
-      if (newAlerts.isNotEmpty) {
-        unawaited(_bounceController.forward(from: 0));
-        for (final w in newAlerts) {
-          _seenAlertWindows.add(w.index);
-          _sendAlertNotification(w);
-        }
-      }
-
-      final activeAlerts = _seenAlertWindows
-          .where(
-            (idx) =>
-                windows.any((w) => w.index == idx && w.hasAlert && w.isActive),
-          )
-          .toList(growable: false);
-      for (final windowIndex in activeAlerts) {
-        _clearAlertNotification(windowIndex);
-      }
-
-      final clearedAlerts = _seenAlertWindows
-          .where((idx) => !windows.any((w) => w.index == idx && w.hasAlert))
-          .toList(growable: false);
-      for (final windowIndex in clearedAlerts) {
-        _seenAlertWindows.remove(windowIndex);
-        _clearAlertNotification(windowIndex);
-      }
-
-      setState(() {
-        _windows = windows;
-        _isLoading = false;
-      });
+      _applyWindows(windows);
       if (widget.isProUser) {
         unawaited(_prefetchPreferredSessionProvider(windows: windows));
       }

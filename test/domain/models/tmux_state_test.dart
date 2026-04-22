@@ -203,6 +203,50 @@ void main() {
     });
   });
 
+  group('applyTmuxWindowChangeEvent', () {
+    test(
+      'replaces an existing window snapshot and clears prior active state',
+      () {
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'first', isActive: true),
+          TmuxWindow(index: 1, name: 'second', isActive: false),
+        ];
+
+        final updated = applyTmuxWindowChangeEvent(
+          windows,
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              name: 'second-renamed',
+              isActive: true,
+              paneTitle: 'editing',
+            ),
+          ),
+        );
+
+        expect(updated[0].isActive, isFalse);
+        expect(updated[1].isActive, isTrue);
+        expect(updated[1].name, 'second-renamed');
+        expect(updated[1].paneTitle, 'editing');
+      },
+    );
+
+    test('adds a new window snapshot in index order', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'first', isActive: true),
+      ];
+
+      final updated = applyTmuxWindowChangeEvent(
+        windows,
+        const TmuxWindowSnapshotEvent(
+          TmuxWindow(index: 2, name: 'third', isActive: false),
+        ),
+      );
+
+      expect(updated.map((window) => window.index).toList(), [0, 2]);
+    });
+  });
+
   group('ToolSessionInfo', () {
     test('constructs with all fields', () {
       final info = ToolSessionInfo(

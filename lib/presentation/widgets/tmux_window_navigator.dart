@@ -144,7 +144,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
-  StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   String? _error;
   bool _loadingWindows = false;
@@ -162,10 +162,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     _installedToolsFuture = _tmux.detectInstalledAgentTools(widget.session);
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
-        .listen((_) {
-          if (!mounted) return;
-          _loadWindows();
-        });
+        .listen(_handleWindowChangeEvent);
     _loadWindows();
   }
 
@@ -249,6 +246,23 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         unawaited(_loadWindows());
       }
     }
+  }
+
+  void _handleWindowChangeEvent(TmuxWindowChangeEvent event) {
+    if (!mounted) return;
+    if (event is TmuxWindowReloadEvent) {
+      _loadWindows();
+      return;
+    }
+    final currentWindows = _windows;
+    if (currentWindows == null) {
+      _loadWindows();
+      return;
+    }
+    setState(() {
+      _windows = applyTmuxWindowChangeEvent(currentWindows, event);
+      _isLoadingWindows = false;
+    });
   }
 
   void _switchToWindow(int windowIndex) {

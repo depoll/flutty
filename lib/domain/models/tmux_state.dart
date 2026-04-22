@@ -163,6 +163,28 @@ class TmuxWindow {
   bool get needsLocalIdleRefresh =>
       !hasAlert && idleSeconds != null && idleSeconds! <= _idleThreshold;
 
+  /// Returns a copy of this window with selectively overridden fields.
+  TmuxWindow copyWith({
+    bool? isActive,
+    String? name,
+    String? currentCommand,
+    String? currentPath,
+    String? flags,
+    String? paneTitle,
+    int? lastActivityEpochSeconds,
+  }) => TmuxWindow(
+    index: index,
+    name: name ?? this.name,
+    isActive: isActive ?? this.isActive,
+    currentCommand: currentCommand ?? this.currentCommand,
+    currentPath: currentPath ?? this.currentPath,
+    flags: flags ?? this.flags,
+    paneTitle: paneTitle ?? this.paneTitle,
+    idleSeconds: _snapshotIdleSeconds,
+    lastActivityEpochSeconds:
+        lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
+  );
+
   /// A short display title — prefers the richest usable tmux title.
   String get displayTitle {
     final normalizedPaneTitle = _normalizedTmuxTitle(
@@ -243,6 +265,56 @@ class TmuxWindow {
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
+}
+
+/// Live update emitted while watching a tmux session in control mode.
+sealed class TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowChangeEvent].
+  const TmuxWindowChangeEvent();
+}
+
+/// A direct per-window snapshot from tmux's `%subscription-changed` output.
+class TmuxWindowSnapshotEvent extends TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowSnapshotEvent].
+  const TmuxWindowSnapshotEvent(this.window);
+
+  /// The latest window snapshot from tmux.
+  final TmuxWindow window;
+}
+
+/// A signal that callers should refetch the full window list.
+class TmuxWindowReloadEvent extends TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowReloadEvent].
+  const TmuxWindowReloadEvent();
+}
+
+/// Applies a live tmux window update to an existing window list.
+List<TmuxWindow> applyTmuxWindowChangeEvent(
+  List<TmuxWindow> windows,
+  TmuxWindowChangeEvent event,
+) {
+  switch (event) {
+    case TmuxWindowReloadEvent():
+      return windows;
+    case TmuxWindowSnapshotEvent(window: final window):
+      final updated = windows
+          .map(
+            (existing) => window.isActive && existing.index != window.index
+                ? existing.copyWith(isActive: false)
+                : existing,
+          )
+          .toList(growable: true);
+      final existingIndex = updated.indexWhere(
+        (existing) => existing.index == window.index,
+      );
+      if (existingIndex == -1) {
+        updated.add(window);
+      } else {
+        updated[existingIndex] = window;
+      }
+      updated.sort((a, b) => a.index.compareTo(b.index));
+      return updated;
+  }
 }
 
 /// Metadata for a recent AI coding tool session found on a remote host.

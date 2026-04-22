@@ -1,4 +1,5 @@
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
@@ -30,103 +31,112 @@ void main() {
     );
   });
 
-  group('shouldReloadTmuxWindowsFromControlLine', () {
+  group('parseTmuxWindowChangeEventFromControlLine', () {
     const subscriptionName = 'flutty-1-42';
 
-    test('returns true for matching subscription notifications', () {
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          r'%subscription-changed flutty-1-42 $1 @1 1 %1 : updated',
-          subscriptionName: subscriptionName,
-        ),
-        isTrue,
+    test('returns a window snapshot event for matching subscriptions', () {
+      final event = parseTmuxWindowChangeEventFromControlLine(
+        r'%subscription-changed flutty-1-42 $1 @1 1 %1 : 1|renamed|1|sleep|/tmp|*|custom-title|1712930000',
+        subscriptionName: subscriptionName,
       );
+
+      expect(event, isA<TmuxWindowSnapshotEvent>());
+      final snapshot = event! as TmuxWindowSnapshotEvent;
+      expect(snapshot.window.index, 1);
+      expect(snapshot.window.name, 'renamed');
+      expect(snapshot.window.isActive, isTrue);
+      expect(snapshot.window.paneTitle, 'custom-title');
     });
 
-    test('returns false for other subscriptions', () {
+    test('normalizes the wrapped first control-mode line', () {
+      final event = parseTmuxWindowChangeEventFromControlLine(
+        '\u001bP1000p%subscription-changed flutty-1-42 \$1 @1 1 %1 : '
+        '0|shell|1|sleep|/tmp|*|wrapped-title|1712930000',
+        subscriptionName: subscriptionName,
+      );
+
+      expect(event, isA<TmuxWindowSnapshotEvent>());
+      final snapshot = event! as TmuxWindowSnapshotEvent;
+      expect(snapshot.window.displayTitle, 'wrapped-title');
+    });
+
+    test('returns null for other subscriptions', () {
       expect(
-        shouldReloadTmuxWindowsFromControlLine(
+        parseTmuxWindowChangeEventFromControlLine(
           r'%subscription-changed other-subscription $1 @1 1 %1 : updated',
           subscriptionName: subscriptionName,
         ),
-        isFalse,
-      );
-    });
-
-    test('returns true for window lifecycle notifications', () {
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          '%window-renamed @1 🔥 test-emoji',
-          subscriptionName: subscriptionName,
-        ),
-        isTrue,
-      );
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          '%window-close @1',
-          subscriptionName: subscriptionName,
-        ),
-        isTrue,
-      );
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          r'%session-window-changed $1 @1',
-          subscriptionName: subscriptionName,
-        ),
-        isTrue,
+        isNull,
       );
     });
 
     test(
-      'returns true for control-mode notifications carrying window state',
+      'returns reload events for lifecycle notifications without snapshots',
       () {
         expect(
-          shouldReloadTmuxWindowsFromControlLine(
-            '%layout-change @1 even-horizontal even-horizontal *',
+          parseTmuxWindowChangeEventFromControlLine(
+            '%window-close @1',
             subscriptionName: subscriptionName,
           ),
-          isTrue,
+          isA<TmuxWindowReloadEvent>(),
         );
         expect(
-          shouldReloadTmuxWindowsFromControlLine(
-            r'%client-session-changed /dev/ttys001 $1 dev',
+          parseTmuxWindowChangeEventFromControlLine(
+            '%unlinked-window-close @1',
             subscriptionName: subscriptionName,
           ),
-          isTrue,
+          isA<TmuxWindowReloadEvent>(),
         );
         expect(
-          shouldReloadTmuxWindowsFromControlLine(
+          parseTmuxWindowChangeEventFromControlLine(
             '%pane-mode-changed %1',
             subscriptionName: subscriptionName,
           ),
-          isTrue,
+          isA<TmuxWindowReloadEvent>(),
         );
       },
     );
 
-    test('returns false for control block markers and noise', () {
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          '%begin 1 2 0',
-          subscriptionName: subscriptionName,
-        ),
-        isFalse,
-      );
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          '%output %1 hello',
-          subscriptionName: subscriptionName,
-        ),
-        isFalse,
-      );
-      expect(
-        shouldReloadTmuxWindowsFromControlLine(
-          '',
-          subscriptionName: subscriptionName,
-        ),
-        isFalse,
-      );
-    });
+    test(
+      'ignores noise and notifications that should rely on snapshots instead',
+      () {
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
+            '%window-renamed @1 🔥 test-emoji',
+            subscriptionName: subscriptionName,
+          ),
+          isNull,
+        );
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
+            r'%session-window-changed $1 @1',
+            subscriptionName: subscriptionName,
+          ),
+          isNull,
+        );
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
+            '%begin 1 2 0',
+            subscriptionName: subscriptionName,
+          ),
+          isNull,
+        );
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
+            '%output %1 hello',
+            subscriptionName: subscriptionName,
+          ),
+          isNull,
+        );
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
+            '',
+            subscriptionName: subscriptionName,
+          ),
+          isNull,
+        );
+      },
+    );
   });
 
   group('tmux window action helpers', () {

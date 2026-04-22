@@ -2528,7 +2528,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
   bool _restoredUiState = false;
-  StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   Timer? _tmuxRetryTimer;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
@@ -2702,11 +2702,34 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     await _windowChangeSubscription?.cancel();
     _windowChangeSubscription = tmux
         .watchWindowChanges(session, sessionName)
-        .listen((_) {
-          if (!mounted) return;
-          _refreshTmuxWindows(session, sessionName);
-        });
+        .listen(
+          (event) => _handleWindowChangeEvent(session, sessionName, event),
+        );
     await _refreshTmuxWindows(session, sessionName);
+  }
+
+  void _handleWindowChangeEvent(
+    SshSession session,
+    String sessionName,
+    TmuxWindowChangeEvent event,
+  ) {
+    if (!mounted) return;
+    if (event is TmuxWindowReloadEvent) {
+      _refreshTmuxWindows(session, sessionName);
+      return;
+    }
+    final currentWindows = _windows;
+    if (currentWindows == null) {
+      _refreshTmuxWindows(session, sessionName);
+      return;
+    }
+    _tmuxRetryTimer?.cancel();
+    _tmuxRetryTimer = null;
+    setState(() {
+      _windows = applyTmuxWindowChangeEvent(currentWindows, event);
+      _sessionName = sessionName;
+      _queried = true;
+    });
   }
 
   Future<void> _refreshTmuxWindows(
