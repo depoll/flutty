@@ -10,7 +10,9 @@ import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
+import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 
@@ -83,6 +85,34 @@ class _MutableActiveSessionsNotifier extends ActiveSessionsNotifier {
   }
 }
 
+class _TestTransferIntentService extends TransferIntentService {
+  @override
+  Stream<String> get incomingPayloads => const Stream<String>.empty();
+
+  @override
+  Future<String?> consumeIncomingTransferPayload() async => null;
+
+  @override
+  Future<void> dispose() async {}
+}
+
+class _TestHomeScreenShortcutService extends HomeScreenShortcutService {
+  @override
+  Stream<int> get hostLaunches => const Stream<int>.empty();
+
+  @override
+  Future<void> initialize() async {}
+
+  @override
+  Future<void> updateShortcuts({
+    required List<Host> hosts,
+    required Set<int> pinnedHostIds,
+  }) async {}
+
+  @override
+  Future<void> dispose() async {}
+}
+
 Host _buildHost({
   required int id,
   required String label,
@@ -153,7 +183,18 @@ void main() {
 
   Widget buildTestWidget(AppDatabase db, {Size size = const Size(800, 600)}) =>
       ProviderScope(
-        overrides: [databaseProvider.overrideWithValue(db)],
+        overrides: [
+          databaseProvider.overrideWithValue(db),
+          transferIntentServiceProvider.overrideWith(
+            (ref) => _TestTransferIntentService(),
+          ),
+          homeScreenShortcutServiceProvider.overrideWith(
+            (ref) => _TestHomeScreenShortcutService(),
+          ),
+          pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+            (ref) => Stream<Set<int>>.value(const <int>{}),
+          ),
+        ],
         child: MediaQuery(
           data: MediaQueryData(size: size),
           child: MaterialApp.router(
@@ -202,7 +243,19 @@ void main() {
     required List overrides,
     Size size = const Size(400, 800),
   }) => ProviderScope(
-    overrides: [databaseProvider.overrideWithValue(db), ...overrides],
+    overrides: [
+      databaseProvider.overrideWithValue(db),
+      transferIntentServiceProvider.overrideWith(
+        (ref) => _TestTransferIntentService(),
+      ),
+      homeScreenShortcutServiceProvider.overrideWith(
+        (ref) => _TestHomeScreenShortcutService(),
+      ),
+      pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+        (ref) => Stream<Set<int>>.value(const <int>{}),
+      ),
+      ...overrides,
+    ],
     child: MediaQuery(
       data: MediaQueryData(size: size),
       child: const MaterialApp(home: HomeScreen()),

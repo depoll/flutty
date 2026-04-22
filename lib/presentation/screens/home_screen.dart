@@ -21,6 +21,7 @@ import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/auth_service.dart';
+import '../../domain/services/home_screen_shortcut_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -66,6 +67,10 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   final Queue<String> _incomingTransferQueue = Queue<String>();
   String? _activeIncomingTransferPayload;
   bool _isHandlingIncomingTransfer = false;
+  StreamSubscription<int>? _homeScreenShortcutSubscription;
+  final Queue<int> _pendingHomeScreenShortcutHostIds = Queue<int>();
+  int? _activeHomeScreenShortcutHostId;
+  bool _isHandlingHomeScreenShortcut = false;
 
   // Breakpoint for switching between mobile and desktop layout
   static const double _mobileBreakpoint = 600;
@@ -81,6 +86,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
             _enqueueIncomingTransferPayload(payload);
           }
         });
+    _homeScreenShortcutSubscription = ref
+        .read(homeScreenShortcutServiceProvider)
+        .hostLaunches
+        .listen((hostId) {
+          if (mounted) {
+            _enqueueHomeScreenShortcutHostLaunch(hostId);
+          }
+        });
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (mounted) {
         unawaited(_checkIncomingTransferPayload());
@@ -92,6 +105,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_incomingTransferSubscription?.cancel());
+    unawaited(_homeScreenShortcutSubscription?.cancel());
     super.dispose();
   }
 
@@ -238,6 +252,61 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         context,
       ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
     }
+  }
+
+  void _enqueueHomeScreenShortcutHostLaunch(int hostId) {
+    if (hostId <= 0 ||
+        hostId == _activeHomeScreenShortcutHostId ||
+        _pendingHomeScreenShortcutHostIds.contains(hostId)) {
+      return;
+    }
+    _pendingHomeScreenShortcutHostIds.add(hostId);
+    unawaited(_processHomeScreenShortcutQueue());
+  }
+
+  Future<void> _processHomeScreenShortcutQueue() async {
+    if (_isHandlingHomeScreenShortcut) {
+      return;
+    }
+
+    while (mounted && _pendingHomeScreenShortcutHostIds.isNotEmpty) {
+      _isHandlingHomeScreenShortcut = true;
+      final hostId = _pendingHomeScreenShortcutHostIds.removeFirst();
+      _activeHomeScreenShortcutHostId = hostId;
+      try {
+        await _openHomeScreenShortcutHost(hostId);
+      } finally {
+        _activeHomeScreenShortcutHostId = null;
+        _isHandlingHomeScreenShortcut = false;
+      }
+    }
+  }
+
+  Future<void> _openHomeScreenShortcutHost(int hostId) async {
+    final host = await ref.read(hostRepositoryProvider).getById(hostId);
+    if (!mounted) {
+      return;
+    }
+
+    if (host == null) {
+      await ref
+          .read(homeScreenShortcutPreferencesServiceProvider)
+          .setHostPinned(hostId, pinned: false);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'That home screen host shortcut is no longer available',
+          ),
+        ),
+      );
+      return;
+    }
+
+    switchToConnectionsTab();
+    unawaited(context.push('/terminal/${host.id}'));
   }
 
   @override
@@ -661,6 +730,7 @@ class HostsPanel extends ConsumerWidget {
 enum _HostContextAction {
   connect,
   newConnection,
+  toggleHomeScreen,
   disconnect,
   edit,
   duplicate,
@@ -723,6 +793,12 @@ class _HostRow extends ConsumerWidget {
     final hasHostThemeAccess = monetizationState.allowsFeature(
       MonetizationFeature.hostSpecificThemes,
     );
+    final pinnedHomeScreenShortcutHostIds =
+        ref.watch(pinnedHomeScreenShortcutHostIdsProvider).asData?.value ??
+        const <int>{};
+    final isPinnedToHomeScreen =
+        supportsHomeScreenShortcutActions &&
+        pinnedHomeScreenShortcutHostIds.contains(host.id);
     final previewEntries = connectionIds
         .map((connectionId) {
           final connection = sessionsNotifier.getActiveConnection(connectionId);
@@ -839,6 +915,14 @@ class _HostRow extends ConsumerWidget {
                                 Icons.star_rounded,
                                 size: 14,
                                 color: Colors.amber.shade600,
+                              ),
+                            ],
+                            if (isPinnedToHomeScreen) ...[
+                              const SizedBox(width: 6),
+                              Icon(
+                                Icons.home_rounded,
+                                size: 14,
+                                color: colorScheme.primary,
                               ),
                             ],
                           ],
@@ -1055,6 +1139,13 @@ class _HostRow extends ConsumerWidget {
     Offset globalPosition,
   ) async {
     final colorScheme = Theme.of(context).colorScheme;
+    final pinnedHomeScreenShortcutHostIds = ref.read(
+      pinnedHomeScreenShortcutHostIdsProvider,
+    );
+    final isPinnedToHomeScreen =
+        supportsHomeScreenShortcutActions &&
+        (pinnedHomeScreenShortcutHostIds.asData?.value.contains(host.id) ??
+            false);
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
     final disconnectLabel = connectionIds.length > 1
@@ -1096,6 +1187,21 @@ class _HostRow extends ConsumerWidget {
               contentPadding: EdgeInsets.zero,
               leading: const Icon(Icons.link_off_rounded),
               title: Text(disconnectLabel),
+            ),
+          ),
+        if (supportsHomeScreenShortcutActions)
+          PopupMenuItem<_HostContextAction>(
+            value: _HostContextAction.toggleHomeScreen,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: Icon(
+                isPinnedToHomeScreen ? Icons.home_rounded : Icons.home_outlined,
+              ),
+              title: Text(
+                isPinnedToHomeScreen
+                    ? 'Remove from Home Screen'
+                    : 'Add to Home Screen',
+              ),
             ),
           ),
         const PopupMenuDivider(),
@@ -1149,6 +1255,13 @@ class _HostRow extends ConsumerWidget {
       case _HostContextAction.newConnection:
         await _openNewConnection(context, ref);
         return;
+      case _HostContextAction.toggleHomeScreen:
+        await _toggleHomeScreenShortcut(
+          context,
+          ref,
+          isPinnedToHomeScreen: isPinnedToHomeScreen,
+        );
+        return;
       case _HostContextAction.disconnect:
         await _disconnectHostConnections(ref, connectionIds);
         return;
@@ -1165,6 +1278,29 @@ class _HostRow extends ConsumerWidget {
         await _confirmDelete(context, ref);
         return;
     }
+  }
+
+  Future<void> _toggleHomeScreenShortcut(
+    BuildContext context,
+    WidgetRef ref, {
+    required bool isPinnedToHomeScreen,
+  }) async {
+    await ref
+        .read(homeScreenShortcutPreferencesServiceProvider)
+        .setHostPinned(host.id, pinned: !isPinnedToHomeScreen);
+    if (!context.mounted) {
+      return;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          isPinnedToHomeScreen
+              ? 'Removed from home screen shortcuts'
+              : 'Added to home screen shortcuts',
+        ),
+      ),
+    );
   }
 
   Future<void> _exportEncryptedFile(BuildContext context, WidgetRef ref) async {
@@ -1251,7 +1387,14 @@ class _HostRow extends ConsumerWidget {
     );
 
     if ((confirmed ?? false) && context.mounted) {
-      await ref.read(hostRepositoryProvider).delete(host.id);
+      final deletedCount = await ref
+          .read(hostRepositoryProvider)
+          .delete(host.id);
+      if (deletedCount > 0) {
+        await ref
+            .read(homeScreenShortcutPreferencesServiceProvider)
+            .setHostPinned(host.id, pinned: false);
+      }
     }
   }
 
