@@ -10,6 +10,7 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/domain/services/home_screen_shortcut_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
 import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
@@ -106,6 +107,18 @@ ActiveConnection _buildActiveConnection({
   ),
 );
 
+Widget _buildHostsScreen({required AppDatabase db, required List overrides}) =>
+    ProviderScope(
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        pinnedHomeScreenShortcutHostIdsProvider.overrideWith(
+          (ref) => Stream<Set<int>>.value(const <int>{}),
+        ),
+        ...overrides,
+      ],
+      child: const MaterialApp(home: HostsScreen()),
+    );
+
 void main() {
   setUpAll(() {
     registerFallbackValue(<int>[]);
@@ -121,13 +134,12 @@ void main() {
     addTearDown(hostsController.close);
 
     await tester.pumpWidget(
-      ProviderScope(
+      _buildHostsScreen(
+        db: db,
         overrides: [
-          databaseProvider.overrideWithValue(db),
           activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
           allHostsProvider.overrideWith((ref) => hostsController.stream),
         ],
-        child: const MaterialApp(home: HostsScreen()),
       ),
     );
 
@@ -155,13 +167,12 @@ void main() {
     addTearDown(hostsController.close);
 
     await tester.pumpWidget(
-      ProviderScope(
+      _buildHostsScreen(
+        db: db,
         overrides: [
-          databaseProvider.overrideWithValue(db),
           activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
           allHostsProvider.overrideWith((ref) => hostsController.stream),
         ],
-        child: const MaterialApp(home: HostsScreen()),
       ),
     );
 
@@ -177,9 +188,9 @@ void main() {
     when(() => hostRepository.reorderByIds(any())).thenAnswer((_) async {});
 
     await tester.pumpWidget(
-      ProviderScope(
+      _buildHostsScreen(
+        db: db,
         overrides: [
-          databaseProvider.overrideWithValue(db),
           hostRepositoryProvider.overrideWithValue(hostRepository),
           activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
           allHostsProvider.overrideWith(
@@ -189,7 +200,6 @@ void main() {
             ]),
           ),
         ],
-        child: const MaterialApp(home: HostsScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -212,16 +222,15 @@ void main() {
     addTearDown(db.close);
 
     await tester.pumpWidget(
-      ProviderScope(
+      _buildHostsScreen(
+        db: db,
         overrides: [
-          databaseProvider.overrideWithValue(db),
           activeSessionsProvider.overrideWith(_TestActiveSessionsNotifier.new),
           allHostsProvider.overrideWith(
             (ref) =>
                 Stream.value([_buildHost(id: 1, label: 'Alpha', sortOrder: 0)]),
           ),
         ],
-        child: const MaterialApp(home: HostsScreen()),
       ),
     );
     await tester.pumpAndSettle();
@@ -254,9 +263,9 @@ void main() {
       );
 
       await tester.pumpWidget(
-        ProviderScope(
+        _buildHostsScreen(
+          db: db,
           overrides: [
-            databaseProvider.overrideWithValue(db),
             activeSessionsProvider.overrideWith(() => sessionsNotifier),
             allHostsProvider.overrideWith(
               (ref) => Stream.value([
@@ -264,7 +273,6 @@ void main() {
               ]),
             ),
           ],
-          child: const MaterialApp(home: HostsScreen()),
         ),
       );
       await tester.pumpAndSettle();
