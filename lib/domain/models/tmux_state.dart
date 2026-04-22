@@ -424,3 +424,18 @@ String? parseTmuxSessionName(String? command) {
 
   return null;
 }
+
+/// Resolves the preferred tmux session name before running remote queries.
+///
+/// Structured host settings win over parsed auto-connect commands because they
+/// are explicit and avoid ambiguous tmux inference when multiple sessions exist.
+String? resolvePreferredTmuxSessionName({
+  String? structuredSessionName,
+  String? autoConnectCommand,
+}) {
+  final structured = structuredSessionName?.trim();
+  if (structured != null && structured.isNotEmpty) {
+    return structured;
+  }
+  return parseTmuxSessionName(autoConnectCommand);
+}

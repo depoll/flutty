@@ -101,13 +101,6 @@ const _tmuxDetectionRetrySchedule = <Duration>[
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
     skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
 
-/// Resolves the tmux session name we can infer before remote verification.
-@visibleForTesting
-String? resolvePreferredTmuxSessionName({
-  String? structuredSessionName,
-  String? autoConnectCommand,
-}) => structuredSessionName ?? parseTmuxSessionName(autoConnectCommand);
-
 /// Resolves the working directory to use when creating a new tmux window.
 @visibleForTesting
 String? resolveTmuxWindowWorkingDirectory({

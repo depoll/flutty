@@ -1555,6 +1555,11 @@ class _ConnectionsPanel extends ConsumerWidget {
                               ? host?.terminalThemeDarkId
                               : null),
                     );
+                    final preferredTmuxSessionName =
+                        resolvePreferredTmuxSessionName(
+                          structuredSessionName: host?.tmuxSessionName,
+                          autoConnectCommand: host?.autoConnectCommand,
+                        );
 
                     return Column(
                       mainAxisSize: MainAxisSize.min,
@@ -1604,6 +1609,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                               'tmux-badge-${connection.connectionId}',
                             ),
                             connectionId: connection.connectionId,
+                            preferredSessionName: preferredTmuxSessionName,
                             onTap: () => unawaited(
                               context.push(
                                 '/terminal/${connection.hostId}'
@@ -2502,10 +2508,12 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
   const _TmuxConnectionBadge({
     required this.connectionId,
     required this.onTap,
+    this.preferredSessionName,
     super.key,
   });
 
   final int connectionId;
+  final String? preferredSessionName;
 
   /// Called when the user taps a window chip — opens the terminal.
   final VoidCallback onTap;
@@ -2533,6 +2541,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
   bool _tmuxQueryScheduled = false;
+  int _tmuxQueryGeneration = 0;
 
   @override
   void initState() {
@@ -2544,10 +2553,32 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   @override
   void didUpdateWidget(covariant _TmuxConnectionBadge oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.connectionId != widget.connectionId) {
+    final connectionChanged = oldWidget.connectionId != widget.connectionId;
+    final preferredSessionChanged =
+        oldWidget.preferredSessionName != widget.preferredSessionName;
+    if (connectionChanged) {
       unawaited(_loadPreferredSessionToolName());
     }
+    if (connectionChanged || preferredSessionChanged) {
+      _tmuxQueryGeneration++;
+      _tmuxRetryTimer?.cancel();
+      _tmuxRetryTimer = null;
+      final subscription = _windowChangeSubscription;
+      _windowChangeSubscription = null;
+      unawaited(subscription?.cancel());
+      setState(() {
+        _windows = null;
+        _sessionName = null;
+        _queried = false;
+        _loadingWindows = false;
+        _pendingWindowReload = false;
+      });
+      unawaited(_queryTmux());
+    }
   }
+
+  bool _isCurrentTmuxQuery(int generation) =>
+      mounted && generation == _tmuxQueryGeneration;
 
   @override
   void dispose() {
@@ -2677,6 +2708,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   }
 
   Future<void> _queryTmux({int retries = 3}) async {
+    final queryGeneration = ++_tmuxQueryGeneration;
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
     final session = sessionsNotifier.getSession(widget.connectionId);
     if (session == null) {
@@ -2687,14 +2719,27 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }
 
     final tmux = ref.read(tmuxServiceProvider);
-    final active = await tmux.isTmuxActive(session);
-    if (!mounted || !active) {
+    final preferredSessionName = widget.preferredSessionName?.trim();
+    final active =
+        preferredSessionName != null && preferredSessionName.isNotEmpty
+        ? await tmux.hasSession(session, preferredSessionName)
+        : await tmux.isTmuxActive(session);
+    if (!_isCurrentTmuxQuery(queryGeneration)) {
+      return;
+    }
+    if (!active) {
       await _retryTmuxQuery(retries);
       return;
     }
 
-    final sessionName = await tmux.currentSessionName(session);
-    if (!mounted || sessionName == null) {
+    final sessionName =
+        preferredSessionName != null && preferredSessionName.isNotEmpty
+        ? preferredSessionName
+        : await tmux.currentSessionName(session);
+    if (!_isCurrentTmuxQuery(queryGeneration)) {
+      return;
+    }
+    if (sessionName == null) {
       await _retryTmuxQuery(retries);
       return;
     }
@@ -2703,16 +2748,28 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _windowChangeSubscription = tmux
         .watchWindowChanges(session, sessionName)
         .listen((_) {
-          if (!mounted) return;
-          _refreshTmuxWindows(session, sessionName);
+          if (!_isCurrentTmuxQuery(queryGeneration)) return;
+          _refreshTmuxWindows(
+            session,
+            sessionName,
+            queryGeneration: queryGeneration,
+          );
         });
-    await _refreshTmuxWindows(session, sessionName);
+    await _refreshTmuxWindows(
+      session,
+      sessionName,
+      queryGeneration: queryGeneration,
+    );
   }
 
   Future<void> _refreshTmuxWindows(
     SshSession session,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    required int queryGeneration,
+  }) async {
+    if (!_isCurrentTmuxQuery(queryGeneration)) {
+      return;
+    }
     if (_loadingWindows) {
       _pendingWindowReload = true;
       return;
@@ -2722,7 +2779,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       final windows = await ref
           .read(tmuxServiceProvider)
           .listWindows(session, sessionName);
-      if (!mounted) return;
+      if (!_isCurrentTmuxQuery(queryGeneration)) {
+        return;
+      }
       if (windows.isEmpty) {
         _scheduleTmuxRetry();
       } else {
@@ -2735,7 +2794,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         _queried = true;
       });
     } on Object {
-      if (!mounted) return;
+      if (!_isCurrentTmuxQuery(queryGeneration)) {
+        return;
+      }
       _scheduleTmuxRetry();
       setState(() {
         _queried = true;
@@ -2744,7 +2805,13 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _loadingWindows = false;
       if (_pendingWindowReload) {
         _pendingWindowReload = false;
-        unawaited(_refreshTmuxWindows(session, sessionName));
+        unawaited(
+          _refreshTmuxWindows(
+            session,
+            sessionName,
+            queryGeneration: queryGeneration,
+          ),
+        );
       }
     }
   }
