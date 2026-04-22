@@ -17,8 +17,6 @@ final _disallowedCommandControlCharacters = RegExp(
   r'[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]',
 );
 final _multilinePattern = RegExp(r'[\r\n]');
-final _shellChainingPattern = RegExp(r'&&|\|\||[;&|]');
-final _shellRedirectionPattern = RegExp('>>?|<');
 
 /// Reasons a terminal command should be reviewed before it is inserted or run.
 enum TerminalCommandReviewReason {
@@ -183,22 +181,108 @@ List<TerminalCommandReviewReason> _collectSuspiciousCommandReasons(
   String command,
 ) {
   final reasons = <TerminalCommandReviewReason>[];
+  final shellTokens = _collectSuspiciousShellTokens(command);
   if (_multilinePattern.hasMatch(command)) {
     reasons.add(TerminalCommandReviewReason.multiline);
   }
   if (_disallowedCommandControlCharacters.hasMatch(command)) {
     reasons.add(TerminalCommandReviewReason.controlCharacters);
   }
-  if (_shellChainingPattern.hasMatch(command)) {
+  if (shellTokens.shellChaining) {
     reasons.add(TerminalCommandReviewReason.shellChaining);
   }
-  if (_shellRedirectionPattern.hasMatch(command)) {
+  if (shellTokens.redirection) {
     reasons.add(TerminalCommandReviewReason.redirection);
   }
-  if (command.contains('`') || command.contains(r'$(')) {
+  if (shellTokens.commandSubstitution) {
     reasons.add(TerminalCommandReviewReason.commandSubstitution);
   }
   return reasons;
+}
+
+({bool shellChaining, bool redirection, bool commandSubstitution})
+_collectSuspiciousShellTokens(String command) {
+  var shellChaining = false;
+  var redirection = false;
+  var commandSubstitution = false;
+  var escapeNext = false;
+  var inSingleQuote = false;
+  var inDoubleQuote = false;
+
+  for (var index = 0; index < command.length; index++) {
+    final character = command[index];
+
+    if (escapeNext) {
+      escapeNext = false;
+      continue;
+    }
+
+    if (inSingleQuote) {
+      if (character == '\'') {
+        inSingleQuote = false;
+      }
+      continue;
+    }
+
+    if (inDoubleQuote) {
+      if (character == r'\') {
+        escapeNext = true;
+        continue;
+      }
+      if (character == '"') {
+        inDoubleQuote = false;
+        continue;
+      }
+      if (character == '`') {
+        commandSubstitution = true;
+        continue;
+      }
+      if (character == r'$' &&
+          index + 1 < command.length &&
+          command[index + 1] == '(') {
+        commandSubstitution = true;
+      }
+      continue;
+    }
+
+    if (character == r'\') {
+      escapeNext = true;
+      continue;
+    }
+    if (character == '\'') {
+      inSingleQuote = true;
+      continue;
+    }
+    if (character == '"') {
+      inDoubleQuote = true;
+      continue;
+    }
+    if (character == '`') {
+      commandSubstitution = true;
+      continue;
+    }
+    if (character == r'$' &&
+        index + 1 < command.length &&
+        command[index + 1] == '(') {
+      commandSubstitution = true;
+      continue;
+    }
+    if (character == ';' || character == '&' || character == '|') {
+      shellChaining = true;
+    } else if (character == '<' || character == '>') {
+      redirection = true;
+    }
+
+    if (shellChaining && redirection && commandSubstitution) {
+      break;
+    }
+  }
+
+  return (
+    shellChaining: shellChaining,
+    redirection: redirection,
+    commandSubstitution: commandSubstitution,
+  );
 }
 
 String _describeReviewReason(TerminalCommandReviewReason reason) =>

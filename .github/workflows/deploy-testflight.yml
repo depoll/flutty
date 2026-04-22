@@ -1,5 +1,7 @@
 name: Deploy PR Preview
 
+run-name: "Deploy PR #${{ inputs.pr-number }}${{ inputs.request-comment-id != '' && format(' from /deploy comment {0}', inputs.request-comment-id) || '' }}"
+
 on:
   workflow_dispatch:
     inputs:
@@ -587,7 +589,7 @@ jobs:
               '',
               '| | Details |',
               '|---|---|',
-              '| **Status** | 🔒 Lock acquired — deploying |',
+              '| **Status** | 🚀 Deploying |',
               `| **Requested by** | ${requestDetails} |`,
               `| **Preview SHA** | \`${deploySha}\` |`,
               `| **Version** | \`${{ needs.finalize-version.outputs.build-display }}\` |`,
@@ -605,7 +607,7 @@ jobs:
               `| **Workflow** | [View deploy run](${runUrl}) |`,
               '',
               rebuildNote,
-              '> Duplicate requests stay locked out while this deploy is queued or running.',
+              '> A newer `/deploy` comment cancels any earlier deploy request for this PR. This workflow waits for matching unsigned preview intermediates for this SHA, then signs and uploads them without recompiling source when they are available.',
                statusMarker,
                '<!-- preview-deploy-state:in_progress -->',
                `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,
@@ -958,7 +960,7 @@ jobs:
               `| **Workflow** | [View deploy run](${runUrl}) |`,
               '',
               rebuildNote,
-              '> Add a new `/deploy` comment if you want to request another deploy.',
+              '> Add a new `/deploy` comment if you want another deploy. A newer request cancels any earlier deploy request for this PR.',
                statusMarker,
                `<!-- preview-deploy-state:${state} -->`,
                `<!-- preview-deploy-last-command-comment-id:${requestCommentId} -->`,

@@ -166,6 +166,7 @@ void main() {
                         session: session,
                         tmuxSessionName: tmuxSessionName,
                         isProUser: true,
+                        startClisInYoloMode: false,
                       ),
                     );
                   },

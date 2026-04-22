@@ -52,6 +52,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required SshSession session,
   required String tmuxSessionName,
   required bool isProUser,
+  required bool startClisInYoloMode,
   String? scopeWorkingDirectory,
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
@@ -60,6 +61,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
     session: session,
     tmuxSessionName: tmuxSessionName,
     isProUser: isProUser,
+    startClisInYoloMode: startClisInYoloMode,
     ref: ref,
     scopeWorkingDirectory: scopeWorkingDirectory,
   ),
@@ -118,6 +120,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
     required this.session,
     required this.tmuxSessionName,
     required this.isProUser,
+    required this.startClisInYoloMode,
     required this.ref,
     this.scopeWorkingDirectory,
   });
@@ -125,6 +128,7 @@ class _TmuxNavigatorSheet extends StatefulWidget {
   final SshSession session;
   final String tmuxSessionName;
   final bool isProUser;
+  final bool startClisInYoloMode;
   final WidgetRef ref;
   final String? scopeWorkingDirectory;
 
@@ -307,7 +311,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         preferredTool: _preferredLaunchTool,
         onToolSelected: (tool) {
           Navigator.pop(context);
-          _createNewWindow(command: tool.commandName, name: tool.commandName);
+          _createNewWindow(
+            command: buildAgentToolCommand(
+              tool,
+              startInYoloMode: widget.startClisInYoloMode,
+            ),
+            name: tool.commandName,
+          );
         },
         onEmptyWindow: () {
           Navigator.pop(context);

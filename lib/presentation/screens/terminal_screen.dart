@@ -31,6 +31,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
@@ -138,6 +139,24 @@ bool shouldReattachTmuxAfterWindowAction({
   required TerminalShellStatus? shellStatus,
 }) {
   if (hasForegroundClient) {
+    return false;
+  }
+  return shellStatus != TerminalShellStatus.runningCommand;
+}
+
+/// Returns whether shell-command review warnings should be shown for text
+/// inserted into the active terminal context.
+///
+/// These warnings are most useful when input is likely targeting a shell
+/// prompt. When a full-screen app owns the alternate buffer, or shell
+/// integration reports that a command is still running, the input is more
+/// likely to be consumed by that program than by the shell itself.
+@visibleForTesting
+bool shouldReviewTerminalCommandInsertion({
+  required TerminalShellStatus? shellStatus,
+  required bool isUsingAltBuffer,
+}) {
+  if (isUsingAltBuffer) {
     return false;
   }
   return shellStatus != TerminalShellStatus.runningCommand;
@@ -285,6 +304,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.tmuxSessionName,
     required this.availableHeight,
     required this.isProUser,
+    required this.startClisInYoloMode,
     required this.ref,
     required this.onAction,
     this.scopeWorkingDirectory,
@@ -301,6 +321,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Whether the user has Pro access.
   final bool isProUser;
+
+  /// Whether supported coding CLIs should launch in YOLO mode for this host.
+  final bool startClisInYoloMode;
 
   /// Riverpod ref.
   final WidgetRef ref;
@@ -780,7 +803,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 }
                 widget.onAction(
                   TmuxNewWindowAction(
-                    command: tool.commandName,
+                    command: buildAgentToolCommand(
+                      tool,
+                      startInYoloMode: widget.startClisInYoloMode,
+                    ),
                     windowName: tool.commandName,
                   ),
                 );
@@ -2343,6 +2369,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Theme state
   Host? _host;
+  bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
 
@@ -2396,6 +2423,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
+
+  bool get _shouldReviewTerminalCommandInsertion =>
+      shouldReviewTerminalCommandInsertion(
+        shellStatus: _shellStatus,
+        isUsingAltBuffer: _isUsingAltBuffer,
+      );
 
   String _terminalCommandAfterInsertion(String insertedText) {
     final snapshot = _buildWrappedTerminalCommandSnapshot();
@@ -2919,6 +2952,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Load host data first for theme
     final hostRepo = ref.read(hostRepositoryProvider);
     _host = await hostRepo.getById(widget.hostId);
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(widget.hostId);
+    _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
     await _loadTheme();
     await _connect(preferredConnectionId: widget.connectionId);
   }
@@ -3650,6 +3687,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       tmuxSessionName: _tmuxSessionName!,
       availableHeight: availableHeight,
       isProUser: isProUser,
+      startClisInYoloMode: _startClisInYoloMode,
       ref: ref,
       onAction: _handleTmuxAction,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -3708,6 +3746,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       tmuxSessionName: _tmuxSessionName!,
       isProUser: isProUser,
+      startClisInYoloMode: _startClisInYoloMode,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -6926,18 +6965,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
-      final shouldPaste = await _confirmTerminalInsertionIfNeeded(
-        insertedText: text,
-        buildReview: (commandText) => assessClipboardPasteCommand(
-          commandText,
-          bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
-        ),
-        title: 'Review clipboard paste',
-        messageBuilder: (review) => review.bracketedPasteModeEnabled
-            ? 'This clipboard content looks risky even with bracketed paste enabled.'
-            : 'This clipboard content could execute multiple or reshaped commands.',
-        confirmLabel: 'Paste anyway',
-      );
+      final shouldPaste =
+          !_shouldReviewTerminalCommandInsertion ||
+          await _confirmTerminalInsertionIfNeeded(
+            insertedText: text,
+            buildReview: (commandText) => assessClipboardPasteCommand(
+              commandText,
+              bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+            ),
+            title: 'Review clipboard paste',
+            messageBuilder: (review) => review.bracketedPasteModeEnabled
+                ? 'This clipboard content looks risky even with bracketed paste enabled.'
+                : 'This clipboard content could execute multiple or reshaped commands.',
+            confirmLabel: 'Paste anyway',
+          );
       if (!shouldPaste) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
@@ -7331,6 +7372,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
+    if (!_shouldReviewTerminalCommandInsertion) {
+      return true;
+    }
     final shouldInsert = await _confirmCommandInsertion(
       title: 'Review keyboard paste',
       message:
@@ -7344,6 +7388,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<bool> _confirmDesktopInsertedText(String text) async {
     if (text.length <= 1) {
+      return true;
+    }
+    if (!_shouldReviewTerminalCommandInsertion) {
       return true;
     }
 
