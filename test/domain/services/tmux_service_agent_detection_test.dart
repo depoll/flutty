@@ -53,12 +53,10 @@ void main() {
     test('parses absolute paths to known CLI binaries', () {
       const output =
           '/opt/homebrew/bin/claude\n'
-          '/usr/local/bin/codex\n'
-          '/Users/me/.local/bin/aider\n';
+          '/usr/local/bin/codex\n';
       expect(parseInstalledAgentTools(output), {
         AgentLaunchTool.claudeCode,
         AgentLaunchTool.codex,
-        AgentLaunchTool.aider,
       });
     });
 
@@ -77,7 +75,7 @@ void main() {
       const output =
           'claude\n'
           '/usr/local/bin/copilot\n'
-          'aider: not found\n';
+          'codex: not found\n';
       expect(parseInstalledAgentTools(output), {AgentLaunchTool.copilotCli});
     });
 
@@ -88,7 +86,6 @@ void main() {
 
     test('handles all supported CLIs', () {
       const output =
-          '/b/aider\n'
           '/b/claude\n'
           '/b/copilot\n'
           '/b/codex\n'

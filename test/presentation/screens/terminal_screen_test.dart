@@ -13,6 +13,12 @@ import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
+import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
+import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -27,6 +33,8 @@ class _MockHostRepository extends Mock implements HostRepository {}
 class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockShellChannel extends Mock implements SSHSession {}
+
+class _MockMonetizationService extends Mock implements MonetizationService {}
 
 class _MockSftpClient extends Mock implements SftpClient {}
 
@@ -58,17 +66,26 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   Future<void> syncBackgroundStatus() async {}
 }
 
-Host _buildHost({required int id}) => Host(
+Host _buildHost({required int id, String? autoConnectCommand}) => Host(
   id: id,
   label: 'Terminal test host',
   hostname: 'terminal.example.com',
   port: 22,
   username: 'root',
+  autoConnectCommand: autoConnectCommand,
   isFavorite: false,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
   autoConnectRequiresConfirmation: false,
   sortOrder: 0,
+);
+
+const _proMonetizationState = MonetizationState(
+  billingAvailability: MonetizationBillingAvailability.available,
+  entitlements: MonetizationEntitlements.pro(),
+  offers: [],
+  debugUnlockAvailable: false,
+  debugUnlocked: false,
 );
 
 TextEditingValue _editingValue(String text, {required int selectionOffset}) =>
@@ -84,6 +101,7 @@ void main() {
     registerFallbackValue(const SSHPtyConfig());
     registerFallbackValue(<int>[]);
     registerFallbackValue(Uint8List(0));
+    registerFallbackValue(MonetizationFeature.autoConnectAutomation);
   });
 
   group('TerminalScreen mobile IME wiring', () {
@@ -91,6 +109,7 @@ void main() {
     late _MockHostRepository hostRepository;
     late _MockSshClient sshClient;
     late _MockShellChannel shellChannel;
+    late _MockMonetizationService monetizationService;
     late SshSession session;
     late Host host;
     late Completer<void> shellDoneCompleter;
@@ -102,10 +121,22 @@ void main() {
       hostRepository = _MockHostRepository();
       sshClient = _MockSshClient();
       shellChannel = _MockShellChannel();
+      monetizationService = _MockMonetizationService();
       host = _buildHost(id: 1);
       shellDoneCompleter = Completer<void>();
       shellStdoutController = StreamController<Uint8List>.broadcast();
       shellWrites = <List<int>>[];
+
+      when(
+        () => monetizationService.currentState,
+      ).thenReturn(_proMonetizationState);
+      when(
+        () => monetizationService.states,
+      ).thenAnswer((_) => Stream.value(_proMonetizationState));
+      when(() => monetizationService.initialize()).thenAnswer((_) async {});
+      when(
+        () => monetizationService.canUseFeature(any()),
+      ).thenAnswer((_) async => true);
 
       when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
       when(
@@ -150,6 +181,10 @@ void main() {
           overrides: [
             databaseProvider.overrideWithValue(db),
             hostRepositoryProvider.overrideWithValue(hostRepository),
+            monetizationServiceProvider.overrideWithValue(monetizationService),
+            monetizationStateProvider.overrideWith(
+              (ref) => Stream.value(_proMonetizationState),
+            ),
             sharedClipboardProvider.overrideWith((ref) async => false),
             activeSessionsProvider.overrideWith(
               () => _TestActiveSessionsNotifier(session),
@@ -167,6 +202,76 @@ void main() {
       await tester.pump();
       await tester.pump();
     }
+
+    testWidgets(
+      'auto-connect rebuilds agent launch commands from the saved preset and host yolo preference',
+      (tester) async {
+        final settingsService = SettingsService(db);
+        final presetService = AgentLaunchPresetService(settingsService);
+        final cliLaunchPreferencesService = HostCliLaunchPreferencesService(
+          settingsService,
+        );
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(
+          id: host.id,
+          autoConnectCommand: 'codex --approval-mode never',
+        );
+        await presetService.setPresetForHost(
+          host.id,
+          const AgentLaunchPreset(tool: AgentLaunchTool.codex),
+        );
+        await cliLaunchPreferencesService.setPreferencesForHost(
+          host.id,
+          const HostCliLaunchPreferences(startInYoloMode: true),
+        );
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              settingsServiceProvider.overrideWithValue(settingsService),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('codex --yolo'));
+        expect(writtenShellText, isNot(contains('--approval-mode never')));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     testWidgets(
       'toolbar navigation keys clear the screen IME buffer',

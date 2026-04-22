@@ -655,7 +655,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   /// All tools that can be shown in the picker, in display order.
   static const _allTools = [
-    AgentLaunchTool.aider,
     AgentLaunchTool.claudeCode,
     AgentLaunchTool.copilotCli,
     AgentLaunchTool.codex,
@@ -779,7 +778,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
 
   static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) {
     final iconData = switch (tool) {
-      AgentLaunchTool.aider => Icons.chat_bubble_outline,
       AgentLaunchTool.claudeCode => Icons.auto_awesome,
       AgentLaunchTool.copilotCli => Icons.flight,
       AgentLaunchTool.codex => Icons.code,
