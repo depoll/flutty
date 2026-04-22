@@ -103,6 +103,11 @@ void main() {
           attemptedTools: const <String>{'Codex'},
         ),
       );
+      await tester.pump();
+
+      expect(find.text('Codex|1|idle|ok'), findsOneWidget);
+      expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
+
       await codexController.close();
       await tester.pump();
 
@@ -119,6 +124,69 @@ void main() {
       await tester.pump();
 
       expect(find.text('Claude Code|no recent|idle|ok'), findsOneWidget);
+    });
+
+    testWidgets('keeps the visible provider order stable', (tester) async {
+      final controllers = <String, StreamController<DiscoveredSessionsResult>>{
+        'Claude Code': StreamController<DiscoveredSessionsResult>(),
+        'Codex': StreamController<DiscoveredSessionsResult>(),
+      };
+      addTearDown(() async {
+        for (final controller in controllers.values) {
+          if (!controller.isClosed) {
+            await controller.close();
+          }
+        }
+      });
+
+      var orderedTools = const ['Claude Code', 'Codex'];
+
+      await tester.pumpWidget(
+        _wrap(
+          StatefulBuilder(
+            builder: (context, setState) => Column(
+              children: [
+                TextButton(
+                  onPressed: () {
+                    setState(() {
+                      orderedTools = const ['Codex', 'Claude Code'];
+                    });
+                  },
+                  child: const Text('Reorder'),
+                ),
+                AiSessionProviderList(
+                  orderedTools: orderedTools,
+                  loadSessionsForTool: (toolName, _) =>
+                      controllers[toolName]!.stream,
+                  itemBuilder: (context, provider) => Text(
+                    provider.toolName,
+                    key: ValueKey<String>(provider.toolName),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      final claudeBefore = tester.getTopLeft(
+        find.byKey(const ValueKey<String>('Claude Code')),
+      );
+      final codexBefore = tester.getTopLeft(
+        find.byKey(const ValueKey<String>('Codex')),
+      );
+      expect(claudeBefore.dy, lessThan(codexBefore.dy));
+
+      await tester.tap(find.text('Reorder'));
+      await tester.pump();
+
+      final claudeAfter = tester.getTopLeft(
+        find.byKey(const ValueKey<String>('Claude Code')),
+      );
+      final codexAfter = tester.getTopLeft(
+        find.byKey(const ValueKey<String>('Codex')),
+      );
+      expect(claudeAfter.dy, lessThan(codexAfter.dy));
     });
   });
 

@@ -2353,6 +2353,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _queried = false;
   bool _expanded = false;
   bool _showSessions = false;
+  bool _hasInitializedSessionProviders = false;
   bool _restoredUiState = false;
   StreamSubscription<void>? _windowChangeSubscription;
   Timer? _tmuxRetryTimer;
@@ -2420,6 +2421,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     if (!_hasAgentSessionAccess) {
       _showSessions = false;
+    }
+    if (_showSessions) {
+      _hasInitializedSessionProviders = true;
     }
   }
 
@@ -2667,9 +2671,15 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () {
-                  setState(() => _showSessions = !_showSessions);
+                  final showSessions = !_showSessions;
+                  setState(() {
+                    _showSessions = showSessions;
+                    if (showSessions) {
+                      _hasInitializedSessionProviders = true;
+                    }
+                  });
                   _persistUiState();
-                  if (_showSessions) {
+                  if (showSessions) {
                     unawaited(_prefetchPreferredSessionProvider());
                   }
                 },
@@ -2702,46 +2712,47 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                   ),
                 ),
               ),
-              if (_showSessions) ...[
-                Builder(
-                  builder: (context) {
-                    final session = ref
-                        .read(activeSessionsProvider.notifier)
-                        .getSession(widget.connectionId);
-                    if (session == null) {
-                      return const SizedBox.shrink();
-                    }
+              if (_hasInitializedSessionProviders)
+                Offstage(
+                  offstage: !_showSessions,
+                  child: Builder(
+                    builder: (context) {
+                      final session = ref
+                          .read(activeSessionsProvider.notifier)
+                          .getSession(widget.connectionId);
+                      if (session == null) {
+                        return const SizedBox.shrink();
+                      }
 
-                    final scopeWorkingDirectory =
-                        _resolveRecentSessionScopeWorkingDirectory(session);
-                    return AiSessionProviderList(
-                      key: ValueKey<Object>(
-                        Object.hashAll(<Object?>[
-                          widget.connectionId,
-                          _sessionName,
-                          scopeWorkingDirectory,
-                          _preferredSessionToolName,
-                        ]),
-                      ),
-                      orderedTools: orderedDiscoveredSessionTools(
-                        const <String, List<ToolSessionInfo>>{},
-                        const <String>{},
-                        preferredToolName: _preferredSessionToolName,
-                      ),
-                      loadSessionsForTool: (toolName, maxSessions) => ref
-                          .read(agentSessionDiscoveryServiceProvider)
-                          .discoverSessionsStream(
-                            session,
-                            workingDirectory: scopeWorkingDirectory,
-                            maxPerTool: maxSessions,
-                            toolName: toolName,
-                          ),
-                      itemBuilder: (context, provider) =>
-                          _buildSessionProviderRow(theme, provider),
-                    );
-                  },
+                      final scopeWorkingDirectory =
+                          _resolveRecentSessionScopeWorkingDirectory(session);
+                      return AiSessionProviderList(
+                        key: ValueKey<Object>(
+                          Object.hashAll(<Object?>[
+                            widget.connectionId,
+                            _sessionName,
+                            scopeWorkingDirectory,
+                          ]),
+                        ),
+                        orderedTools: orderedDiscoveredSessionTools(
+                          const <String, List<ToolSessionInfo>>{},
+                          const <String>{},
+                          preferredToolName: _preferredSessionToolName,
+                        ),
+                        loadSessionsForTool: (toolName, maxSessions) => ref
+                            .read(agentSessionDiscoveryServiceProvider)
+                            .discoverSessionsStream(
+                              session,
+                              workingDirectory: scopeWorkingDirectory,
+                              maxPerTool: maxSessions,
+                              toolName: toolName,
+                            ),
+                        itemBuilder: (context, provider) =>
+                            _buildSessionProviderRow(theme, provider),
+                      );
+                    },
+                  ),
                 ),
-              ],
             ] else
               InkWell(
                 onTap: () => unawaited(_handleLockedAiSessionsTap()),

@@ -304,6 +304,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _expanded = false;
   bool _isLoading = true;
   bool _showSessions = false;
+  bool _hasInitializedSessionProviders = false;
   double _dragOffset = 0;
   StreamSubscription<void>? _windowChangeSubscription;
   late AnimationController _bounceController;
@@ -773,38 +774,47 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           color: theme.colorScheme.onSurfaceVariant,
         ),
         onTap: () {
-          setState(() => _showSessions = !_showSessions);
-          if (_showSessions) {
+          final showSessions = !_showSessions;
+          setState(() {
+            _showSessions = showSessions;
+            if (showSessions) {
+              _hasInitializedSessionProviders = true;
+            }
+          });
+          if (showSessions) {
             unawaited(_prefetchPreferredSessionProvider());
           }
         },
       ),
-      if (_showSessions) ...[
-        AiSessionProviderList(
-          key: ValueKey<Object>(
-            Object.hashAll(<Object?>[
-              widget.session.connectionId,
-              widget.tmuxSessionName,
-              _resolveRecentSessionScopeWorkingDirectory(),
-              _preferredLaunchTool?.discoveredSessionToolName,
-            ]),
+      if (_hasInitializedSessionProviders)
+        Offstage(
+          offstage: !_showSessions,
+          child: AiSessionProviderList(
+            key: ValueKey<Object>(
+              Object.hashAll(<Object?>[
+                widget.session.connectionId,
+                widget.tmuxSessionName,
+                _resolveRecentSessionScopeWorkingDirectory(),
+              ]),
+            ),
+            orderedTools: orderedDiscoveredSessionTools(
+              const <String, List<ToolSessionInfo>>{},
+              const <String>{},
+              preferredToolName:
+                  _preferredLaunchTool?.discoveredSessionToolName,
+            ),
+            loadSessionsForTool: (toolName, maxSessions) =>
+                _discovery.discoverSessionsStream(
+                  widget.session,
+                  workingDirectory:
+                      _resolveRecentSessionScopeWorkingDirectory(),
+                  maxPerTool: maxSessions,
+                  toolName: toolName,
+                ),
+            itemBuilder: (context, provider) =>
+                _buildSessionProviderTile(theme, provider),
           ),
-          orderedTools: orderedDiscoveredSessionTools(
-            const <String, List<ToolSessionInfo>>{},
-            const <String>{},
-            preferredToolName: _preferredLaunchTool?.discoveredSessionToolName,
-          ),
-          loadSessionsForTool: (toolName, maxSessions) =>
-              _discovery.discoverSessionsStream(
-                widget.session,
-                workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
-                maxPerTool: maxSessions,
-                toolName: toolName,
-              ),
-          itemBuilder: (context, provider) =>
-              _buildSessionProviderTile(theme, provider),
         ),
-      ],
     ],
   );
 

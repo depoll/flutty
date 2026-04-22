@@ -143,6 +143,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   StreamSubscription<void>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
   bool _showRecentSessions = false;
+  bool _hasInitializedRecentSessions = false;
   String? _error;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
@@ -513,50 +514,60 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           children: [Text('Recent AI Sessions'), Spacer(), PremiumBadge()],
         ),
         onTap: () {
-          setState(() => _showRecentSessions = !_showRecentSessions);
-          if (_showRecentSessions) {
+          final showRecentSessions = !_showRecentSessions;
+          setState(() {
+            _showRecentSessions = showRecentSessions;
+            if (showRecentSessions) {
+              _hasInitializedRecentSessions = true;
+            }
+          });
+          if (showRecentSessions) {
             unawaited(_prefetchPreferredSessionProvider());
           }
         },
       ),
-      if (_showRecentSessions) ...[
-        AiSessionProviderList(
-          key: ValueKey<Object>(
-            Object.hashAll(<Object?>[
-              widget.session.connectionId,
-              widget.tmuxSessionName,
-              widget.scopeWorkingDirectory,
-              _windows
-                  ?.where((window) => window.isActive)
-                  .firstOrNull
-                  ?.currentPath,
-              _preferredLaunchTool?.discoveredSessionToolName,
-            ]),
+      if (_hasInitializedRecentSessions)
+        Offstage(
+          offstage: !_showRecentSessions,
+          child: AiSessionProviderList(
+            key: ValueKey<Object>(
+              Object.hashAll(<Object?>[
+                widget.session.connectionId,
+                widget.tmuxSessionName,
+                widget.scopeWorkingDirectory,
+                _windows
+                    ?.where((window) => window.isActive)
+                    .firstOrNull
+                    ?.currentPath,
+              ]),
+            ),
+            orderedTools: orderedDiscoveredSessionTools(
+              const <String, List<ToolSessionInfo>>{},
+              const <String>{},
+              preferredToolName:
+                  _preferredLaunchTool?.discoveredSessionToolName,
+            ),
+            loadSessionsForTool: (toolName, maxSessions) {
+              final activeWindow = _windows
+                  ?.where((w) => w.isActive)
+                  .firstOrNull;
+              final scopeWorkingDirectory =
+                  widget.scopeWorkingDirectory ??
+                  resolveAgentSessionScopeWorkingDirectory(
+                    activeWorkingDirectory: activeWindow?.currentPath,
+                    sessionWorkingDirectory: widget.session.workingDirectory,
+                  );
+              return _discovery.discoverSessionsStream(
+                widget.session,
+                workingDirectory: scopeWorkingDirectory,
+                maxPerTool: maxSessions,
+                toolName: toolName,
+              );
+            },
+            itemBuilder: (context, provider) =>
+                _buildSessionProviderTile(theme, provider),
           ),
-          orderedTools: orderedDiscoveredSessionTools(
-            const <String, List<ToolSessionInfo>>{},
-            const <String>{},
-            preferredToolName: _preferredLaunchTool?.discoveredSessionToolName,
-          ),
-          loadSessionsForTool: (toolName, maxSessions) {
-            final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-            final scopeWorkingDirectory =
-                widget.scopeWorkingDirectory ??
-                resolveAgentSessionScopeWorkingDirectory(
-                  activeWorkingDirectory: activeWindow?.currentPath,
-                  sessionWorkingDirectory: widget.session.workingDirectory,
-                );
-            return _discovery.discoverSessionsStream(
-              widget.session,
-              workingDirectory: scopeWorkingDirectory,
-              maxPerTool: maxSessions,
-              toolName: toolName,
-            );
-          },
-          itemBuilder: (context, provider) =>
-              _buildSessionProviderTile(theme, provider),
         ),
-      ],
     ],
   );
 
