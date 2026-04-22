@@ -1099,6 +1099,9 @@ final _terminalLinkPattern = RegExp(
 final _terminalFilePathPattern = RegExp(
   r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
+final _terminalFilePathLineSuffixPattern = RegExp(
+  r'''(?:~(?:/[^\s<>"'$#&|;]+)?/?|/(?:[^\s<>"'$#&|;]+)?|\.\.?/(?:[^\s<>"'$#&|;]+)?|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
+);
 final _terminalFilePathStackTraceSuffixPattern = RegExp(
   r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
 );
@@ -1106,6 +1109,9 @@ final _terminalFilePathShellOperatorSuffixPattern = RegExp(
   r'(?:&&|\|\||[&;|])+$',
 );
 final _terminalWrappedCountSuffixPattern = RegExp(r'\d+$');
+final _terminalStandalonePathMetadataPattern = RegExp(
+  r'^(?:L\d+(?::\d+)?|:\d+(?::\d+)?)(?:\s|\(|$)',
+);
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
 const _terminalInputIndicatorDuration = Duration(milliseconds: 700);
@@ -1738,36 +1744,94 @@ String _trimTerminalPathContinuationPrefix(String text) {
   return text.substring(index);
 }
 
+bool _startsFreshTerminalFilePathLine(String text) =>
+    text == '~' ||
+    text.startsWith('~/') ||
+    text.startsWith('/') ||
+    text.startsWith('./') ||
+    text.startsWith('../');
+
+String? _leadingTerminalFilePathCandidate(String text) {
+  final match = _terminalFilePathPattern.matchAsPrefix(text);
+  if (match == null) {
+    return null;
+  }
+
+  final candidate = trimTerminalFilePathCandidate(match.group(0)!);
+  return isSupportedTerminalFilePath(candidate) ? candidate : null;
+}
+
+bool _hasMeaningfulTextBeforeTrailingTerminalPath(
+  String text,
+  Match trailingPathMatch,
+) => _trimTerminalPathContinuationPrefix(
+  text.substring(0, trailingPathMatch.start),
+).trim().isNotEmpty;
+
+bool _endsWithTerminalPathContinuationBoundary(String path) =>
+    path == '~' || path.endsWith('/');
+
+bool _hasLeadingTerminalPathFragment(String text) =>
+    text.isNotEmpty && _isTerminalFilePathBodyCharacter(text[0]);
+
+bool _looksLikeTerminalPathContinuationAcrossRenderedLines({
+  required String previousText,
+  required String nextText,
+}) {
+  final trimmedPreviousText = trimTerminalLinePadding(previousText);
+  final trimmedNextText = trimTerminalLinePadding(nextText);
+  if (trimmedPreviousText.isEmpty || trimmedNextText.isEmpty) {
+    return false;
+  }
+  if (_terminalStandalonePathMetadataPattern.hasMatch(trimmedNextText)) {
+    return false;
+  }
+
+  final previousPathMatch = _terminalFilePathLineSuffixPattern.firstMatch(
+    trimmedPreviousText,
+  );
+  if (previousPathMatch == null) {
+    return false;
+  }
+
+  final previousPath = trimTerminalFilePathCandidate(
+    previousPathMatch.group(0)!,
+  );
+  final previousHasLeadingContext =
+      _hasMeaningfulTextBeforeTrailingTerminalPath(
+        trimmedPreviousText,
+        previousPathMatch,
+      );
+  final previousEndsWithBoundary = _endsWithTerminalPathContinuationBoundary(
+    previousPath,
+  );
+  final nextLeadingPath = _leadingTerminalFilePathCandidate(trimmedNextText);
+
+  if (_startsFreshTerminalFilePathLine(trimmedNextText)) {
+    return previousHasLeadingContext || previousEndsWithBoundary;
+  }
+
+  if (nextLeadingPath != null && !isExplicitTerminalFilePath(nextLeadingPath)) {
+    if (!previousHasLeadingContext &&
+        !previousEndsWithBoundary &&
+        !isExplicitTerminalFilePath(previousPath)) {
+      return false;
+    }
+    return true;
+  }
+
+  return _hasLeadingTerminalPathFragment(trimmedNextText);
+}
+
 /// Whether adjacent rendered lines should be treated as one file-path span.
 @visibleForTesting
 bool isTerminalPathContinuationAcrossLines({
   required String previousLineText,
   required String nextLineText,
-}) {
-  final previousText = trimTerminalLinePadding(previousLineText);
-  final nextText = trimTerminalLinePadding(nextLineText);
-  if (previousText.isEmpty || nextText.isEmpty) {
-    return false;
-  }
-
-  final nextWithoutIndentation = _trimTerminalPathContinuationPrefix(nextText);
-  if (nextWithoutIndentation.isNotEmpty &&
-      nextWithoutIndentation.length != nextText.length &&
-      _isTerminalFilePathBodyCharacter(previousText[previousText.length - 1]) &&
-      _isTerminalFilePathBodyCharacter(nextWithoutIndentation[0])) {
-    return true;
-  }
-
-  final combinedText = '$previousText\n$nextText';
-  final splitOffset = previousText.length;
-  for (final detectedPath in _detectTerminalFilePathMatches(combinedText)) {
-    if (detectedPath.start < splitOffset &&
-        detectedPath.end > splitOffset + 1) {
-      return true;
-    }
-  }
-  return false;
-}
+}) => _looksLikeTerminalPathContinuationAcrossRenderedLines(
+  previousText: previousLineText,
+  nextText: _trimTerminalPathContinuationPrefix(nextLineText),
+);
 
 _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   String text,
@@ -1777,6 +1841,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
   final normalizedToOriginalStarts = <int>[];
   final normalizedToOriginalEnds = <int>[];
   var index = 0;
+  var lineStart = 0;
 
   while (index < text.length) {
     final character = text[index];
@@ -1796,17 +1861,19 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
         continuationEnd++;
       }
 
-      final previousCharacter = normalizedCharacters.isEmpty
-          ? null
-          : normalizedCharacters.last;
-      final nextCharacter = continuationEnd < text.length
-          ? text[continuationEnd]
-          : null;
+      var nextLineEnd = continuationEnd;
+      while (nextLineEnd < text.length &&
+          text[nextLineEnd] != '\r' &&
+          text[nextLineEnd] != '\n') {
+        nextLineEnd++;
+      }
+
       final isPathContinuation =
-          previousCharacter != null &&
-          nextCharacter != null &&
-          _isTerminalFilePathBodyCharacter(previousCharacter) &&
-          _isTerminalFilePathBodyCharacter(nextCharacter);
+          continuationEnd < text.length &&
+          _looksLikeTerminalPathContinuationAcrossRenderedLines(
+            previousText: text.substring(lineStart, index),
+            nextText: text.substring(continuationEnd, nextLineEnd),
+          );
       if (isPathContinuation) {
         for (
           var skippedIndex = index;
@@ -1816,6 +1883,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
           originalToNormalizedOffsets[skippedIndex] =
               normalizedCharacters.length;
         }
+        lineStart = lineBreakEnd;
         index = continuationEnd;
         continue;
       }
@@ -1827,6 +1895,7 @@ _NormalizedTerminalPathSnapshot _normalizeTerminalFilePathDetectionText(
       normalizedCharacters.add('\n');
       normalizedToOriginalStarts.add(index);
       normalizedToOriginalEnds.add(lineBreakEnd);
+      lineStart = lineBreakEnd;
       index = lineBreakEnd;
       continue;
     }
@@ -2763,7 +2832,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           : 0,
     );
     _syncNativeScrollFromTerminal();
-    _queueVisibleTerminalPathUnderlineRefresh();
+    _refreshVisibleTerminalPathUnderlines();
   }
 
   void _followLiveOutput() {
@@ -4876,10 +4945,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           fit: StackFit.expand,
           children: [
             terminalView,
-            for (final underline in _visibleTerminalPathUnderlines)
+            for (final entry in _visibleTerminalPathUnderlines.asMap().entries)
               Positioned(
-                left: underline.underlineRect.left,
-                top: underline.underlineRect.top,
+                left: entry.value.underlineRect.left,
+                top: entry.value.underlineRect.top,
                 child: IgnorePointer(
                   child: DecoratedBox(
                     decoration: BoxDecoration(
@@ -4887,8 +4956,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                       borderRadius: BorderRadius.circular(999),
                     ),
                     child: SizedBox(
-                      width: underline.underlineRect.width,
-                      height: underline.underlineRect.height,
+                      key: ValueKey<String>(
+                        'terminal-path-underline:${entry.key}:${entry.value.path}',
+                      ),
+                      width: entry.value.underlineRect.width,
+                      height: entry.value.underlineRect.height,
                     ),
                   ),
                 ),
@@ -6019,7 +6091,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       builder.write(lineSnapshot.text);
       columnOffsets.add(lineSnapshot.columnOffsets);
-      if (lineIndex < endRow) {
+      if (lineIndex < endRow && !buffer.lines[lineIndex + 1].isWrapped) {
         builder.write('\n');
       }
     }
@@ -6803,7 +6875,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted || verifiedPath == null) {
           return;
         }
-        setState(() {});
+        setState(() {
+          _shouldScheduleVisibleTerminalPathUnderlineRefreshFromBuild = true;
+        });
       } finally {
         _verifyingTerminalPathCacheKeys.remove(cacheKey);
       }

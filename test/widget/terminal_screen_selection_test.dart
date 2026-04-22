@@ -394,6 +394,61 @@ void main() {
       );
     });
 
+    test(
+      'detects relative paths split immediately after a directory slash',
+      () {
+        const text =
+            'Open lib/presentation/\n'
+            '    screens/terminal_screen.dart next.';
+        final detectedPath = detectTerminalFilePathAtTextOffset(
+          text,
+          text.indexOf('screens'),
+        );
+
+        expect(detectedPath, isNotNull);
+        expect(
+          detectedPath!.path,
+          'lib/presentation/screens/terminal_screen.dart',
+        );
+      },
+    );
+
+    test('detects tilde-root paths split before the next segment', () {
+      const text = 'Open ~/\nCode/flutty next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('Code'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '~/Code/flutty');
+    });
+
+    test('detects slash-root paths split before the next segment', () {
+      const text = 'Open /\nvar/log/app.log next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('var/log'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/var/log/app.log');
+    });
+
+    test(
+      'detects absolute paths that resume with a slash after leading context',
+      () {
+        const text = 'Open /Users/tester\n/project/lib/main.dart next.';
+        final detectedPath = detectTerminalFilePathAtTextOffset(
+          text,
+          text.indexOf('project/lib'),
+        );
+
+        expect(detectedPath, isNotNull);
+        expect(detectedPath!.path, '/Users/tester/project/lib/main.dart');
+      },
+    );
+
     test('ignores colored guide prefixes in continuation indentation', () {
       const text =
           'Open /srv/app/lib/presentation/\n'
@@ -588,6 +643,68 @@ void main() {
       expect(
         detectedPath!.path,
         '~/Code/flutty.worktrees/fix-local-path-link-separators/lib/presentation/screens/terminal_screen.dart',
+      );
+    });
+
+    test('ignores separate view metadata rows after wrapped worktree paths', () {
+      const text =
+          'Read terminal_screen.dart\n'
+          '~/Code/flutty.worktrees/session-resumption-all-provide\n'
+          'rs/lib/presentation/screens/terminal_screen.dart\n'
+          '└ L330:390 (61 lines read)';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('session-resumption'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        '~/Code/flutty.worktrees/session-resumption-all-providers/lib/presentation/screens/terminal_screen.dart',
+      );
+      expect(
+        detectTerminalFilePathAtTextOffset(text, text.indexOf('L330')),
+        isNull,
+      );
+    });
+
+    test('detects prompt-style explicit paths after ordinary prose rows', () {
+      const text =
+          'metadata rows no longer get folded into the path\n'
+          '~/Code/flutty [⇢main]';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('Code'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '~/Code/flutty');
+    });
+
+    test('does not merge separate absolute paths on adjacent lines', () {
+      const text = '/tmp/foo\n/var/log/app.log';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('/var/log'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/var/log/app.log');
+    });
+
+    test('does not merge separate relative paths on adjacent lines', () {
+      const text =
+          'lib/presentation/screens/terminal_screen.dart\n'
+          'test/widget/terminal_screen_selection_test.dart';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('test/widget'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        'test/widget/terminal_screen_selection_test.dart',
       );
     });
 
@@ -1004,6 +1121,98 @@ void main() {
         isTerminalPathContinuationAcrossLines(
           previousLineText: 'Read terminal_screen.dart',
           nextLineText: 'Read sftp_screen.dart',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join file labels to a following explicit path row', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Read terminal_screen.dart',
+          nextLineText:
+              '~/Code/flutty.worktrees/session-resumption-all-provide',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join standalone view metadata rows after a path', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText:
+              '~/Code/flutty.worktrees/session-resumption-all-provide',
+          nextLineText: '└ L330:390 (61 lines read)',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join separate absolute path starts across lines', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: '/tmp/foo',
+          nextLineText: '/var/log/app.log',
+        ),
+        isFalse,
+      );
+    });
+
+    test('joins relative paths split after a directory separator', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open lib/presentation/',
+          nextLineText: 'screens/terminal_screen.dart',
+        ),
+        isTrue,
+      );
+    });
+
+    test('joins tilde-root prefixes split before the next segment', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open ~/',
+          nextLineText: 'Code/flutty',
+        ),
+        isTrue,
+      );
+    });
+
+    test('joins slash-root prefixes split before the next segment', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open /',
+          nextLineText: 'var/log/app.log',
+        ),
+        isTrue,
+      );
+    });
+
+    test('joins absolute path continuations that resume with a slash', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open /Users/tester',
+          nextLineText: '/project/lib/main.dart',
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not join separate relative path starts across lines', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'lib/presentation/screens/terminal_screen.dart',
+          nextLineText: 'test/widget/terminal_screen_selection_test.dart',
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not join ordinary prose rows to a following prompt path', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'metadata rows no longer get folded into the path',
+          nextLineText: '~/Code/flutty [⇢main]',
         ),
         isFalse,
       );
