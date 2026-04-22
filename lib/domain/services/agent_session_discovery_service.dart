@@ -963,12 +963,14 @@ class AgentSessionDiscoveryService {
     SshSession session, {
     String? workingDirectory,
     int maxPerTool = 12,
+    String? toolName,
   }) async {
     DiscoveredSessionsResult? latestResult;
     await for (final result in discoverSessionsStream(
       session,
       workingDirectory: workingDirectory,
       maxPerTool: maxPerTool,
+      toolName: toolName,
     )) {
       latestResult = result;
     }
@@ -984,12 +986,14 @@ class AgentSessionDiscoveryService {
     SshSession session, {
     String? workingDirectory,
     int maxPerTool = 12,
+    String? toolName,
   }) async {
     try {
       await discoverSessionsStream(
         session,
         workingDirectory: workingDirectory,
         maxPerTool: maxPerTool,
+        toolName: toolName,
       ).drain<void>();
     } on Object catch (error, stackTrace) {
       FlutterError.reportError(
@@ -1014,12 +1018,14 @@ class AgentSessionDiscoveryService {
     SshSession session, {
     String? workingDirectory,
     int maxPerTool = 12,
+    String? toolName,
   }) async* {
     _pruneExpiredCacheEntries();
     final key = _AgentSessionDiscoveryKey.fromSession(
       session,
       workingDirectory: workingDirectory,
       maxPerTool: maxPerTool,
+      toolName: toolName,
     );
 
     final freshCachedResult = _lookupCachedDiscoveryResult(key);
@@ -1071,6 +1077,7 @@ class AgentSessionDiscoveryService {
       session,
       workingDirectory: workingDirectory,
       maxPerTool: maxPerTool,
+      toolName: toolName,
     );
   }
 
@@ -1079,6 +1086,7 @@ class AgentSessionDiscoveryService {
     SshSession session, {
     required String? workingDirectory,
     required int maxPerTool,
+    required String? toolName,
   }) {
     final controller = StreamController<DiscoveredSessionsResult>.broadcast();
     _inFlightDiscoveries[key] = controller.stream;
@@ -1096,6 +1104,7 @@ class AgentSessionDiscoveryService {
           workingDirectory: workingDirectory,
           relatedWorkingDirectories: relatedWorkingDirectories,
           maxPerTool: maxPerTool,
+          toolName: toolName,
         );
         final pendingResults = <int, Future<_IndexedToolDiscoveryResult>>{
           for (var index = 0; index < discoveries.length; index++)
@@ -1213,33 +1222,89 @@ class AgentSessionDiscoveryService {
     required String? workingDirectory,
     required List<String> relatedWorkingDirectories,
     required int maxPerTool,
-  }) => [
-    _discoverOpenCodeSessions(
+    required String? toolName,
+  }) => toolName == null
+      ? [
+          _discoverOpenCodeSessions(
+            session,
+            workingDirectory,
+            relatedWorkingDirectories,
+            maxPerTool,
+          ),
+          _discoverCodexSessions(
+            session,
+            workingDirectory,
+            relatedWorkingDirectories,
+            maxPerTool,
+          ),
+          _discoverCopilotSessions(
+            session,
+            relatedWorkingDirectories,
+            maxPerTool,
+          ),
+          _discoverGeminiSessions(
+            session,
+            workingDirectory,
+            relatedWorkingDirectories,
+            maxPerTool,
+          ),
+          _discoverClaudeSessions(
+            session,
+            workingDirectory,
+            relatedWorkingDirectories,
+            maxPerTool,
+          ),
+        ]
+      : [
+          _discoverSessionsForTool(
+            toolName,
+            session,
+            workingDirectory: workingDirectory,
+            relatedWorkingDirectories: relatedWorkingDirectories,
+            maxPerTool: maxPerTool,
+          ),
+        ];
+
+  Future<_ToolDiscoveryResult> _discoverSessionsForTool(
+    String toolName,
+    SshSession session, {
+    required String? workingDirectory,
+    required List<String> relatedWorkingDirectories,
+    required int maxPerTool,
+  }) => switch (toolName) {
+    'OpenCode' => _discoverOpenCodeSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
     ),
-    _discoverCodexSessions(
+    'Codex' => _discoverCodexSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
     ),
-    _discoverCopilotSessions(session, relatedWorkingDirectories, maxPerTool),
-    _discoverGeminiSessions(
+    'Copilot CLI' => _discoverCopilotSessions(
+      session,
+      relatedWorkingDirectories,
+      maxPerTool,
+    ),
+    'Gemini CLI' => _discoverGeminiSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
     ),
-    _discoverClaudeSessions(
+    'Claude Code' => _discoverClaudeSessions(
       session,
       workingDirectory,
       relatedWorkingDirectories,
       maxPerTool,
     ),
-  ];
+    _ => Future<_ToolDiscoveryResult>.value(
+      _ToolDiscoveryResult.success(toolName, const <ToolSessionInfo>[]),
+    ),
+  };
 
   DiscoveredSessionsResult _buildDiscoveredSessionsResult(
     Iterable<_ToolDiscoveryResult> results, {
@@ -2410,10 +2475,12 @@ class _AgentSessionDiscoveryKey {
     SshSession session, {
     required String? workingDirectory,
     required int maxPerTool,
+    String? toolName,
   }) => _AgentSessionDiscoveryKey(
     scopeKey: _AgentSessionDiscoveryScopeKey.fromSession(
       session,
       workingDirectory: workingDirectory,
+      toolName: toolName,
     ),
     maxPerTool: maxPerTool,
   );
@@ -2440,17 +2507,20 @@ class _AgentSessionDiscoveryScopeKey {
     required this.port,
     required this.username,
     required this.workingDirectory,
+    required this.toolName,
   });
 
   factory _AgentSessionDiscoveryScopeKey.fromSession(
     SshSession session, {
     required String? workingDirectory,
+    String? toolName,
   }) => _AgentSessionDiscoveryScopeKey(
     hostId: session.hostId,
     hostname: session.config.hostname,
     port: session.config.port,
     username: session.config.username,
     workingDirectory: _trimWorkingDirectory(workingDirectory),
+    toolName: toolName,
   );
 
   final int hostId;
@@ -2458,6 +2528,7 @@ class _AgentSessionDiscoveryScopeKey {
   final int port;
   final String username;
   final String? workingDirectory;
+  final String? toolName;
 
   @override
   bool operator ==(Object other) =>
@@ -2467,11 +2538,12 @@ class _AgentSessionDiscoveryScopeKey {
           hostname == other.hostname &&
           port == other.port &&
           username == other.username &&
-          workingDirectory == other.workingDirectory;
+          workingDirectory == other.workingDirectory &&
+          toolName == other.toolName;
 
   @override
   int get hashCode =>
-      Object.hash(hostId, hostname, port, username, workingDirectory);
+      Object.hash(hostId, hostname, port, username, workingDirectory, toolName);
 }
 
 class _CachedDiscoveryResult {

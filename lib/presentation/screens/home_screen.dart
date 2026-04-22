@@ -2344,28 +2344,21 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
 
 class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   static const _initialSessionFetchLimit = 24;
-  static const _sessionFetchStep = 12;
+  static const _prefetchSessionFetchLimit = 6;
   static const _tmuxQueryRetryDelay = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
-  List<ToolSessionInfo>? _recentSessions;
-  Set<String> _attemptedSessionTools = const <String>{};
-  Set<String> _failedSessionTools = const <String>{};
   String? _preferredSessionToolName;
-  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
-  String? _sessionLoadError;
   String? _sessionName;
   bool _queried = false;
   bool _expanded = false;
   bool _showSessions = false;
-  bool _isLoadingSessions = false;
-  bool _canLoadMoreSessions = false;
-  int _sessionFetchLimit = _initialSessionFetchLimit;
-  int _sessionLoadGeneration = 0;
   bool _restoredUiState = false;
   StreamSubscription<void>? _windowChangeSubscription;
+  Timer? _tmuxRetryTimer;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
+  bool _tmuxQueryScheduled = false;
 
   @override
   void initState() {
@@ -2384,7 +2377,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   @override
   void dispose() {
-    unawaited(_sessionDiscoverySubscription?.cancel());
+    _tmuxRetryTimer?.cancel();
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
   }
@@ -2406,6 +2399,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final preferredToolName = preset?.tool.discoveredSessionToolName;
     if (_preferredSessionToolName == preferredToolName) return;
     setState(() => _preferredSessionToolName = preferredToolName);
+    if (_showSessions) {
+      unawaited(_prefetchPreferredSessionProvider());
+    }
   }
 
   @override
@@ -2421,17 +2417,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     _expanded = storedState['expanded'] as bool? ?? _expanded;
     _showSessions = storedState['showSessions'] as bool? ?? _showSessions;
-    _sessionFetchLimit =
-        storedState['sessionFetchLimit'] as int? ?? _sessionFetchLimit;
 
     if (!_hasAgentSessionAccess) {
       _showSessions = false;
-    }
-
-    if (_showSessions && _hasAgentSessionAccess) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _loadRecentSessions();
-      });
     }
   }
 
@@ -2442,7 +2430,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     PageStorage.maybeOf(context)?.writeState(context, <String, Object>{
       'expanded': _expanded,
       'showSessions': _showSessions,
-      'sessionFetchLimit': _sessionFetchLimit,
     }, identifier: _pageStorageIdentifier);
   }
 
@@ -2459,6 +2446,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     if (retries <= 0 || !mounted) {
       if (mounted) {
         setState(() => _queried = true);
+        _scheduleTmuxRetry();
       }
       return;
     }
@@ -2473,6 +2461,43 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     ref: ref,
     feature: MonetizationFeature.agentLaunchPresets,
   );
+
+  String? _resolveRecentSessionScopeWorkingDirectory(SshSession session) {
+    final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+    return resolveAgentSessionScopeWorkingDirectory(
+      activeWorkingDirectory: activeWindow?.currentPath,
+      sessionWorkingDirectory: session.workingDirectory,
+    );
+  }
+
+  Future<void> _prefetchPreferredSessionProvider() async {
+    if (!_hasAgentSessionAccess) return;
+    final toolName = _preferredSessionToolName;
+    if (toolName == null || toolName.isEmpty) return;
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null) return;
+
+    await ref
+        .read(agentSessionDiscoveryServiceProvider)
+        .prefetchSessions(
+          session,
+          workingDirectory: _resolveRecentSessionScopeWorkingDirectory(session),
+          maxPerTool: _prefetchSessionFetchLimit,
+          toolName: toolName,
+        );
+  }
+
+  void _scheduleTmuxRetry() {
+    if (_tmuxRetryTimer?.isActive ?? false) return;
+    _tmuxRetryTimer = Timer(const Duration(seconds: 10), () {
+      _tmuxRetryTimer = null;
+      if (mounted) {
+        unawaited(_queryTmux());
+      }
+    });
+  }
 
   Future<void> _queryTmux({int retries = 3}) async {
     final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
@@ -2521,6 +2546,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           .read(tmuxServiceProvider)
           .listWindows(session, sessionName);
       if (!mounted) return;
+      if (windows.isEmpty) {
+        _scheduleTmuxRetry();
+      } else {
+        _tmuxRetryTimer?.cancel();
+        _tmuxRetryTimer = null;
+      }
       setState(() {
         _windows = windows;
         _sessionName = sessionName;
@@ -2528,6 +2559,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       });
     } on Object {
       if (!mounted) return;
+      _scheduleTmuxRetry();
       setState(() {
         _queried = true;
       });
@@ -2542,6 +2574,22 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   @override
   Widget build(BuildContext context) {
+    final connectionState = ref.watch(
+      activeSessionsProvider.select((state) => state[widget.connectionId]),
+    );
+    if (connectionState == SshConnectionState.connected &&
+        !_tmuxQueryScheduled &&
+        !_loadingWindows &&
+        (_sessionName == null || !_queried)) {
+      _tmuxQueryScheduled = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _tmuxQueryScheduled = false;
+        if (mounted) {
+          unawaited(_queryTmux());
+        }
+      });
+    }
+
     if (!_queried || _windows == null || _windows!.isEmpty) {
       return const SizedBox.shrink();
     }
@@ -2621,7 +2669,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 onTap: () {
                   setState(() => _showSessions = !_showSessions);
                   _persistUiState();
-                  if (_showSessions) _loadRecentSessions();
+                  if (_showSessions) {
+                    unawaited(_prefetchPreferredSessionProvider());
+                  }
                 },
                 child: Padding(
                   padding: const EdgeInsets.symmetric(
@@ -2653,48 +2703,44 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 ),
               ),
               if (_showSessions) ...[
-                if (_hasVisibleSessionProviders) ...[
-                  if (_sessionLoadError != null)
-                    Padding(
-                      padding: const EdgeInsets.only(bottom: 4),
-                      child: Text(
-                        _sessionLoadError!,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: theme.colorScheme.error,
-                        ),
+                Builder(
+                  builder: (context) {
+                    final session = ref
+                        .read(activeSessionsProvider.notifier)
+                        .getSession(widget.connectionId);
+                    if (session == null) {
+                      return const SizedBox.shrink();
+                    }
+
+                    final scopeWorkingDirectory =
+                        _resolveRecentSessionScopeWorkingDirectory(session);
+                    return AiSessionProviderList(
+                      key: ValueKey<Object>(
+                        Object.hashAll(<Object?>[
+                          widget.connectionId,
+                          _sessionName,
+                          scopeWorkingDirectory,
+                          _preferredSessionToolName,
+                        ]),
                       ),
-                    ),
-                  ..._buildSessionProviderEntries().map(
-                    (provider) => _buildSessionProviderRow(theme, provider),
-                  ),
-                  if (_canLoadMoreSessions)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: TextButton(
-                        onPressed: _loadMoreSessions,
-                        child: const Text('Load more'),
+                      orderedTools: orderedDiscoveredSessionTools(
+                        const <String, List<ToolSessionInfo>>{},
+                        const <String>{},
+                        preferredToolName: _preferredSessionToolName,
                       ),
-                    ),
-                ] else if (_sessionLoadError != null && _recentSessions != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      _sessionLoadError!,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.error,
-                      ),
-                    ),
-                  )
-                else if (_recentSessions != null)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      'No recent sessions found',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ),
+                      loadSessionsForTool: (toolName, maxSessions) => ref
+                          .read(agentSessionDiscoveryServiceProvider)
+                          .discoverSessionsStream(
+                            session,
+                            workingDirectory: scopeWorkingDirectory,
+                            maxPerTool: maxSessions,
+                            toolName: toolName,
+                          ),
+                      itemBuilder: (context, provider) =>
+                          _buildSessionProviderRow(theme, provider),
+                    );
+                  },
+                ),
               ],
             ] else
               InkWell(
@@ -2772,121 +2818,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     widget.onTap();
   }
 
-  Future<void> _loadRecentSessions({bool forceReload = false}) async {
-    if (!_hasAgentSessionAccess) {
-      return;
-    }
-    if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
-    final previousCount = _recentSessions?.length ?? 0;
-    final loadGeneration = ++_sessionLoadGeneration;
-    await _sessionDiscoverySubscription?.cancel();
-    _sessionDiscoverySubscription = null;
-    setState(() {
-      _isLoadingSessions = true;
-      _sessionLoadError = null;
-      _canLoadMoreSessions = false;
-      _failedSessionTools = const <String>{};
-    });
-
-    final session = ref
-        .read(activeSessionsProvider.notifier)
-        .getSession(widget.connectionId);
-    if (session == null) {
-      if (mounted && loadGeneration == _sessionLoadGeneration) {
-        setState(() {
-          _recentSessions = const [];
-          _canLoadMoreSessions = false;
-          _isLoadingSessions = false;
-        });
-      }
-      return;
-    }
-    unawaited(_loadPreferredSessionToolName(session.hostId));
-
-    try {
-      final discovery = ref.read(agentSessionDiscoveryServiceProvider);
-      // Scope sessions to the active tmux window's working directory
-      // so results match the current project context.
-      final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-      final scopeWorkingDirectory = resolveAgentSessionScopeWorkingDirectory(
-        activeWorkingDirectory: activeWindow?.currentPath,
-        sessionWorkingDirectory: session.workingDirectory,
-      );
-      _sessionDiscoverySubscription = discovery
-          .discoverSessionsStream(
-            session,
-            workingDirectory: scopeWorkingDirectory,
-            maxPerTool: _sessionFetchLimit,
-          )
-          .listen(
-            (result) {
-              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              setState(() {
-                _recentSessions = result.sessions;
-                _attemptedSessionTools = result.attemptedTools;
-                _failedSessionTools = result.failedTools;
-                _sessionLoadError = result.failureMessage;
-              });
-            },
-            onError: (Object _) {
-              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              setState(() {
-                _recentSessions ??= const [];
-                _failedSessionTools = const <String>{};
-                _sessionLoadError = 'Could not load recent AI sessions.';
-                _canLoadMoreSessions = false;
-                _isLoadingSessions = false;
-              });
-              _sessionDiscoverySubscription = null;
-              _persistUiState();
-            },
-            onDone: () {
-              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              final sessions = _recentSessions ?? const <ToolSessionInfo>[];
-              setState(() {
-                _canLoadMoreSessions =
-                    sessions.length > previousCount &&
-                    _hasSessionGroupAtLimit(sessions);
-                _isLoadingSessions = false;
-              });
-              _sessionDiscoverySubscription = null;
-              _persistUiState();
-            },
-            cancelOnError: true,
-          );
-    } on Exception {
-      if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-      setState(() {
-        _recentSessions ??= const [];
-        _failedSessionTools = const <String>{};
-        _sessionLoadError = 'Could not load recent AI sessions.';
-        _canLoadMoreSessions = false;
-        _isLoadingSessions = false;
-      });
-      _sessionDiscoverySubscription = null;
-      _persistUiState();
-    }
-  }
-
-  void _loadMoreSessions() {
-    if (_isLoadingSessions) return;
-    setState(() => _sessionFetchLimit += _sessionFetchStep);
-    _persistUiState();
-    _loadRecentSessions(forceReload: true);
-  }
-
-  bool _hasSessionGroupAtLimit(List<ToolSessionInfo> sessions) {
-    final countsByTool = <String, int>{};
-    for (final session in sessions) {
-      countsByTool.update(
-        session.toolName,
-        (count) => count + 1,
-        ifAbsent: () => 1,
-      );
-    }
-    return countsByTool.values.any((count) => count >= _sessionFetchLimit);
-  }
-
   void _resumeSession(ToolSessionInfo info) {
     if (!_hasAgentSessionAccess) {
       unawaited(_handleLockedAiSessionsTap());
@@ -2915,49 +2846,28 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   Future<void> _showSessionPickerForTool(
     AiSessionProviderEntry provider,
   ) async {
-    if (!provider.isSelectable) return;
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(widget.connectionId);
+    if (session == null) return;
+
     final selected = await showAiSessionPickerDialog(
       context: context,
       toolName: provider.toolName,
-      sessions: provider.sessions,
+      initialMaxSessions: _initialSessionFetchLimit,
+      loadSessions: (maxSessions) => ref
+          .read(agentSessionDiscoveryServiceProvider)
+          .discoverSessionsStream(
+            session,
+            workingDirectory: _resolveRecentSessionScopeWorkingDirectory(
+              session,
+            ),
+            maxPerTool: maxSessions,
+            toolName: provider.toolName,
+          ),
     );
     if (!mounted || selected == null) return;
     _resumeSession(selected);
-  }
-
-  Map<String, List<ToolSessionInfo>> _groupSessions(
-    List<ToolSessionInfo> sessions,
-  ) {
-    final grouped = <String, List<ToolSessionInfo>>{};
-    for (final session in sessions) {
-      grouped
-          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
-          .add(session);
-    }
-    return grouped;
-  }
-
-  bool get _hasVisibleSessionProviders =>
-      _isLoadingSessions ||
-      _attemptedSessionTools.isNotEmpty ||
-      _failedSessionTools.isNotEmpty ||
-      (_recentSessions?.isNotEmpty ?? false);
-
-  List<AiSessionProviderEntry> _buildSessionProviderEntries() {
-    final grouped = _groupSessions(
-      _recentSessions ?? const <ToolSessionInfo>[],
-    );
-    final orderedTools = orderedDiscoveredSessionTools(grouped, <String>{
-      ..._attemptedSessionTools,
-      ..._failedSessionTools,
-    }, preferredToolName: _preferredSessionToolName);
-    return buildAiSessionProviderEntries(
-      orderedTools: orderedTools,
-      groupedSessions: grouped,
-      attemptedTools: _attemptedSessionTools,
-      failedTools: _failedSessionTools,
-      isLoading: _isLoadingSessions,
-    );
   }
 
   Widget _buildSessionProviderRow(
@@ -2997,13 +2907,21 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               ),
             ),
           ),
-          if (provider.isLoading)
+          if (provider.isLoading && !provider.hasSessions)
             const SizedBox(
               width: 12,
               height: 12,
               child: CircularProgressIndicator.adaptive(strokeWidth: 2),
             )
           else ...[
+            if (provider.isLoading) ...[
+              const SizedBox(
+                width: 12,
+                height: 12,
+                child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+              ),
+              const SizedBox(width: 4),
+            ],
             Text(
               provider.compactStatusLabel,
               style: theme.textTheme.labelSmall?.copyWith(

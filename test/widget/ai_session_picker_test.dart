@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
 import 'package:monkeyssh/presentation/widgets/ai_session_picker.dart';
 
 Widget _wrap(Widget child) => MaterialApp(home: Scaffold(body: child));
@@ -31,6 +34,92 @@ void main() {
       expect(entries[2].isLoading, isTrue);
       expect(entries[2].compactStatusLabel, 'loading');
     });
+
+    test('keeps the discovered count visible while refreshing', () {
+      const entry = AiSessionProviderEntry(
+        toolName: 'Codex',
+        sessions: <ToolSessionInfo>[
+          ToolSessionInfo(
+            toolName: 'Codex',
+            sessionId: 'session-1',
+            summary: 'Refresh in place',
+          ),
+        ],
+        wasAttempted: true,
+        hasFailure: false,
+        isLoading: true,
+      );
+
+      expect(entry.statusLabel, '1 session');
+      expect(entry.compactStatusLabel, '1');
+    });
+  });
+
+  group('AiSessionProviderList', () {
+    testWidgets('live updates provider rows in place', (tester) async {
+      final claudeController = StreamController<DiscoveredSessionsResult>();
+      final codexController = StreamController<DiscoveredSessionsResult>();
+      addTearDown(() async {
+        if (!claudeController.isClosed) {
+          await claudeController.close();
+        }
+        if (!codexController.isClosed) {
+          await codexController.close();
+        }
+      });
+
+      await tester.pumpWidget(
+        _wrap(
+          AiSessionProviderList(
+            orderedTools: const ['Claude Code', 'Codex'],
+            loadSessionsForTool: (toolName, _) => switch (toolName) {
+              'Claude Code' => claudeController.stream,
+              'Codex' => codexController.stream,
+              _ => Stream<DiscoveredSessionsResult>.value(
+                DiscoveredSessionsResult(sessions: const []),
+              ),
+            },
+            itemBuilder: (context, provider) => Text(
+              '${provider.toolName}|${provider.compactStatusLabel}|'
+              '${provider.isLoading ? 'loading' : 'idle'}|'
+              '${provider.hasFailure ? 'error' : 'ok'}',
+            ),
+          ),
+        ),
+      );
+
+      expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
+      expect(find.text('Codex|loading|loading|ok'), findsOneWidget);
+
+      codexController.add(
+        DiscoveredSessionsResult(
+          sessions: const <ToolSessionInfo>[
+            ToolSessionInfo(
+              toolName: 'Codex',
+              sessionId: 'session-1',
+              summary: 'Fix the tmux menu refresh',
+            ),
+          ],
+          attemptedTools: const <String>{'Codex'},
+        ),
+      );
+      await codexController.close();
+      await tester.pump();
+
+      expect(find.text('Codex|1|idle|ok'), findsOneWidget);
+      expect(find.text('Claude Code|loading|loading|ok'), findsOneWidget);
+
+      claudeController.add(
+        DiscoveredSessionsResult(
+          sessions: const <ToolSessionInfo>[],
+          attemptedTools: const <String>{'Claude Code'},
+        ),
+      );
+      await claudeController.close();
+      await tester.pump();
+
+      expect(find.text('Claude Code|no recent|idle|ok'), findsOneWidget);
+    });
   });
 
   group('AiSessionPickerDialog', () {
@@ -50,7 +139,12 @@ void main() {
                 picked = await showAiSessionPickerDialog(
                   context: context,
                   toolName: 'Codex',
-                  sessions: const [selectedSession],
+                  loadSessions: (_) => Stream<DiscoveredSessionsResult>.value(
+                    DiscoveredSessionsResult(
+                      sessions: const <ToolSessionInfo>[selectedSession],
+                      attemptedTools: const <String>{'Codex'},
+                    ),
+                  ),
                 );
               },
               child: const Text('Open'),

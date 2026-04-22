@@ -296,26 +296,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   static const _denseTileVisualDensity = VisualDensity(vertical: -2);
   static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
-  static const _initialSessionFetchLimit = 12;
   static const _prefetchSessionFetchLimit = 6;
-  static const _sessionFetchStep = 12;
 
   List<TmuxWindow>? _windows;
-  List<ToolSessionInfo>? _recentSessions;
-  Set<String> _attemptedSessionTools = const <String>{};
-  Set<String> _failedSessionTools = const <String>{};
   AgentLaunchTool? _preferredLaunchTool;
   final Set<int> _seenAlertWindows = <int>{};
-  StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
-  String? _sessionLoadError;
   bool _expanded = false;
   bool _isLoading = true;
-  bool _isLoadingSessions = false;
-  bool _canLoadMoreSessions = false;
   bool _showSessions = false;
   double _dragOffset = 0;
-  int _sessionFetchLimit = _initialSessionFetchLimit;
-  int _sessionLoadGeneration = 0;
   StreamSubscription<void>? _windowChangeSubscription;
   late AnimationController _bounceController;
   late Animation<double> _bounceAnimation;
@@ -344,9 +333,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
     unawaited(_loadPreferredLaunchTool());
-    if (widget.isProUser) {
-      unawaited(_prefetchRecentSessions());
-    }
     _loadWindows();
     _subscribeToWindowChanges();
   }
@@ -361,15 +347,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
-    if (widget.isProUser) {
-      unawaited(_prefetchRecentSessions());
-    }
     _loadWindows();
   }
 
   @override
   void dispose() {
-    unawaited(_sessionDiscoverySubscription?.cancel());
     unawaited(_windowChangeSubscription?.cancel());
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
@@ -388,6 +370,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final preferredLaunchTool = preset?.tool;
     if (_preferredLaunchTool == preferredLaunchTool) return;
     setState(() => _preferredLaunchTool = preferredLaunchTool);
+    if (widget.isProUser) {
+      unawaited(_prefetchPreferredSessionProvider());
+    }
   }
 
   void _subscribeToWindowChanges() {
@@ -412,14 +397,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         );
   }
 
-  Future<void> _prefetchRecentSessions({
+  Future<void> _prefetchPreferredSessionProvider({
     List<TmuxWindow>? windows,
     int maxPerTool = _prefetchSessionFetchLimit,
-  }) => _discovery.prefetchSessions(
-    widget.session,
-    workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
-    maxPerTool: maxPerTool,
-  );
+  }) async {
+    final toolName = _preferredLaunchTool?.discoveredSessionToolName;
+    if (toolName == null || toolName.isEmpty) return;
+    await _discovery.prefetchSessions(
+      widget.session,
+      workingDirectory: _resolveRecentSessionScopeWorkingDirectory(windows),
+      maxPerTool: maxPerTool,
+      toolName: toolName,
+    );
+  }
 
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
@@ -470,7 +460,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         _isLoading = false;
       });
       if (widget.isProUser) {
-        unawaited(_prefetchRecentSessions(windows: windows));
+        unawaited(_prefetchPreferredSessionProvider(windows: windows));
       }
     } on Object {
       if (!mounted) return;
@@ -482,91 +472,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         unawaited(_loadWindows());
       }
     }
-  }
-
-  Future<void> _loadRecentSessions({bool forceReload = false}) async {
-    if (_isLoadingSessions || (_recentSessions != null && !forceReload)) return;
-    final previousCount = _recentSessions?.length ?? 0;
-    final loadGeneration = ++_sessionLoadGeneration;
-    await _sessionDiscoverySubscription?.cancel();
-    _sessionDiscoverySubscription = null;
-    setState(() {
-      _isLoadingSessions = true;
-      _sessionLoadError = null;
-      _canLoadMoreSessions = false;
-      _failedSessionTools = const <String>{};
-    });
-
-    try {
-      _sessionDiscoverySubscription = _discovery
-          .discoverSessionsStream(
-            widget.session,
-            workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
-            maxPerTool: _sessionFetchLimit,
-          )
-          .listen(
-            (result) {
-              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              setState(() {
-                _recentSessions = result.sessions;
-                _attemptedSessionTools = result.attemptedTools;
-                _failedSessionTools = result.failedTools;
-                _sessionLoadError = result.failureMessage;
-              });
-            },
-            onError: (Object _) {
-              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              setState(() {
-                _recentSessions ??= const [];
-                _failedSessionTools = const <String>{};
-                _sessionLoadError = 'Could not load recent AI sessions.';
-                _canLoadMoreSessions = false;
-                _isLoadingSessions = false;
-              });
-              _sessionDiscoverySubscription = null;
-            },
-            onDone: () {
-              if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-              final sessions = _recentSessions ?? const <ToolSessionInfo>[];
-              setState(() {
-                _canLoadMoreSessions =
-                    sessions.length > previousCount &&
-                    _hasSessionGroupAtLimit(sessions);
-                _isLoadingSessions = false;
-              });
-              _sessionDiscoverySubscription = null;
-            },
-            cancelOnError: true,
-          );
-    } on Exception {
-      if (!mounted || loadGeneration != _sessionLoadGeneration) return;
-      setState(() {
-        _recentSessions ??= const [];
-        _failedSessionTools = const <String>{};
-        _sessionLoadError = 'Could not load recent AI sessions.';
-        _canLoadMoreSessions = false;
-        _isLoadingSessions = false;
-      });
-      _sessionDiscoverySubscription = null;
-    }
-  }
-
-  void _loadMoreSessions() {
-    if (_isLoadingSessions) return;
-    setState(() => _sessionFetchLimit += _sessionFetchStep);
-    _loadRecentSessions(forceReload: true);
-  }
-
-  bool _hasSessionGroupAtLimit(List<ToolSessionInfo> sessions) {
-    final countsByTool = <String, int>{};
-    for (final session in sessions) {
-      countsByTool.update(
-        session.toolName,
-        (count) => count + 1,
-        ifAbsent: () => 1,
-      );
-    }
-    return countsByTool.values.any((count) => count >= _sessionFetchLimit);
   }
 
   void _resumeSession(ToolSessionInfo info) {
@@ -581,11 +486,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Future<void> _showSessionPickerForTool(
     AiSessionProviderEntry provider,
   ) async {
-    if (!provider.isSelectable) return;
     final selected = await showAiSessionPickerDialog(
       context: context,
       toolName: provider.toolName,
-      sessions: provider.sessions,
+      loadSessions: (maxSessions) => _discovery.discoverSessionsStream(
+        widget.session,
+        workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
+        maxPerTool: maxSessions,
+        toolName: provider.toolName,
+      ),
     );
     if (!mounted || selected == null) return;
     _resumeSession(selected);
@@ -711,7 +620,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       if (!wasExpanded) {
         _loadWindows();
         if (widget.isProUser) {
-          unawaited(_prefetchRecentSessions());
+          unawaited(_prefetchPreferredSessionProvider());
         }
       }
     },
@@ -865,90 +774,39 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ),
         onTap: () {
           setState(() => _showSessions = !_showSessions);
-          if (_showSessions) _loadRecentSessions();
+          if (_showSessions) {
+            unawaited(_prefetchPreferredSessionProvider());
+          }
         },
       ),
       if (_showSessions) ...[
-        if (_hasVisibleSessionProviders) ...[
-          if (_sessionLoadError != null)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                _sessionLoadError!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.error,
-                ),
-              ),
-            ),
-          ..._buildSessionProviderEntries().map(
-            (provider) => _buildSessionProviderTile(theme, provider),
+        AiSessionProviderList(
+          key: ValueKey<Object>(
+            Object.hashAll(<Object?>[
+              widget.session.connectionId,
+              widget.tmuxSessionName,
+              _resolveRecentSessionScopeWorkingDirectory(),
+              _preferredLaunchTool?.discoveredSessionToolName,
+            ]),
           ),
-          if (_canLoadMoreSessions)
-            Padding(
-              padding: const EdgeInsets.only(bottom: 8),
-              child: TextButton(
-                onPressed: _loadMoreSessions,
-                child: const Text('Load more'),
-              ),
-            ),
-        ] else if (_sessionLoadError != null && _recentSessions != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              _sessionLoadError!,
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.error,
-              ),
-            ),
-          )
-        else if (_recentSessions != null)
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-            child: Text(
-              'No recent sessions found',
-              style: theme.textTheme.bodySmall?.copyWith(
-                color: theme.colorScheme.onSurfaceVariant,
-              ),
-            ),
+          orderedTools: orderedDiscoveredSessionTools(
+            const <String, List<ToolSessionInfo>>{},
+            const <String>{},
+            preferredToolName: _preferredLaunchTool?.discoveredSessionToolName,
           ),
+          loadSessionsForTool: (toolName, maxSessions) =>
+              _discovery.discoverSessionsStream(
+                widget.session,
+                workingDirectory: _resolveRecentSessionScopeWorkingDirectory(),
+                maxPerTool: maxSessions,
+                toolName: toolName,
+              ),
+          itemBuilder: (context, provider) =>
+              _buildSessionProviderTile(theme, provider),
+        ),
       ],
     ],
   );
-
-  bool get _hasVisibleSessionProviders =>
-      _isLoadingSessions ||
-      _attemptedSessionTools.isNotEmpty ||
-      _failedSessionTools.isNotEmpty ||
-      (_recentSessions?.isNotEmpty ?? false);
-
-  List<AiSessionProviderEntry> _buildSessionProviderEntries() {
-    final grouped = _groupSessions(
-      _recentSessions ?? const <ToolSessionInfo>[],
-    );
-    final orderedTools = orderedDiscoveredSessionTools(grouped, <String>{
-      ..._attemptedSessionTools,
-      ..._failedSessionTools,
-    }, preferredToolName: _preferredLaunchTool?.discoveredSessionToolName);
-    return buildAiSessionProviderEntries(
-      orderedTools: orderedTools,
-      groupedSessions: grouped,
-      attemptedTools: _attemptedSessionTools,
-      failedTools: _failedSessionTools,
-      isLoading: _isLoadingSessions,
-    );
-  }
-
-  Map<String, List<ToolSessionInfo>> _groupSessions(
-    List<ToolSessionInfo> sessions,
-  ) {
-    final grouped = <String, List<ToolSessionInfo>>{};
-    for (final session in sessions) {
-      grouped
-          .putIfAbsent(session.toolName, () => <ToolSessionInfo>[])
-          .add(session);
-    }
-    return grouped;
-  }
 
   Widget _buildSessionProviderTile(
     ThemeData theme,
@@ -989,15 +847,30 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               : theme.colorScheme.onSurfaceVariant,
         ),
       ),
-      trailing: provider.isLoading
+      trailing: provider.isLoading && !provider.hasSessions
           ? const SizedBox(
               width: 16,
               height: 16,
               child: CircularProgressIndicator.adaptive(strokeWidth: 2),
             )
-          : provider.isSelectable
-          ? Icon(Icons.chevron_right, color: theme.colorScheme.onSurfaceVariant)
-          : null,
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                if (provider.isLoading) ...[
+                  const SizedBox(
+                    width: 14,
+                    height: 14,
+                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+                  ),
+                  const SizedBox(width: 4),
+                ],
+                if (provider.isSelectable)
+                  Icon(
+                    Icons.chevron_right,
+                    color: theme.colorScheme.onSurfaceVariant,
+                  ),
+              ],
+            ),
       onTap: provider.isSelectable
           ? () => unawaited(_showSessionPickerForTool(provider))
           : null,

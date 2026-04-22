@@ -717,6 +717,47 @@ cwd: /tmp/demo
   });
 
   group('discoverSessionsStream caching', () {
+    test('toolName limits discovery to the requested provider', () async {
+      final client = _MockSshClient();
+      final commands = <String>[];
+      when(() => client.execute(any())).thenAnswer((invocation) async {
+        final command = invocation.positionalArguments.first as String;
+        commands.add(command);
+        if (command.contains('opencode session list --format json')) {
+          return _buildExecSession(
+            stdout:
+                '[{"id":"session-1","title":"OpenCode only","directory":"/Users/depoll/Code/flutty","updated":"2026-04-21T20:00:00.000Z"}]',
+          );
+        }
+        if (command.contains('find ~/.codex/sessions')) {
+          return _buildExecSession(stdout: '/tmp/rollout-should-not-run.jsonl');
+        }
+        return _buildExecSession();
+      });
+
+      final discovery = AgentSessionDiscoveryService();
+      final session = _buildDiscoverySession(client);
+      final result = await discovery.discoverSessions(
+        session,
+        toolName: 'OpenCode',
+      );
+
+      expect(result.sessions.map((session) => session.toolName), ['OpenCode']);
+      expect(result.sessions.map((session) => session.sessionId), [
+        'session-1',
+      ]);
+      expect(
+        commands.where(
+          (command) => command.contains('opencode session list --format json'),
+        ),
+        hasLength(1),
+      );
+      expect(
+        commands.where((command) => command.contains('find ~/.codex/sessions')),
+        isEmpty,
+      );
+    });
+
     test('prefetchSessions warms the cache for the next visible load', () async {
       final client = _MockSshClient();
       final commands = <String>[];
