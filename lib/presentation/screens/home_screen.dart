@@ -2650,16 +2650,20 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     );
   }
 
-  Future<void> _retryTmuxQuery(int retries) async {
-    if (retries <= 0 || !mounted) {
-      if (mounted) {
-        setState(() => _queried = true);
-        _scheduleTmuxRetry();
-      }
+  Future<void> _retryTmuxQuery(
+    int retries, {
+    required int expectedGeneration,
+  }) async {
+    if (!_isCurrentTmuxQuery(expectedGeneration)) {
+      return;
+    }
+    if (retries <= 0) {
+      setState(() => _queried = true);
+      _scheduleTmuxRetry();
       return;
     }
     await Future<void>.delayed(_tmuxQueryRetryDelay);
-    if (mounted) {
+    if (_isCurrentTmuxQuery(expectedGeneration)) {
       await _queryTmux(retries: retries - 1);
     }
   }
@@ -2714,7 +2718,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     if (session == null) {
       // Session not available yet — retry after a delay so the badge
       // still appears for connections that finish establishing shortly.
-      await _retryTmuxQuery(retries);
+      await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
 
@@ -2728,7 +2732,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
     if (!active) {
-      await _retryTmuxQuery(retries);
+      await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
 
@@ -2740,7 +2744,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
     if (sessionName == null) {
-      await _retryTmuxQuery(retries);
+      await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
       return;
     }
 

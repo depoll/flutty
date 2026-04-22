@@ -586,6 +586,93 @@ void main() {
     expect(find.text('wrong-session · 1 windows'), findsNothing);
   });
 
+  testWidgets(
+    'ignores stale tmux retries after host session info loads later',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final tmuxService = _MockTmuxService();
+      final sshClient = _MockSshClient();
+      final hostsController = StreamController<List<Host>>.broadcast();
+      addTearDown(hostsController.close);
+
+      final delayedWindows = Completer<List<TmuxWindow>>();
+      final session = SshSession(
+        connectionId: 7,
+        hostId: 1,
+        client: sshClient,
+        config: const SshConnectionConfig(
+          hostname: 'alpha.example.com',
+          port: 22,
+          username: 'root',
+        ),
+      );
+      final sessionsNotifier = _MutableActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(connectionId: 7, hostId: 1),
+        ],
+        initialSessions: [session],
+      );
+
+      when(
+        () => tmuxService.isTmuxActive(session),
+      ).thenAnswer((_) async => true);
+      when(
+        () => tmuxService.currentSessionName(session),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.hasSession(session, 'correct-session'),
+      ).thenAnswer((_) async => true);
+      when(
+        () => tmuxService.watchWindowChanges(session, any()),
+      ).thenAnswer((_) => const Stream<void>.empty());
+      when(
+        () => tmuxService.listWindows(session, 'correct-session'),
+      ).thenAnswer((_) => delayedWindows.future);
+
+      hostsController.add(<Host>[]);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith((ref) => hostsController.stream),
+            tmuxServiceProvider.overrideWithValue(tmuxService),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Connections').first);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      hostsController.add([
+        _buildHost(
+          id: 1,
+          label: 'Alpha',
+          sortOrder: 0,
+          tmuxSessionName: 'correct-session',
+        ),
+      ]);
+      await tester.pump();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.pump(const Duration(seconds: 2));
+
+      delayedWindows.complete(const <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'editor', isActive: true),
+      ]);
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('correct-session · 1 windows'), findsOneWidget);
+    },
+  );
+
   testWidgets('returns to Hosts when the last active connection disappears', (
     tester,
   ) async {
