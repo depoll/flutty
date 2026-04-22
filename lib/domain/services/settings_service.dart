@@ -80,6 +80,9 @@ abstract final class SettingKeys {
   /// Saved host-scoped coding-agent launch presets.
   static const agentLaunchPresets = 'agent_launch_presets';
 
+  /// Saved host-scoped coding CLI launch preferences.
+  static const hostCliLaunchPreferences = 'host_cli_launch_preferences';
+
   /// Enable shared clipboard between device and remote session.
   ///
   /// The terminal can sync through OSC 52 and remote clipboard utilities when

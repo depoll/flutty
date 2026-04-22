@@ -30,6 +30,7 @@ import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
@@ -255,6 +256,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.tmuxSessionName,
     required this.availableHeight,
     required this.isProUser,
+    required this.startClisInYoloMode,
     required this.ref,
     required this.onAction,
   });
@@ -270,6 +272,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Whether the user has Pro access.
   final bool isProUser;
+
+  /// Whether supported coding CLIs should launch in YOLO mode for this host.
+  final bool startClisInYoloMode;
 
   /// Riverpod ref.
   final WidgetRef ref;
@@ -720,7 +725,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 }
                 widget.onAction(
                   TmuxNewWindowAction(
-                    command: tool.commandName,
+                    command: buildAgentToolCommand(
+                      tool,
+                      startInYoloMode: widget.startClisInYoloMode,
+                    ),
                     windowName: tool.commandName,
                   ),
                 );
@@ -2342,6 +2350,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Theme state
   Host? _host;
+  bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
 
@@ -2916,6 +2925,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Load host data first for theme
     final hostRepo = ref.read(hostRepositoryProvider);
     _host = await hostRepo.getById(widget.hostId);
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(widget.hostId);
+    _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
     await _loadTheme();
     await _connect(preferredConnectionId: widget.connectionId);
   }
@@ -3647,6 +3660,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       tmuxSessionName: _tmuxSessionName!,
       availableHeight: availableHeight,
       isProUser: isProUser,
+      startClisInYoloMode: _startClisInYoloMode,
       ref: ref,
       onAction: _handleTmuxAction,
     );
@@ -3700,6 +3714,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session: session,
       tmuxSessionName: _tmuxSessionName!,
       isProUser: isProUser,
+      startClisInYoloMode: _startClisInYoloMode,
     );
 
     if (!mounted || action == null) return;

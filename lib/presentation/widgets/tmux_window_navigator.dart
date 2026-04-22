@@ -30,6 +30,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required SshSession session,
   required String tmuxSessionName,
   required bool isProUser,
+  required bool startClisInYoloMode,
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
   isScrollControlled: true,
@@ -37,6 +38,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
     session: session,
     tmuxSessionName: tmuxSessionName,
     isProUser: isProUser,
+    startClisInYoloMode: startClisInYoloMode,
     ref: ref,
   ),
 );
@@ -94,12 +96,14 @@ class _TmuxNavigatorSheet extends StatefulWidget {
     required this.session,
     required this.tmuxSessionName,
     required this.isProUser,
+    required this.startClisInYoloMode,
     required this.ref,
   });
 
   final SshSession session;
   final String tmuxSessionName;
   final bool isProUser;
+  final bool startClisInYoloMode;
   final WidgetRef ref;
 
   @override
@@ -243,7 +247,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         installedToolsFuture: _installedToolsFuture,
         onToolSelected: (tool) {
           Navigator.pop(context);
-          _createNewWindow(command: tool.commandName, name: tool.commandName);
+          _createNewWindow(
+            command: buildAgentToolCommand(
+              tool,
+              startInYoloMode: widget.startClisInYoloMode,
+            ),
+            name: tool.commandName,
+          );
         },
         onEmptyWindow: () {
           Navigator.pop(context);

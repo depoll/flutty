@@ -52,6 +52,19 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
   };
+
+  /// Whether this tool supports launching directly into YOLO mode.
+  bool get supportsYoloMode => yoloArgument != null;
+
+  /// Command-line argument that enables YOLO mode for this tool, if available.
+  String? get yoloArgument => switch (this) {
+    AgentLaunchTool.claudeCode => '--dangerously-skip-permissions',
+    AgentLaunchTool.copilotCli => null,
+    AgentLaunchTool.aider => '--yes-always',
+    AgentLaunchTool.codex => '--approval-mode never',
+    AgentLaunchTool.openCode => null,
+    AgentLaunchTool.geminiCli => '--yolo',
+  };
 }
 
 /// Host-scoped preset for launching a coding agent after connect.
@@ -151,13 +164,15 @@ const _backslashCodeUnit = 0x5C;
 final _unquotedTmuxFlagTokenPattern = RegExp(r'^[A-Za-z0-9_./~:=,+-]+$');
 
 /// Builds the shell command for a saved agent launch preset.
-String buildAgentLaunchCommand(AgentLaunchPreset preset) {
-  final baseCommand = [
-    preset.tool.commandName,
-    if (preset.additionalArguments case final value?
-        when value.trim().isNotEmpty)
-      value.trim(),
-  ].join(' ');
+String buildAgentLaunchCommand(
+  AgentLaunchPreset preset, {
+  bool startInYoloMode = false,
+}) {
+  final baseCommand = buildAgentToolCommand(
+    preset.tool,
+    additionalArguments: preset.additionalArguments,
+    startInYoloMode: startInYoloMode,
+  );
 
   final tmuxSessionName = preset.tmuxSessionName?.trim();
   final workingDirectory = preset.workingDirectory?.trim();
@@ -179,6 +194,28 @@ String buildAgentLaunchCommand(AgentLaunchPreset preset) {
   }
 
   return baseCommand;
+}
+
+/// Builds the base shell command for launching [tool].
+String buildAgentToolCommand(
+  AgentLaunchTool tool, {
+  String? additionalArguments,
+  bool startInYoloMode = false,
+}) {
+  final trimmedAdditionalArguments = additionalArguments?.trim();
+  final commandParts = <String>[tool.commandName];
+  final yoloArgument = tool.yoloArgument;
+  if (startInYoloMode &&
+      yoloArgument != null &&
+      (trimmedAdditionalArguments == null ||
+          !trimmedAdditionalArguments.contains(yoloArgument))) {
+    commandParts.add(yoloArgument);
+  }
+  if (trimmedAdditionalArguments != null &&
+      trimmedAdditionalArguments.isNotEmpty) {
+    commandParts.add(trimmedAdditionalArguments);
+  }
+  return commandParts.join(' ');
 }
 
 List<String> _tokenizeTmuxNewSessionFlags(String? value) {
