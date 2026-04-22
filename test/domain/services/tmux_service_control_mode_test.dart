@@ -77,6 +77,33 @@ void main() {
       );
     });
 
+    test(
+      'returns true for control-mode notifications carrying window state',
+      () {
+        expect(
+          shouldReloadTmuxWindowsFromControlLine(
+            '%layout-change @1 even-horizontal even-horizontal *',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldReloadTmuxWindowsFromControlLine(
+            r'%client-session-changed /dev/ttys001 $1 dev',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldReloadTmuxWindowsFromControlLine(
+            '%pane-mode-changed %1',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+      },
+    );
+
     test('returns false for control block markers and noise', () {
       expect(
         shouldReloadTmuxWindowsFromControlLine(
@@ -127,7 +154,8 @@ void main() {
     test('noop while control-mode notifications are flowing', () {
       expect(
         decideTmuxHeartbeatAction(
-          silence: Duration.zero,
+          controlSilence: Duration.zero,
+          timeSinceLastRefresh: Duration.zero,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -135,7 +163,8 @@ void main() {
       );
       expect(
         decideTmuxHeartbeatAction(
-          silence: const Duration(milliseconds: 4999),
+          controlSilence: const Duration(milliseconds: 4999),
+          timeSinceLastRefresh: const Duration(milliseconds: 4999),
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -147,7 +176,8 @@ void main() {
         'heartbeat interval', () {
       expect(
         decideTmuxHeartbeatAction(
-          silence: heartbeat,
+          controlSilence: heartbeat,
+          timeSinceLastRefresh: heartbeat,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -155,7 +185,20 @@ void main() {
       );
       expect(
         decideTmuxHeartbeatAction(
-          silence: const Duration(seconds: 20),
+          controlSilence: const Duration(seconds: 20),
+          timeSinceLastRefresh: const Duration(seconds: 20),
+          heartbeatInterval: heartbeat,
+          maxSilenceBeforeRestart: maxSilence,
+        ),
+        TmuxControlHeartbeatAction.refresh,
+      );
+    });
+
+    test('refreshes even while unrelated control chatter keeps arriving', () {
+      expect(
+        decideTmuxHeartbeatAction(
+          controlSilence: const Duration(milliseconds: 100),
+          timeSinceLastRefresh: heartbeat,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -167,7 +210,8 @@ void main() {
         'threshold', () {
       expect(
         decideTmuxHeartbeatAction(
-          silence: maxSilence,
+          controlSilence: maxSilence,
+          timeSinceLastRefresh: maxSilence,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -175,7 +219,8 @@ void main() {
       );
       expect(
         decideTmuxHeartbeatAction(
-          silence: const Duration(minutes: 5),
+          controlSilence: const Duration(minutes: 5),
+          timeSinceLastRefresh: const Duration(minutes: 5),
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
