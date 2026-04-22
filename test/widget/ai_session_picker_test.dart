@@ -188,6 +188,85 @@ void main() {
       );
       expect(claudeAfter.dy, lessThan(codexAfter.dy));
     });
+
+    testWidgets('only rebuilds the provider row that changed', (tester) async {
+      final claudeController = StreamController<DiscoveredSessionsResult>();
+      final codexController = StreamController<DiscoveredSessionsResult>();
+      final buildCounts = <String, int>{};
+      addTearDown(() async {
+        if (!claudeController.isClosed) {
+          await claudeController.close();
+        }
+        if (!codexController.isClosed) {
+          await codexController.close();
+        }
+      });
+
+      await tester.pumpWidget(
+        _wrap(
+          AiSessionProviderList(
+            orderedTools: const ['Claude Code', 'Codex'],
+            loadSessionsForTool: (toolName, _) => switch (toolName) {
+              'Claude Code' => claudeController.stream,
+              'Codex' => codexController.stream,
+              _ => Stream<DiscoveredSessionsResult>.value(
+                DiscoveredSessionsResult(sessions: const []),
+              ),
+            },
+            itemBuilder: (context, provider) {
+              buildCounts.update(
+                provider.toolName,
+                (count) => count + 1,
+                ifAbsent: () => 1,
+              );
+              return Text(
+                '${provider.toolName}|${provider.compactStatusLabel}',
+                key: ValueKey<String>(provider.toolName),
+              );
+            },
+          ),
+        ),
+      );
+
+      expect(buildCounts, {'Claude Code': 1, 'Codex': 1});
+
+      codexController.add(
+        DiscoveredSessionsResult(
+          sessions: const <ToolSessionInfo>[
+            ToolSessionInfo(
+              toolName: 'Codex',
+              sessionId: 'session-1',
+              summary: 'Only Codex should rebuild',
+            ),
+          ],
+          attemptedTools: const <String>{'Codex'},
+        ),
+      );
+      await tester.pump();
+
+      expect(buildCounts, {'Claude Code': 1, 'Codex': 2});
+
+      codexController.add(
+        DiscoveredSessionsResult(
+          sessions: const <ToolSessionInfo>[
+            ToolSessionInfo(
+              toolName: 'Codex',
+              sessionId: 'session-1',
+              summary: 'Only Codex should rebuild',
+            ),
+            ToolSessionInfo(
+              toolName: 'Codex',
+              sessionId: 'session-2',
+              summary: 'Extra streamed session should not churn the row',
+            ),
+          ],
+          attemptedTools: const <String>{'Codex'},
+        ),
+      );
+      await tester.pump();
+
+      expect(buildCounts, {'Claude Code': 1, 'Codex': 2});
+    });
   });
 
   group('AiSessionPickerDialog', () {

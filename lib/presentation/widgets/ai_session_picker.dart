@@ -1,6 +1,5 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../domain/models/tmux_state.dart';
@@ -15,6 +14,7 @@ class AiSessionProviderEntry {
     required this.wasAttempted,
     required this.hasFailure,
     required this.isLoading,
+    this.hasSessionsOverride,
   });
 
   /// Provider display name.
@@ -32,8 +32,11 @@ class AiSessionProviderEntry {
   /// Whether this provider is still pending during the current load.
   final bool isLoading;
 
+  /// Optional explicit session-availability flag for lightweight row updates.
+  final bool? hasSessionsOverride;
+
   /// Whether the provider currently has at least one discovered session.
-  bool get hasSessions => sessions.isNotEmpty;
+  bool get hasSessions => hasSessionsOverride ?? sessions.isNotEmpty;
 
   /// Provider rows stay tappable so users can load or retry on demand.
   bool get isSelectable => true;
@@ -139,11 +142,9 @@ class AiSessionProviderList extends StatefulWidget {
 class _AiSessionProviderListState extends State<AiSessionProviderList> {
   final Map<String, StreamSubscription<DiscoveredSessionsResult>>
   _subscriptions = <String, StreamSubscription<DiscoveredSessionsResult>>{};
-  final Map<String, List<ToolSessionInfo>> _sessionsByTool =
-      <String, List<ToolSessionInfo>>{};
-  final Set<String> _attemptedTools = <String>{};
-  final Set<String> _failedTools = <String>{};
-  final Set<String> _loadingTools = <String>{};
+  final Map<String, ValueNotifier<AiSessionProviderEntry>> _entryNotifiers =
+      <String, ValueNotifier<AiSessionProviderEntry>>{};
+  final Map<String, bool> _currentLoadHasSessions = <String, bool>{};
   late List<String> _orderedTools;
   int _loadGeneration = 0;
 
@@ -151,6 +152,7 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
   void initState() {
     super.initState();
     _orderedTools = widget.orderedTools.toList(growable: false);
+    _disposeObsoleteNotifiers();
     _startLoadingProviders();
   }
 
@@ -176,6 +178,9 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
   @override
   void dispose() {
     unawaited(_cancelSubscriptions());
+    for (final notifier in _entryNotifiers.values) {
+      notifier.dispose();
+    }
     super.dispose();
   }
 
@@ -196,19 +201,17 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
   Future<void> _restartLoadingProviders() async {
     await _cancelSubscriptions();
     if (!mounted) return;
-    setState(() {
-      final orderedToolSet = _orderedTools.toSet();
-      _sessionsByTool.removeWhere(
-        (toolName, _) => !orderedToolSet.contains(toolName),
+    _disposeObsoleteNotifiers();
+    for (final toolName in _orderedTools) {
+      final current = _entryForTool(toolName);
+      _setEntry(
+        toolName,
+        hasSessions: current.hasSessions,
+        wasAttempted: current.wasAttempted,
+        hasFailure: current.hasFailure,
+        isLoading: false,
       );
-      _attemptedTools.removeWhere(
-        (toolName) => !orderedToolSet.contains(toolName),
-      );
-      _failedTools.removeWhere(
-        (toolName) => !orderedToolSet.contains(toolName),
-      );
-      _loadingTools.clear();
-    });
+    }
     _startLoadingProviders();
   }
 
@@ -221,95 +224,136 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
     }
   }
 
+  void _disposeObsoleteNotifiers() {
+    final orderedToolSet = _orderedTools.toSet();
+    final obsoleteToolNames = _entryNotifiers.keys
+        .where((toolName) => !orderedToolSet.contains(toolName))
+        .toList(growable: false);
+    for (final toolName in obsoleteToolNames) {
+      _currentLoadHasSessions.remove(toolName);
+      _entryNotifiers.remove(toolName)?.dispose();
+    }
+  }
+
+  AiSessionProviderEntry _createInitialEntry(String toolName) =>
+      AiSessionProviderEntry(
+        toolName: toolName,
+        sessions: const <ToolSessionInfo>[],
+        wasAttempted: false,
+        hasFailure: false,
+        isLoading: false,
+        hasSessionsOverride: false,
+      );
+
+  ValueNotifier<AiSessionProviderEntry> _entryNotifier(String toolName) =>
+      _entryNotifiers.putIfAbsent(
+        toolName,
+        () => ValueNotifier<AiSessionProviderEntry>(
+          _createInitialEntry(toolName),
+        ),
+      );
+
+  AiSessionProviderEntry _entryForTool(String toolName) =>
+      _entryNotifier(toolName).value;
+
+  bool _sameEntry(AiSessionProviderEntry a, AiSessionProviderEntry b) =>
+      a.toolName == b.toolName &&
+      a.hasSessions == b.hasSessions &&
+      a.wasAttempted == b.wasAttempted &&
+      a.hasFailure == b.hasFailure &&
+      a.isLoading == b.isLoading;
+
+  void _setEntry(
+    String toolName, {
+    required bool hasSessions,
+    required bool wasAttempted,
+    required bool hasFailure,
+    required bool isLoading,
+  }) {
+    final notifier = _entryNotifier(toolName);
+    final next = AiSessionProviderEntry(
+      toolName: toolName,
+      sessions: const <ToolSessionInfo>[],
+      wasAttempted: wasAttempted,
+      hasFailure: hasFailure,
+      isLoading: isLoading,
+      hasSessionsOverride: hasSessions,
+    );
+    if (_sameEntry(notifier.value, next)) {
+      return;
+    }
+    notifier.value = next;
+  }
+
   void _startLoadingProviders() {
     final generation = _loadGeneration;
     for (final toolName in _orderedTools) {
-      final existingSessions = _sessionsByTool[toolName];
+      _currentLoadHasSessions[toolName] = false;
+      final current = _entryForTool(toolName);
       final hasVisibleState =
-          (existingSessions?.isNotEmpty ?? false) ||
-          _attemptedTools.contains(toolName) ||
-          _failedTools.contains(toolName);
+          current.hasSessions || current.wasAttempted || current.hasFailure;
       if (!hasVisibleState) {
-        _loadingTools.add(toolName);
+        _setEntry(
+          toolName,
+          hasSessions: false,
+          wasAttempted: false,
+          hasFailure: false,
+          isLoading: true,
+        );
       }
       _subscriptions[toolName] = widget
           .loadSessionsForTool(toolName, widget.initialMaxSessions)
           .listen(
             (result) {
               if (!mounted || generation != _loadGeneration) return;
-              final sessions = result.sessions
-                  .where((session) => session.toolName == toolName)
-                  .toList(growable: false);
+              final current = _entryForTool(toolName);
+              final sawSessions = result.sessions.any(
+                (session) => session.toolName == toolName,
+              );
+              if (sawSessions) {
+                _currentLoadHasSessions[toolName] = true;
+              }
               final wasAttempted =
                   result.attemptedTools.contains(toolName) ||
                   result.failedTools.contains(toolName) ||
-                  sessions.isNotEmpty;
+                  sawSessions;
               final hadFailure = result.failedTools.contains(toolName);
-              const isLoading = false;
-              final sessionsChanged = !listEquals(
-                _sessionsByTool[toolName],
-                sessions,
+              _setEntry(
+                toolName,
+                hasSessions:
+                    current.hasSessions ||
+                    (_currentLoadHasSessions[toolName] ?? false),
+                wasAttempted: wasAttempted,
+                hasFailure: hadFailure,
+                isLoading: false,
               );
-              final attemptedChanged =
-                  _attemptedTools.contains(toolName) != wasAttempted;
-              final failureChanged =
-                  _failedTools.contains(toolName) != hadFailure;
-              final loadingChanged =
-                  _loadingTools.contains(toolName) != isLoading;
-              if (!sessionsChanged &&
-                  !attemptedChanged &&
-                  !failureChanged &&
-                  !loadingChanged) {
-                return;
-              }
-              setState(() {
-                _sessionsByTool[toolName] = sessions;
-                if (wasAttempted) {
-                  _attemptedTools.add(toolName);
-                } else {
-                  _attemptedTools.remove(toolName);
-                }
-                if (hadFailure) {
-                  _failedTools.add(toolName);
-                } else {
-                  _failedTools.remove(toolName);
-                }
-                _loadingTools.remove(toolName);
-              });
             },
             onError: (Object _) {
               if (!mounted || generation != _loadGeneration) return;
-              final needsUpdate =
-                  !_attemptedTools.contains(toolName) ||
-                  !_failedTools.contains(toolName) ||
-                  _loadingTools.contains(toolName) ||
-                  !_sessionsByTool.containsKey(toolName);
-              if (!needsUpdate) {
-                _subscriptions.remove(toolName);
-                return;
-              }
-              setState(() {
-                _attemptedTools.add(toolName);
-                _failedTools.add(toolName);
-                _loadingTools.remove(toolName);
-                _sessionsByTool.putIfAbsent(
-                  toolName,
-                  () => const <ToolSessionInfo>[],
-                );
-              });
+              final current = _entryForTool(toolName);
+              _setEntry(
+                toolName,
+                hasSessions:
+                    current.hasSessions ||
+                    (_currentLoadHasSessions[toolName] ?? false),
+                wasAttempted: true,
+                hasFailure: true,
+                isLoading: false,
+              );
+              _currentLoadHasSessions.remove(toolName);
               _subscriptions.remove(toolName);
             },
             onDone: () {
               if (!mounted || generation != _loadGeneration) return;
-              final needsUpdate =
-                  !_attemptedTools.contains(toolName) ||
-                  _loadingTools.contains(toolName);
-              if (needsUpdate) {
-                setState(() {
-                  _attemptedTools.add(toolName);
-                  _loadingTools.remove(toolName);
-                });
-              }
+              final current = _entryForTool(toolName);
+              _setEntry(
+                toolName,
+                hasSessions: _currentLoadHasSessions[toolName] ?? false,
+                wasAttempted: true,
+                hasFailure: current.hasFailure,
+                isLoading: false,
+              );
+              _currentLoadHasSessions.remove(toolName);
               _subscriptions.remove(toolName);
             },
             cancelOnError: true,
@@ -317,21 +361,19 @@ class _AiSessionProviderListState extends State<AiSessionProviderList> {
     }
   }
 
-  AiSessionProviderEntry _entryForTool(String toolName) =>
-      AiSessionProviderEntry(
-        toolName: toolName,
-        sessions: _sessionsByTool[toolName] ?? const <ToolSessionInfo>[],
-        wasAttempted: _attemptedTools.contains(toolName),
-        hasFailure: _failedTools.contains(toolName),
-        isLoading: _loadingTools.contains(toolName),
-      );
-
   @override
   Widget build(BuildContext context) => Column(
     mainAxisSize: MainAxisSize.min,
     children: [
       for (final toolName in _orderedTools)
-        widget.itemBuilder(context, _entryForTool(toolName)),
+        RepaintBoundary(
+          child: ValueListenableBuilder<AiSessionProviderEntry>(
+            key: ValueKey<String>('ai-session-provider-$toolName'),
+            valueListenable: _entryNotifier(toolName),
+            builder: (context, provider, _) =>
+                widget.itemBuilder(context, provider),
+          ),
+        ),
     ],
   );
 }

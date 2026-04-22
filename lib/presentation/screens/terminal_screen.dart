@@ -174,6 +174,34 @@ double resolveTmuxBarRevealOpacity(
   return (terminalBottomPadding / handleHeight).clamp(0.0, 1.0);
 }
 
+/// Resolves the active tmux window title to show in the collapsed bar handle.
+@visibleForTesting
+String? resolveTmuxBarActiveWindowTitle(Iterable<TmuxWindow>? windows) {
+  final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
+  final title = activeWindow?.displayTitle.trim();
+  if (title == null || title.isEmpty) {
+    return null;
+  }
+  return title;
+}
+
+/// Resolves the compact label shown in the tmux bar handle.
+@visibleForTesting
+String resolveTmuxBarHandleLabel(
+  String tmuxSessionName, {
+  String? activeWindowTitle,
+}) {
+  final sessionName = tmuxSessionName.trim();
+  final title = activeWindowTitle?.trim();
+  if (title == null || title.isEmpty || title == sessionName) {
+    return sessionName;
+  }
+  if (sessionName.isEmpty) {
+    return title;
+  }
+  return '$sessionName · $title';
+}
+
 final _oscEscapeSequencePattern = RegExp(
   '\x1B\\][^\x07\x1B]*(?:\x07|\x1B\\\\)',
   dotAll: true,
@@ -612,68 +640,84 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     );
   }
 
-  Widget _buildHandleBar(ThemeData theme) => GestureDetector(
-    key: const ValueKey('tmux-handle-bar'),
-    onTap: () {
-      final wasExpanded = _expanded;
-      setState(() => _expanded = !_expanded);
-      // Refresh window list when expanding to get current active state.
-      if (!wasExpanded) {
-        _loadWindows();
-        if (widget.isProUser) {
-          unawaited(_prefetchPreferredSessionProvider());
+  Widget _buildHandleBar(ThemeData theme) {
+    final handleLabel = resolveTmuxBarHandleLabel(
+      widget.tmuxSessionName,
+      activeWindowTitle: resolveTmuxBarActiveWindowTitle(_windows),
+    );
+    return GestureDetector(
+      key: const ValueKey('tmux-handle-bar'),
+      onTap: () {
+        final wasExpanded = _expanded;
+        setState(() => _expanded = !_expanded);
+        // Refresh window list when expanding to get current active state.
+        if (!wasExpanded) {
+          _loadWindows();
+          if (widget.isProUser) {
+            unawaited(_prefetchPreferredSessionProvider());
+          }
         }
-      }
-    },
-    child: SizedBox(
-      height: _TmuxExpandableBar.handleHeight,
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12),
-        child: Stack(
-          alignment: Alignment.center,
-          children: [
-            // Centered drag handle pill.
-            Container(
-              width: 28,
-              height: 3,
-              decoration: BoxDecoration(
-                color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
-                borderRadius: BorderRadius.circular(2),
+      },
+      child: SizedBox(
+        height: _TmuxExpandableBar.handleHeight,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Stack(
+            children: [
+              Align(
+                alignment: Alignment.topCenter,
+                child: Padding(
+                  padding: const EdgeInsets.only(top: 4),
+                  child: Container(
+                    width: 28,
+                    height: 3,
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
               ),
-            ),
-            // Left-aligned session name, right-aligned chevron.
-            Row(
-              children: [
-                Icon(
-                  Icons.window_outlined,
-                  size: 12,
-                  color: theme.colorScheme.primary,
+              Align(
+                alignment: Alignment.bottomCenter,
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.window_outlined,
+                      size: 12,
+                      color: theme.colorScheme.primary,
+                    ),
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        handleLabel,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          fontSize: 10,
+                          color: theme.colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 4),
+                    AnimatedRotation(
+                      duration: const Duration(milliseconds: 300),
+                      turns: _expanded ? 0.5 : 0,
+                      child: Icon(
+                        Icons.keyboard_arrow_up,
+                        size: 14,
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(width: 4),
-                Text(
-                  widget.tmuxSessionName,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontSize: 10,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                const Spacer(),
-                AnimatedRotation(
-                  duration: const Duration(milliseconds: 300),
-                  turns: _expanded ? 0.5 : 0,
-                  child: Icon(
-                    Icons.keyboard_arrow_up,
-                    size: 14,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-              ],
-            ),
-          ],
+              ),
+            ],
+          ),
         ),
       ),
-    ),
-  );
+    );
+  }
 
   Widget _buildWindowList(ThemeData theme) {
     if (_isLoading) {

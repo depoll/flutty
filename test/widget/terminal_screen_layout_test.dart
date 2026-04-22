@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
@@ -49,6 +50,44 @@ void main() {
       expect(resolveTmuxBarRevealOpacity(11), 0.5);
       expect(resolveTmuxBarRevealOpacity(22), 1);
       expect(resolveTmuxBarRevealOpacity(40), 1);
+    });
+
+    test('uses the active tmux window title in the handle label', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(
+          index: 0,
+          name: 'shell',
+          isActive: false,
+          paneTitle: 'Ignored',
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'agent',
+          isActive: true,
+          paneTitle: '✨ Editing main.dart',
+        ),
+      ];
+
+      expect(resolveTmuxBarActiveWindowTitle(windows), '✨ Editing main.dart');
+      expect(
+        resolveTmuxBarHandleLabel(
+          'workspace',
+          activeWindowTitle: resolveTmuxBarActiveWindowTitle(windows),
+        ),
+        'workspace · ✨ Editing main.dart',
+      );
+    });
+
+    test('omits duplicate or blank tmux window titles in the handle label', () {
+      expect(resolveTmuxBarActiveWindowTitle(const <TmuxWindow>[]), isNull);
+      expect(
+        resolveTmuxBarHandleLabel('workspace', activeWindowTitle: 'workspace'),
+        'workspace',
+      );
+      expect(
+        resolveTmuxBarHandleLabel('workspace', activeWindowTitle: '  '),
+        'workspace',
+      );
     });
 
     test('tmux bar stays inside visible safe insets', () {

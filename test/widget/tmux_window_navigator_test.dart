@@ -1,8 +1,19 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:async';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/agent_session_discovery_service.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/tmux_service.dart';
+import 'package:monkeyssh/presentation/widgets/tmux_window_navigator.dart';
 
 void main() {
   group('tmux navigator UI', () {
@@ -90,8 +101,102 @@ void main() {
       expect(find.text('Claude Code · 2h ago'), findsOneWidget);
       expect(find.text('Resume'), findsOneWidget);
     });
+
+    testWidgets('shows AI session providers without expanding a section', (
+      tester,
+    ) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const tmuxSessionName = 'main';
+
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.detectInstalledAgentTools(session),
+      ).thenAnswer((_) async => const <AgentLaunchTool>{});
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<void>.empty());
+      when(
+        () => tmuxService.listWindows(session, tmuxSessionName),
+      ).thenAnswer((_) async => windows);
+      when(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      ).thenAnswer(
+        (_) => Stream<DiscoveredSessionsResult>.value(
+          DiscoveredSessionsResult(sessions: const <ToolSessionInfo>[]),
+        ),
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            tmuxServiceProvider.overrideWithValue(tmuxService),
+            agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+            agentSessionDiscoveryServiceProvider.overrideWithValue(
+              discoveryService,
+            ),
+          ],
+          child: MaterialApp(
+            home: Scaffold(
+              body: Consumer(
+                builder: (context, ref, _) => TextButton(
+                  onPressed: () {
+                    unawaited(
+                      showTmuxNavigator(
+                        context: context,
+                        ref: ref,
+                        session: session,
+                        tmuxSessionName: tmuxSessionName,
+                        isProUser: true,
+                      ),
+                    );
+                  },
+                  child: const Text('Open'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Recent AI Sessions'), findsOneWidget);
+      expect(find.text('Claude Code'), findsOneWidget);
+      expect(find.byIcon(Icons.expand_more), findsNothing);
+      expect(find.byIcon(Icons.expand_less), findsNothing);
+    });
   });
 }
+
+class _MockTmuxService extends Mock implements TmuxService {}
+
+class _MockAgentLaunchPresetService extends Mock
+    implements AgentLaunchPresetService {}
+
+class _MockAgentSessionDiscoveryService extends Mock
+    implements AgentSessionDiscoveryService {}
+
+class _MockSshClient extends Mock implements SSHClient {}
 
 class _MockWindowList extends StatelessWidget {
   const _MockWindowList({required this.windows});

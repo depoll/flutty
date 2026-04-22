@@ -142,8 +142,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
   StreamSubscription<void>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
-  bool _showRecentSessions = false;
-  bool _hasInitializedRecentSessions = false;
   String? _error;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
@@ -359,7 +357,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
             const SizedBox(height: 4),
 
-            // Scrollable window list
+            // Scrollable popup content
             Flexible(
               child: ListView(
                 shrinkWrap: true,
@@ -381,36 +379,32 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     )
                   else if (_windows != null && _windows!.isNotEmpty)
                     ..._windows!.map(_buildWindowTile),
+                  const Divider(height: 1),
+                  // New Window button
+                  ListTile(
+                    visualDensity: _tmuxNavigatorDenseVisualDensity,
+                    minTileHeight: 42,
+                    contentPadding: _tmuxNavigatorTilePadding,
+                    horizontalTitleGap: 12,
+                    minLeadingWidth: 20,
+                    leading: Icon(
+                      Icons.add_circle_outline,
+                      color: theme.colorScheme.primary,
+                      size: 18,
+                    ),
+                    title: const Text('New Window'),
+                    dense: true,
+                    onTap: _showNewWindowPicker,
+                  ),
+                  // Recent AI Sessions
+                  if (widget.isProUser) ...[
+                    const Divider(height: 1),
+                    _buildRecentSessionsSection(theme),
+                  ],
+                  const SizedBox(height: 8),
                 ],
               ),
             ),
-
-            const Divider(height: 1),
-
-            // New Window button
-            ListTile(
-              visualDensity: _tmuxNavigatorDenseVisualDensity,
-              minTileHeight: 42,
-              contentPadding: _tmuxNavigatorTilePadding,
-              horizontalTitleGap: 12,
-              minLeadingWidth: 20,
-              leading: Icon(
-                Icons.add_circle_outline,
-                color: theme.colorScheme.primary,
-                size: 18,
-              ),
-              title: const Text('New Window'),
-              dense: true,
-              onTap: _showNewWindowPicker,
-            ),
-
-            // Recent AI Sessions (collapsed by default)
-            if (widget.isProUser) ...[
-              const Divider(height: 1),
-              _buildRecentSessionsSection(theme),
-            ],
-
-            const SizedBox(height: 8),
           ],
         ),
       ),
@@ -506,68 +500,49 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         horizontalTitleGap: 12,
         minLeadingWidth: 18,
         leading: Icon(
-          _showRecentSessions ? Icons.expand_less : Icons.expand_more,
+          Icons.smart_toy_outlined,
           size: 18,
           color: theme.colorScheme.onSurfaceVariant,
         ),
         title: const Row(
           children: [Text('Recent AI Sessions'), Spacer(), PremiumBadge()],
         ),
-        onTap: () {
-          final showRecentSessions = !_showRecentSessions;
-          setState(() {
-            _showRecentSessions = showRecentSessions;
-            if (showRecentSessions) {
-              _hasInitializedRecentSessions = true;
-            }
-          });
-          if (showRecentSessions) {
-            unawaited(_prefetchPreferredSessionProvider());
-          }
-        },
       ),
-      if (_hasInitializedRecentSessions)
-        Offstage(
-          offstage: !_showRecentSessions,
-          child: AiSessionProviderList(
-            key: ValueKey<Object>(
-              Object.hashAll(<Object?>[
-                widget.session.connectionId,
-                widget.tmuxSessionName,
-                widget.scopeWorkingDirectory,
-                _windows
-                    ?.where((window) => window.isActive)
-                    .firstOrNull
-                    ?.currentPath,
-              ]),
-            ),
-            orderedTools: orderedDiscoveredSessionTools(
-              const <String, List<ToolSessionInfo>>{},
-              const <String>{},
-              preferredToolName:
-                  _preferredLaunchTool?.discoveredSessionToolName,
-            ),
-            loadSessionsForTool: (toolName, maxSessions) {
-              final activeWindow = _windows
-                  ?.where((w) => w.isActive)
-                  .firstOrNull;
-              final scopeWorkingDirectory =
-                  widget.scopeWorkingDirectory ??
-                  resolveAgentSessionScopeWorkingDirectory(
-                    activeWorkingDirectory: activeWindow?.currentPath,
-                    sessionWorkingDirectory: widget.session.workingDirectory,
-                  );
-              return _discovery.discoverSessionsStream(
-                widget.session,
-                workingDirectory: scopeWorkingDirectory,
-                maxPerTool: maxSessions,
-                toolName: toolName,
-              );
-            },
-            itemBuilder: (context, provider) =>
-                _buildSessionProviderTile(theme, provider),
-          ),
+      AiSessionProviderList(
+        key: ValueKey<Object>(
+          Object.hashAll(<Object?>[
+            widget.session.connectionId,
+            widget.tmuxSessionName,
+            widget.scopeWorkingDirectory,
+            _windows
+                ?.where((window) => window.isActive)
+                .firstOrNull
+                ?.currentPath,
+          ]),
         ),
+        orderedTools: orderedDiscoveredSessionTools(
+          const <String, List<ToolSessionInfo>>{},
+          const <String>{},
+          preferredToolName: _preferredLaunchTool?.discoveredSessionToolName,
+        ),
+        loadSessionsForTool: (toolName, maxSessions) {
+          final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
+          final scopeWorkingDirectory =
+              widget.scopeWorkingDirectory ??
+              resolveAgentSessionScopeWorkingDirectory(
+                activeWorkingDirectory: activeWindow?.currentPath,
+                sessionWorkingDirectory: widget.session.workingDirectory,
+              );
+          return _discovery.discoverSessionsStream(
+            widget.session,
+            workingDirectory: scopeWorkingDirectory,
+            maxPerTool: maxSessions,
+            toolName: toolName,
+          );
+        },
+        itemBuilder: (context, provider) =>
+            _buildSessionProviderTile(theme, provider),
+      ),
     ],
   );
 
