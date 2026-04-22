@@ -196,6 +196,47 @@ void main() {
         isTrue,
       );
     });
+
+    test('reviews terminal command insertion at shell prompts', () {
+      expect(
+        shouldReviewTerminalCommandInsertion(
+          shellStatus: TerminalShellStatus.prompt,
+          isUsingAltBuffer: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReviewTerminalCommandInsertion(
+          shellStatus: TerminalShellStatus.editingCommand,
+          isUsingAltBuffer: false,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldReviewTerminalCommandInsertion(
+          shellStatus: null,
+          isUsingAltBuffer: false,
+        ),
+        isTrue,
+      );
+    });
+
+    test('suppresses terminal command insertion review in CLI contexts', () {
+      expect(
+        shouldReviewTerminalCommandInsertion(
+          shellStatus: TerminalShellStatus.runningCommand,
+          isUsingAltBuffer: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldReviewTerminalCommandInsertion(
+          shellStatus: TerminalShellStatus.prompt,
+          isUsingAltBuffer: true,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('tmux bar safe insets vs. keyboard toolbar', () {

@@ -237,6 +237,29 @@ void main() {
       );
     });
 
+    test('ignores quoted shell-like text during clipboard review', () {
+      final review = assessClipboardPasteCommand(
+        'printf "%s" "fish & chips | <html>"',
+        bracketedPasteModeEnabled: false,
+      );
+
+      expect(review.requiresReview, isFalse);
+      expect(review.reasons, isEmpty);
+    });
+
+    test('still flags command substitution inside double quotes', () {
+      final review = assessClipboardPasteCommand(
+        r'echo "$(id)"',
+        bracketedPasteModeEnabled: false,
+      );
+
+      expect(review.requiresReview, isTrue);
+      expect(
+        review.reasons,
+        contains(TerminalCommandReviewReason.commandSubstitution),
+      );
+    });
+
     test(
       'safe single-line commands without special tokens do not require review',
       () {
