@@ -394,32 +394,39 @@ branch refs/heads/fix/session-resumption
   });
 
   group('orderedDiscoveredSessionTools', () {
-    test(
-      'lists grouped tools first and appends empty attempts alphabetically',
-      () {
-        final ordered = orderedDiscoveredSessionTools(
-          {
-            'Claude Code': const <ToolSessionInfo>[],
-            'Codex': const <ToolSessionInfo>[],
-          },
-          const ['OpenCode', 'Gemini CLI', 'Codex'],
-        );
-
-        expect(ordered, ['Claude Code', 'Codex', 'Gemini CLI', 'OpenCode']);
-      },
-    );
-
-    test('moves the preferred tool to the front when present', () {
+    test('includes all known providers in a stable order', () {
       final ordered = orderedDiscoveredSessionTools(
         {
           'Claude Code': const <ToolSessionInfo>[],
           'Codex': const <ToolSessionInfo>[],
         },
         const ['Gemini CLI'],
+      );
+
+      expect(ordered, [
+        'Claude Code',
+        'Copilot CLI',
+        'Codex',
+        'Gemini CLI',
+        'OpenCode',
+      ]);
+    });
+
+    test('moves the preferred tool to the front and appends unknown tools', () {
+      final ordered = orderedDiscoveredSessionTools(
+        const {'Custom Tool': <ToolSessionInfo>[]},
+        const ['Custom Tool'],
         preferredToolName: 'Codex',
       );
 
-      expect(ordered, ['Codex', 'Claude Code', 'Gemini CLI']);
+      expect(ordered, [
+        'Codex',
+        'Claude Code',
+        'Copilot CLI',
+        'Gemini CLI',
+        'OpenCode',
+        'Custom Tool',
+      ]);
     });
   });
 

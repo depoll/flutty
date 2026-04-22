@@ -11,12 +11,12 @@ import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../widgets/premium_badge.dart';
+import 'ai_session_picker.dart';
 import 'tmux_window_status_badge.dart';
 
 const _tmuxNavigatorDenseVisualDensity = VisualDensity(vertical: -2);
 const _tmuxNavigatorTilePadding = EdgeInsets.symmetric(horizontal: 16);
 const _tmuxNavigatorGroupTilePadding = EdgeInsets.only(left: 16, right: 16);
-const _tmuxNavigatorSessionTilePadding = EdgeInsets.only(left: 56, right: 12);
 const _tmuxNavigatorMaxHeightFactor = 0.48;
 const _tmuxNavigatorMaxHeightCap = 440.0;
 const _tmuxToolPickerMaxHeightFactor = 0.36;
@@ -139,9 +139,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   Set<String> _attemptedSessionTools = const <String>{};
+  Set<String> _failedSessionTools = const <String>{};
   AgentLaunchTool? _preferredLaunchTool;
   Future<Set<AgentLaunchTool>>? _installedToolsFuture;
-  final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   StreamSubscription<void>? _windowChangeSubscription;
   bool _isLoadingWindows = true;
@@ -238,6 +238,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     setState(() {
       _isLoadingSessions = true;
       _sessionLoadError = null;
+      _failedSessionTools = const <String>{};
     });
 
     try {
@@ -261,6 +262,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               setState(() {
                 _recentSessions = result.sessions;
                 _attemptedSessionTools = result.attemptedTools;
+                _failedSessionTools = result.failedTools;
                 _sessionLoadError = result.failureMessage;
               });
             },
@@ -268,6 +270,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
               setState(() {
                 _recentSessions ??= const [];
+                _failedSessionTools = const <String>{};
                 _sessionLoadError = 'Could not load recent AI sessions.';
                 _isLoadingSessions = false;
               });
@@ -286,6 +289,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       if (!mounted || loadGeneration != _sessionLoadGeneration) return;
       setState(() {
         _recentSessions ??= const [];
+        _failedSessionTools = const <String>{};
         _sessionLoadError = 'Could not load recent AI sessions.';
         _isLoadingSessions = false;
       });
@@ -314,6 +318,19 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       context,
       TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
     );
+  }
+
+  Future<void> _showSessionPickerForTool(
+    AiSessionProviderEntry provider,
+  ) async {
+    if (!provider.isSelectable) return;
+    final selected = await showAiSessionPickerDialog(
+      context: context,
+      toolName: provider.toolName,
+      sessions: provider.sessions,
+    );
+    if (!mounted || selected == null) return;
+    _resumeSession(selected);
   }
 
   void _showNewWindowPicker() {
@@ -513,7 +530,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   Widget _buildRecentSessionsSection(ThemeData theme) {
     final visibleCount = _recentSessions?.length ?? 0;
-    final groupedSessions = _groupSessions(_recentSessions);
 
     return Column(
       mainAxisSize: MainAxisSize.min,
@@ -554,43 +570,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           },
         ),
         if (_showRecentSessions) ...[
-          if (_isLoadingSessions &&
-              (_recentSessions == null || _recentSessions!.isEmpty))
-            const Padding(
-              padding: EdgeInsets.all(16),
-              child: Center(
-                child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                ),
-              ),
-            )
-          else if (_sessionLoadError != null &&
-              _recentSessions != null &&
-              _recentSessions!.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                _sessionLoadError!,
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.error,
-                ),
-              ),
-            )
-          else if (_recentSessions != null &&
-              _recentSessions!.isEmpty &&
-              _attemptedSessionTools.isEmpty)
-            Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
-              child: Text(
-                'No recent AI sessions found on this host.',
-                style: theme.textTheme.bodySmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            )
-          else if (_recentSessions != null) ...[
+          if (_hasVisibleSessionProviders) ...[
             if (_sessionLoadError != null)
               Padding(
                 padding: const EdgeInsets.symmetric(
@@ -604,32 +584,53 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   ),
                 ),
               ),
-            ...orderedDiscoveredSessionTools(
-              groupedSessions,
-              _attemptedSessionTools,
-              preferredToolName:
-                  _preferredLaunchTool?.discoveredSessionToolName,
-            ).map(
-              (toolName) => _buildSessionGroup(
-                theme,
-                toolName,
-                groupedSessions[toolName] ?? const <ToolSessionInfo>[],
-              ),
+            ..._buildSessionProviderEntries().map(
+              (provider) => _buildSessionProviderTile(theme, provider),
             ),
-            if (_isLoadingSessions)
-              const Padding(
-                padding: EdgeInsets.symmetric(vertical: 8),
-                child: Center(
-                  child: SizedBox(
-                    width: 16,
-                    height: 16,
-                    child: CircularProgressIndicator.adaptive(strokeWidth: 2),
-                  ),
+          ] else if (_sessionLoadError != null && _recentSessions != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                _sessionLoadError!,
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.error,
                 ),
               ),
-          ],
+            )
+          else if (_recentSessions != null)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+              child: Text(
+                'No recent AI sessions found on this host.',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
         ],
       ],
+    );
+  }
+
+  bool get _hasVisibleSessionProviders =>
+      _isLoadingSessions ||
+      _attemptedSessionTools.isNotEmpty ||
+      _failedSessionTools.isNotEmpty ||
+      (_recentSessions?.isNotEmpty ?? false);
+
+  List<AiSessionProviderEntry> _buildSessionProviderEntries() {
+    final groupedSessions = _groupSessions(_recentSessions);
+    final orderedTools = orderedDiscoveredSessionTools(
+      groupedSessions,
+      <String>{..._attemptedSessionTools, ..._failedSessionTools},
+      preferredToolName: _preferredLaunchTool?.discoveredSessionToolName,
+    );
+    return buildAiSessionProviderEntries(
+      orderedTools: orderedTools,
+      groupedSessions: groupedSessions,
+      attemptedTools: _attemptedSessionTools,
+      failedTools: _failedSessionTools,
+      isLoading: _isLoadingSessions,
     );
   }
 
@@ -646,121 +647,54 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     return grouped;
   }
 
-  Widget _buildSessionGroup(
+  Widget _buildSessionProviderTile(
     ThemeData theme,
-    String toolName,
-    List<ToolSessionInfo> sessions,
-  ) {
-    final isEmpty = sessions.isEmpty;
-    final isExpanded = _expandedSessionTools.contains(toolName);
-
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        ListTile(
-          dense: true,
-          visualDensity: _tmuxNavigatorDenseVisualDensity,
-          minVerticalPadding: 2,
-          contentPadding: _tmuxNavigatorGroupTilePadding,
-          horizontalTitleGap: 12,
-          minLeadingWidth: 20,
-          leading: _toolIcon(toolName, theme),
-          title: Text(
-            toolName,
-            style: isEmpty
-                ? theme.textTheme.bodyMedium?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  )
-                : null,
-          ),
-          subtitle: Text(
-            isEmpty
-                ? 'No recent sessions for this project'
-                : '${sessions.length} session${sessions.length == 1 ? '' : 's'}',
-            style: theme.textTheme.bodySmall?.copyWith(
-              color: theme.colorScheme.onSurfaceVariant,
-            ),
-          ),
-          trailing: isEmpty
-              ? null
-              : Icon(
-                  isExpanded ? Icons.expand_less : Icons.expand_more,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-          onTap: isEmpty
-              ? null
-              : () {
-                  setState(() {
-                    if (isExpanded) {
-                      _expandedSessionTools.remove(toolName);
-                    } else {
-                      _expandedSessionTools.add(toolName);
-                    }
-                  });
-                },
-        ),
-        if (isExpanded && !isEmpty)
-          ...sessions.map(
-            (session) => _buildSessionTile(
-              session,
-              contentPadding: _tmuxNavigatorSessionTilePadding,
-            ),
-          ),
-      ],
-    );
-  }
-
-  Widget _buildSessionTile(
-    ToolSessionInfo info, {
-    EdgeInsetsGeometry? contentPadding,
-  }) {
-    final theme = Theme.of(context);
-
-    return ListTile(
-      dense: true,
-      visualDensity: _tmuxNavigatorDenseVisualDensity,
-      minVerticalPadding: 2,
-      contentPadding: contentPadding,
-      leading: _toolIcon(info.toolName, theme),
-      horizontalTitleGap: 12,
-      minLeadingWidth: 20,
-      title: Text(
-        info.summary ?? info.sessionId,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
+    AiSessionProviderEntry provider,
+  ) => ListTile(
+    dense: true,
+    visualDensity: _tmuxNavigatorDenseVisualDensity,
+    minVerticalPadding: 2,
+    contentPadding: _tmuxNavigatorGroupTilePadding,
+    horizontalTitleGap: 12,
+    minLeadingWidth: 20,
+    leading: _toolIcon(provider.toolName, theme),
+    title: Text(
+      provider.toolName,
+      style: theme.textTheme.bodyMedium?.copyWith(
+        color: provider.hasFailure
+            ? theme.colorScheme.error
+            : provider.isSelectable
+            ? theme.colorScheme.onSurface
+            : theme.colorScheme.onSurfaceVariant,
       ),
-      subtitle: Text(
-        info.lastUpdatedLabel.isNotEmpty
-            ? info.lastUpdatedLabel
-            : info.toolName,
-        style: theme.textTheme.bodySmall?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
+    ),
+    subtitle: Text(
+      provider.statusLabel,
+      style: theme.textTheme.bodySmall?.copyWith(
+        color: provider.hasFailure
+            ? theme.colorScheme.error
+            : theme.colorScheme.onSurfaceVariant,
       ),
-      trailing: TextButton(
-        onPressed: () => _resumeSession(info),
-        style: TextButton.styleFrom(
-          visualDensity: VisualDensity.compact,
-          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
-        ),
-        child: const Text('Resume'),
-      ),
-    );
-  }
+    ),
+    trailing: provider.isLoading
+        ? const SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+          )
+        : provider.isSelectable
+        ? Icon(Icons.chevron_right, color: theme.colorScheme.onSurfaceVariant)
+        : null,
+    onTap: provider.isSelectable
+        ? () => unawaited(_showSessionPickerForTool(provider))
+        : null,
+  );
 
-  Widget _toolIcon(String toolName, ThemeData theme) {
-    final iconData = switch (toolName) {
-      'Claude Code' => Icons.auto_awesome,
-      'Codex' => Icons.code,
-      'Copilot CLI' => Icons.flight,
-      'Gemini CLI' => Icons.diamond_outlined,
-      'OpenCode' => Icons.terminal,
-      _ => Icons.smart_toy_outlined,
-    };
-
-    return Icon(iconData, size: 20, color: theme.colorScheme.primary);
-  }
+  Widget _toolIcon(String toolName, ThemeData theme) => Icon(
+    aiSessionToolIconData(toolName),
+    size: 20,
+    color: theme.colorScheme.primary,
+  );
 }
 
 /// Bottom sheet for picking an AI coding tool to launch in a new tmux window.

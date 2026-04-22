@@ -29,6 +29,7 @@ import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/ai_session_picker.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
 import '../widgets/file_picker_helpers.dart';
@@ -2349,8 +2350,8 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   List<TmuxWindow>? _windows;
   List<ToolSessionInfo>? _recentSessions;
   Set<String> _attemptedSessionTools = const <String>{};
+  Set<String> _failedSessionTools = const <String>{};
   String? _preferredSessionToolName;
-  final Set<String> _expandedSessionTools = <String>{};
   StreamSubscription<DiscoveredSessionsResult>? _sessionDiscoverySubscription;
   String? _sessionLoadError;
   String? _sessionName;
@@ -2423,17 +2424,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _sessionFetchLimit =
         storedState['sessionFetchLimit'] as int? ?? _sessionFetchLimit;
 
-    final expandedSessionTools = storedState['expandedSessionTools'];
-    if (expandedSessionTools is List<Object?>) {
-      _expandedSessionTools
-        ..clear()
-        ..addAll(
-          expandedSessionTools.whereType<String>().where(
-            (toolName) => toolName.isNotEmpty,
-          ),
-        );
-    }
-
     if (!_hasAgentSessionAccess) {
       _showSessions = false;
     }
@@ -2453,7 +2443,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       'expanded': _expanded,
       'showSessions': _showSessions,
       'sessionFetchLimit': _sessionFetchLimit,
-      'expandedSessionTools': _expandedSessionTools.toList(growable: false),
     }, identifier: _pageStorageIdentifier);
   }
 
@@ -2664,45 +2653,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                 ),
               ),
               if (_showSessions) ...[
-                if (_isLoadingSessions &&
-                    (_recentSessions == null || _recentSessions!.isEmpty))
-                  const Padding(
-                    padding: EdgeInsets.symmetric(vertical: 8),
-                    child: Center(
-                      child: SizedBox(
-                        width: 14,
-                        height: 14,
-                        child: CircularProgressIndicator.adaptive(
-                          strokeWidth: 2,
-                        ),
-                      ),
-                    ),
-                  )
-                else if (_sessionLoadError != null &&
-                    _recentSessions != null &&
-                    _recentSessions!.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      _sessionLoadError!,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.error,
-                      ),
-                    ),
-                  )
-                else if (_recentSessions != null &&
-                    _recentSessions!.isEmpty &&
-                    _attemptedSessionTools.isEmpty)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Text(
-                      'No recent sessions found',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  )
-                else if (_recentSessions != null) ...[
+                if (_hasVisibleSessionProviders) ...[
                   if (_sessionLoadError != null)
                     Padding(
                       padding: const EdgeInsets.only(bottom: 4),
@@ -2713,33 +2664,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                         ),
                       ),
                     ),
-                  ...() {
-                    final grouped = _groupSessions(_recentSessions!);
-                    return orderedDiscoveredSessionTools(
-                      grouped,
-                      _attemptedSessionTools,
-                      preferredToolName: _preferredSessionToolName,
-                    ).map(
-                      (toolName) => _buildSessionGroup(
-                        theme,
-                        toolName,
-                        grouped[toolName] ?? const <ToolSessionInfo>[],
-                      ),
-                    );
-                  }(),
-                  if (_isLoadingSessions)
-                    const Padding(
-                      padding: EdgeInsets.symmetric(vertical: 8),
-                      child: Center(
-                        child: SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator.adaptive(
-                            strokeWidth: 2,
-                          ),
-                        ),
-                      ),
-                    ),
+                  ..._buildSessionProviderEntries().map(
+                    (provider) => _buildSessionProviderRow(theme, provider),
+                  ),
                   if (_canLoadMoreSessions)
                     Padding(
                       padding: const EdgeInsets.only(top: 2),
@@ -2748,7 +2675,26 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                         child: const Text('Load more'),
                       ),
                     ),
-                ],
+                ] else if (_sessionLoadError != null && _recentSessions != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      _sessionLoadError!,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.error,
+                      ),
+                    ),
+                  )
+                else if (_recentSessions != null)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Text(
+                      'No recent sessions found',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
               ],
             ] else
               InkWell(
@@ -2839,6 +2785,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _isLoadingSessions = true;
       _sessionLoadError = null;
       _canLoadMoreSessions = false;
+      _failedSessionTools = const <String>{};
     });
 
     final session = ref
@@ -2877,6 +2824,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               setState(() {
                 _recentSessions = result.sessions;
                 _attemptedSessionTools = result.attemptedTools;
+                _failedSessionTools = result.failedTools;
                 _sessionLoadError = result.failureMessage;
               });
             },
@@ -2884,6 +2832,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
               if (!mounted || loadGeneration != _sessionLoadGeneration) return;
               setState(() {
                 _recentSessions ??= const [];
+                _failedSessionTools = const <String>{};
                 _sessionLoadError = 'Could not load recent AI sessions.';
                 _canLoadMoreSessions = false;
                 _isLoadingSessions = false;
@@ -2909,6 +2858,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       if (!mounted || loadGeneration != _sessionLoadGeneration) return;
       setState(() {
         _recentSessions ??= const [];
+        _failedSessionTools = const <String>{};
         _sessionLoadError = 'Could not load recent AI sessions.';
         _canLoadMoreSessions = false;
         _isLoadingSessions = false;
@@ -2962,6 +2912,19 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .ignore();
   }
 
+  Future<void> _showSessionPickerForTool(
+    AiSessionProviderEntry provider,
+  ) async {
+    if (!provider.isSelectable) return;
+    final selected = await showAiSessionPickerDialog(
+      context: context,
+      toolName: provider.toolName,
+      sessions: provider.sessions,
+    );
+    if (!mounted || selected == null) return;
+    _resumeSession(selected);
+  }
+
   Map<String, List<ToolSessionInfo>> _groupSessions(
     List<ToolSessionInfo> sessions,
   ) {
@@ -2974,141 +2937,94 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     return grouped;
   }
 
-  Widget _buildSessionGroup(
-    ThemeData theme,
-    String toolName,
-    List<ToolSessionInfo> sessions,
-  ) {
-    final isEmpty = sessions.isEmpty;
-    final isExpanded = !isEmpty && _expandedSessionTools.contains(toolName);
+  bool get _hasVisibleSessionProviders =>
+      _isLoadingSessions ||
+      _attemptedSessionTools.isNotEmpty ||
+      _failedSessionTools.isNotEmpty ||
+      (_recentSessions?.isNotEmpty ?? false);
 
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        InkWell(
-          onTap: isEmpty
-              ? null
-              : () {
-                  setState(() {
-                    if (isExpanded) {
-                      _expandedSessionTools.remove(toolName);
-                    } else {
-                      _expandedSessionTools.add(toolName);
-                    }
-                  });
-                  _persistUiState();
-                },
-          borderRadius: BorderRadius.circular(6),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
-            child: Row(
-              children: [
-                Icon(
-                  _toolIconData(toolName),
-                  size: 14,
-                  color: isEmpty
-                      ? theme.colorScheme.onSurfaceVariant
-                      : theme.colorScheme.primary,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    toolName,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: isEmpty
-                          ? theme.colorScheme.onSurfaceVariant
-                          : theme.colorScheme.onSurface,
-                      fontWeight: FontWeight.w600,
-                    ),
-                  ),
-                ),
-                Text(
-                  isEmpty ? 'no recent' : '${sessions.length}',
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ),
-                if (!isEmpty) ...[
-                  const SizedBox(width: 4),
-                  Icon(
-                    isExpanded ? Icons.expand_less : Icons.expand_more,
-                    size: 14,
-                    color: theme.colorScheme.onSurfaceVariant,
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ),
-        if (isExpanded)
-          for (final session in sessions)
-            _buildSessionRow(theme, session, indent: 20),
-      ],
+  List<AiSessionProviderEntry> _buildSessionProviderEntries() {
+    final grouped = _groupSessions(
+      _recentSessions ?? const <ToolSessionInfo>[],
+    );
+    final orderedTools = orderedDiscoveredSessionTools(grouped, <String>{
+      ..._attemptedSessionTools,
+      ..._failedSessionTools,
+    }, preferredToolName: _preferredSessionToolName);
+    return buildAiSessionProviderEntries(
+      orderedTools: orderedTools,
+      groupedSessions: grouped,
+      attemptedTools: _attemptedSessionTools,
+      failedTools: _failedSessionTools,
+      isLoading: _isLoadingSessions,
     );
   }
 
-  Widget _buildSessionRow(
+  Widget _buildSessionProviderRow(
     ThemeData theme,
-    ToolSessionInfo info, {
-    double indent = 0,
-  }) {
-    final iconData = _toolIconData(info.toolName);
-
-    return InkWell(
-      onTap: () => _resumeSession(info),
-      borderRadius: BorderRadius.circular(6),
-      child: Padding(
-        padding: EdgeInsets.fromLTRB(6 + indent, 6, 6, 6),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Icon(iconData, size: 14, color: theme.colorScheme.primary),
-            const SizedBox(width: 6),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    info.summary ?? info.sessionId,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: theme.colorScheme.onSurface,
-                    ),
-                  ),
-                  if (info.lastUpdatedLabel.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 2),
-                      child: Text(
-                        info.lastUpdatedLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          fontSize: 10,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                ],
+    AiSessionProviderEntry provider,
+  ) => InkWell(
+    onTap: provider.isSelectable
+        ? () => unawaited(_showSessionPickerForTool(provider))
+        : null,
+    borderRadius: BorderRadius.circular(6),
+    child: Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
+      child: Row(
+        children: [
+          Icon(
+            aiSessionToolIconData(provider.toolName),
+            size: 14,
+            color: provider.hasFailure
+                ? theme.colorScheme.error
+                : provider.isSelectable
+                ? theme.colorScheme.primary
+                : theme.colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              provider.toolName,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: provider.hasFailure
+                    ? theme.colorScheme.error
+                    : provider.isSelectable
+                    ? theme.colorScheme.onSurface
+                    : theme.colorScheme.onSurfaceVariant,
+                fontWeight: FontWeight.w600,
               ),
             ),
+          ),
+          if (provider.isLoading)
+            const SizedBox(
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator.adaptive(strokeWidth: 2),
+            )
+          else ...[
+            Text(
+              provider.compactStatusLabel,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: provider.hasFailure
+                    ? theme.colorScheme.error
+                    : theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            if (provider.isSelectable) ...[
+              const SizedBox(width: 4),
+              Icon(
+                Icons.chevron_right,
+                size: 14,
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ],
           ],
-        ),
+        ],
       ),
-    );
-  }
-
-  IconData _toolIconData(String toolName) => switch (toolName) {
-    'Claude Code' => Icons.auto_awesome,
-    'Codex' => Icons.code,
-    'Copilot CLI' => Icons.flight,
-    'Gemini CLI' => Icons.diamond_outlined,
-    'OpenCode' => Icons.terminal,
-    _ => Icons.smart_toy_outlined,
-  };
+    ),
+  );
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.displayTitle;

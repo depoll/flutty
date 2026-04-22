@@ -66,28 +66,39 @@ int compareDiscoveredSessionsByRecency(ToolSessionInfo a, ToolSessionInfo b) {
   return (a.summary ?? '').compareTo(b.summary ?? '');
 }
 
-/// Orders tool groups for UI rendering: providers with sessions first, then
-/// attempted providers that yielded no sessions, alphabetized.
+const _knownDiscoveredSessionTools = <String>[
+  'Claude Code',
+  'Copilot CLI',
+  'Codex',
+  'Gemini CLI',
+  'OpenCode',
+];
+
+/// Orders discovered-session providers for UI rendering in a stable list.
+///
+/// The known provider rows stay visible in a fixed order so incremental
+/// streaming updates do not insert or remove rows while the menu is open. Any
+/// unexpected provider names are appended alphabetically after the known set.
 List<String> orderedDiscoveredSessionTools(
   Map<String, List<ToolSessionInfo>> grouped,
   Iterable<String> attemptedTools, {
   String? preferredToolName,
 }) {
-  final ordered = <String>[...grouped.keys];
-  final emptyAttempts =
-      attemptedTools
-          .where((tool) => !grouped.containsKey(tool))
-          .toSet()
-          .toList()
+  final ordered = List<String>.of(_knownDiscoveredSessionTools);
+  final extraTools =
+      <String>{
+          ...grouped.keys,
+          ...attemptedTools,
+        }.where((tool) => !_knownDiscoveredSessionTools.contains(tool)).toList()
         ..sort();
   if (preferredToolName case final preferred? when preferred.isNotEmpty) {
     if (ordered.remove(preferred)) {
       ordered.insert(0, preferred);
-    } else if (emptyAttempts.remove(preferred)) {
+    } else if (extraTools.remove(preferred)) {
       ordered.insert(0, preferred);
     }
   }
-  ordered.addAll(emptyAttempts);
+  ordered.addAll(extraTools);
   return ordered;
 }
 
