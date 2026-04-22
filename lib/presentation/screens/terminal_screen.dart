@@ -1038,7 +1038,7 @@ final _terminalFilePathPattern = RegExp(
   r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
 final _terminalFilePathLineSuffixPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
+  r'''(?:~(?:/[^\s<>"'$#&|;]+)?/?|/(?:[^\s<>"'$#&|;]+)?|\.\.?/(?:[^\s<>"'$#&|;]+)?|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
 );
 final _terminalFilePathStackTraceSuffixPattern = RegExp(
   r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
@@ -1689,6 +1689,26 @@ bool _startsFreshTerminalFilePathLine(String text) =>
     text.startsWith('./') ||
     text.startsWith('../');
 
+String? _leadingTerminalFilePathCandidate(String text) {
+  final match = _terminalFilePathPattern.matchAsPrefix(text);
+  if (match == null) {
+    return null;
+  }
+
+  final candidate = trimTerminalFilePathCandidate(match.group(0)!);
+  return isSupportedTerminalFilePath(candidate) ? candidate : null;
+}
+
+bool _hasMeaningfulTextBeforeTrailingTerminalPath(
+  String text,
+  Match trailingPathMatch,
+) => _trimTerminalPathContinuationPrefix(
+  text.substring(0, trailingPathMatch.start),
+).trim().isNotEmpty;
+
+bool _endsWithTerminalPathContinuationBoundary(String path) =>
+    path == '~' || path.endsWith('/');
+
 bool _hasLeadingTerminalPathFragment(String text) =>
     text.isNotEmpty && _isTerminalFilePathBodyCharacter(text[0]);
 
@@ -1701,13 +1721,44 @@ bool _looksLikeTerminalPathContinuationAcrossRenderedLines({
   if (trimmedPreviousText.isEmpty || trimmedNextText.isEmpty) {
     return false;
   }
-  if (_terminalStandalonePathMetadataPattern.hasMatch(trimmedNextText) ||
-      _startsFreshTerminalFilePathLine(trimmedNextText)) {
+  if (_terminalStandalonePathMetadataPattern.hasMatch(trimmedNextText)) {
     return false;
   }
-  return _terminalFilePathLineSuffixPattern.hasMatch(trimmedPreviousText) &&
-      (_terminalFilePathPattern.matchAsPrefix(trimmedNextText) != null ||
-          _hasLeadingTerminalPathFragment(trimmedNextText));
+
+  final previousPathMatch = _terminalFilePathLineSuffixPattern.firstMatch(
+    trimmedPreviousText,
+  );
+  if (previousPathMatch == null) {
+    return false;
+  }
+
+  final previousPath = trimTerminalFilePathCandidate(
+    previousPathMatch.group(0)!,
+  );
+  final previousHasLeadingContext =
+      _hasMeaningfulTextBeforeTrailingTerminalPath(
+        trimmedPreviousText,
+        previousPathMatch,
+      );
+  final previousEndsWithBoundary = _endsWithTerminalPathContinuationBoundary(
+    previousPath,
+  );
+  final nextLeadingPath = _leadingTerminalFilePathCandidate(trimmedNextText);
+
+  if (_startsFreshTerminalFilePathLine(trimmedNextText)) {
+    return previousHasLeadingContext || previousEndsWithBoundary;
+  }
+
+  if (nextLeadingPath != null && !isExplicitTerminalFilePath(nextLeadingPath)) {
+    if (!previousHasLeadingContext &&
+        !previousEndsWithBoundary &&
+        !isExplicitTerminalFilePath(previousPath)) {
+      return false;
+    }
+    return true;
+  }
+
+  return _hasLeadingTerminalPathFragment(trimmedNextText);
 }
 
 /// Whether adjacent rendered lines should be treated as one file-path span.
@@ -5910,7 +5961,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       builder.write(lineSnapshot.text);
       columnOffsets.add(lineSnapshot.columnOffsets);
-      if (lineIndex < endRow) {
+      if (lineIndex < endRow && !buffer.lines[lineIndex + 1].isWrapped) {
         builder.write('\n');
       }
     }

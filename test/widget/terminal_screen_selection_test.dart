@@ -413,6 +413,42 @@ void main() {
       },
     );
 
+    test('detects tilde-root paths split before the next segment', () {
+      const text = 'Open ~/\nCode/flutty next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('Code'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '~/Code/flutty');
+    });
+
+    test('detects slash-root paths split before the next segment', () {
+      const text = 'Open /\nvar/log/app.log next.';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('var/log'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/var/log/app.log');
+    });
+
+    test(
+      'detects absolute paths that resume with a slash after leading context',
+      () {
+        const text = 'Open /Users/tester\n/project/lib/main.dart next.';
+        final detectedPath = detectTerminalFilePathAtTextOffset(
+          text,
+          text.indexOf('project/lib'),
+        );
+
+        expect(detectedPath, isNotNull);
+        expect(detectedPath!.path, '/Users/tester/project/lib/main.dart');
+      },
+    );
+
     test('ignores colored guide prefixes in continuation indentation', () {
       const text =
           'Open /srv/app/lib/presentation/\n'
@@ -654,6 +690,22 @@ void main() {
 
       expect(detectedPath, isNotNull);
       expect(detectedPath!.path, '/var/log/app.log');
+    });
+
+    test('does not merge separate relative paths on adjacent lines', () {
+      const text =
+          'lib/presentation/screens/terminal_screen.dart\n'
+          'test/widget/terminal_screen_selection_test.dart';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('test/widget'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(
+        detectedPath!.path,
+        'test/widget/terminal_screen_selection_test.dart',
+      );
     });
 
     test('ignores branch-like slash paths without a file-like basename', () {
@@ -1113,6 +1165,46 @@ void main() {
           nextLineText: 'screens/terminal_screen.dart',
         ),
         isTrue,
+      );
+    });
+
+    test('joins tilde-root prefixes split before the next segment', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open ~/',
+          nextLineText: 'Code/flutty',
+        ),
+        isTrue,
+      );
+    });
+
+    test('joins slash-root prefixes split before the next segment', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open /',
+          nextLineText: 'var/log/app.log',
+        ),
+        isTrue,
+      );
+    });
+
+    test('joins absolute path continuations that resume with a slash', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open /Users/tester',
+          nextLineText: '/project/lib/main.dart',
+        ),
+        isTrue,
+      );
+    });
+
+    test('does not join separate relative path starts across lines', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'lib/presentation/screens/terminal_screen.dart',
+          nextLineText: 'test/widget/terminal_screen_selection_test.dart',
+        ),
+        isFalse,
       );
     });
 
