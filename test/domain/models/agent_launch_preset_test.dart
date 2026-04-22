@@ -4,6 +4,44 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 
 void main() {
+  group('buildAgentToolCommand', () {
+    test('adds yolo flags for supported tools', () {
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.claudeCode,
+          startInYoloMode: true,
+        ),
+        'claude --dangerously-skip-permissions',
+      );
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.codex, startInYoloMode: true),
+        'codex --approval-mode never',
+      );
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
+        'gemini --yolo',
+      );
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.aider, startInYoloMode: true),
+        'aider --yes-always',
+      );
+    });
+
+    test('leaves unsupported tools unchanged in yolo mode', () {
+      expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.copilotCli,
+          startInYoloMode: true,
+        ),
+        'copilot',
+      );
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.openCode, startInYoloMode: true),
+        'opencode',
+      );
+    });
+  });
+
   group('buildAgentLaunchCommand', () {
     test('builds a working-directory command without tmux', () {
       const preset = AgentLaunchPreset(
@@ -134,6 +172,42 @@ void main() {
 
       expect(buildAgentLaunchCommand(preset), 'gemini');
     });
+
+    test('adds yolo mode to supported presets', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        workingDirectory: '~/project',
+      );
+
+      expect(
+        buildAgentLaunchCommand(preset, startInYoloMode: true),
+        r'cd "$HOME/project" && codex --approval-mode never',
+      );
+    });
+
+    test('does not duplicate a yolo flag already in extra arguments', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        additionalArguments: '--approval-mode never --model gpt-5.4',
+      );
+
+      expect(
+        buildAgentLaunchCommand(preset, startInYoloMode: true),
+        'codex --approval-mode never --model gpt-5.4',
+      );
+    });
+
+    test('replaces conflicting codex approval-mode arguments in yolo mode', () {
+      const preset = AgentLaunchPreset(
+        tool: AgentLaunchTool.codex,
+        additionalArguments: '--approval-mode auto --model gpt-5.4',
+      );
+
+      expect(
+        buildAgentLaunchCommand(preset, startInYoloMode: true),
+        'codex --approval-mode never --model gpt-5.4',
+      );
+    });
   });
 
   test('round-trips preset json', () {
@@ -205,6 +279,15 @@ void main() {
           reason: '${tool.name} should support resume',
         );
       }
+    });
+
+    test('supportsYoloMode is only true for supported tools', () {
+      expect(AgentLaunchTool.claudeCode.supportsYoloMode, isTrue);
+      expect(AgentLaunchTool.aider.supportsYoloMode, isTrue);
+      expect(AgentLaunchTool.codex.supportsYoloMode, isTrue);
+      expect(AgentLaunchTool.geminiCli.supportsYoloMode, isTrue);
+      expect(AgentLaunchTool.copilotCli.supportsYoloMode, isFalse);
+      expect(AgentLaunchTool.openCode.supportsYoloMode, isFalse);
     });
   });
 

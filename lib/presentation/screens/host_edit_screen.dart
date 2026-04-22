@@ -13,10 +13,12 @@ import '../../data/repositories/port_forward_repository.dart';
 import '../../data/repositories/snippet_repository.dart';
 import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
+import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
+import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
@@ -124,6 +126,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool _showPassword = false;
   bool _disableTmuxStatusBar = false;
   bool _disableAgentTmuxStatusBar = false;
+  bool _startClisInYoloMode = false;
 
   Host? _existingHost;
   List<PortForward> _portForwards = [];
@@ -165,6 +168,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final preset = await ref
         .read(agentLaunchPresetServiceProvider)
         .getPresetForHost(host.id);
+    final cliLaunchPreferences = await ref
+        .read(hostCliLaunchPreferencesServiceProvider)
+        .getPreferencesForHost(host.id);
     final tmuxExtraFlags = host.tmuxExtraFlags ?? '';
     if (!mounted) return;
     setState(() {
@@ -190,6 +196,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _autoConnectCommandController.text = host.autoConnectCommand ?? '';
       _disableTmuxStatusBar = _hasTmuxDisableStatusBarCommand(tmuxExtraFlags);
       _disableAgentTmuxStatusBar = preset?.tmuxDisableStatusBar ?? false;
+      _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
       _selectedAutoConnectMode = resolveAutoConnectCommandMode(
         command: host.autoConnectCommand,
         snippetId: host.autoConnectSnippetId,
@@ -200,7 +207,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         autoConnectMode: _selectedAutoConnectMode,
       );
       if (preset != null) {
-        final presetCommand = _tryBuildAgentLaunchCommand(preset);
+        final presetCommand = _tryBuildAgentLaunchCommand(
+          preset,
+          startInYoloMode: cliLaunchPreferences.startInYoloMode,
+        );
         _selectedAgentLaunchTool = preset.tool;
         _agentWorkingDirectoryController.text = preset.workingDirectory ?? '';
         _agentTmuxSessionController.text = preset.tmuxSessionName ?? '';
@@ -650,6 +660,25 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
         ],
         const SizedBox(height: 12),
+        CheckboxListTile(
+          key: const Key('host-cli-yolo-mode-checkbox'),
+          value: _startClisInYoloMode,
+          contentPadding: EdgeInsets.zero,
+          controlAffinity: ListTileControlAffinity.leading,
+          title: const Text('Start supported coding CLIs in YOLO mode'),
+          subtitle: Text(
+            hasAgentPresetAccess
+                ? 'Applies to coding CLI launches on this host. Claude Code, Codex, Gemini CLI, and Aider support startup YOLO mode.'
+                : 'MonkeySSH Pro unlocks host-specific coding CLI defaults like YOLO mode.',
+          ),
+          onChanged: hasAgentPresetAccess
+              ? (value) {
+                  setState(() => _startClisInYoloMode = value ?? false);
+                  _syncAutoConnectCommandFromPreset();
+                }
+              : null,
+        ),
+        const SizedBox(height: 12),
         DropdownButtonFormField<_HostStartupMode>(
           key: const Key('host-startup-mode-field'),
           // ignore: deprecated_member_use
@@ -799,7 +828,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     String? generatedCommand;
     String? generatedCommandError;
     try {
-      generatedCommand = buildAgentLaunchCommand(currentPreset);
+      generatedCommand = buildAgentLaunchCommand(
+        currentPreset,
+        startInYoloMode: _startClisInYoloMode,
+      );
     } on FormatException catch (error) {
       generatedCommandError = _formatFormatExceptionMessage(error);
     }
@@ -919,6 +951,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               ? (_) => _handleAgentPresetFieldChanged()
               : null,
         ),
+        if (_startClisInYoloMode &&
+            !_selectedAgentLaunchTool.supportsYoloMode) ...[
+          const SizedBox(height: 12),
+          Text(
+            '${_selectedAgentLaunchTool.label} does not expose a startup YOLO flag, so this host setting only affects other supported CLIs.',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
         const SizedBox(height: 12),
         Text(
           'Generated command',
@@ -1072,6 +1114,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       );
       final repo = ref.read(hostRepositoryProvider);
       final presetService = ref.read(agentLaunchPresetServiceProvider);
+      final cliLaunchPreferencesService = ref.read(
+        hostCliLaunchPreferencesServiceProvider,
+      );
       final port = int.parse(_portController.text);
       final password = _passwordController.text.isEmpty
           ? null
@@ -1090,7 +1135,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final currentPreset = _buildCurrentAgentLaunchPreset();
       final presetCommand = currentPreset == null
           ? null
-          : buildAgentLaunchCommand(currentPreset);
+          : buildAgentLaunchCommand(
+              currentPreset,
+              startInYoloMode: _startClisInYoloMode,
+            );
       final tmuxSessionName = _tmuxSessionController.text.trim();
       final tmuxWorkingDirectory = _tmuxWorkingDirectoryController.text.trim();
       final tmuxExtraFlags = _tmuxExtraFlagsController.text.trim();
@@ -1241,6 +1289,13 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       }
 
       if (savedHostId != null) {
+        if (hasAgentPresetAccess) {
+          await cliLaunchPreferencesService.setPreferencesForHost(
+            savedHostId,
+            HostCliLaunchPreferences(startInYoloMode: _startClisInYoloMode),
+          );
+        }
+
         final preset = _buildCurrentAgentLaunchPreset();
         if (_selectedStartupMode == _HostStartupMode.agent &&
             hasAutomationAccess &&
@@ -1517,12 +1572,18 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     }
   }
 
-  String? _tryBuildAgentLaunchCommand(AgentLaunchPreset? preset) {
+  String? _tryBuildAgentLaunchCommand(
+    AgentLaunchPreset? preset, {
+    bool? startInYoloMode,
+  }) {
     if (preset == null) {
       return null;
     }
     try {
-      return buildAgentLaunchCommand(preset);
+      return buildAgentLaunchCommand(
+        preset,
+        startInYoloMode: startInYoloMode ?? _startClisInYoloMode,
+      );
     } on FormatException {
       return null;
     }
