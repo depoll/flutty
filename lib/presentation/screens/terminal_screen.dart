@@ -141,6 +141,24 @@ bool shouldReattachTmuxAfterWindowAction({
   return shellStatus != TerminalShellStatus.runningCommand;
 }
 
+/// Returns whether shell-command review warnings should be shown for text
+/// inserted into the active terminal context.
+///
+/// These warnings are most useful when input is likely targeting a shell
+/// prompt. When a full-screen app owns the alternate buffer, or shell
+/// integration reports that a command is still running, the input is more
+/// likely to be consumed by that program than by the shell itself.
+@visibleForTesting
+bool shouldReviewTerminalCommandInsertion({
+  required TerminalShellStatus? shellStatus,
+  required bool isUsingAltBuffer,
+}) {
+  if (isUsingAltBuffer) {
+    return false;
+  }
+  return shellStatus != TerminalShellStatus.runningCommand;
+}
+
 /// Resolves the safe-area insets the tmux bar should stay within.
 @visibleForTesting
 EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
@@ -2393,6 +2411,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalShellStatus? get _shellStatus => _observedSession?.shellStatus;
 
   int? get _lastExitCode => _observedSession?.lastExitCode;
+
+  bool get _shouldReviewTerminalCommandInsertion =>
+      shouldReviewTerminalCommandInsertion(
+        shellStatus: _shellStatus,
+        isUsingAltBuffer: _isUsingAltBuffer,
+      );
 
   String _terminalCommandAfterInsertion(String insertedText) {
     final snapshot = _buildWrappedTerminalCommandSnapshot();
@@ -6913,18 +6937,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
-      final shouldPaste = await _confirmTerminalInsertionIfNeeded(
-        insertedText: text,
-        buildReview: (commandText) => assessClipboardPasteCommand(
-          commandText,
-          bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
-        ),
-        title: 'Review clipboard paste',
-        messageBuilder: (review) => review.bracketedPasteModeEnabled
-            ? 'This clipboard content looks risky even with bracketed paste enabled.'
-            : 'This clipboard content could execute multiple or reshaped commands.',
-        confirmLabel: 'Paste anyway',
-      );
+      final shouldPaste =
+          !_shouldReviewTerminalCommandInsertion ||
+          await _confirmTerminalInsertionIfNeeded(
+            insertedText: text,
+            buildReview: (commandText) => assessClipboardPasteCommand(
+              commandText,
+              bracketedPasteModeEnabled: _terminal.bracketedPasteMode,
+            ),
+            title: 'Review clipboard paste',
+            messageBuilder: (review) => review.bracketedPasteModeEnabled
+                ? 'This clipboard content looks risky even with bracketed paste enabled.'
+                : 'This clipboard content could execute multiple or reshaped commands.',
+            confirmLabel: 'Paste anyway',
+          );
       if (!shouldPaste) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         return;
@@ -7318,6 +7344,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<bool> _confirmKeyboardInsertion(TerminalCommandReview review) async {
+    if (!_shouldReviewTerminalCommandInsertion) {
+      return true;
+    }
     final shouldInsert = await _confirmCommandInsertion(
       title: 'Review keyboard paste',
       message:
@@ -7331,6 +7360,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<bool> _confirmDesktopInsertedText(String text) async {
     if (text.length <= 1) {
+      return true;
+    }
+    if (!_shouldReviewTerminalCommandInsertion) {
       return true;
     }
 

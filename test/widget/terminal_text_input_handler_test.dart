@@ -5242,6 +5242,53 @@ void main() {
     });
 
     testWidgets(
+      'does not review quoted shell-like IME text as suspicious paste',
+      (tester) async {
+        final terminalOutput = <String>[];
+        final terminal = Terminal(onOutput: terminalOutput.add);
+        final focusNode = FocusNode();
+        final reviews = <TerminalCommandReview>[];
+        const benignCommand = 'printf "%s" "fish & chips | <html>"';
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                onReviewInsertedText: (review) async {
+                  reviews.add(review);
+                  return true;
+                },
+                child: const SizedBox.expand(),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        tester.testTextInput.updateEditingValue(
+          const TextEditingValue(
+            text: '$_deleteDetectionMarker$benignCommand',
+            selection: TextSelection.collapsed(
+              offset: _deleteDetectionMarker.length + benignCommand.length,
+            ),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        expect(reviews, isEmpty);
+        expect(terminalOutput.join(), benignCommand);
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'reviews a suspicious committed IME payload after composition ends',
       (tester) async {
         final terminalOutput = <String>[];
