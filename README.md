@@ -1,186 +1,101 @@
 # MonkeySSH
 
-> ⚠️ **EXPERIMENTAL PROJECT** ⚠️
-> 
-> This is a learning/experimental project. **Not intended for production use.**
-> May contain security vulnerabilities. Use at your own risk.
-
-A cross-platform SSH client built with Flutter, inspired by [Termius](https://termius.com/).
+**MonkeySSH is the SSH app for agentic coding.** It combines a serious mobile terminal, SFTP workspace, tmux-aware remote workflows, and first-class launch/resume flows for modern coding agents.
 
 [![CI](https://github.com/depollsoft/MonkeySSH/actions/workflows/ci.yml/badge.svg)](https://github.com/depollsoft/MonkeySSH/actions/workflows/ci.yml)
 [![codecov](https://codecov.io/gh/depollsoft/MonkeySSH/branch/main/graph/badge.svg)](https://codecov.io/gh/depollsoft/MonkeySSH)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-## Features
+MonkeySSH is built for the way people actually work with remote development environments now: connect to a box, jump into tmux, resume the right agent session, browse files, edit config, forward a port, paste commands safely, and keep moving without a laptop.
 
-- 🔐 **SSH2 Protocol** - Password & key-based authentication, jump hosts
-- 💻 **Terminal Emulator** - xterm-256color with customizable themes
-- ⌨️ **Rich Keyboard** - Modifier keys, function keys, macros, gestures
-- 📁 **SFTP** - Browse, upload, download, edit remote files
-- 🔑 **Key Management** - Generate, import, export Ed25519/RSA keys
-- 🔄 **Offline Device Transfer** - Encrypted `.monkeysshx` packages for host/key/device migration
-- 📂 **Organization** - Groups, folders, tags, favorites, search
-- 🚇 **Port Forwarding** - Local & remote tunnels
-- 📝 **Snippets** - Save and execute common commands
-- 🔒 **Security** - Biometric/PIN lock, encrypted local storage
-- 🎨 **Themes** - Dark/light mode, customizable colors
+## Why MonkeySSH
 
-## Platforms
+- **Built for agent workflows** with recent-session discovery for supported coding CLIs and saved launch presets per host
+- **Tmux-aware by design** so long-running coding sessions survive reconnects and stay easy to resume
+- **A real SSH workspace** with terminal, SFTP, remote editing, snippets, key management, jump hosts, and port forwarding
+- **Mobile-first terminal UX** with modifier keys, gestures, safer paste review, shared clipboard, and clickable file paths
+- **Private by default** with local auth, host-key verification, encrypted offline transfers, and no required cloud sync
 
-| Platform | Status |
-|----------|--------|
-| Android  | 🚧 In Development |
-| iOS      | 🚧 In Development |
-| macOS    | 🚧 In Development |
-| Windows  | 🚧 In Development |
-| Linux    | 🚧 In Development |
+## Built for agentic coding
 
-## Getting Started
+MonkeySSH is not just an SSH pipe with a keyboard attached. It is designed around the tools and workflows people use for remote AI-assisted development.
 
-### Prerequisites
+- **Recent agent session discovery** for supported CLIs, scoped to the active project so you can jump back into the right conversation faster
+- **Saved launch presets** for tools like Claude Code, Copilot CLI, Codex, Gemini CLI, OpenCode, and Aider
+- **Per-host startup flows** with working-directory changes, tmux session names, extra arguments, and optional one-tap automation
+- **Tmux integration** for discovering sessions and windows, tracking the active pane path, and launching agents into persistent workspaces
+- **Safer command handling** with review prompts for suspicious pasted or auto-run shell text before it is inserted or executed
+- **Remote clipboard sync** so it is easier to move code and commands between your device and the remote machine
 
-- [Flutter](https://flutter.dev/docs/get-started/install) 3.x or later
-- For iOS/macOS: Xcode 15+
-- For Android: Android Studio with SDK 21+
-- For Windows: Visual Studio 2022 with C++ workload
-- For Linux: CMake, GTK3, pkg-config
+## Feature overview
 
-### Installation
+| Area | What you get |
+| --- | --- |
+| **SSH connections** | Password and key auth, jump hosts, multiple concurrent sessions, host organization, search, favorites |
+| **Terminal** | xterm-256color, customizable themes, adjustable fonts, modifier keys, function keys, gestures, macros, bell, tap-to-show keyboard |
+| **Coding workflow** | AI session picker, recent session resume, tmux-aware launch flows, clickable file paths, shared clipboard, safer paste review |
+| **Files** | SFTP browser, upload/download, remote file creation, direct remote text editing, syntax highlighting, path-aware navigation from terminal output |
+| **Automation** | Snippets, variable-aware snippet insertion, host auto-connect commands, saved agent launch presets |
+| **Networking** | Local and remote port forwards for tunnels, dashboards, previews, and remote services |
+| **Keys and trust** | Generate/import/export Ed25519 and RSA keys, verify SSH host fingerprints, track trusted hosts locally |
+| **Security and portability** | PIN + biometrics, auto-lock, encrypted offline transfer bundles, encrypted full-app migration packages, no required cloud sync |
 
-```bash
-# Clone the repository
-git clone https://github.com/depollsoft/MonkeySSH.git
-cd MonkeySSH
+## MonkeySSH Pro
 
-# Install dependencies
-flutter pub get
+MonkeySSH Pro unlocks the features that matter most for power users and multi-device workflows:
 
-# Run the app
-flutter run
-```
+- encrypted host and key transfers
+- full migration import/export
+- auto-connect automation
+- agent launch presets
+- host-specific terminal themes
 
-### Building
+Core SSH, terminal, SFTP, and everyday remote access stay front and center regardless.
 
-```bash
-# Android
-flutter build apk
-flutter build appbundle
+## Release focus
 
-# iOS
-flutter build ios
-
-# macOS
-flutter build macos
-
-# Windows
-flutter build windows
-
-# Linux
-flutter build linux
-```
+MonkeySSH is being prepared for public release with production App Store and Play Store deployment flows already in place. The app is built with Flutter, so the codebase remains portable, but the current release pipeline and store metadata are centered on **iPhone and Android**.
 
 ## Development
 
-### Running Tests
+```bash
+flutter pub get
+dart run build_runner build --delete-conflicting-outputs
+flutter analyze
+dart format .
+flutter test
+```
+
+### Android builds
+
+Use **JDK 17** for Android and Gradle work in this repo:
 
 ```bash
-# Unit and widget tests
-flutter test
+export JAVA_HOME="$("/usr/libexec/java_home" -v 17)"
+```
 
-# With coverage
-flutter test --coverage
+### Integration and manual testing
 
-# Integration tests
+```bash
 flutter test integration_test
 ```
 
-### Code Quality
+To test tmux navigation against a real SSH target:
 
 ```bash
-# Analyze code
-flutter analyze
-
-# Format code
-dart format .
-
-# Check formatting
-dart format --set-exit-if-changed .
+./scripts/setup_tmux_test_env.sh
+# ... run the app and connect to localhost ...
+./scripts/setup_tmux_test_env.sh teardown
 ```
-
-## Architecture
-
-```
-lib/
-├── app/                    # App configuration, themes, routing
-├── core/                   # Core utilities, extensions, constants
-├── data/                   # Data layer (database, repositories)
-│   ├── database/          # Drift database schemas
-│   ├── models/            # Data models
-│   └── repositories/      # Repository implementations
-├── domain/                 # Business logic
-│   ├── entities/          # Domain entities
-│   └── services/          # Domain services
-├── presentation/           # UI layer
-│   ├── screens/           # Screen widgets
-│   ├── widgets/           # Reusable widgets
-│   └── providers/         # Riverpod providers
-└── main.dart              # Entry point
-```
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| Framework | Flutter 3.x |
-| State Management | Riverpod |
-| Navigation | GoRouter |
-| Database | Drift (SQLite) |
-| SSH | dartssh2 |
-| Terminal | xterm |
-| Secure Storage | flutter_secure_storage |
 
 ## Deployment
 
-See [docs/deployment.md](docs/deployment.md) for setting up automated deployment to TestFlight and Google Play.
-
-## Versioning
-
-MonkeySSH keeps the store-facing app version numeric (`major.minor.patch`) so App Store Connect and Google Play accept the build, and layers a monkey codename on top of each major version.
-
-- Major `0` starts the sequence with **Allen's Swamp Monkey**
-- Each later major advances alphabetically: **Baboon**, **Capuchin**, **Drill**, and so on
-- `X` is intentionally reserved until a real X codename is chosen
-
-The canonical codename table lives in `assets/version_codenames.json`, and release workflows plus the in-app About screen both read from that scheme.
+Release automation, app variants, store setup, and signing details live in [docs/deployment.md](docs/deployment.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## Security
-
-This is an **experimental project** and has not undergone a security audit. 
-Do not use for production workloads or to connect to sensitive systems.
-
-Recent hardening changes:
-- PIN verification uses PBKDF2-HMAC-SHA256 (120k iterations, per-device salt) in secure storage. Legacy PIN hashes are not migrated; users on unsupported pre-release data must re-create their PIN.
-- The SQLite database is stored in the platform Application Support directory, with automatic migration from legacy Documents storage.
-- Platform backup/file exposure is restricted:
-  - Android disables app backup and excludes app data from backup/device-transfer rules.
-  - iOS disables `UIFileSharingEnabled` and `LSSupportsOpeningDocumentsInPlace`.
-- CI/CD workflows pin third-party GitHub Actions by commit SHA, scope `GITHUB_TOKEN` permissions to the minimum needed, and avoid inherited reusable-workflow secrets.
-- CI now runs OSS Gitleaks secret scanning, a pull-request dependency diff review backed by OSV when GitHub dependency review is unavailable, and baseline OSV dependency scanning, while release uploads publish `SHA256SUMS.txt` alongside release artifacts.
-
-Export packages are encrypted with a user-provided passphrase and are intended for explicit export/import between devices. No cloud sync is required.
-
-If you discover a security vulnerability, please open an issue.
+See [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Acknowledgments
-
-- [Termius](https://termius.com/) - Inspiration for features and UX
-- [dartssh2](https://pub.dev/packages/dartssh2) - SSH2 client implementation
-- [xterm](https://pub.dev/packages/xterm) - Terminal emulator widget
+This project is licensed under the MIT License. See [LICENSE](LICENSE).
