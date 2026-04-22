@@ -1,6 +1,6 @@
 name: Deploy PR Preview
 
-run-name: Deploy PR #${{ inputs.pr-number }}${{ inputs.request-comment-id != '' && format(' from /deploy comment {0}', inputs.request-comment-id) || '' }}
+run-name: "Deploy PR #${{ inputs.pr-number }}${{ inputs.request-comment-id != '' && format(' from /deploy comment {0}', inputs.request-comment-id) || '' }}"
 
 on:
   workflow_dispatch:
