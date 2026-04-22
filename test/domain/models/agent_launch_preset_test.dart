@@ -14,8 +14,19 @@ void main() {
         'claude --dangerously-skip-permissions',
       );
       expect(
+        buildAgentToolCommand(
+          AgentLaunchTool.copilotCli,
+          startInYoloMode: true,
+        ),
+        'copilot --yolo',
+      );
+      expect(
         buildAgentToolCommand(AgentLaunchTool.codex, startInYoloMode: true),
-        'codex --approval-mode never',
+        'codex --yolo',
+      );
+      expect(
+        buildAgentToolCommand(AgentLaunchTool.openCode, startInYoloMode: true),
+        r'OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode',
       );
       expect(
         buildAgentToolCommand(AgentLaunchTool.geminiCli, startInYoloMode: true),
@@ -23,21 +34,7 @@ void main() {
       );
       expect(
         buildAgentToolCommand(AgentLaunchTool.aider, startInYoloMode: true),
-        'aider --yes-always',
-      );
-    });
-
-    test('leaves unsupported tools unchanged in yolo mode', () {
-      expect(
-        buildAgentToolCommand(
-          AgentLaunchTool.copilotCli,
-          startInYoloMode: true,
-        ),
-        'copilot',
-      );
-      expect(
-        buildAgentToolCommand(AgentLaunchTool.openCode, startInYoloMode: true),
-        'opencode',
+        'aider --yes',
       );
     });
   });
@@ -62,13 +59,13 @@ void main() {
         workingDirectory: '~/src/app',
         tmuxSessionName: 'nightly review',
         tmuxExtraFlags: '-x 160 -y 48',
-        additionalArguments: '--yes-always',
+        additionalArguments: '--message "hello"',
       );
 
       expect(
         buildAgentLaunchCommand(preset),
         'tmux new-session -A -s \'nightly review\' -c '
-        '"\$HOME/src/app" -x 160 -y 48 \'codex --yes-always\'',
+        '"\$HOME/src/app" -x 160 -y 48 \'codex --message "hello"\'',
       );
     });
 
@@ -76,10 +73,10 @@ void main() {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.codex,
         tmuxExtraFlags: '-x 160 -y 48',
-        additionalArguments: '--yes-always',
+        additionalArguments: '--message "hello"',
       );
 
-      expect(buildAgentLaunchCommand(preset), 'codex --yes-always');
+      expect(buildAgentLaunchCommand(preset), 'codex --message "hello"');
     });
 
     test(
@@ -181,31 +178,62 @@ void main() {
 
       expect(
         buildAgentLaunchCommand(preset, startInYoloMode: true),
-        r'cd "$HOME/project" && codex --approval-mode never',
+        r'cd "$HOME/project" && codex --yolo',
       );
     });
 
-    test('does not duplicate a yolo flag already in extra arguments', () {
+    test('normalizes existing codex yolo aliases', () {
       const preset = AgentLaunchPreset(
         tool: AgentLaunchTool.codex,
-        additionalArguments: '--approval-mode never --model gpt-5.4',
+        additionalArguments: '--ask-for-approval never --model gpt-5.4',
       );
 
       expect(
         buildAgentLaunchCommand(preset, startInYoloMode: true),
-        'codex --approval-mode never --model gpt-5.4',
+        'codex --yolo --model gpt-5.4',
       );
     });
 
-    test('replaces conflicting codex approval-mode arguments in yolo mode', () {
+    test(
+      'replaces conflicting codex approval and sandbox arguments in yolo mode',
+      () {
+        const preset = AgentLaunchPreset(
+          tool: AgentLaunchTool.codex,
+          additionalArguments:
+              '--ask-for-approval on-request --sandbox workspace-write --model gpt-5.4',
+        );
+
+        expect(
+          buildAgentLaunchCommand(preset, startInYoloMode: true),
+          'codex --yolo --model gpt-5.4',
+        );
+      },
+    );
+
+    test(
+      'rebuilds opencode in yolo mode with an allow-all permission override',
+      () {
+        const preset = AgentLaunchPreset(
+          tool: AgentLaunchTool.openCode,
+          workingDirectory: '~/project',
+        );
+
+        expect(
+          buildAgentLaunchCommand(preset, startInYoloMode: true),
+          r'cd "$HOME/project" && OPENCODE_PERMISSION="{\"*\":\"allow\"}" opencode',
+        );
+      },
+    );
+
+    test('normalizes legacy aider yolo flags', () {
       const preset = AgentLaunchPreset(
-        tool: AgentLaunchTool.codex,
-        additionalArguments: '--approval-mode auto --model gpt-5.4',
+        tool: AgentLaunchTool.aider,
+        additionalArguments: '--yes-always --model sonnet',
       );
 
       expect(
         buildAgentLaunchCommand(preset, startInYoloMode: true),
-        'codex --approval-mode never --model gpt-5.4',
+        'aider --yes --model sonnet',
       );
     });
   });
@@ -282,12 +310,13 @@ void main() {
     });
 
     test('supportsYoloMode is only true for supported tools', () {
-      expect(AgentLaunchTool.claudeCode.supportsYoloMode, isTrue);
-      expect(AgentLaunchTool.aider.supportsYoloMode, isTrue);
-      expect(AgentLaunchTool.codex.supportsYoloMode, isTrue);
-      expect(AgentLaunchTool.geminiCli.supportsYoloMode, isTrue);
-      expect(AgentLaunchTool.copilotCli.supportsYoloMode, isFalse);
-      expect(AgentLaunchTool.openCode.supportsYoloMode, isFalse);
+      for (final tool in AgentLaunchTool.values) {
+        expect(
+          tool.supportsYoloMode,
+          isTrue,
+          reason: '${tool.name} should support yolo mode',
+        );
+      }
     });
   });
 
