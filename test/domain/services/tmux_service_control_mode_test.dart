@@ -154,8 +154,7 @@ void main() {
     test('noop while control-mode notifications are flowing', () {
       expect(
         decideTmuxHeartbeatAction(
-          controlSilence: Duration.zero,
-          timeSinceLastRefresh: Duration.zero,
+          silence: Duration.zero,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -163,8 +162,7 @@ void main() {
       );
       expect(
         decideTmuxHeartbeatAction(
-          controlSilence: const Duration(milliseconds: 4999),
-          timeSinceLastRefresh: const Duration(milliseconds: 4999),
+          silence: const Duration(milliseconds: 4999),
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -176,8 +174,7 @@ void main() {
         'heartbeat interval', () {
       expect(
         decideTmuxHeartbeatAction(
-          controlSilence: heartbeat,
-          timeSinceLastRefresh: heartbeat,
+          silence: heartbeat,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -185,20 +182,7 @@ void main() {
       );
       expect(
         decideTmuxHeartbeatAction(
-          controlSilence: const Duration(seconds: 20),
-          timeSinceLastRefresh: const Duration(seconds: 20),
-          heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
-        ),
-        TmuxControlHeartbeatAction.refresh,
-      );
-    });
-
-    test('refreshes even while unrelated control chatter keeps arriving', () {
-      expect(
-        decideTmuxHeartbeatAction(
-          controlSilence: const Duration(milliseconds: 100),
-          timeSinceLastRefresh: heartbeat,
+          silence: const Duration(seconds: 20),
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -210,8 +194,7 @@ void main() {
         'threshold', () {
       expect(
         decideTmuxHeartbeatAction(
-          controlSilence: maxSilence,
-          timeSinceLastRefresh: maxSilence,
+          silence: maxSilence,
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),
@@ -219,8 +202,7 @@ void main() {
       );
       expect(
         decideTmuxHeartbeatAction(
-          controlSilence: const Duration(minutes: 5),
-          timeSinceLastRefresh: const Duration(minutes: 5),
+          silence: const Duration(minutes: 5),
           heartbeatInterval: heartbeat,
           maxSilenceBeforeRestart: maxSilence,
         ),

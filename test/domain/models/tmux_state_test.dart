@@ -143,6 +143,19 @@ void main() {
       expect(window.statusLabel, 'alert');
     });
 
+    test('computes idle state from activity epoch dynamically', () {
+      final activityEpoch =
+          (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 20;
+      final window = TmuxWindow.fromTmuxFormat(
+        '3|claude|1|claude|/tmp|*|Waiting|$activityEpoch',
+      );
+
+      expect(window.lastActivityEpochSeconds, activityEpoch);
+      expect(window.idleSeconds, greaterThanOrEqualTo(20));
+      expect(window.isIdle, isTrue);
+      expect(window.statusLabel, 'waiting');
+    });
+
     test('throws on too few fields', () {
       expect(() => TmuxWindow.fromTmuxFormat('0|vim'), throwsFormatException);
     });

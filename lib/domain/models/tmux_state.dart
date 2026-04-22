@@ -74,8 +74,9 @@ class TmuxWindow {
     this.currentPath,
     this.flags,
     this.paneTitle,
-    this.idleSeconds,
-  });
+    int? idleSeconds,
+    this.lastActivityEpochSeconds,
+  }) : _snapshotIdleSeconds = idleSeconds;
 
   /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
   ///
@@ -87,16 +88,7 @@ class TmuxWindow {
       throw FormatException('Invalid tmux window format: $line');
     }
 
-    // Compute idle seconds from window_activity epoch if available.
-    int? idleSeconds;
-    if (fields.length > 7) {
-      final activityEpoch = int.tryParse(fields[7]);
-      if (activityEpoch != null && activityEpoch > 0) {
-        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-        idleSeconds = now - activityEpoch;
-        if (idleSeconds < 0) idleSeconds = 0;
-      }
-    }
+    final activityEpoch = fields.length > 7 ? int.tryParse(fields[7]) : null;
 
     return TmuxWindow(
       index: int.tryParse(fields[0]) ?? 0,
@@ -106,7 +98,9 @@ class TmuxWindow {
       currentPath: fields.length > 4 ? _nonEmpty(fields[4]) : null,
       flags: fields.length > 5 ? _nonEmpty(fields[5]) : null,
       paneTitle: fields.length > 6 ? _nonEmpty(fields[6]) : null,
-      idleSeconds: idleSeconds,
+      lastActivityEpochSeconds: activityEpoch != null && activityEpoch > 0
+          ? activityEpoch
+          : null,
     );
   }
 
@@ -131,8 +125,21 @@ class TmuxWindow {
   /// The pane title set by the running application, if available.
   final String? paneTitle;
 
+  /// tmux's `window_activity` epoch seconds, if available.
+  final int? lastActivityEpochSeconds;
+
+  final int? _snapshotIdleSeconds;
+
   /// Seconds since last output activity in this window, if available.
-  final int? idleSeconds;
+  int? get idleSeconds {
+    final activityEpoch = lastActivityEpochSeconds;
+    if (activityEpoch == null) {
+      return _snapshotIdleSeconds;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final idleSeconds = now - activityEpoch;
+    return idleSeconds < 0 ? 0 : idleSeconds;
+  }
 
   /// Idle threshold (seconds) above which a window is considered "waiting".
   static const _idleThreshold = 15;
@@ -150,6 +157,11 @@ class TmuxWindow {
 
   /// Whether the window appears to be actively running work.
   bool get isRunning => !hasAlert && !isIdle;
+
+  /// Whether the window's status can still change from running to waiting
+  /// without tmux emitting a new control-mode notification.
+  bool get needsLocalIdleRefresh =>
+      !hasAlert && idleSeconds != null && idleSeconds! <= _idleThreshold;
 
   /// A short display title — prefers the richest usable tmux title.
   String get displayTitle {
@@ -216,7 +228,8 @@ class TmuxWindow {
           currentPath == other.currentPath &&
           flags == other.flags &&
           paneTitle == other.paneTitle &&
-          idleSeconds == other.idleSeconds;
+          lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
+          _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
   @override
   int get hashCode => Object.hash(
@@ -227,7 +240,8 @@ class TmuxWindow {
     currentPath,
     flags,
     paneTitle,
-    idleSeconds,
+    lastActivityEpochSeconds,
+    _snapshotIdleSeconds,
   );
 }
 

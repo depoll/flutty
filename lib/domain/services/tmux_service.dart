@@ -555,15 +555,14 @@ enum TmuxControlHeartbeatAction {
 /// channel is half-open.
 @visibleForTesting
 TmuxControlHeartbeatAction decideTmuxHeartbeatAction({
-  required Duration controlSilence,
-  required Duration timeSinceLastRefresh,
+  required Duration silence,
   required Duration heartbeatInterval,
   required Duration maxSilenceBeforeRestart,
 }) {
-  if (controlSilence >= maxSilenceBeforeRestart) {
+  if (silence >= maxSilenceBeforeRestart) {
     return TmuxControlHeartbeatAction.restart;
   }
-  if (timeSinceLastRefresh >= heartbeatInterval) {
+  if (silence >= heartbeatInterval) {
     return TmuxControlHeartbeatAction.refresh;
   }
   return TmuxControlHeartbeatAction.noop;
@@ -606,11 +605,11 @@ class _TmuxWindowChangeObserver {
 
   static const _eventDebounce = Duration(milliseconds: 150);
 
-  /// How often to synthesize a tmux snapshot refresh while the watcher is
-  /// active. This keeps time-based window state (for example `waiting`
-  /// derived from `window_activity`) and any missed control-mode updates in
-  /// sync with the visible tmux UI.
-  static const _heartbeatInterval = Duration(seconds: 1);
+  /// How often to check whether the control-mode session has gone silent
+  /// and synthesize a refresh event when it has. Keeps the UI in sync
+  /// even if `%subscription-changed` notifications are dropped (e.g. due
+  /// to a half-open SSH channel that did not surface as `done`).
+  static const _heartbeatInterval = Duration(seconds: 5);
 
   /// If no control-mode line arrives for this long, treat the session as
   /// dead and force a reconnect even though the SSH `done` callback never
@@ -635,7 +634,6 @@ class _TmuxWindowChangeObserver {
   bool _disposed = false;
   int _restartAttempts = 0;
   DateTime? _lastControlActivity;
-  DateTime? _lastRefreshSignal;
 
   String get _subscriptionName =>
       'flutty-${session.connectionId}-${sessionName.hashCode.abs()}';
@@ -676,7 +674,6 @@ class _TmuxWindowChangeObserver {
       _configureControlSession();
       _restartAttempts = 0;
       _lastControlActivity = _now();
-      _lastRefreshSignal = _lastControlActivity;
       _startHeartbeat();
     } on Object catch (error, stackTrace) {
       _handleControlFailure(error, stackTrace);
@@ -721,7 +718,6 @@ class _TmuxWindowChangeObserver {
     _debounceTimer?.cancel();
     _debounceTimer = Timer(_eventDebounce, () {
       if (!_disposed && !_controller.isClosed) {
-        _lastRefreshSignal = _now();
         _controller.add(null);
       }
     });
@@ -768,13 +764,10 @@ class _TmuxWindowChangeObserver {
   ///    silence is a strong signal of a dead channel.
   void _onHeartbeat() {
     if (_disposed) return;
-    final lastControlActivity = _lastControlActivity;
-    final lastRefreshSignal = _lastRefreshSignal;
-    if (lastControlActivity == null || lastRefreshSignal == null) return;
-    final now = _now();
+    final lastActivity = _lastControlActivity;
+    if (lastActivity == null) return;
     final action = decideTmuxHeartbeatAction(
-      controlSilence: now.difference(lastControlActivity),
-      timeSinceLastRefresh: now.difference(lastRefreshSignal),
+      silence: _now().difference(lastActivity),
       heartbeatInterval: _heartbeatInterval,
       maxSilenceBeforeRestart: _maxSilenceBeforeRestart,
     );
@@ -801,7 +794,6 @@ class _TmuxWindowChangeObserver {
     _controlSession?.close();
     _controlSession = null;
     _lastControlActivity = null;
-    _lastRefreshSignal = null;
   }
 
   Future<void> dispose() async {
