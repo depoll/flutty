@@ -1038,7 +1038,7 @@ final _terminalFilePathPattern = RegExp(
   r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)''',
 );
 final _terminalFilePathLineSuffixPattern = RegExp(
-  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+)$''',
+  r'''(?:~(?:/[^\s<>"'$#&|;]+)?|/(?:[^\s<>"'$#&|;]+)|\.\.?/(?:[^\s<>"'$#&|;]+)|[A-Za-z0-9_.-]+(?:/[A-Za-z0-9_.-]+)+/?)$''',
 );
 final _terminalFilePathStackTraceSuffixPattern = RegExp(
   r'(?:L\d+(?::\d+)?|:\d+(?::\d+)?)$',
@@ -1685,6 +1685,7 @@ String _trimTerminalPathContinuationPrefix(String text) {
 bool _startsFreshTerminalFilePathLine(String text) =>
     text == '~' ||
     text.startsWith('~/') ||
+    text.startsWith('/') ||
     text.startsWith('./') ||
     text.startsWith('../');
 

@@ -394,6 +394,25 @@ void main() {
       );
     });
 
+    test(
+      'detects relative paths split immediately after a directory slash',
+      () {
+        const text =
+            'Open lib/presentation/\n'
+            '    screens/terminal_screen.dart next.';
+        final detectedPath = detectTerminalFilePathAtTextOffset(
+          text,
+          text.indexOf('screens'),
+        );
+
+        expect(detectedPath, isNotNull);
+        expect(
+          detectedPath!.path,
+          'lib/presentation/screens/terminal_screen.dart',
+        );
+      },
+    );
+
     test('ignores colored guide prefixes in continuation indentation', () {
       const text =
           'Open /srv/app/lib/presentation/\n'
@@ -624,6 +643,17 @@ void main() {
 
       expect(detectedPath, isNotNull);
       expect(detectedPath!.path, '~/Code/flutty');
+    });
+
+    test('does not merge separate absolute paths on adjacent lines', () {
+      const text = '/tmp/foo\n/var/log/app.log';
+      final detectedPath = detectTerminalFilePathAtTextOffset(
+        text,
+        text.indexOf('/var/log'),
+      );
+
+      expect(detectedPath, isNotNull);
+      expect(detectedPath!.path, '/var/log/app.log');
     });
 
     test('ignores branch-like slash paths without a file-like basename', () {
@@ -1063,6 +1093,26 @@ void main() {
           nextLineText: '└ L330:390 (61 lines read)',
         ),
         isFalse,
+      );
+    });
+
+    test('does not join separate absolute path starts across lines', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: '/tmp/foo',
+          nextLineText: '/var/log/app.log',
+        ),
+        isFalse,
+      );
+    });
+
+    test('joins relative paths split after a directory separator', () {
+      expect(
+        isTerminalPathContinuationAcrossLines(
+          previousLineText: 'Open lib/presentation/',
+          nextLineText: 'screens/terminal_screen.dart',
+        ),
+        isTrue,
       );
     });
 
