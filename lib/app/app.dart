@@ -71,13 +71,15 @@ class _BackgroundLifecycleBridgeState
       syncBackgroundState: () =>
           BackgroundSshService.setForegroundState(isForeground: false),
     );
-    _listenForHomeScreenShortcutChanges();
-    _runLifecycleSync(
-      () => ref.read(homeScreenShortcutServiceProvider).initialize(),
-      errorContext:
-          'while initializing home-screen shortcuts during app startup',
-      defer: true,
-    );
+    if (supportsHomeScreenShortcutActions) {
+      _listenForHomeScreenShortcutChanges();
+      _runLifecycleSync(
+        () => ref.read(homeScreenShortcutServiceProvider).initialize(),
+        errorContext:
+            'while initializing home-screen shortcuts during app startup',
+        defer: true,
+      );
+    }
     _runLifecycleSync(
       _refreshMonetizationOnStartup,
       errorContext: 'while refreshing subscription state during app startup',

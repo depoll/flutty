@@ -167,4 +167,12 @@ void main() {
 
     await expectLater(service.hostLaunches, emits(9));
   });
+
+  test('debug-emitted launches after dispose are ignored', () async {
+    final service = HomeScreenShortcutService();
+
+    await service.dispose();
+
+    expect(() => service.debugEmitHostLaunch(9), returnsNormally);
+  });
 }

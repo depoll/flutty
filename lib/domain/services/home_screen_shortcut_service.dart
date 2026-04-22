@@ -16,7 +16,8 @@ const homeScreenShortcutHostTypePrefix = 'host:';
 /// Maximum number of hosts surfaced in the app icon's quick actions.
 const maxHomeScreenShortcutItems = 4;
 
-bool get _supportsHomeScreenShortcuts =>
+/// Whether the current platform supports app-icon home-screen shortcuts.
+bool get supportsHomeScreenShortcutActions =>
     !kIsWeb &&
     (defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS);
@@ -234,7 +235,7 @@ class HomeScreenShortcutService {
 
   /// Ensures the quick-action integration is initialized once.
   Future<void> initialize() =>
-      _initializeFuture ??= _supportsHomeScreenShortcuts
+      _initializeFuture ??= supportsHomeScreenShortcutActions
       ? _initializeInternal()
       : Future<void>.value();
 
@@ -243,7 +244,7 @@ class HomeScreenShortcutService {
     required List<Host> hosts,
     required Set<int> pinnedHostIds,
   }) async {
-    if (!_supportsHomeScreenShortcuts) {
+    if (!supportsHomeScreenShortcutActions) {
       return;
     }
 
@@ -278,6 +279,9 @@ class HomeScreenShortcutService {
   }
 
   void _dispatchHostLaunch(int hostId) {
+    if (_hostLaunchController.isClosed) {
+      return;
+    }
     if (_hostLaunchListenerCount == 0) {
       _pendingHostLaunches.add(hostId);
       return;

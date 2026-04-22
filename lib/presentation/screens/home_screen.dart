@@ -2,7 +2,6 @@ import 'dart:async';
 import 'dart:collection';
 
 import 'package:drift/drift.dart' as drift;
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -36,11 +35,6 @@ import '../widgets/premium_access.dart';
 import '../widgets/reorder_helpers.dart';
 import '../widgets/tmux_window_status_badge.dart';
 import 'transfer_screen.dart';
-
-bool get _supportsHomeScreenShortcutActions =>
-    !kIsWeb &&
-    (defaultTargetPlatform == TargetPlatform.android ||
-        defaultTargetPlatform == TargetPlatform.iOS);
 
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
@@ -785,7 +779,7 @@ class _HostRow extends ConsumerWidget {
         ref.watch(pinnedHomeScreenShortcutHostIdsProvider).asData?.value ??
         const <int>{};
     final isPinnedToHomeScreen =
-        _supportsHomeScreenShortcutActions &&
+        supportsHomeScreenShortcutActions &&
         pinnedHomeScreenShortcutHostIds.contains(host.id);
     final previewEntries = connectionIds
         .map((connectionId) {
@@ -1131,7 +1125,7 @@ class _HostRow extends ConsumerWidget {
       pinnedHomeScreenShortcutHostIdsProvider,
     );
     final isPinnedToHomeScreen =
-        _supportsHomeScreenShortcutActions &&
+        supportsHomeScreenShortcutActions &&
         (pinnedHomeScreenShortcutHostIds.asData?.value.contains(host.id) ??
             false);
 
@@ -1163,7 +1157,7 @@ class _HostRow extends ConsumerWidget {
             title: Text('New connection'),
           ),
         ),
-        if (_supportsHomeScreenShortcutActions)
+        if (supportsHomeScreenShortcutActions)
           PopupMenuItem<_HostContextAction>(
             value: _HostContextAction.toggleHomeScreen,
             child: ListTile(
