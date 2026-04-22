@@ -17,17 +17,47 @@ import 'package:monkeyssh/presentation/screens/hosts_screen.dart';
 class _MockHostRepository extends Mock implements HostRepository {}
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
+  _TestActiveSessionsNotifier({
+    List<ActiveConnection> initialConnections = const <ActiveConnection>[],
+  }) {
+    _connections.addEntries(
+      initialConnections.map(
+        (connection) => MapEntry(connection.connectionId, connection),
+      ),
+    );
+  }
+
+  final Map<int, ActiveConnection> _connections = <int, ActiveConnection>{};
+  final List<int> disconnectedConnectionIds = <int>[];
+
   @override
-  Map<int, SshConnectionState> build() => <int, SshConnectionState>{};
+  Map<int, SshConnectionState> build() => {
+    for (final connection in _connections.values)
+      connection.connectionId: connection.state,
+  };
 
   @override
   ConnectionAttemptStatus? getConnectionAttempt(int hostId) => null;
 
   @override
-  List<int> getConnectionsForHost(int hostId) => const [];
+  List<int> getConnectionsForHost(int hostId) => _connections.values
+      .where((connection) => connection.hostId == hostId)
+      .map((connection) => connection.connectionId)
+      .toList(growable: false);
 
   @override
-  ActiveConnection? getActiveConnection(int connectionId) => null;
+  ActiveConnection? getActiveConnection(int connectionId) =>
+      _connections[connectionId];
+
+  @override
+  Future<void> disconnect(int connectionId) async {
+    disconnectedConnectionIds.add(connectionId);
+    _connections.remove(connectionId);
+    state = {
+      for (final connection in _connections.values)
+        connection.connectionId: connection.state,
+    };
+  }
 }
 
 Host _buildHost({
@@ -58,6 +88,22 @@ Host _buildHost({
   autoConnectSnippetId: null,
   autoConnectRequiresConfirmation: false,
   sortOrder: sortOrder,
+);
+
+ActiveConnection _buildActiveConnection({
+  required int connectionId,
+  required int hostId,
+  SshConnectionState state = SshConnectionState.connected,
+}) => ActiveConnection(
+  connectionId: connectionId,
+  hostId: hostId,
+  state: state,
+  createdAt: DateTime(2026),
+  config: const SshConnectionConfig(
+    hostname: 'alpha.example.com',
+    port: 22,
+    username: 'root',
+  ),
 );
 
 void main() {
@@ -188,9 +234,50 @@ void main() {
 
     expect(find.text('Connect'), findsOneWidget);
     expect(find.text('New connection'), findsOneWidget);
+    expect(find.text('Disconnect'), findsNothing);
+    expect(find.text('Disconnect all'), findsNothing);
     expect(find.text('Edit'), findsOneWidget);
     expect(find.text('Duplicate'), findsOneWidget);
     expect(find.text('Export Encrypted File (Pro)'), findsOneWidget);
     expect(find.text('Delete'), findsOneWidget);
   });
+
+  testWidgets(
+    'connected host long press can disconnect from the context menu',
+    (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final sessionsNotifier = _TestActiveSessionsNotifier(
+        initialConnections: [
+          _buildActiveConnection(connectionId: 7, hostId: 1),
+        ],
+      );
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            activeSessionsProvider.overrideWith(() => sessionsNotifier),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value([
+                _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+              ]),
+            ),
+          ],
+          child: const MaterialApp(home: HostsScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.longPress(find.text('Alpha'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Disconnect'), findsOneWidget);
+
+      await tester.tap(find.text('Disconnect'));
+      await tester.pumpAndSettle();
+
+      expect(sessionsNotifier.disconnectedConnectionIds, orderedEquals([7]));
+    },
+  );
 }

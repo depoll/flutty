@@ -658,10 +658,25 @@ class HostsPanel extends ConsumerWidget {
 enum _HostContextAction {
   connect,
   newConnection,
+  disconnect,
   edit,
   duplicate,
   export,
   delete,
+}
+
+Future<void> _disconnectConnection(WidgetRef ref, int connectionId) async {
+  ref.read(tmuxServiceProvider).clearCache(connectionId);
+  await ref.read(activeSessionsProvider.notifier).disconnect(connectionId);
+}
+
+Future<void> _disconnectHostConnections(
+  WidgetRef ref,
+  Iterable<int> connectionIds,
+) async {
+  for (final connectionId in connectionIds.toList(growable: false)) {
+    await _disconnectConnection(ref, connectionId);
+  }
 }
 
 class _HostRow extends ConsumerWidget {
@@ -1037,6 +1052,11 @@ class _HostRow extends ConsumerWidget {
     Offset globalPosition,
   ) async {
     final colorScheme = Theme.of(context).colorScheme;
+    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+    final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
+    final disconnectLabel = connectionIds.length > 1
+        ? 'Disconnect all'
+        : 'Disconnect';
 
     final overlay = Overlay.maybeOf(context);
     final overlayBox = overlay?.context.findRenderObject() as RenderBox?;
@@ -1066,6 +1086,15 @@ class _HostRow extends ConsumerWidget {
             title: Text('New connection'),
           ),
         ),
+        if (connectionIds.isNotEmpty)
+          PopupMenuItem<_HostContextAction>(
+            value: _HostContextAction.disconnect,
+            child: ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.link_off_rounded),
+              title: Text(disconnectLabel),
+            ),
+          ),
         const PopupMenuDivider(),
         const PopupMenuItem<_HostContextAction>(
           value: _HostContextAction.edit,
@@ -1116,6 +1145,9 @@ class _HostRow extends ConsumerWidget {
         return;
       case _HostContextAction.newConnection:
         await _openNewConnection(context, ref);
+        return;
+      case _HostContextAction.disconnect:
+        await _disconnectHostConnections(ref, connectionIds);
         return;
       case _HostContextAction.edit:
         unawaited(context.push('/hosts/edit/${host.id}'));
@@ -1406,14 +1438,12 @@ class _ConnectionsPanel extends ConsumerWidget {
                           trailing: IconButton(
                             icon: const Icon(Icons.close),
                             tooltip: 'Disconnect',
-                            onPressed: () async {
-                              ref
-                                  .read(tmuxServiceProvider)
-                                  .clearCache(connection.connectionId);
-                              await ref
-                                  .read(activeSessionsProvider.notifier)
-                                  .disconnect(connection.connectionId);
-                            },
+                            onPressed: () => unawaited(
+                              _disconnectConnection(
+                                ref,
+                                connection.connectionId,
+                              ),
+                            ),
                           ),
                           onTap: () => unawaited(
                             context.push(
