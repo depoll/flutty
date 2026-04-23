@@ -2533,6 +2533,8 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
   bool _tmuxQueryScheduled = false;
+  int _windowReloadGeneration = 0;
+  int _windowEventGeneration = 0;
 
   @override
   void initState() {
@@ -2700,10 +2702,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }
 
     await _windowChangeSubscription?.cancel();
+    final generation = ++_windowEventGeneration;
     _windowChangeSubscription = tmux
         .watchWindowChanges(session, sessionName)
         .listen(
-          (event) => _handleWindowChangeEvent(session, sessionName, event),
+          (event) =>
+              _handleWindowChangeEvent(session, sessionName, event, generation),
         );
     await _refreshTmuxWindows(session, sessionName);
   }
@@ -2712,8 +2716,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     SshSession session,
     String sessionName,
     TmuxWindowChangeEvent event,
+    int generation,
   ) {
     if (!mounted) return;
+    if (generation != _windowEventGeneration) return;
     if (event is TmuxWindowReloadEvent) {
       _refreshTmuxWindows(session, sessionName);
       return;
@@ -2723,6 +2729,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _refreshTmuxWindows(session, sessionName);
       return;
     }
+    _windowReloadGeneration += 1;
     _tmuxRetryTimer?.cancel();
     _tmuxRetryTimer = null;
     setState(() {
@@ -2741,11 +2748,13 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
     _loadingWindows = true;
+    final reloadGeneration = ++_windowReloadGeneration;
     try {
       final windows = await ref
           .read(tmuxServiceProvider)
           .listWindows(session, sessionName);
       if (!mounted) return;
+      if (reloadGeneration < _windowReloadGeneration) return;
       if (windows.isEmpty) {
         _scheduleTmuxRetry();
       } else {

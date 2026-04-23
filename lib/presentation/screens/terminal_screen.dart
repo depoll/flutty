@@ -362,6 +362,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   late Animation<double> _bounceAnimation;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
+  int _windowReloadGeneration = 0;
+  int _windowEventGeneration = 0;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -428,13 +430,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   void _subscribeToWindowChanges() {
+    final generation = ++_windowEventGeneration;
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
-        .listen(_handleWindowChangeEvent);
+        .listen((event) => _handleWindowChangeEvent(event, generation));
   }
 
-  void _handleWindowChangeEvent(TmuxWindowChangeEvent event) {
+  void _handleWindowChangeEvent(TmuxWindowChangeEvent event, int generation) {
     if (!mounted) return;
+    if (generation != _windowEventGeneration) return;
     if (event is TmuxWindowReloadEvent) {
       _loadWindows();
       return;
@@ -444,6 +448,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _loadWindows();
       return;
     }
+    _windowReloadGeneration += 1;
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
     _applyWindows(windows);
     if (widget.isProUser) {
@@ -521,12 +526,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       return;
     }
     _loadingWindows = true;
+    final reloadGeneration = ++_windowReloadGeneration;
     try {
       final windows = await _tmux.listWindows(
         widget.session,
         widget.tmuxSessionName,
       );
       if (!mounted) return;
+      if (reloadGeneration < _windowReloadGeneration) return;
       _applyWindows(windows);
       if (widget.isProUser) {
         unawaited(_prefetchPreferredSessionProvider(windows: windows));
