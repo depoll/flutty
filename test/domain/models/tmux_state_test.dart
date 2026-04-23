@@ -304,6 +304,26 @@ void main() {
     });
   });
 
+  group('resolveTmuxReloadedWindows', () {
+    test('preserves the prior non-empty window snapshot on empty reloads', () {
+      const currentWindows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'shell', isActive: true),
+      ];
+
+      expect(resolveTmuxReloadedWindows(currentWindows, const <TmuxWindow>[]), [
+        const TmuxWindow(index: 0, name: 'shell', isActive: true),
+      ]);
+    });
+
+    test('keeps loading when no tmux windows have loaded yet', () {
+      expect(resolveTmuxReloadedWindows(null, const <TmuxWindow>[]), isNull);
+      expect(
+        resolveTmuxReloadedWindows(const <TmuxWindow>[], const <TmuxWindow>[]),
+        isNull,
+      );
+    });
+  });
+
   group('ToolSessionInfo', () {
     test('constructs with all fields', () {
       final info = ToolSessionInfo(

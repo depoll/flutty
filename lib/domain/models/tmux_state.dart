@@ -362,6 +362,29 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
   }
 }
 
+/// Resolves the tmux window list after a full reload query.
+///
+/// A live tmux session should always report at least one window. Treat an
+/// empty reload as transient: preserve the prior non-empty snapshot when
+/// possible so the UI does not collapse into a broken-looking empty state
+/// while a follow-up refresh retries in the background.
+List<TmuxWindow>? resolveTmuxReloadedWindows(
+  Iterable<TmuxWindow>? currentWindows,
+  Iterable<TmuxWindow> reloadedWindows,
+) {
+  final nextWindows = reloadedWindows.toList(growable: false);
+  if (nextWindows.isNotEmpty) {
+    return nextWindows;
+  }
+
+  final previousWindows = currentWindows?.toList(growable: false);
+  if (previousWindows != null && previousWindows.isNotEmpty) {
+    return previousWindows;
+  }
+
+  return null;
+}
+
 /// Metadata for a recent AI coding tool session found on a remote host.
 @immutable
 class ToolSessionInfo {

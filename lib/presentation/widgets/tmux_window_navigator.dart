@@ -141,6 +141,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
   static const _maxSessionsPerTool = 16;
   static const _prefetchSessionFetchLimit = 6;
+  static const _windowRetryDelay = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -152,6 +153,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   bool _pendingWindowReload = false;
   int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
+  Timer? _windowRetryTimer;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -177,6 +179,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   @override
   void dispose() {
+    _cancelWindowRetry();
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
   }
@@ -232,21 +235,38 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     _loadingWindows = true;
     final reloadGeneration = ++_windowReloadGeneration;
     try {
-      final windows = await _tmux.listWindows(
+      final reloadedWindows = await _tmux.listWindows(
         widget.session,
         widget.tmuxSessionName,
       );
       if (!mounted) return;
       if (reloadGeneration < _windowReloadGeneration) return;
+      final windows = resolveTmuxReloadedWindows(_windows, reloadedWindows);
+      if (windows == null) {
+        _scheduleWindowRetry();
+        setState(() {
+          _windows = null;
+          _error = null;
+          _isLoadingWindows = true;
+        });
+        return;
+      }
+      if (reloadedWindows.isEmpty) {
+        _scheduleWindowRetry();
+      } else {
+        _cancelWindowRetry();
+      }
       setState(() {
         _windows = windows;
+        _error = null;
         _isLoadingWindows = false;
       });
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
     } on Exception catch (e) {
       if (!mounted) return;
+      _scheduleWindowRetry();
       setState(() {
-        _error = e.toString();
+        _error = _windows?.isEmpty ?? true ? e.toString() : null;
         _isLoadingWindows = false;
       });
     } finally {
@@ -271,9 +291,28 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       return;
     }
     _windowReloadGeneration += 1;
+    _cancelWindowRetry();
     setState(() {
       _windows = applyTmuxWindowChangeEvent(currentWindows, event);
+      _error = null;
       _isLoadingWindows = false;
+    });
+  }
+
+  void _cancelWindowRetry() {
+    _windowRetryTimer?.cancel();
+    _windowRetryTimer = null;
+  }
+
+  void _scheduleWindowRetry() {
+    if (!mounted || (_windowRetryTimer?.isActive ?? false)) {
+      return;
+    }
+    _windowRetryTimer = Timer(_windowRetryDelay, () {
+      _windowRetryTimer = null;
+      if (mounted) {
+        unawaited(_loadWindows());
+      }
     });
   }
 

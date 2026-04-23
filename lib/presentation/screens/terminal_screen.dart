@@ -404,6 +404,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
   static const _prefetchSessionFetchLimit = 6;
   static const _pendingSelectionTimeout = Duration(seconds: 2);
+  static const _windowRetryDelay = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -422,6 +423,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   int _windowEventGeneration = 0;
   int? _pendingSelectedWindowIndex;
   Timer? _pendingSelectionTimer;
+  Timer? _windowRetryTimer;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -462,6 +464,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       return;
     }
     _clearPendingSelectedWindow(notify: false);
+    _cancelWindowRetry();
     setState(() {
       _windows = null;
       _isLoading = true;
@@ -475,6 +478,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void dispose() {
     _clearPendingSelectedWindow(notify: false);
+    _cancelWindowRetry();
     unawaited(_windowChangeSubscription?.cancel());
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
@@ -519,6 +523,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     _windowReloadGeneration += 1;
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
+    _cancelWindowRetry();
     _applyWindows(windows);
     if (widget.isProUser) {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
@@ -598,6 +603,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     setState(() => _pendingSelectedWindowIndex = null);
   }
 
+  void _cancelWindowRetry() {
+    _windowRetryTimer?.cancel();
+    _windowRetryTimer = null;
+  }
+
+  void _scheduleWindowRetry() {
+    if (!mounted || (_windowRetryTimer?.isActive ?? false)) {
+      return;
+    }
+    _windowRetryTimer = Timer(_windowRetryDelay, () {
+      _windowRetryTimer = null;
+      if (mounted) {
+        unawaited(_loadWindows());
+      }
+    });
+  }
+
   String? _resolveRecentSessionScopeWorkingDirectory([
     List<TmuxWindow>? windows,
   ]) {
@@ -633,19 +655,39 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _loadingWindows = true;
     final reloadGeneration = ++_windowReloadGeneration;
     try {
-      final windows = await _tmux.listWindows(
+      final reloadedWindows = await _tmux.listWindows(
         widget.session,
         widget.tmuxSessionName,
       );
       if (!mounted) return;
       if (reloadGeneration < _windowReloadGeneration) return;
+      final windows = resolveTmuxReloadedWindows(_windows, reloadedWindows);
+      if (windows == null) {
+        _scheduleWindowRetry();
+        if (_isLoading) {
+          setState(() => _isLoading = true);
+        }
+        return;
+      }
+      if (reloadedWindows.isEmpty) {
+        _scheduleWindowRetry();
+      } else {
+        _cancelWindowRetry();
+      }
       _applyWindows(windows);
       if (widget.isProUser) {
         unawaited(_prefetchPreferredSessionProvider(windows: windows));
       }
     } on Object {
       if (!mounted) return;
-      if (_isLoading) setState(() => _isLoading = false);
+      _scheduleWindowRetry();
+      if (_windows?.isNotEmpty ?? false) {
+        if (_isLoading) {
+          setState(() => _isLoading = false);
+        }
+      } else {
+        setState(() => _isLoading = true);
+      }
     } finally {
       _loadingWindows = false;
       if (_pendingWindowReload) {
