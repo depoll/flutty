@@ -139,6 +139,54 @@ void main() {
     );
   });
 
+  group('shouldScheduleTmuxWindowReloadFallback', () {
+    const subscriptionName = 'flutty-1-42';
+
+    test(
+      'schedules fallback reloads for window signals that may miss snapshots',
+      () {
+        expect(
+          shouldScheduleTmuxWindowReloadFallback(
+            r'%subscription-changed flutty-1-42 $1 @1 1 %1 : malformed',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldScheduleTmuxWindowReloadFallback(
+            r'%session-window-changed $1 @1',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldScheduleTmuxWindowReloadFallback(
+            '%window-renamed @1 renamed-window',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+      },
+    );
+
+    test('ignores unrelated control-mode noise', () {
+      expect(
+        shouldScheduleTmuxWindowReloadFallback(
+          r'%subscription-changed other-subscription $1 @1 1 %1 : value',
+          subscriptionName: subscriptionName,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldScheduleTmuxWindowReloadFallback(
+          '%output %1 hello',
+          subscriptionName: subscriptionName,
+        ),
+        isFalse,
+      );
+    });
+  });
+
   group('tmux window action helpers', () {
     test('parses the current pane path from display-message output', () {
       expect(parseTmuxCurrentPanePath('/tmp/project\n'), '/tmp/project');

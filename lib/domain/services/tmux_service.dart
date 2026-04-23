@@ -511,6 +511,37 @@ String _normalizeTmuxControlLine(String line) {
   return normalized.trim();
 }
 
+/// Returns whether [line] should trigger a debounced reload fallback when a
+/// direct snapshot either does not arrive or cannot be parsed.
+///
+/// tmux normally follows window-change notifications like
+/// `%session-window-changed` with `%subscription-changed` snapshots, but some
+/// hosts intermittently stop delivering the snapshot while still emitting the
+/// lifecycle notification. Treat those lines as a fallback reload trigger so
+/// the UI does not get stuck on stale window metadata.
+@visibleForTesting
+bool shouldScheduleTmuxWindowReloadFallback(
+  String line, {
+  required String subscriptionName,
+}) {
+  final trimmed = _normalizeTmuxControlLine(line);
+  if (trimmed.isEmpty) return false;
+  if (trimmed.startsWith('%subscription-changed $subscriptionName ')) {
+    return true;
+  }
+
+  const notificationPrefixes = <String>[
+    '%pane-mode-changed ',
+    '%session-window-changed ',
+    '%sessions-changed',
+    '%unlinked-window-close ',
+    '%unlinked-window-renamed ',
+    '%window-close ',
+    '%window-renamed ',
+  ];
+  return notificationPrefixes.any(trimmed.startsWith);
+}
+
 /// Parses a control-mode output [line] into a tmux window change event for
 /// the observer using [subscriptionName].
 @visibleForTesting
@@ -719,9 +750,16 @@ class _TmuxWindowChangeObserver {
       subscriptionName: _subscriptionName,
     );
     if (event == null) {
+      if (shouldScheduleTmuxWindowReloadFallback(
+        trimmed,
+        subscriptionName: _subscriptionName,
+      )) {
+        _scheduleReloadEvent();
+      }
       return;
     }
     if (event is TmuxWindowSnapshotEvent) {
+      _cancelScheduledReload();
       _emitEvent(event);
       return;
     }
@@ -739,9 +777,14 @@ class _TmuxWindowChangeObserver {
     _controller.add(event);
   }
 
+  void _cancelScheduledReload() {
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+  }
+
   void _scheduleReloadEvent() {
     if (_disposed) return;
-    _debounceTimer?.cancel();
+    _cancelScheduledReload();
     _debounceTimer = Timer(_eventDebounce, () {
       if (!_disposed && !_controller.isClosed) {
         _controller.add(const TmuxWindowReloadEvent());
@@ -811,8 +854,7 @@ class _TmuxWindowChangeObserver {
 
   void _cleanupControlSession() {
     _stopHeartbeat();
-    _debounceTimer?.cancel();
-    _debounceTimer = null;
+    _cancelScheduledReload();
     unawaited(_stdoutSubscription?.cancel());
     unawaited(_stderrSubscription?.cancel());
     unawaited(_doneSubscription?.cancel());
