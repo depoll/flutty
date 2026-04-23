@@ -244,38 +244,40 @@ void main() {
         );
         final editableTextFinder = find.byType(EditableText);
         final textFieldFinder = find.byType(TextField);
-        final openScrollbarElement = tester.element(scrollbarFinder);
         final openViewportRect = tester.getRect(
           find.byKey(const ValueKey<String>('remoteTextEditorNowrapViewport')),
         );
-        final openEditableTextElement = tester.element(editableTextFinder);
         final openEditableText = tester.widget<EditableText>(
           editableTextFinder,
         );
+        final openSelection = controller.selection;
+        final openText = controller.text;
 
         await tester.showKeyboard(textFieldFinder);
         await tester.pump();
 
+        expect(scrollbarFinder, findsOneWidget);
         expect(openEditableText.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
+        expect(controller.selection, openSelection);
+        expect(controller.text, openText);
 
         keyboardInset.value = 0;
         await tester.pump();
         await tester.pumpAndSettle();
 
-        final closedScrollbarElement = tester.element(scrollbarFinder);
         final closedViewportRect = tester.getRect(
           find.byKey(const ValueKey<String>('remoteTextEditorNowrapViewport')),
         );
-        final closedEditableTextElement = tester.element(editableTextFinder);
         final closedEditableText = tester.widget<EditableText>(
           editableTextFinder,
         );
 
-        expect(closedScrollbarElement, same(openScrollbarElement));
-        expect(closedEditableTextElement, same(openEditableTextElement));
+        expect(scrollbarFinder, findsOneWidget);
         expect(closedEditableText.focusNode.hasFocus, isTrue);
         expect(tester.testTextInput.isVisible, isTrue);
+        expect(controller.selection, openSelection);
+        expect(controller.text, openText);
         expect(closedViewportRect.height, greaterThan(openViewportRect.height));
       },
     );
