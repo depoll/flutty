@@ -668,7 +668,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           title: const Text('Start supported coding CLIs in YOLO mode'),
           subtitle: Text(
             hasAgentPresetAccess
-                ? 'Applies to coding CLI launches on this host. Claude Code, Codex, Gemini CLI, and Aider support startup YOLO mode.'
+                ? 'Applies to coding CLI launches on this host. Claude Code, Copilot CLI, Codex, OpenCode, and Gemini CLI support startup YOLO mode.'
                 : 'MonkeySSH Pro unlocks host-specific coding CLI defaults like YOLO mode.',
           ),
           onChanged: hasAgentPresetAccess

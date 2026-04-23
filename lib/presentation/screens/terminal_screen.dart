@@ -101,13 +101,6 @@ const _tmuxDetectionRetrySchedule = <Duration>[
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
     skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
 
-/// Resolves the tmux session name we can infer before remote verification.
-@visibleForTesting
-String? resolvePreferredTmuxSessionName({
-  String? structuredSessionName,
-  String? autoConnectCommand,
-}) => structuredSessionName ?? parseTmuxSessionName(autoConnectCommand);
-
 /// Resolves the working directory to use when creating a new tmux window.
 @visibleForTesting
 String? resolveTmuxWindowWorkingDirectory({
@@ -2576,6 +2569,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   // Theme state
   Host? _host;
+  AgentLaunchPreset? _autoConnectAgentPreset;
   bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
@@ -3159,6 +3153,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Load host data first for theme
     final hostRepo = ref.read(hostRepositoryProvider);
     _host = await hostRepo.getById(widget.hostId);
+    _autoConnectAgentPreset = await ref
+        .read(agentLaunchPresetServiceProvider)
+        .getPresetForHost(widget.hostId);
     final cliLaunchPreferences = await ref
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
@@ -3606,8 +3603,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
     final mode = resolveAutoConnectCommandMode(
-      command: host.autoConnectCommand,
+      command: resolvedStoredCommand,
       snippetId: host.autoConnectSnippetId,
     );
     if (mode == AutoConnectCommandMode.none) {
@@ -3632,7 +3630,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final command = resolveAutoConnectCommandText(
       mode: mode,
-      storedCommand: host.autoConnectCommand,
+      storedCommand: resolvedStoredCommand,
       snippetCommand: snippetCommand,
     );
     if (command == null) {
@@ -3669,7 +3667,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final host = _host;
     final preferredSessionName = resolvePreferredTmuxSessionName(
       structuredSessionName: host?.tmuxSessionName,
-      autoConnectCommand: host?.autoConnectCommand,
+      autoConnectCommand: _resolveStoredAutoConnectCommand(host),
     );
     if (!mounted || preferredSessionName == null) {
       return;
@@ -3696,7 +3694,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final host = _host;
     final preferredSessionName = resolvePreferredTmuxSessionName(
       structuredSessionName: host?.tmuxSessionName,
-      autoConnectCommand: host?.autoConnectCommand,
+      autoConnectCommand: _resolveStoredAutoConnectCommand(host),
     );
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
 
@@ -3789,6 +3787,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       });
     } on Object {
       // Silently ignore — tmux detection is best-effort.
+    }
+  }
+
+  String? _resolveStoredAutoConnectCommand(Host? host) {
+    if (host == null) {
+      return null;
+    }
+    if (host.autoConnectSnippetId != null) {
+      return host.autoConnectCommand;
+    }
+    final preset = _autoConnectAgentPreset;
+    if (preset == null) {
+      return host.autoConnectCommand;
+    }
+    try {
+      return buildAgentLaunchCommand(
+        preset,
+        startInYoloMode: _startClisInYoloMode,
+      );
+    } on FormatException {
+      return host.autoConnectCommand;
     }
   }
 

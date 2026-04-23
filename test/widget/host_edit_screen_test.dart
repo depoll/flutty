@@ -250,7 +250,7 @@ void main() {
           skipOffstage: false,
         );
         await tester.ensureVisible(saveButton);
-        await tester.tap(saveButton, warnIfMissed: false);
+        tester.widget<FilledButton>(saveButton).onPressed!();
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 300));
 
@@ -780,10 +780,7 @@ void main() {
         await tester.pump();
 
         expect(
-          find.textContaining(
-            'codex --approval-mode never',
-            findRichText: true,
-          ),
+          find.textContaining('codex --yolo', findRichText: true),
           findsOneWidget,
         );
 
@@ -804,7 +801,7 @@ void main() {
         expect(hostRepository.updatedHost, isNotNull);
         expect(
           hostRepository.updatedHost!.autoConnectCommand,
-          contains('--approval-mode never'),
+          contains('--yolo'),
         );
       },
     );

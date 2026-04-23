@@ -8,9 +8,6 @@ enum AgentLaunchTool {
   /// GitHub Copilot CLI.
   copilotCli,
 
-  /// Aider.
-  aider,
-
   /// OpenAI Codex CLI.
   codex,
 
@@ -27,7 +24,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get label => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => 'Aider',
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
@@ -37,7 +33,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String get commandName => switch (this) {
     AgentLaunchTool.claudeCode => 'claude',
     AgentLaunchTool.copilotCli => 'copilot',
-    AgentLaunchTool.aider => 'aider',
     AgentLaunchTool.codex => 'codex',
     AgentLaunchTool.openCode => 'opencode',
     AgentLaunchTool.geminiCli => 'gemini',
@@ -47,7 +42,6 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   bool get supportsResume => switch (this) {
     AgentLaunchTool.claudeCode => true,
     AgentLaunchTool.copilotCli => true,
-    AgentLaunchTool.aider => true,
     AgentLaunchTool.codex => true,
     AgentLaunchTool.openCode => true,
     AgentLaunchTool.geminiCli => true,
@@ -58,23 +52,28 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   String? get discoveredSessionToolName => switch (this) {
     AgentLaunchTool.claudeCode => 'Claude Code',
     AgentLaunchTool.copilotCli => 'Copilot CLI',
-    AgentLaunchTool.aider => null,
     AgentLaunchTool.codex => 'Codex',
     AgentLaunchTool.openCode => 'OpenCode',
     AgentLaunchTool.geminiCli => 'Gemini CLI',
   };
 
   /// Whether this tool supports launching directly into YOLO mode.
-  bool get supportsYoloMode => yoloArgument != null;
+  bool get supportsYoloMode =>
+      yoloArguments.isNotEmpty || yoloEnvironment.isNotEmpty;
 
-  /// Command-line argument that enables YOLO mode for this tool, if available.
-  String? get yoloArgument => switch (this) {
-    AgentLaunchTool.claudeCode => '--dangerously-skip-permissions',
-    AgentLaunchTool.copilotCli => null,
-    AgentLaunchTool.aider => '--yes-always',
-    AgentLaunchTool.codex => '--approval-mode never',
-    AgentLaunchTool.openCode => null,
-    AgentLaunchTool.geminiCli => '--yolo',
+  /// Command-line arguments that enable YOLO mode for this tool.
+  List<String> get yoloArguments => switch (this) {
+    AgentLaunchTool.claudeCode => const ['--dangerously-skip-permissions'],
+    AgentLaunchTool.copilotCli => const ['--yolo'],
+    AgentLaunchTool.codex => const ['--yolo'],
+    AgentLaunchTool.openCode => const [],
+    AgentLaunchTool.geminiCli => const ['--yolo'],
+  };
+
+  /// Environment variables that enable YOLO mode for this tool.
+  Map<String, String> get yoloEnvironment => switch (this) {
+    AgentLaunchTool.openCode => const {'OPENCODE_PERMISSION': '{"*":"allow"}'},
+    _ => const <String, String>{},
   };
 }
 
@@ -95,10 +94,7 @@ class AgentLaunchPreset {
     final rawTool = _readTrimmedString(json['tool']);
     final tool = AgentLaunchTool.values.firstWhere(
       (value) => value.name == rawTool,
-      orElse: () => switch (rawTool) {
-        'aider' => AgentLaunchTool.aider,
-        _ => AgentLaunchTool.claudeCode,
-      },
+      orElse: () => AgentLaunchTool.claudeCode,
     );
     return AgentLaunchPreset(
       tool: tool,
@@ -179,6 +175,51 @@ final _codexApprovalModeEqualsPattern = RegExp(
 final _codexApprovalModeSeparatedPattern = RegExp(
   r'''(?<!\S)--approval-mode\s+(?:"[^"]*"|'[^']*'|\S+)''',
 );
+final _codexAskForApprovalEqualsPattern = RegExp(
+  r'''(?<!\S)--ask-for-approval=(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexAskForApprovalSeparatedPattern = RegExp(
+  r'''(?<!\S)--ask-for-approval\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexShortApprovalPattern = RegExp(
+  r'''(?<!\S)-a\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexSandboxEqualsPattern = RegExp(
+  r'''(?<!\S)--sandbox=(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexSandboxSeparatedPattern = RegExp(
+  r'''(?<!\S)--sandbox\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexShortSandboxPattern = RegExp(
+  r'''(?<!\S)-s\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _codexFullAutoPattern = RegExp(r'(?<!\S)--full-auto(?=\s|$)');
+final _codexYoloPattern = RegExp(r'(?<!\S)--yolo(?=\s|$)');
+final _codexDangerousBypassPattern = RegExp(
+  r'(?<!\S)--dangerously-bypass-approvals-and-sandbox(?=\s|$)',
+);
+final _claudeDangerouslySkipPermissionsPattern = RegExp(
+  r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
+);
+final _claudePermissionModeEqualsPattern = RegExp(
+  r'''(?<!\S)--permission-mode=(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _claudePermissionModeSeparatedPattern = RegExp(
+  r'''(?<!\S)--permission-mode\s+(?:"[^"]*"|'[^']*'|\S+)''',
+);
+final _copilotAllowAllPattern = RegExp(r'(?<!\S)--allow-all(?=\s|$)');
+final _copilotYoloPattern = RegExp(r'(?<!\S)--yolo(?=\s|$)');
+final _copilotAllowAllToolsPattern = RegExp(
+  r'(?<!\S)--allow-all-tools(?=\s|$)',
+);
+final _copilotAllowAllPathsPattern = RegExp(
+  r'(?<!\S)--allow-all-paths(?=\s|$)',
+);
+final _copilotAllowAllUrlsPattern = RegExp(r'(?<!\S)--allow-all-urls(?=\s|$)');
+final _geminiYoloPattern = RegExp(r'(?<!\S)(?:--yolo|-y)(?=\s|$)');
+final _openCodeDangerouslySkipPermissionsPattern = RegExp(
+  r'(?<!\S)--dangerously-skip-permissions(?=\s|$)',
+);
 
 /// Builds the shell command for a saved agent launch preset.
 String buildAgentLaunchCommand(
@@ -219,7 +260,13 @@ String buildAgentToolCommand(
   String? additionalArguments,
   bool startInYoloMode = false,
 }) {
-  final commandParts = <String>[tool.commandName];
+  final commandParts = <String>[
+    ..._buildAgentToolEnvironmentAssignments(
+      tool,
+      startInYoloMode: startInYoloMode,
+    ),
+    tool.commandName,
+  ];
   final normalizedArguments = _normalizeAgentToolArguments(
     tool: tool,
     additionalArguments: additionalArguments,
@@ -236,41 +283,93 @@ String? _normalizeAgentToolArguments({
   required String? additionalArguments,
   required bool startInYoloMode,
 }) {
-  final yoloArgument = tool.yoloArgument;
   final trimmedAdditionalArguments = additionalArguments?.trim();
-  if (!startInYoloMode || yoloArgument == null) {
+  if (!startInYoloMode) {
     return trimmedAdditionalArguments;
   }
 
   final sanitizedAdditionalArguments = switch (tool) {
-    AgentLaunchTool.codex => _stripCodexApprovalModeArguments(
+    AgentLaunchTool.claudeCode =>
+      _stripArgumentPatterns(trimmedAdditionalArguments, [
+        _claudeDangerouslySkipPermissionsPattern,
+        _claudePermissionModeEqualsPattern,
+        _claudePermissionModeSeparatedPattern,
+      ]),
+    AgentLaunchTool.copilotCli =>
+      _stripArgumentPatterns(trimmedAdditionalArguments, [
+        _copilotAllowAllPattern,
+        _copilotYoloPattern,
+        _copilotAllowAllToolsPattern,
+        _copilotAllowAllPathsPattern,
+        _copilotAllowAllUrlsPattern,
+      ]),
+    AgentLaunchTool.codex => _stripCodexYoloConflicts(
       trimmedAdditionalArguments,
     ),
-    _ => trimmedAdditionalArguments,
+    AgentLaunchTool.openCode => _stripArgumentPatterns(
+      trimmedAdditionalArguments,
+      [_openCodeDangerouslySkipPermissionsPattern],
+    ),
+    AgentLaunchTool.geminiCli => _stripArgumentPatterns(
+      trimmedAdditionalArguments,
+      [_geminiYoloPattern],
+    ),
   };
 
-  if (sanitizedAdditionalArguments == null ||
-      sanitizedAdditionalArguments.isEmpty) {
-    return yoloArgument;
-  }
-
-  if (sanitizedAdditionalArguments.contains(yoloArgument)) {
+  final yoloArguments = tool.yoloArguments;
+  if (yoloArguments.isEmpty) {
     return sanitizedAdditionalArguments;
   }
 
-  return '$yoloArgument $sanitizedAdditionalArguments';
+  if (sanitizedAdditionalArguments == null ||
+      sanitizedAdditionalArguments.isEmpty) {
+    return yoloArguments.join(' ');
+  }
+
+  return '${yoloArguments.join(' ')} $sanitizedAdditionalArguments';
 }
 
-String? _stripCodexApprovalModeArguments(String? additionalArguments) {
+List<String> _buildAgentToolEnvironmentAssignments(
+  AgentLaunchTool tool, {
+  required bool startInYoloMode,
+}) => !startInYoloMode
+    ? const []
+    : tool.yoloEnvironment.entries
+          .map(
+            (entry) => _quoteShellEnvironmentAssignment(entry.key, entry.value),
+          )
+          .toList(growable: false);
+
+String? _stripCodexYoloConflicts(String? additionalArguments) =>
+    _stripArgumentPatterns(additionalArguments, [
+      _codexApprovalModeEqualsPattern,
+      _codexApprovalModeSeparatedPattern,
+      _codexAskForApprovalEqualsPattern,
+      _codexAskForApprovalSeparatedPattern,
+      _codexShortApprovalPattern,
+      _codexSandboxEqualsPattern,
+      _codexSandboxSeparatedPattern,
+      _codexShortSandboxPattern,
+      _codexFullAutoPattern,
+      _codexYoloPattern,
+      _codexDangerousBypassPattern,
+    ]);
+
+String? _stripArgumentPatterns(
+  String? additionalArguments,
+  List<RegExp> patterns,
+) {
   final trimmedAdditionalArguments = additionalArguments?.trim();
   if (trimmedAdditionalArguments == null ||
       trimmedAdditionalArguments.isEmpty) {
     return null;
   }
 
-  final normalizedArguments = trimmedAdditionalArguments
-      .replaceAll(_codexApprovalModeEqualsPattern, ' ')
-      .replaceAll(_codexApprovalModeSeparatedPattern, ' ')
+  final normalizedArguments = patterns
+      .fold<String>(
+        trimmedAdditionalArguments,
+        (value, pattern) => value.replaceAll(pattern, ' '),
+      )
       .replaceAll(RegExp(r'\s+'), ' ')
       .trim();
   return normalizedArguments.isEmpty ? null : normalizedArguments;
@@ -409,6 +508,9 @@ String _quoteShellPath(String value) {
 
 String _quoteShellArgument(String value) =>
     '\'${value.replaceAll('\'', '\'"\'"\'')}\'';
+
+String _quoteShellEnvironmentAssignment(String key, String value) =>
+    '$key="${_escapeForDoubleQuotedShellContent(value)}"';
 
 String _escapeForDoubleQuotedShellContent(String value) => value
     .replaceAll(RegExp(r'\\'), r'\\')

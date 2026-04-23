@@ -930,7 +930,6 @@ final tmuxServiceProvider = Provider<TmuxService>((ref) => const TmuxService());
 /// or `null` if it does not correspond to a supported CLI.
 AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
     switch (binaryName) {
-      'aider' => AgentLaunchTool.aider,
       'claude' => AgentLaunchTool.claudeCode,
       'copilot' => AgentLaunchTool.copilotCli,
       'codex' => AgentLaunchTool.codex,

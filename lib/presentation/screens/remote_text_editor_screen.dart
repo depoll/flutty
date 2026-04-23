@@ -793,7 +793,6 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       height: height,
       child: ClipRect(
         child: Scrollbar(
-          key: ValueKey<(double, double)>((viewportWidth, height)),
           controller: _horizontalScrollController,
           thumbVisibility: true,
           notificationPredicate: (notification) =>
