@@ -204,6 +204,58 @@ String? resolveTmuxBarActiveWindowTitle(Iterable<TmuxWindow>? windows) {
   return title;
 }
 
+/// Resolves the tmux windows the bar should display, including any local
+/// optimistic selection while the tmux snapshot is still catching up.
+@visibleForTesting
+List<TmuxWindow>? resolveTmuxBarDisplayedWindows(
+  Iterable<TmuxWindow>? windows, {
+  int? pendingSelectedWindowIndex,
+}) {
+  final windowList = windows?.toList(growable: false);
+  if (windowList == null || pendingSelectedWindowIndex == null) {
+    return windowList;
+  }
+  if (!windowList.any((window) => window.index == pendingSelectedWindowIndex)) {
+    return windowList;
+  }
+
+  var didChangeActiveWindow = false;
+  final displayedWindows = <TmuxWindow>[];
+  for (final window in windowList) {
+    final shouldBeActive = window.index == pendingSelectedWindowIndex;
+    if (window.isActive != shouldBeActive) {
+      didChangeActiveWindow = true;
+      displayedWindows.add(window.copyWith(isActive: shouldBeActive));
+      continue;
+    }
+    displayedWindows.add(window);
+  }
+  return didChangeActiveWindow ? displayedWindows : windowList;
+}
+
+/// Resolves whether the tmux bar should keep or clear its optimistic selection
+/// after tmux reports a new window list.
+@visibleForTesting
+int? resolveTmuxBarPendingSelectedWindowIndex(
+  Iterable<TmuxWindow>? windows, {
+  int? pendingSelectedWindowIndex,
+}) {
+  if (pendingSelectedWindowIndex == null || windows == null) {
+    return pendingSelectedWindowIndex;
+  }
+  final windowList = windows.toList(growable: false);
+  if (!windowList.any((window) => window.index == pendingSelectedWindowIndex)) {
+    return null;
+  }
+  final activeWindow = windowList
+      .where((window) => window.isActive)
+      .firstOrNull;
+  if (activeWindow?.index == pendingSelectedWindowIndex) {
+    return null;
+  }
+  return pendingSelectedWindowIndex;
+}
+
 /// Resolves the compact label shown in the tmux bar handle.
 @visibleForTesting
 String resolveTmuxBarHandleLabel(
@@ -348,6 +400,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   static const _denseTilePadding = EdgeInsets.symmetric(horizontal: 12);
   static const _groupTilePadding = EdgeInsets.only(left: 52, right: 12);
   static const _prefetchSessionFetchLimit = 6;
+  static const _pendingSelectionTimeout = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -364,11 +417,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   bool _pendingWindowReload = false;
   int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
+  int? _pendingSelectedWindowIndex;
+  Timer? _pendingSelectionTimer;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
   AgentSessionDiscoveryService get _discovery =>
       widget.ref.read(agentSessionDiscoveryServiceProvider);
+
+  List<TmuxWindow>? get _displayedWindows => resolveTmuxBarDisplayedWindows(
+    _windows,
+    pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
+  );
 
   @override
   void initState() {
@@ -398,6 +458,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         oldWidget.tmuxSessionName == widget.tmuxSessionName) {
       return;
     }
+    _clearPendingSelectedWindow(notify: false);
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
@@ -406,6 +467,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   @override
   void dispose() {
+    _clearPendingSelectedWindow(notify: false);
     unawaited(_windowChangeSubscription?.cancel());
     for (final windowIndex in _seenAlertWindows) {
       _clearAlertNotification(windowIndex);
@@ -487,10 +549,46 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _clearAlertNotification(windowIndex);
     }
 
+    final nextPendingSelectedWindowIndex =
+        resolveTmuxBarPendingSelectedWindowIndex(
+          windows,
+          pendingSelectedWindowIndex: _pendingSelectedWindowIndex,
+        );
+    if (_pendingSelectedWindowIndex != null &&
+        nextPendingSelectedWindowIndex == null) {
+      _pendingSelectionTimer?.cancel();
+      _pendingSelectionTimer = null;
+    }
+
     setState(() {
       _windows = windows;
       _isLoading = false;
+      _pendingSelectedWindowIndex = nextPendingSelectedWindowIndex;
     });
+  }
+
+  void _startPendingSelectionTimer(int windowIndex) {
+    _pendingSelectionTimer?.cancel();
+    _pendingSelectionTimer = Timer(_pendingSelectionTimeout, () {
+      _pendingSelectionTimer = null;
+      if (!mounted || _pendingSelectedWindowIndex != windowIndex) {
+        return;
+      }
+      setState(() => _pendingSelectedWindowIndex = null);
+    });
+  }
+
+  void _clearPendingSelectedWindow({required bool notify}) {
+    _pendingSelectionTimer?.cancel();
+    _pendingSelectionTimer = null;
+    if (_pendingSelectedWindowIndex == null) {
+      return;
+    }
+    if (!notify || !mounted) {
+      _pendingSelectedWindowIndex = null;
+      return;
+    }
+    setState(() => _pendingSelectedWindowIndex = null);
   }
 
   String? _resolveRecentSessionScopeWorkingDirectory([
@@ -688,9 +786,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   Widget _buildHandleBar(ThemeData theme) {
+    final displayedWindows = _displayedWindows;
     final handleLabel = resolveTmuxBarHandleLabel(
       widget.tmuxSessionName,
-      activeWindowTitle: resolveTmuxBarActiveWindowTitle(_windows),
+      activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
     );
     return GestureDetector(
       key: const ValueKey('tmux-handle-bar'),
@@ -767,6 +866,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   Widget _buildWindowList(ThemeData theme) {
+    final displayedWindows = _displayedWindows;
     if (_isLoading) {
       return const Padding(
         padding: EdgeInsets.all(16),
@@ -780,7 +880,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       );
     }
 
-    if (_windows == null || _windows!.isEmpty) {
+    if (displayedWindows == null || displayedWindows.isEmpty) {
       return const SizedBox.shrink();
     }
 
@@ -789,7 +889,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         mainAxisSize: MainAxisSize.min,
         children: [
           const Divider(height: 1),
-          for (final window in _windows!) _buildWindowTile(theme, window),
+          for (final window in displayedWindows)
+            _buildWindowTile(theme, window),
           const Divider(height: 1),
           ListTile(
             dense: true,
@@ -1053,6 +1154,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
                 _windows = _windows
                     ?.where((w) => w.index != window.index)
                     .toList();
+                if (_pendingSelectedWindowIndex == window.index) {
+                  _pendingSelectedWindowIndex = null;
+                  _pendingSelectionTimer?.cancel();
+                  _pendingSelectionTimer = null;
+                }
               });
             },
           ),
@@ -1061,8 +1167,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       onTap: isActive
           ? () => setState(() => _expanded = false)
           : () {
-              widget.onAction(TmuxSwitchWindowAction(window.index));
-              setState(() => _expanded = false);
+              setState(() {
+                _pendingSelectedWindowIndex = window.index;
+                _expanded = false;
+              });
+              _startPendingSelectionTimer(window.index);
+              unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
             },
     );
   }
