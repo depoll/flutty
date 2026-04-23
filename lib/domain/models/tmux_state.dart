@@ -210,12 +210,29 @@ class TmuxWindow {
   /// tmux updates `window_name` as part of the window-switch snapshot, while
   /// `pane_title` can lag slightly behind focus changes on some hosts. Prefer
   /// the normalized window name here so collapsed labels stay in sync with the
-  /// active window selection.
+  /// active window selection. If the window name is just echoing the current
+  /// command (for example `copilot` or `claude`), prefer the richer pane title
+  /// instead so the collapsed handle still distinguishes agent sessions.
   String get handleTitle {
+    final normalizedPaneTitle = _normalizedTmuxTitle(
+      paneTitle,
+      stripPlaceholderPrefix: true,
+    );
     final normalizedName = _normalizedTmuxTitle(
       name,
       stripPlaceholderPrefix: true,
     );
+    final normalizedCommand = _normalizedTmuxTitle(
+      currentCommand,
+      stripPlaceholderPrefix: true,
+    );
+    if (normalizedPaneTitle != null &&
+        normalizedName != null &&
+        normalizedCommand != null &&
+        normalizedName.toLowerCase() == normalizedCommand.toLowerCase() &&
+        normalizedPaneTitle != normalizedName) {
+      return normalizedPaneTitle;
+    }
     return normalizedName ?? displayTitle;
   }
 

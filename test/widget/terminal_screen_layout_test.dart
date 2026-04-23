@@ -62,19 +62,20 @@ void main() {
         ),
         TmuxWindow(
           index: 1,
-          name: 'agent',
+          name: 'copilot',
           isActive: true,
+          currentCommand: 'copilot',
           paneTitle: '✨ Editing main.dart',
         ),
       ];
 
-      expect(resolveTmuxBarActiveWindowTitle(windows), 'agent');
+      expect(resolveTmuxBarActiveWindowTitle(windows), '✨ Editing main.dart');
       expect(
         resolveTmuxBarHandleLabel(
           'workspace',
           activeWindowTitle: resolveTmuxBarActiveWindowTitle(windows),
         ),
-        'workspace · agent',
+        'workspace · ✨ Editing main.dart',
       );
     });
 

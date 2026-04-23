@@ -94,11 +94,12 @@ void main() {
         index: 1,
         name: 'claude',
         isActive: false,
+        currentCommand: 'claude',
         paneTitle: '✨ Editing main.dart',
       );
 
       expect(window.displayTitle, '✨ Editing main.dart');
-      expect(window.handleTitle, 'claude');
+      expect(window.handleTitle, '✨ Editing main.dart');
       expect(window.secondaryTitle, 'claude');
     });
 
@@ -111,6 +112,18 @@ void main() {
       );
 
       expect(window.handleTitle, 'test-emoji');
+    });
+
+    test('handleTitle still prefers the window name when it is distinct', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'workspace',
+        isActive: false,
+        currentCommand: 'claude',
+        paneTitle: '✨ Editing main.dart',
+      );
+
+      expect(window.handleTitle, 'workspace');
     });
 
     test(
