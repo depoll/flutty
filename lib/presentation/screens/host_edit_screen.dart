@@ -23,6 +23,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/agent_tool_icon.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
 import '../widgets/terminal_text_style.dart';
@@ -844,9 +845,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           key: const Key('host-agent-tool-field'),
           // ignore: deprecated_member_use
           value: _selectedAgentLaunchTool,
-          decoration: const InputDecoration(
+          decoration: InputDecoration(
             labelText: 'Coding agent',
-            prefixIcon: Icon(Icons.smart_toy_outlined),
+            prefixIcon: Padding(
+              padding: const EdgeInsets.all(12),
+              child: AgentToolIcon(tool: _selectedAgentLaunchTool),
+            ),
             helperText:
                 'Launch an agent directly, or pair it with tmux so Flutty can show extra window navigation.',
           ),
@@ -854,7 +858,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               .map(
                 (tool) => DropdownMenuItem<AgentLaunchTool>(
                   value: tool,
-                  child: Text(tool.label),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AgentToolIcon(tool: tool, size: 18),
+                      const SizedBox(width: 10),
+                      Text(tool.label),
+                    ],
+                  ),
                 ),
               )
               .toList(growable: false),

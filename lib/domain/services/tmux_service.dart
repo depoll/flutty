@@ -812,14 +812,7 @@ final tmuxServiceProvider = Provider<TmuxService>((ref) => const TmuxService());
 /// Maps a binary's basename (e.g. `claude`) to the matching [AgentLaunchTool],
 /// or `null` if it does not correspond to a supported CLI.
 AgentLaunchTool? agentToolForBinaryName(String binaryName) =>
-    switch (binaryName) {
-      'claude' => AgentLaunchTool.claudeCode,
-      'copilot' => AgentLaunchTool.copilotCli,
-      'codex' => AgentLaunchTool.codex,
-      'gemini' => AgentLaunchTool.geminiCli,
-      'opencode' => AgentLaunchTool.openCode,
-      _ => null,
-    };
+    agentLaunchToolForCommandName(binaryName);
 
 /// Builds the shell command used by [TmuxService.detectInstalledAgentTools]
 /// to resolve agent CLI binaries on a remote host.

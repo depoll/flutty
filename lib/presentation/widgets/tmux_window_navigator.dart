@@ -10,8 +10,9 @@ import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
-import '../widgets/premium_badge.dart';
+import 'agent_tool_icon.dart';
 import 'ai_session_picker.dart';
+import 'premium_badge.dart';
 import 'tmux_window_status_badge.dart';
 
 const _tmuxNavigatorDenseVisualDensity = VisualDensity(vertical: -2);
@@ -425,6 +426,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     final theme = Theme.of(context);
     final isActive = window.isActive;
     final secondaryTitle = window.secondaryTitle;
+    final iconColor = isActive
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
       dense: true,
@@ -457,13 +461,28 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
           ),
         ),
       ),
-      title: Text(
-        window.displayTitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: isActive
-            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
-            : null,
+      title: Row(
+        children: [
+          AgentToolIcon(
+            tool: window.foregroundAgentTool,
+            size: 16,
+            color: iconColor,
+            fallbackIcon: Icons.terminal,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              window.displayTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: isActive
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+        ],
       ),
       subtitle: secondaryTitle != null
           ? Text(
@@ -566,7 +585,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     contentPadding: _tmuxNavigatorGroupTilePadding,
     horizontalTitleGap: 12,
     minLeadingWidth: 20,
-    leading: _toolIcon(provider.toolName, theme),
+    leading: AgentToolIcon(
+      toolName: provider.toolName,
+      color: theme.colorScheme.primary,
+    ),
     title: Text(
       provider.toolName,
       style: theme.textTheme.bodyMedium?.copyWith(
@@ -612,12 +634,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     onTap: provider.isSelectable
         ? () => unawaited(_showSessionPickerForTool(provider))
         : null,
-  );
-
-  Widget _toolIcon(String toolName, ThemeData theme) => Icon(
-    aiSessionToolIconData(toolName),
-    size: 20,
-    color: theme.colorScheme.primary,
   );
 }
 
@@ -776,15 +792,6 @@ class TmuxToolPickerSheet extends StatelessWidget {
     );
   }
 
-  static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) {
-    final iconData = switch (tool) {
-      AgentLaunchTool.claudeCode => Icons.auto_awesome,
-      AgentLaunchTool.copilotCli => Icons.flight,
-      AgentLaunchTool.codex => Icons.code,
-      AgentLaunchTool.geminiCli => Icons.diamond_outlined,
-      AgentLaunchTool.openCode => Icons.terminal,
-    };
-
-    return Icon(iconData, color: theme.colorScheme.primary);
-  }
+  static Widget _iconForTool(AgentLaunchTool tool, ThemeData theme) =>
+      AgentToolIcon(tool: tool, color: theme.colorScheme.primary);
 }

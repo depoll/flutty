@@ -30,6 +30,7 @@ import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/connection_attempt_dialog.dart';
 import '../widgets/connection_preview_snippet.dart';
@@ -3137,8 +3138,8 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       padding: const EdgeInsets.symmetric(vertical: 6, horizontal: 6),
       child: Row(
         children: [
-          Icon(
-            aiSessionToolIconData(provider.toolName),
+          AgentToolIcon(
+            toolName: provider.toolName,
             size: 14,
             color: provider.hasFailure
                 ? theme.colorScheme.error
@@ -3201,6 +3202,9 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
   Widget _buildWindowRow(ThemeData theme, TmuxWindow window) {
     final title = window.displayTitle;
+    final iconColor = window.isActive
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
 
     return InkWell(
       onTap: () => _switchAndOpenWindow(window.index),
@@ -3242,6 +3246,15 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
                   color: theme.colorScheme.error,
                 ),
               ),
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: AgentToolIcon(
+                tool: window.foregroundAgentTool,
+                size: 14,
+                color: iconColor,
+                fallbackIcon: Icons.terminal,
+              ),
+            ),
             // Title — truncated.
             Expanded(
               child: Text(

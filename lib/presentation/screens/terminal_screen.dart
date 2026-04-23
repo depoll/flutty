@@ -41,6 +41,7 @@ import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/tmux_service.dart';
+import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
@@ -196,6 +197,15 @@ String? resolveTmuxBarActiveWindowTitle(Iterable<TmuxWindow>? windows) {
   }
   return title;
 }
+
+/// Resolves the supported foreground agent running in the active tmux window.
+@visibleForTesting
+AgentLaunchTool? resolveTmuxBarActiveWindowTool(
+  Iterable<TmuxWindow>? windows,
+) => windows
+    ?.where((window) => window.isActive)
+    .firstOrNull
+    ?.foregroundAgentTool;
 
 /// Resolves the compact label shown in the tmux bar handle.
 @visibleForTesting
@@ -661,6 +671,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       widget.tmuxSessionName,
       activeWindowTitle: resolveTmuxBarActiveWindowTitle(_windows),
     );
+    final activeWindowTool = resolveTmuxBarActiveWindowTool(_windows);
     return GestureDetector(
       key: const ValueKey('tmux-handle-bar'),
       onTap: () {
@@ -678,54 +689,42 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         height: _TmuxExpandableBar.handleHeight,
         child: Padding(
           padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Stack(
+          child: Row(
             children: [
-              Align(
-                alignment: Alignment.topCenter,
-                child: Padding(
-                  padding: const EdgeInsets.only(top: 4),
-                  child: Container(
-                    width: 28,
-                    height: 3,
-                    decoration: BoxDecoration(
-                      color: theme.colorScheme.onSurfaceVariant.withAlpha(80),
-                      borderRadius: BorderRadius.circular(2),
-                    ),
+              AgentToolIcon(
+                tool: activeWindowTool,
+                size: 12,
+                color: theme.colorScheme.primary,
+                fallbackIcon: Icons.window_outlined,
+              ),
+              const SizedBox(width: 4),
+              Expanded(
+                child: Text(
+                  handleLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontSize: 10,
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
               ),
-              Align(
-                alignment: Alignment.bottomCenter,
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.window_outlined,
-                      size: 12,
-                      color: theme.colorScheme.primary,
-                    ),
-                    const SizedBox(width: 4),
-                    Expanded(
-                      child: Text(
-                        handleLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          fontSize: 10,
-                          color: theme.colorScheme.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                    const SizedBox(width: 4),
-                    AnimatedRotation(
-                      duration: const Duration(milliseconds: 300),
-                      turns: _expanded ? 0.5 : 0,
-                      child: Icon(
-                        Icons.keyboard_arrow_up,
-                        size: 14,
-                        color: theme.colorScheme.onSurfaceVariant,
-                      ),
-                    ),
-                  ],
+              const SizedBox(width: 6),
+              DecoratedBox(
+                decoration: BoxDecoration(
+                  color: theme.colorScheme.onSurfaceVariant.withAlpha(90),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: const SizedBox(width: 10, height: 2),
+              ),
+              const SizedBox(width: 6),
+              AnimatedRotation(
+                duration: const Duration(milliseconds: 300),
+                turns: _expanded ? 0.5 : 0,
+                child: Icon(
+                  Icons.keyboard_arrow_up,
+                  size: 14,
+                  color: theme.colorScheme.onSurfaceVariant,
                 ),
               ),
             ],
@@ -903,8 +902,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       contentPadding: _groupTilePadding,
       horizontalTitleGap: 12,
       minLeadingWidth: 18,
-      leading: Icon(
-        aiSessionToolIconData(provider.toolName),
+      leading: AgentToolIcon(
+        toolName: provider.toolName,
         size: 16,
         color: iconColor,
       ),
@@ -953,6 +952,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
     final secondaryTitle = window.secondaryTitle;
+    final iconColor = isActive
+        ? theme.colorScheme.primary
+        : theme.colorScheme.onSurfaceVariant;
 
     return ListTile(
       dense: true,
@@ -985,13 +987,28 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
         ),
       ),
-      title: Text(
-        window.displayTitle,
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: isActive
-            ? theme.textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w600)
-            : null,
+      title: Row(
+        children: [
+          AgentToolIcon(
+            tool: window.foregroundAgentTool,
+            size: 16,
+            color: iconColor,
+            fallbackIcon: Icons.terminal,
+          ),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              window.displayTitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: isActive
+                  ? theme.textTheme.bodyMedium?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    )
+                  : null,
+            ),
+          ),
+        ],
       ),
       subtitle: secondaryTitle != null
           ? Text(

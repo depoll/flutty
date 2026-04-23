@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -76,6 +77,30 @@ void main() {
         ),
         'workspace · ✨ Editing main.dart',
       );
+    });
+
+    test('uses the active tmux foreground tool for the handle icon', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(
+          index: 0,
+          name: 'shell',
+          isActive: false,
+          currentCommand: 'bash',
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'agent',
+          isActive: true,
+          currentCommand: 'claude',
+          paneTitle: '✨ Editing main.dart',
+        ),
+      ];
+
+      expect(
+        resolveTmuxBarActiveWindowTool(windows),
+        AgentLaunchTool.claudeCode,
+      );
+      expect(resolveTmuxBarActiveWindowTool(const <TmuxWindow>[]), isNull);
     });
 
     test('omits duplicate or blank tmux window titles in the handle label', () {

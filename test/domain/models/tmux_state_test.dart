@@ -1,6 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 
 void main() {
@@ -179,6 +180,37 @@ void main() {
       expect(activeWaiting.statusLabel, 'waiting');
       expect(activeWaiting.isIdle, true);
     });
+
+    test(
+      'foregroundAgentTool prefers the current command then window name',
+      () {
+        const currentCommandWindow = TmuxWindow(
+          index: 1,
+          name: 'node',
+          isActive: false,
+          currentCommand: 'copilot',
+        );
+        const namedWindow = TmuxWindow(
+          index: 2,
+          name: 'codex',
+          isActive: false,
+          currentCommand: 'node',
+        );
+        const unknownWindow = TmuxWindow(
+          index: 3,
+          name: 'vim',
+          isActive: false,
+          paneTitle: 'Editing main.dart',
+        );
+
+        expect(
+          currentCommandWindow.foregroundAgentTool,
+          AgentLaunchTool.copilotCli,
+        );
+        expect(namedWindow.foregroundAgentTool, AgentLaunchTool.codex);
+        expect(unknownWindow.foregroundAgentTool, isNull);
+      },
+    );
 
     test('equality works correctly', () {
       const a = TmuxWindow(index: 0, name: 'vim', isActive: true);

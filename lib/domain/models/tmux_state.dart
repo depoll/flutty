@@ -1,5 +1,7 @@
 import 'package:flutter/foundation.dart';
 
+import 'agent_launch_preset.dart';
+
 /// Represents a tmux session on a remote host.
 @immutable
 class TmuxSession {
@@ -198,6 +200,17 @@ class TmuxWindow {
     if (hasAlert) return 'alert';
     if (isIdle) return 'waiting';
     return 'running';
+  }
+
+  /// The supported agent CLI running in the foreground, if one can be inferred.
+  AgentLaunchTool? get foregroundAgentTool {
+    for (final candidate in [currentCommand, name, paneTitle]) {
+      final tool = agentLaunchToolForCommandName(candidate);
+      if (tool != null) {
+        return tool;
+      }
+    }
+    return null;
   }
 
   @override
