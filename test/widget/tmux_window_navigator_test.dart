@@ -128,7 +128,7 @@ void main() {
       ).thenAnswer((_) async => const <AgentLaunchTool>{});
       when(
         () => tmuxService.watchWindowChanges(session, tmuxSessionName),
-      ).thenAnswer((_) => const Stream<void>.empty());
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
       when(
         () => tmuxService.listWindows(session, tmuxSessionName),
       ).thenAnswer((_) async => windows);

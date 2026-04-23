@@ -2537,11 +2537,13 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
   bool _restoredUiState = false;
-  StreamSubscription<void>? _windowChangeSubscription;
+  StreamSubscription<TmuxWindowChangeEvent>? _windowChangeSubscription;
   Timer? _tmuxRetryTimer;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
   bool _tmuxQueryScheduled = false;
+  int _windowReloadGeneration = 0;
+  int _windowEventGeneration = 0;
   int _tmuxQueryGeneration = 0;
 
   @override
@@ -2750,14 +2752,17 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     }
 
     await _windowChangeSubscription?.cancel();
+    final generation = ++_windowEventGeneration;
     _windowChangeSubscription = tmux
         .watchWindowChanges(session, sessionName)
-        .listen((_) {
+        .listen((event) {
           if (!_isCurrentTmuxQuery(queryGeneration)) return;
-          _refreshTmuxWindows(
+          _handleWindowChangeEvent(
             session,
             sessionName,
-            queryGeneration: queryGeneration,
+            event,
+            generation,
+            queryGeneration,
           );
         });
     await _refreshTmuxWindows(
@@ -2765,6 +2770,42 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       sessionName,
       queryGeneration: queryGeneration,
     );
+  }
+
+  void _handleWindowChangeEvent(
+    SshSession session,
+    String sessionName,
+    TmuxWindowChangeEvent event,
+    int generation,
+    int queryGeneration,
+  ) {
+    if (!mounted || !_isCurrentTmuxQuery(queryGeneration)) return;
+    if (generation != _windowEventGeneration) return;
+    if (event is TmuxWindowReloadEvent) {
+      _refreshTmuxWindows(
+        session,
+        sessionName,
+        queryGeneration: queryGeneration,
+      );
+      return;
+    }
+    final currentWindows = _windows;
+    if (currentWindows == null) {
+      _refreshTmuxWindows(
+        session,
+        sessionName,
+        queryGeneration: queryGeneration,
+      );
+      return;
+    }
+    _windowReloadGeneration += 1;
+    _tmuxRetryTimer?.cancel();
+    _tmuxRetryTimer = null;
+    setState(() {
+      _windows = applyTmuxWindowChangeEvent(currentWindows, event);
+      _sessionName = sessionName;
+      _queried = true;
+    });
   }
 
   Future<void> _refreshTmuxWindows(
@@ -2780,6 +2821,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       return;
     }
     _loadingWindows = true;
+    final reloadGeneration = ++_windowReloadGeneration;
     try {
       final windows = await ref
           .read(tmuxServiceProvider)
@@ -2787,6 +2829,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       if (!_isCurrentTmuxQuery(queryGeneration)) {
         return;
       }
+      if (reloadGeneration < _windowReloadGeneration) return;
       if (windows.isEmpty) {
         _scheduleTmuxRetry();
       } else {
