@@ -459,6 +459,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       return;
     }
     _clearPendingSelectedWindow(notify: false);
+    setState(() {
+      _windows = null;
+      _isLoading = true;
+    });
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
@@ -3988,7 +3992,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    ref
+    await ref
         .read(tmuxServiceProvider)
         .selectWindow(session, sessionName, windowIndex);
 

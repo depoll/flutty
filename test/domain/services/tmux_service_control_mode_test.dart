@@ -75,7 +75,21 @@ void main() {
       () {
         expect(
           parseTmuxWindowChangeEventFromControlLine(
+            '%window-add @1',
+            subscriptionName: subscriptionName,
+          ),
+          isA<TmuxWindowReloadEvent>(),
+        );
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
             '%window-close @1',
+            subscriptionName: subscriptionName,
+          ),
+          isA<TmuxWindowReloadEvent>(),
+        );
+        expect(
+          parseTmuxWindowChangeEventFromControlLine(
+            '%unlinked-window-add @1',
             subscriptionName: subscriptionName,
           ),
           isA<TmuxWindowReloadEvent>(),
@@ -161,6 +175,13 @@ void main() {
         );
         expect(
           shouldScheduleTmuxWindowReloadFallback(
+            '%window-add @1',
+            subscriptionName: subscriptionName,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldScheduleTmuxWindowReloadFallback(
             '%window-renamed @1 renamed-window',
             subscriptionName: subscriptionName,
           ),
@@ -181,6 +202,25 @@ void main() {
         shouldScheduleTmuxWindowReloadFallback(
           '%output %1 hello',
           subscriptionName: subscriptionName,
+        ),
+        isFalse,
+      );
+    });
+
+    test('preserves add and close reloads through later snapshots', () {
+      expect(
+        shouldPreserveTmuxWindowReloadThroughSnapshots('%window-add @1'),
+        isTrue,
+      );
+      expect(
+        shouldPreserveTmuxWindowReloadThroughSnapshots(
+          '%unlinked-window-close @1',
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveTmuxWindowReloadThroughSnapshots(
+          r'%session-window-changed $1 @1',
         ),
         isFalse,
       );

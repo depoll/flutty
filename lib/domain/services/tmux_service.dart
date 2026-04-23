@@ -300,10 +300,15 @@ class TmuxService {
   /// clients of the change, so it works correctly regardless of which
   /// channel sends the command.
   ///
-  /// Uses fire-and-forget for instant response — the window switch is
-  /// visible immediately in the interactive terminal PTY.
-  void selectWindow(SshSession session, String sessionName, int windowIndex) {
-    _execFireAndForget(
+  /// Waits for tmux to process the selection before returning so callers can
+  /// safely perform follow-up work (like reattaching the visible PTY) without
+  /// racing the server-side window change.
+  Future<void> selectWindow(
+    SshSession session,
+    String sessionName,
+    int windowIndex,
+  ) async {
+    await _exec(
       session,
       'tmux select-window -t ${_shellQuote(sessionName)}:$windowIndex',
     );
@@ -534,10 +539,31 @@ bool shouldScheduleTmuxWindowReloadFallback(
     '%pane-mode-changed ',
     '%session-window-changed ',
     '%sessions-changed',
+    '%unlinked-window-add ',
     '%unlinked-window-close ',
     '%unlinked-window-renamed ',
+    '%window-add ',
     '%window-close ',
     '%window-renamed ',
+  ];
+  return notificationPrefixes.any(trimmed.startsWith);
+}
+
+/// Returns whether a scheduled tmux reload should be preserved even if a later
+/// snapshot arrives before the debounce fires.
+///
+/// Window add/remove lifecycle events need a full `list-windows` refresh so the
+/// local list can drop removed windows and pick up newly created ones. A later
+/// per-window snapshot is not enough to reconcile those structural changes.
+@visibleForTesting
+bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
+  final trimmed = _normalizeTmuxControlLine(line);
+  const notificationPrefixes = <String>[
+    '%sessions-changed',
+    '%unlinked-window-add ',
+    '%unlinked-window-close ',
+    '%window-add ',
+    '%window-close ',
   ];
   return notificationPrefixes.any(trimmed.startsWith);
 }
@@ -567,8 +593,10 @@ TmuxWindowChangeEvent? parseTmuxWindowChangeEventFromControlLine(
   const notificationPrefixes = <String>[
     '%pane-mode-changed ',
     '%sessions-changed',
+    '%unlinked-window-add ',
     '%unlinked-window-close ',
     '%unlinked-window-renamed ',
+    '%window-add ',
     '%window-close ',
   ];
   if (notificationPrefixes.any(trimmed.startsWith)) {
@@ -675,6 +703,7 @@ class _TmuxWindowChangeObserver {
   SSHSession? _controlSession;
   bool _starting = false;
   bool _disposed = false;
+  bool _preserveScheduledReloadThroughSnapshots = false;
   int _restartAttempts = 0;
   DateTime? _lastControlActivity;
 
@@ -754,16 +783,25 @@ class _TmuxWindowChangeObserver {
         trimmed,
         subscriptionName: _subscriptionName,
       )) {
-        _scheduleReloadEvent();
+        _scheduleReloadEvent(
+          preserveThroughSnapshots:
+              shouldPreserveTmuxWindowReloadThroughSnapshots(trimmed),
+        );
       }
       return;
     }
     if (event is TmuxWindowSnapshotEvent) {
-      _cancelScheduledReload();
+      if (!_preserveScheduledReloadThroughSnapshots) {
+        _cancelScheduledReload();
+      }
       _emitEvent(event);
       return;
     }
-    _scheduleReloadEvent();
+    _scheduleReloadEvent(
+      preserveThroughSnapshots: shouldPreserveTmuxWindowReloadThroughSnapshots(
+        trimmed,
+      ),
+    );
   }
 
   void _handleStderrLine(String line) {
@@ -780,12 +818,17 @@ class _TmuxWindowChangeObserver {
   void _cancelScheduledReload() {
     _debounceTimer?.cancel();
     _debounceTimer = null;
+    _preserveScheduledReloadThroughSnapshots = false;
   }
 
-  void _scheduleReloadEvent() {
+  void _scheduleReloadEvent({bool preserveThroughSnapshots = false}) {
     if (_disposed) return;
-    _cancelScheduledReload();
+    _debounceTimer?.cancel();
+    _preserveScheduledReloadThroughSnapshots =
+        _preserveScheduledReloadThroughSnapshots || preserveThroughSnapshots;
     _debounceTimer = Timer(_eventDebounce, () {
+      _debounceTimer = null;
+      _preserveScheduledReloadThroughSnapshots = false;
       if (!_disposed && !_controller.isClosed) {
         _controller.add(const TmuxWindowReloadEvent());
       }
