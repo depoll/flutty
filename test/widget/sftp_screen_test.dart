@@ -54,6 +54,14 @@ void main() {
         expect(applyRemoteEditorScaleDelta(16, -1, 0.5), 8);
       },
     );
+
+    test('resolves the transient visual editor scale from pinch sizing', () {
+      expect(resolveRemoteEditorVisualScale(fontSize: 14), 1);
+      expect(
+        resolveRemoteEditorVisualScale(fontSize: 14, pinchFontSize: 21),
+        1.5,
+      );
+    });
   });
 
   group('resolveUnwrappedEditorSelectionScrollOffset', () {
@@ -333,5 +341,86 @@ void main() {
       expect(find.byTooltip('Zoom out'), findsNothing);
       expect(find.byTooltip('Zoom in'), findsNothing);
     });
+
+    testWidgets(
+      'pinch zoom scales the editor surface during the gesture then commits font size',
+      (tester) async {
+        final controller = TextEditingController(text: 'alpha\nbeta\ngamma');
+        addTearDown(controller.dispose);
+
+        await tester.pumpWidget(
+          MaterialApp(
+            theme: ThemeData(platform: TargetPlatform.iOS),
+            home: buildRemoteTextEditorScreenForTesting(
+              fileName: 'notes.txt',
+              controller: controller,
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        final editableTextFinder = find.byType(EditableText);
+        final transformFinder = find.byKey(
+          const ValueKey<String>('remoteTextEditorContentTransform'),
+        );
+        final target = find.byKey(
+          const ValueKey<String>('remoteTextEditorSurface'),
+        );
+
+        expect(
+          tester.widget<EditableText>(editableTextFinder).style.fontSize,
+          14,
+        );
+        expect(
+          tester
+              .widget<Transform>(transformFinder)
+              .transform
+              .getMaxScaleOnAxis(),
+          1,
+        );
+
+        final center = tester.getCenter(target);
+        final firstGesture = await tester.createGesture(pointer: 10);
+        await firstGesture.down(center - const Offset(30, 0));
+        await tester.pump();
+
+        final secondGesture = await tester.createGesture(pointer: 11);
+        await secondGesture.down(center + const Offset(30, 0));
+        await tester.pump();
+
+        await firstGesture.moveBy(const Offset(-20, 0));
+        await secondGesture.moveBy(const Offset(20, 0));
+        await tester.pump();
+
+        expect(
+          tester
+              .widget<Transform>(transformFinder)
+              .transform
+              .getMaxScaleOnAxis(),
+          closeTo(1.67, 0.01),
+        );
+        expect(
+          tester.widget<EditableText>(editableTextFinder).style.fontSize,
+          14,
+        );
+        expect(find.text('23 pt'), findsOneWidget);
+
+        await firstGesture.up();
+        await secondGesture.up();
+        await tester.pumpAndSettle();
+
+        expect(
+          tester
+              .widget<Transform>(transformFinder)
+              .transform
+              .getMaxScaleOnAxis(),
+          1,
+        );
+        expect(
+          tester.widget<EditableText>(editableTextFinder).style.fontSize,
+          closeTo(23.3, 0.1),
+        );
+      },
+    );
   });
 }
