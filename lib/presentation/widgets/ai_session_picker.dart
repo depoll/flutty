@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import 'agent_tool_icon.dart';
 
 /// Derived UI state for a discovered-session provider row.
 class AiSessionProviderEntry {
@@ -89,16 +90,6 @@ List<AiSessionProviderEntry> buildAiSessionProviderEntries({
       )
       .toList(growable: false);
 }
-
-/// Returns the icon used for a discovered-session provider.
-IconData aiSessionToolIconData(String toolName) => switch (toolName) {
-  'Claude Code' => Icons.auto_awesome,
-  'Codex' => Icons.code,
-  'Copilot CLI' => Icons.flight,
-  'Gemini CLI' => Icons.diamond_outlined,
-  'OpenCode' => Icons.terminal,
-  _ => Icons.smart_toy_outlined,
-};
 
 /// Loader callback used by [AiSessionPickerDialog].
 typedef AiSessionLoader =
@@ -635,9 +626,8 @@ class _AiSessionPickerTile extends StatelessWidget {
       contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 2),
       horizontalTitleGap: 12,
       minLeadingWidth: 20,
-      leading: Icon(
-        aiSessionToolIconData(session.toolName),
-        size: 20,
+      leading: AgentToolIcon(
+        toolName: session.toolName,
         color: theme.colorScheme.primary,
       ),
       title: Text(

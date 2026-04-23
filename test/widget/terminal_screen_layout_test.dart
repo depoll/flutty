@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
@@ -120,6 +121,39 @@ void main() {
         ),
       ];
 
+      final displayedWindows = resolveTmuxBarDisplayedWindows(
+        windows,
+        pendingSelectedWindowIndex: 1,
+      );
+
+      expect(
+        resolveTmuxBarActiveWindowTitle(displayedWindows),
+        '✨ Editing main.dart',
+      );
+      expect(
+        displayedWindows
+            ?.where((window) => window.isActive)
+            .map((window) => window.index),
+        [1],
+      );
+      expect(
+        resolveTmuxBarActiveWindowTool(displayedWindows),
+        AgentLaunchTool.copilotCli,
+      );
+    });
+
+    test('clears optimistic selection once tmux confirms it', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'shell', isActive: false),
+        TmuxWindow(
+          index: 1,
+          name: 'copilot',
+          isActive: true,
+          currentCommand: 'copilot',
+          paneTitle: '✨ Editing main.dart',
+        ),
+      ];
+
       expect(
         resolveTmuxBarPendingSelectedWindowIndex(
           windows,
@@ -127,6 +161,30 @@ void main() {
         ),
         isNull,
       );
+    });
+
+    test('uses the active tmux foreground tool for the handle icon', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(
+          index: 0,
+          name: 'shell',
+          isActive: false,
+          currentCommand: 'bash',
+        ),
+        TmuxWindow(
+          index: 1,
+          name: 'agent',
+          isActive: true,
+          currentCommand: 'claude',
+          paneTitle: '✨ Editing main.dart',
+        ),
+      ];
+
+      expect(
+        resolveTmuxBarActiveWindowTool(windows),
+        AgentLaunchTool.claudeCode,
+      );
+      expect(resolveTmuxBarActiveWindowTool(const <TmuxWindow>[]), isNull);
     });
 
     test('omits duplicate or blank tmux window titles in the handle label', () {

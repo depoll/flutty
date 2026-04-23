@@ -283,6 +283,29 @@ void main() {
       expect(AgentLaunchTool.geminiCli.commandName, 'gemini');
     });
 
+    test('command lookup resolves bare names, paths, and argv tokens', () {
+      expect(
+        agentLaunchToolForCommandName('claude'),
+        AgentLaunchTool.claudeCode,
+      );
+      expect(
+        agentLaunchToolForCommandName('/opt/homebrew/bin/codex'),
+        AgentLaunchTool.codex,
+      );
+      expect(
+        agentLaunchToolForCommandName(
+          r'C:\Users\demo\AppData\Local\Programs\opencode.exe',
+        ),
+        AgentLaunchTool.openCode,
+      );
+      expect(
+        agentLaunchToolForCommandName('gemini --yolo'),
+        AgentLaunchTool.geminiCli,
+      );
+      expect(agentLaunchToolForCommandName('vim'), isNull);
+      expect(agentLaunchToolForCommandName(''), isNull);
+    });
+
     test('supportsResume returns true for all tools', () {
       for (final tool in AgentLaunchTool.values) {
         expect(

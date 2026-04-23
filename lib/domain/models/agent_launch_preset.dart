@@ -77,6 +77,24 @@ extension AgentLaunchToolPresentation on AgentLaunchTool {
   };
 }
 
+/// Resolves a supported agent CLI from a command or binary name.
+///
+/// The input may be a bare executable (`claude`), a full path
+/// (`/opt/homebrew/bin/codex`), or a command token with trailing arguments.
+AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
+  final normalized = _normalizeAgentCommandName(commandName);
+  if (normalized == null) {
+    return null;
+  }
+
+  for (final tool in AgentLaunchTool.values) {
+    if (tool.commandName == normalized) {
+      return tool;
+    }
+  }
+  return null;
+}
+
 /// Host-scoped preset for launching a coding agent after connect.
 class AgentLaunchPreset {
   /// Creates a new [AgentLaunchPreset].
@@ -167,6 +185,20 @@ class AgentLaunchPreset {
 enum _ShellQuoteMode { none, single, double }
 
 const _backslashCodeUnit = 0x5C;
+
+String? _normalizeAgentCommandName(String? commandName) {
+  final trimmed = commandName?.trim();
+  if (trimmed == null || trimmed.isEmpty) {
+    return null;
+  }
+
+  final token = trimmed.split(RegExp(r'\s+')).first;
+  final basename = token.split(RegExp(r'[\\/]')).last.toLowerCase();
+  if (basename.isEmpty) {
+    return null;
+  }
+  return basename.replaceFirst(RegExp(r'\.exe$'), '');
+}
 
 final _unquotedTmuxFlagTokenPattern = RegExp(r'^[A-Za-z0-9_./~:=,+-]+$');
 final _codexApprovalModeEqualsPattern = RegExp(
