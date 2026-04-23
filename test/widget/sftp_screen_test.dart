@@ -7,7 +7,7 @@ Widget _buildRemoteEditorWithKeyboardInset({
   required TextEditingController controller,
   required ScrollController horizontalScrollController,
 }) => MaterialApp(
-  theme: ThemeData(platform: TargetPlatform.macOS),
+  theme: ThemeData(platform: TargetPlatform.android),
   home: Builder(
     builder: (context) => ValueListenableBuilder<double>(
       valueListenable: keyboardInset,
@@ -211,7 +211,7 @@ void main() {
     );
 
     testWidgets(
-      'rebuilds the horizontal scrollbar when the keyboard is dismissed',
+      'keeps the editor input connection open across keyboard inset changes',
       (tester) async {
         final longLine = List<String>.filled(80, '0123456789').join();
         final controller = TextEditingController(text: longLine)
@@ -240,15 +240,24 @@ void main() {
           of: find.byKey(
             const ValueKey<String>('remoteTextEditorNowrapViewport'),
           ),
-          matching: find.byWidgetPredicate(
-            (widget) =>
-                widget is Scrollbar && widget.key is ValueKey<(double, double)>,
-          ),
+          matching: find.byType(Scrollbar),
         );
+        final editableTextFinder = find.byType(EditableText);
+        final textFieldFinder = find.byType(TextField);
         final openScrollbarElement = tester.element(scrollbarFinder);
         final openViewportRect = tester.getRect(
           find.byKey(const ValueKey<String>('remoteTextEditorNowrapViewport')),
         );
+        final openEditableTextElement = tester.element(editableTextFinder);
+        final openEditableText = tester.widget<EditableText>(
+          editableTextFinder,
+        );
+
+        await tester.showKeyboard(textFieldFinder);
+        await tester.pump();
+
+        expect(openEditableText.focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
 
         keyboardInset.value = 0;
         await tester.pump();
@@ -258,8 +267,15 @@ void main() {
         final closedViewportRect = tester.getRect(
           find.byKey(const ValueKey<String>('remoteTextEditorNowrapViewport')),
         );
+        final closedEditableTextElement = tester.element(editableTextFinder);
+        final closedEditableText = tester.widget<EditableText>(
+          editableTextFinder,
+        );
 
-        expect(closedScrollbarElement, isNot(same(openScrollbarElement)));
+        expect(closedScrollbarElement, same(openScrollbarElement));
+        expect(closedEditableTextElement, same(openEditableTextElement));
+        expect(closedEditableText.focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
         expect(closedViewportRect.height, greaterThan(openViewportRect.height));
       },
     );
