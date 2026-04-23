@@ -197,7 +197,7 @@ double resolveTmuxBarRevealOpacity(
 @visibleForTesting
 String? resolveTmuxBarActiveWindowTitle(Iterable<TmuxWindow>? windows) {
   final activeWindow = windows?.where((window) => window.isActive).firstOrNull;
-  final title = activeWindow?.displayTitle.trim();
+  final title = activeWindow?.handleTitle.trim();
   if (title == null || title.isEmpty) {
     return null;
   }

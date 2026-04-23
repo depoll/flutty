@@ -68,13 +68,13 @@ void main() {
         ),
       ];
 
-      expect(resolveTmuxBarActiveWindowTitle(windows), '✨ Editing main.dart');
+      expect(resolveTmuxBarActiveWindowTitle(windows), 'agent');
       expect(
         resolveTmuxBarHandleLabel(
           'workspace',
           activeWindowTitle: resolveTmuxBarActiveWindowTitle(windows),
         ),
-        'workspace · ✨ Editing main.dart',
+        'workspace · agent',
       );
     });
 

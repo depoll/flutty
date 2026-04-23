@@ -204,6 +204,21 @@ class TmuxWindow {
     return normalizedPaneTitle;
   }
 
+  /// A compact window label for surfaces that should track tmux window
+  /// switches immediately.
+  ///
+  /// tmux updates `window_name` as part of the window-switch snapshot, while
+  /// `pane_title` can lag slightly behind focus changes on some hosts. Prefer
+  /// the normalized window name here so collapsed labels stay in sync with the
+  /// active window selection.
+  String get handleTitle {
+    final normalizedName = _normalizedTmuxTitle(
+      name,
+      stripPlaceholderPrefix: true,
+    );
+    return normalizedName ?? displayTitle;
+  }
+
   /// Secondary context for the window title when both pane and window names
   /// are useful and distinct.
   String? get secondaryTitle {

@@ -98,7 +98,19 @@ void main() {
       );
 
       expect(window.displayTitle, '✨ Editing main.dart');
+      expect(window.handleTitle, 'claude');
       expect(window.secondaryTitle, 'claude');
+    });
+
+    test('handleTitle falls back to the display title when needed', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: '__ test-emoji',
+        isActive: false,
+        paneTitle: '🔥 test-emoji',
+      );
+
+      expect(window.handleTitle, 'test-emoji');
     });
 
     test(
