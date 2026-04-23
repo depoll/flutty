@@ -324,6 +324,64 @@ void main() {
     });
   });
 
+  group('shouldPreserveTmuxWindowSnapshotOnEmptyReload', () {
+    test('preserves non-empty snapshots only up to the retry limit', () {
+      const currentWindows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'shell', isActive: true),
+      ];
+
+      expect(
+        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+          currentWindows,
+          consecutiveEmptyReloads: 1,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+          currentWindows,
+          consecutiveEmptyReloads: 3,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+          currentWindows,
+          consecutiveEmptyReloads: 4,
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not preserve empty or missing snapshots', () {
+      expect(
+        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+          null,
+          consecutiveEmptyReloads: 1,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+          const <TmuxWindow>[],
+          consecutiveEmptyReloads: 1,
+        ),
+        isFalse,
+      );
+    });
+  });
+
+  group('resolveTmuxWindowReloadRetryDelay', () {
+    test('uses exponential backoff with a cap', () {
+      expect(resolveTmuxWindowReloadRetryDelay(0), const Duration(seconds: 2));
+      expect(resolveTmuxWindowReloadRetryDelay(1), const Duration(seconds: 4));
+      expect(resolveTmuxWindowReloadRetryDelay(2), const Duration(seconds: 8));
+      expect(resolveTmuxWindowReloadRetryDelay(3), const Duration(seconds: 16));
+      expect(resolveTmuxWindowReloadRetryDelay(4), const Duration(seconds: 30));
+      expect(resolveTmuxWindowReloadRetryDelay(6), const Duration(seconds: 30));
+    });
+  });
+
   group('ToolSessionInfo', () {
     test('constructs with all fields', () {
       final info = ToolSessionInfo(

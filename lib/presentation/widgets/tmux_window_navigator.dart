@@ -141,7 +141,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   /// Maximum number of recent sessions to show per tool.
   static const _maxSessionsPerTool = 16;
   static const _prefetchSessionFetchLimit = 6;
-  static const _windowRetryDelay = Duration(seconds: 2);
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
@@ -154,6 +153,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
   Timer? _windowRetryTimer;
+  int _windowRetryAttempts = 0;
+  int _consecutiveEmptyWindowReloads = 0;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -173,13 +174,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   void didUpdateWidget(covariant _TmuxNavigatorSheet oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.hostId != widget.session.hostId) {
+      _resetWindowReloadRecovery();
       unawaited(_loadPreferredLaunchTool());
     }
   }
 
   @override
   void dispose() {
-    _cancelWindowRetry();
+    _resetWindowReloadRecovery();
     unawaited(_windowChangeSubscription?.cancel());
     super.dispose();
   }
@@ -241,7 +243,21 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       );
       if (!mounted) return;
       if (reloadGeneration < _windowReloadGeneration) return;
-      final windows = resolveTmuxReloadedWindows(_windows, reloadedWindows);
+      final isEmptyReload = reloadedWindows.isEmpty;
+      if (isEmptyReload) {
+        _consecutiveEmptyWindowReloads += 1;
+      } else {
+        _resetWindowReloadRecovery();
+      }
+      final windows = resolveTmuxReloadedWindows(
+        shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+              _windows,
+              consecutiveEmptyReloads: _consecutiveEmptyWindowReloads,
+            )
+            ? _windows
+            : null,
+        reloadedWindows,
+      );
       if (windows == null) {
         _scheduleWindowRetry();
         setState(() {
@@ -251,10 +267,10 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         });
         return;
       }
-      if (reloadedWindows.isEmpty) {
+      if (isEmptyReload) {
         _scheduleWindowRetry();
       } else {
-        _cancelWindowRetry();
+        _resetWindowReloadRecovery();
       }
       setState(() {
         _windows = windows;
@@ -291,7 +307,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       return;
     }
     _windowReloadGeneration += 1;
-    _cancelWindowRetry();
+    _resetWindowReloadRecovery();
     setState(() {
       _windows = applyTmuxWindowChangeEvent(currentWindows, event);
       _error = null;
@@ -304,11 +320,19 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     _windowRetryTimer = null;
   }
 
+  void _resetWindowReloadRecovery() {
+    _cancelWindowRetry();
+    _windowRetryAttempts = 0;
+    _consecutiveEmptyWindowReloads = 0;
+  }
+
   void _scheduleWindowRetry() {
     if (!mounted || (_windowRetryTimer?.isActive ?? false)) {
       return;
     }
-    _windowRetryTimer = Timer(_windowRetryDelay, () {
+    final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
+    _windowRetryAttempts += 1;
+    _windowRetryTimer = Timer(delay, () {
       _windowRetryTimer = null;
       if (mounted) {
         unawaited(_loadWindows());

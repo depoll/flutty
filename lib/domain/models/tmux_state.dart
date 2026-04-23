@@ -385,6 +385,43 @@ List<TmuxWindow>? resolveTmuxReloadedWindows(
   return null;
 }
 
+/// Returns whether a transient empty tmux reload should keep showing the last
+/// known non-empty window snapshot.
+bool shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+  Iterable<TmuxWindow>? currentWindows, {
+  required int consecutiveEmptyReloads,
+  int maxConsecutiveEmptyReloads = 3,
+}) {
+  if (consecutiveEmptyReloads > maxConsecutiveEmptyReloads) {
+    return false;
+  }
+  return currentWindows?.any((_) => true) ?? false;
+}
+
+/// Resolves the retry delay for tmux window reload recovery.
+///
+/// Uses exponential backoff so dead sessions do not get polled aggressively
+/// forever while still continuing to self-heal if tmux comes back later.
+Duration resolveTmuxWindowReloadRetryDelay(
+  int retryAttempt, {
+  Duration initialDelay = const Duration(seconds: 2),
+  Duration maxDelay = const Duration(seconds: 30),
+}) {
+  if (retryAttempt <= 0) {
+    return initialDelay;
+  }
+
+  var delay = initialDelay;
+  for (var attempt = 0; attempt < retryAttempt; attempt++) {
+    final doubledDelay = Duration(milliseconds: delay.inMilliseconds * 2);
+    if (doubledDelay >= maxDelay) {
+      return maxDelay;
+    }
+    delay = doubledDelay;
+  }
+  return delay;
+}
+
 /// Metadata for a recent AI coding tool session found on a remote host.
 @immutable
 class ToolSessionInfo {
