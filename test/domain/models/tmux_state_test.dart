@@ -94,11 +94,36 @@ void main() {
         index: 1,
         name: 'claude',
         isActive: false,
+        currentCommand: 'claude',
         paneTitle: '✨ Editing main.dart',
       );
 
       expect(window.displayTitle, '✨ Editing main.dart');
+      expect(window.handleTitle, '✨ Editing main.dart');
       expect(window.secondaryTitle, 'claude');
+    });
+
+    test('handleTitle falls back to the display title when needed', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: '__ test-emoji',
+        isActive: false,
+        paneTitle: '🔥 test-emoji',
+      );
+
+      expect(window.handleTitle, 'test-emoji');
+    });
+
+    test('handleTitle still prefers the window name when it is distinct', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'workspace',
+        isActive: false,
+        currentCommand: 'claude',
+        paneTitle: '✨ Editing main.dart',
+      );
+
+      expect(window.handleTitle, 'workspace');
     });
 
     test(
@@ -141,6 +166,19 @@ void main() {
 
       expect(window.hasAlert, true);
       expect(window.statusLabel, 'alert');
+    });
+
+    test('computes idle state from activity epoch dynamically', () {
+      final activityEpoch =
+          (DateTime.now().millisecondsSinceEpoch ~/ 1000) - 20;
+      final window = TmuxWindow.fromTmuxFormat(
+        '3|claude|1|claude|/tmp|*|Waiting|$activityEpoch',
+      );
+
+      expect(window.lastActivityEpochSeconds, activityEpoch);
+      expect(window.idleSeconds, greaterThanOrEqualTo(20));
+      expect(window.isIdle, isTrue);
+      expect(window.statusLabel, 'waiting');
     });
 
     test('throws on too few fields', () {
@@ -187,6 +225,50 @@ void main() {
 
       expect(a, equals(b));
       expect(a, isNot(equals(c)));
+    });
+  });
+
+  group('applyTmuxWindowChangeEvent', () {
+    test(
+      'replaces an existing window snapshot and clears prior active state',
+      () {
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'first', isActive: true),
+          TmuxWindow(index: 1, name: 'second', isActive: false),
+        ];
+
+        final updated = applyTmuxWindowChangeEvent(
+          windows,
+          const TmuxWindowSnapshotEvent(
+            TmuxWindow(
+              index: 1,
+              name: 'second-renamed',
+              isActive: true,
+              paneTitle: 'editing',
+            ),
+          ),
+        );
+
+        expect(updated[0].isActive, isFalse);
+        expect(updated[1].isActive, isTrue);
+        expect(updated[1].name, 'second-renamed');
+        expect(updated[1].paneTitle, 'editing');
+      },
+    );
+
+    test('adds a new window snapshot in index order', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'first', isActive: true),
+      ];
+
+      final updated = applyTmuxWindowChangeEvent(
+        windows,
+        const TmuxWindowSnapshotEvent(
+          TmuxWindow(index: 2, name: 'third', isActive: false),
+        ),
+      );
+
+      expect(updated.map((window) => window.index).toList(), [0, 2]);
     });
   });
 

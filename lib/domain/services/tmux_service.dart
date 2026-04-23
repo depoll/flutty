@@ -239,7 +239,10 @@ class TmuxService {
 
   /// Watches tmux control-mode notifications that indicate window state
   /// has changed for [sessionName].
-  Stream<void> watchWindowChanges(SshSession session, String sessionName) {
+  Stream<TmuxWindowChangeEvent> watchWindowChanges(
+    SshSession session,
+    String sessionName,
+  ) {
     final key = _TmuxWindowWatchKey(
       connectionId: session.connectionId,
       sessionName: sessionName,
@@ -297,10 +300,15 @@ class TmuxService {
   /// clients of the change, so it works correctly regardless of which
   /// channel sends the command.
   ///
-  /// Uses fire-and-forget for instant response — the window switch is
-  /// visible immediately in the interactive terminal PTY.
-  void selectWindow(SshSession session, String sessionName, int windowIndex) {
-    _execFireAndForget(
+  /// Waits for tmux to process the selection before returning so callers can
+  /// safely perform follow-up work (like reattaching the visible PTY) without
+  /// racing the server-side window change.
+  Future<void> selectWindow(
+    SshSession session,
+    String sessionName,
+    int windowIndex,
+  ) async {
+    await _exec(
       session,
       'tmux select-window -t ${_shellQuote(sessionName)}:$windowIndex',
     );
@@ -501,22 +509,34 @@ String buildTmuxControlModeAttachCommand(String sessionName) =>
 String buildTmuxWindowSubscriptionCommand(String subscriptionName) =>
     "refresh-client -B '$subscriptionName:@*:$_tmuxWindowSubscriptionFormat'";
 
-/// Returns whether a control-mode output [line] should trigger a window
-/// snapshot refresh for the observer using [subscriptionName].
+String _normalizeTmuxControlLine(String line) {
+  var normalized = line.trim();
+  normalized = normalized.replaceFirst(RegExp(r'^\u001bP\d+p'), '');
+  normalized = normalized.replaceFirst(RegExp(r'\u001b\\$'), '');
+  return normalized.trim();
+}
+
+/// Returns whether [line] should trigger a debounced reload fallback when a
+/// direct snapshot either does not arrive or cannot be parsed.
+///
+/// tmux normally follows window-change notifications like
+/// `%session-window-changed` with `%subscription-changed` snapshots, but some
+/// hosts intermittently stop delivering the snapshot while still emitting the
+/// lifecycle notification. Treat those lines as a fallback reload trigger so
+/// the UI does not get stuck on stale window metadata.
 @visibleForTesting
-bool shouldReloadTmuxWindowsFromControlLine(
+bool shouldScheduleTmuxWindowReloadFallback(
   String line, {
   required String subscriptionName,
 }) {
-  final trimmed = line.trim();
+  final trimmed = _normalizeTmuxControlLine(line);
   if (trimmed.isEmpty) return false;
   if (trimmed.startsWith('%subscription-changed $subscriptionName ')) {
     return true;
   }
 
   const notificationPrefixes = <String>[
-    '%session-changed ',
-    '%session-renamed ',
+    '%pane-mode-changed ',
     '%session-window-changed ',
     '%sessions-changed',
     '%unlinked-window-add ',
@@ -524,10 +544,65 @@ bool shouldReloadTmuxWindowsFromControlLine(
     '%unlinked-window-renamed ',
     '%window-add ',
     '%window-close ',
-    '%window-pane-changed ',
     '%window-renamed ',
   ];
   return notificationPrefixes.any(trimmed.startsWith);
+}
+
+/// Returns whether a scheduled tmux reload should be preserved even if a later
+/// snapshot arrives before the debounce fires.
+///
+/// Window add/remove lifecycle events need a full `list-windows` refresh so the
+/// local list can drop removed windows and pick up newly created ones. A later
+/// per-window snapshot is not enough to reconcile those structural changes.
+@visibleForTesting
+bool shouldPreserveTmuxWindowReloadThroughSnapshots(String line) {
+  final trimmed = _normalizeTmuxControlLine(line);
+  const notificationPrefixes = <String>[
+    '%sessions-changed',
+    '%unlinked-window-add ',
+    '%unlinked-window-close ',
+    '%window-add ',
+    '%window-close ',
+  ];
+  return notificationPrefixes.any(trimmed.startsWith);
+}
+
+/// Parses a control-mode output [line] into a tmux window change event for
+/// the observer using [subscriptionName].
+@visibleForTesting
+TmuxWindowChangeEvent? parseTmuxWindowChangeEventFromControlLine(
+  String line, {
+  required String subscriptionName,
+}) {
+  final trimmed = _normalizeTmuxControlLine(line);
+  if (trimmed.isEmpty) return null;
+  if (trimmed.startsWith('%subscription-changed $subscriptionName ')) {
+    final valueSeparator = trimmed.indexOf(' : ');
+    if (valueSeparator == -1 || valueSeparator + 3 >= trimmed.length) {
+      return const TmuxWindowReloadEvent();
+    }
+    final value = trimmed.substring(valueSeparator + 3);
+    try {
+      return TmuxWindowSnapshotEvent(TmuxWindow.fromTmuxFormat(value));
+    } on FormatException {
+      return const TmuxWindowReloadEvent();
+    }
+  }
+
+  const notificationPrefixes = <String>[
+    '%pane-mode-changed ',
+    '%sessions-changed',
+    '%unlinked-window-add ',
+    '%unlinked-window-close ',
+    '%unlinked-window-renamed ',
+    '%window-add ',
+    '%window-close ',
+  ];
+  if (notificationPrefixes.any(trimmed.startsWith)) {
+    return const TmuxWindowReloadEvent();
+  }
+  return null;
 }
 
 /// Action the tmux control-mode heartbeat decides to take based on how
@@ -593,7 +668,7 @@ class _TmuxWindowChangeObserver {
     required this.onDispose,
     DateTime Function()? now,
   }) : _now = now ?? DateTime.now,
-       _controller = StreamController<void>.broadcast() {
+       _controller = StreamController<TmuxWindowChangeEvent>.broadcast() {
     _controller
       ..onListen = _ensureStarted
       ..onCancel = () => unawaited(dispose());
@@ -617,7 +692,7 @@ class _TmuxWindowChangeObserver {
   final String sessionName;
   final VoidCallback onDispose;
   final DateTime Function() _now;
-  final StreamController<void> _controller;
+  final StreamController<TmuxWindowChangeEvent> _controller;
 
   StreamSubscription<String>? _stdoutSubscription;
   StreamSubscription<String>? _stderrSubscription;
@@ -628,13 +703,14 @@ class _TmuxWindowChangeObserver {
   SSHSession? _controlSession;
   bool _starting = false;
   bool _disposed = false;
+  bool _preserveScheduledReloadThroughSnapshots = false;
   int _restartAttempts = 0;
   DateTime? _lastControlActivity;
 
   String get _subscriptionName =>
       'flutty-${session.connectionId}-${sessionName.hashCode.abs()}';
 
-  Stream<void> get stream => _controller.stream;
+  Stream<TmuxWindowChangeEvent> get stream => _controller.stream;
 
   Future<void> _ensureStarted() async {
     if (_disposed || _starting || _controlSession != null) return;
@@ -646,6 +722,10 @@ class _TmuxWindowChangeObserver {
           session,
           buildTmuxControlModeAttachCommand(sessionName),
         ),
+        // tmux control mode stays silent over a plain exec channel on some SSH
+        // servers. Request a dedicated PTY so `%subscription-changed` events
+        // stream in real time instead of only catching up on fallback reloads.
+        pty: const SSHPtyConfig(),
       );
       if (_disposed) {
         execSession.close();
@@ -689,18 +769,39 @@ class _TmuxWindowChangeObserver {
   void _handleStdoutLine(String line) {
     if (_disposed) return;
     _lastControlActivity = _now();
-    final trimmed = line.trim();
+    final trimmed = _normalizeTmuxControlLine(line);
     if (trimmed.startsWith('%exit')) {
       _handleControlClosed();
       return;
     }
-    if (!shouldReloadTmuxWindowsFromControlLine(
+    final event = parseTmuxWindowChangeEventFromControlLine(
       trimmed,
       subscriptionName: _subscriptionName,
-    )) {
+    );
+    if (event == null) {
+      if (shouldScheduleTmuxWindowReloadFallback(
+        trimmed,
+        subscriptionName: _subscriptionName,
+      )) {
+        _scheduleReloadEvent(
+          preserveThroughSnapshots:
+              shouldPreserveTmuxWindowReloadThroughSnapshots(trimmed),
+        );
+      }
       return;
     }
-    _scheduleEvent();
+    if (event is TmuxWindowSnapshotEvent) {
+      if (!_preserveScheduledReloadThroughSnapshots) {
+        _cancelScheduledReload();
+      }
+      _emitEvent(event);
+      return;
+    }
+    _scheduleReloadEvent(
+      preserveThroughSnapshots: shouldPreserveTmuxWindowReloadThroughSnapshots(
+        trimmed,
+      ),
+    );
   }
 
   void _handleStderrLine(String line) {
@@ -709,12 +810,27 @@ class _TmuxWindowChangeObserver {
     _scheduleRestart();
   }
 
-  void _scheduleEvent() {
+  void _emitEvent(TmuxWindowChangeEvent event) {
+    if (_disposed || _controller.isClosed) return;
+    _controller.add(event);
+  }
+
+  void _cancelScheduledReload() {
+    _debounceTimer?.cancel();
+    _debounceTimer = null;
+    _preserveScheduledReloadThroughSnapshots = false;
+  }
+
+  void _scheduleReloadEvent({bool preserveThroughSnapshots = false}) {
     if (_disposed) return;
     _debounceTimer?.cancel();
+    _preserveScheduledReloadThroughSnapshots =
+        _preserveScheduledReloadThroughSnapshots || preserveThroughSnapshots;
     _debounceTimer = Timer(_eventDebounce, () {
+      _debounceTimer = null;
+      _preserveScheduledReloadThroughSnapshots = false;
       if (!_disposed && !_controller.isClosed) {
-        _controller.add(null);
+        _controller.add(const TmuxWindowReloadEvent());
       }
     });
   }
@@ -771,16 +887,17 @@ class _TmuxWindowChangeObserver {
       case TmuxControlHeartbeatAction.noop:
         return;
       case TmuxControlHeartbeatAction.refresh:
-        _scheduleEvent();
+        _scheduleReloadEvent();
+        return;
       case TmuxControlHeartbeatAction.restart:
         _handleControlClosed();
+        return;
     }
   }
 
   void _cleanupControlSession() {
     _stopHeartbeat();
-    _debounceTimer?.cancel();
-    _debounceTimer = null;
+    _cancelScheduledReload();
     unawaited(_stdoutSubscription?.cancel());
     unawaited(_stderrSubscription?.cancel());
     unawaited(_doneSubscription?.cancel());

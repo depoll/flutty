@@ -74,8 +74,9 @@ class TmuxWindow {
     this.currentPath,
     this.flags,
     this.paneTitle,
-    this.idleSeconds,
-  });
+    int? idleSeconds,
+    this.lastActivityEpochSeconds,
+  }) : _snapshotIdleSeconds = idleSeconds;
 
   /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
   ///
@@ -87,16 +88,7 @@ class TmuxWindow {
       throw FormatException('Invalid tmux window format: $line');
     }
 
-    // Compute idle seconds from window_activity epoch if available.
-    int? idleSeconds;
-    if (fields.length > 7) {
-      final activityEpoch = int.tryParse(fields[7]);
-      if (activityEpoch != null && activityEpoch > 0) {
-        final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
-        idleSeconds = now - activityEpoch;
-        if (idleSeconds < 0) idleSeconds = 0;
-      }
-    }
+    final activityEpoch = fields.length > 7 ? int.tryParse(fields[7]) : null;
 
     return TmuxWindow(
       index: int.tryParse(fields[0]) ?? 0,
@@ -106,7 +98,9 @@ class TmuxWindow {
       currentPath: fields.length > 4 ? _nonEmpty(fields[4]) : null,
       flags: fields.length > 5 ? _nonEmpty(fields[5]) : null,
       paneTitle: fields.length > 6 ? _nonEmpty(fields[6]) : null,
-      idleSeconds: idleSeconds,
+      lastActivityEpochSeconds: activityEpoch != null && activityEpoch > 0
+          ? activityEpoch
+          : null,
     );
   }
 
@@ -131,8 +125,21 @@ class TmuxWindow {
   /// The pane title set by the running application, if available.
   final String? paneTitle;
 
+  /// tmux's `window_activity` epoch seconds, if available.
+  final int? lastActivityEpochSeconds;
+
+  final int? _snapshotIdleSeconds;
+
   /// Seconds since last output activity in this window, if available.
-  final int? idleSeconds;
+  int? get idleSeconds {
+    final activityEpoch = lastActivityEpochSeconds;
+    if (activityEpoch == null) {
+      return _snapshotIdleSeconds;
+    }
+    final now = DateTime.now().millisecondsSinceEpoch ~/ 1000;
+    final idleSeconds = now - activityEpoch;
+    return idleSeconds < 0 ? 0 : idleSeconds;
+  }
 
   /// Idle threshold (seconds) above which a window is considered "waiting".
   static const _idleThreshold = 15;
@@ -151,6 +158,33 @@ class TmuxWindow {
   /// Whether the window appears to be actively running work.
   bool get isRunning => !hasAlert && !isIdle;
 
+  /// Whether the window's status can still change from running to waiting
+  /// without tmux emitting a new control-mode notification.
+  bool get needsLocalIdleRefresh =>
+      !hasAlert && idleSeconds != null && idleSeconds! <= _idleThreshold;
+
+  /// Returns a copy of this window with selectively overridden fields.
+  TmuxWindow copyWith({
+    bool? isActive,
+    String? name,
+    String? currentCommand,
+    String? currentPath,
+    String? flags,
+    String? paneTitle,
+    int? lastActivityEpochSeconds,
+  }) => TmuxWindow(
+    index: index,
+    name: name ?? this.name,
+    isActive: isActive ?? this.isActive,
+    currentCommand: currentCommand ?? this.currentCommand,
+    currentPath: currentPath ?? this.currentPath,
+    flags: flags ?? this.flags,
+    paneTitle: paneTitle ?? this.paneTitle,
+    idleSeconds: _snapshotIdleSeconds,
+    lastActivityEpochSeconds:
+        lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
+  );
+
   /// A short display title — prefers the richest usable tmux title.
   String get displayTitle {
     final normalizedPaneTitle = _normalizedTmuxTitle(
@@ -168,6 +202,38 @@ class TmuxWindow {
       return name.trim();
     }
     return normalizedPaneTitle;
+  }
+
+  /// A compact window label for surfaces that should track tmux window
+  /// switches immediately.
+  ///
+  /// tmux updates `window_name` as part of the window-switch snapshot, while
+  /// `pane_title` can lag slightly behind focus changes on some hosts. Prefer
+  /// the normalized window name here so collapsed labels stay in sync with the
+  /// active window selection. If the window name is just echoing the current
+  /// command (for example `copilot` or `claude`), prefer the richer pane title
+  /// instead so the collapsed handle still distinguishes agent sessions.
+  String get handleTitle {
+    final normalizedPaneTitle = _normalizedTmuxTitle(
+      paneTitle,
+      stripPlaceholderPrefix: true,
+    );
+    final normalizedName = _normalizedTmuxTitle(
+      name,
+      stripPlaceholderPrefix: true,
+    );
+    final normalizedCommand = _normalizedTmuxTitle(
+      currentCommand,
+      stripPlaceholderPrefix: true,
+    );
+    if (normalizedPaneTitle != null &&
+        normalizedName != null &&
+        normalizedCommand != null &&
+        normalizedName.toLowerCase() == normalizedCommand.toLowerCase() &&
+        normalizedPaneTitle != normalizedName) {
+      return normalizedPaneTitle;
+    }
+    return normalizedName ?? displayTitle;
   }
 
   /// Secondary context for the window title when both pane and window names
@@ -216,7 +282,8 @@ class TmuxWindow {
           currentPath == other.currentPath &&
           flags == other.flags &&
           paneTitle == other.paneTitle &&
-          idleSeconds == other.idleSeconds;
+          lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
+          _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
   @override
   int get hashCode => Object.hash(
@@ -227,8 +294,59 @@ class TmuxWindow {
     currentPath,
     flags,
     paneTitle,
-    idleSeconds,
+    lastActivityEpochSeconds,
+    _snapshotIdleSeconds,
   );
+}
+
+/// Live update emitted while watching a tmux session in control mode.
+sealed class TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowChangeEvent].
+  const TmuxWindowChangeEvent();
+}
+
+/// A direct per-window snapshot from tmux's `%subscription-changed` output.
+class TmuxWindowSnapshotEvent extends TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowSnapshotEvent].
+  const TmuxWindowSnapshotEvent(this.window);
+
+  /// The latest window snapshot from tmux.
+  final TmuxWindow window;
+}
+
+/// A signal that callers should refetch the full window list.
+class TmuxWindowReloadEvent extends TmuxWindowChangeEvent {
+  /// Creates a new [TmuxWindowReloadEvent].
+  const TmuxWindowReloadEvent();
+}
+
+/// Applies a live tmux window update to an existing window list.
+List<TmuxWindow> applyTmuxWindowChangeEvent(
+  List<TmuxWindow> windows,
+  TmuxWindowChangeEvent event,
+) {
+  switch (event) {
+    case TmuxWindowReloadEvent():
+      return windows;
+    case TmuxWindowSnapshotEvent(window: final window):
+      final updated = windows
+          .map(
+            (existing) => window.isActive && existing.index != window.index
+                ? existing.copyWith(isActive: false)
+                : existing,
+          )
+          .toList(growable: true);
+      final existingIndex = updated.indexWhere(
+        (existing) => existing.index == window.index,
+      );
+      if (existingIndex == -1) {
+        updated.add(window);
+      } else {
+        updated[existingIndex] = window;
+      }
+      updated.sort((a, b) => a.index.compareTo(b.index));
+      return updated;
+  }
 }
 
 /// Metadata for a recent AI coding tool session found on a remote host.

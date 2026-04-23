@@ -62,8 +62,9 @@ void main() {
         ),
         TmuxWindow(
           index: 1,
-          name: 'agent',
+          name: 'copilot',
           isActive: true,
+          currentCommand: 'copilot',
           paneTitle: '✨ Editing main.dart',
         ),
       ];
@@ -75,6 +76,56 @@ void main() {
           activeWindowTitle: resolveTmuxBarActiveWindowTitle(windows),
         ),
         'workspace · ✨ Editing main.dart',
+      );
+    });
+
+    test('optimistically shows the tapped tmux window as active', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'shell', isActive: true, paneTitle: 'Shell'),
+        TmuxWindow(
+          index: 1,
+          name: 'copilot',
+          isActive: false,
+          currentCommand: 'copilot',
+          paneTitle: '✨ Editing main.dart',
+        ),
+      ];
+
+      final displayedWindows = resolveTmuxBarDisplayedWindows(
+        windows,
+        pendingSelectedWindowIndex: 1,
+      );
+
+      expect(
+        resolveTmuxBarActiveWindowTitle(displayedWindows),
+        '✨ Editing main.dart',
+      );
+      expect(
+        displayedWindows
+            ?.where((window) => window.isActive)
+            .map((window) => window.index),
+        [1],
+      );
+    });
+
+    test('clears optimistic selection once tmux confirms it', () {
+      const windows = <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'shell', isActive: false),
+        TmuxWindow(
+          index: 1,
+          name: 'copilot',
+          isActive: true,
+          currentCommand: 'copilot',
+          paneTitle: '✨ Editing main.dart',
+        ),
+      ];
+
+      expect(
+        resolveTmuxBarPendingSelectedWindowIndex(
+          windows,
+          pendingSelectedWindowIndex: 1,
+        ),
+        isNull,
       );
     });
 

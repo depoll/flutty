@@ -542,7 +542,7 @@ void main() {
     ).thenAnswer((_) async => true);
     when(
       () => tmuxService.watchWindowChanges(session, any()),
-    ).thenAnswer((_) => const Stream<void>.empty());
+    ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
     when(() => tmuxService.listWindows(session, any())).thenAnswer(
       (_) async => const <TmuxWindow>[
         TmuxWindow(index: 0, name: 'editor', isActive: true),
@@ -625,7 +625,7 @@ void main() {
       ).thenAnswer((_) async => true);
       when(
         () => tmuxService.watchWindowChanges(session, any()),
-      ).thenAnswer((_) => const Stream<void>.empty());
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
       when(
         () => tmuxService.listWindows(session, 'correct-session'),
       ).thenAnswer((_) => delayedWindows.future);
