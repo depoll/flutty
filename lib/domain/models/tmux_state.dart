@@ -362,6 +362,66 @@ List<TmuxWindow> applyTmuxWindowChangeEvent(
   }
 }
 
+/// Resolves the tmux window list after a full reload query.
+///
+/// A live tmux session should always report at least one window. Treat an
+/// empty reload as transient: preserve the prior non-empty snapshot when
+/// possible so the UI does not collapse into a broken-looking empty state
+/// while a follow-up refresh retries in the background.
+List<TmuxWindow>? resolveTmuxReloadedWindows(
+  Iterable<TmuxWindow>? currentWindows,
+  Iterable<TmuxWindow> reloadedWindows,
+) {
+  final nextWindows = reloadedWindows.toList(growable: false);
+  if (nextWindows.isNotEmpty) {
+    return nextWindows;
+  }
+
+  final previousWindows = currentWindows?.toList(growable: false);
+  if (previousWindows != null && previousWindows.isNotEmpty) {
+    return previousWindows;
+  }
+
+  return null;
+}
+
+/// Returns whether a transient empty tmux reload should keep showing the last
+/// known non-empty window snapshot.
+bool shouldPreserveTmuxWindowSnapshotOnEmptyReload(
+  Iterable<TmuxWindow>? currentWindows, {
+  required int consecutiveEmptyReloads,
+  int maxConsecutiveEmptyReloads = 3,
+}) {
+  if (consecutiveEmptyReloads > maxConsecutiveEmptyReloads) {
+    return false;
+  }
+  return currentWindows?.any((_) => true) ?? false;
+}
+
+/// Resolves the retry delay for tmux window reload recovery.
+///
+/// Uses exponential backoff so dead sessions do not get polled aggressively
+/// forever while still continuing to self-heal if tmux comes back later.
+Duration resolveTmuxWindowReloadRetryDelay(
+  int retryAttempt, {
+  Duration initialDelay = const Duration(seconds: 2),
+  Duration maxDelay = const Duration(seconds: 30),
+}) {
+  if (retryAttempt <= 0) {
+    return initialDelay;
+  }
+
+  var delay = initialDelay;
+  for (var attempt = 0; attempt < retryAttempt; attempt++) {
+    final doubledDelay = Duration(milliseconds: delay.inMilliseconds * 2);
+    if (doubledDelay >= maxDelay) {
+      return maxDelay;
+    }
+    delay = doubledDelay;
+  }
+  return delay;
+}
+
 /// Metadata for a recent AI coding tool session found on a remote host.
 @immutable
 class ToolSessionInfo {

@@ -186,7 +186,121 @@ void main() {
       expect(find.byIcon(Icons.expand_more), findsNothing);
       expect(find.byIcon(Icons.expand_less), findsNothing);
     });
+
+    testWidgets('recovers from a transient empty window reload', (
+      tester,
+    ) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const tmuxSessionName = 'main';
+      var listWindowsCallCount = 0;
+
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.detectInstalledAgentTools(session),
+      ).thenAnswer((_) async => const <AgentLaunchTool>{});
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(() => tmuxService.listWindows(session, tmuxSessionName)).thenAnswer((
+        _,
+      ) {
+        if (listWindowsCallCount++ == 0) {
+          return Future<List<TmuxWindow>>.value(const <TmuxWindow>[]);
+        }
+        return Future<List<TmuxWindow>>.value(windows);
+      });
+      when(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      ).thenAnswer(
+        (_) => Stream<DiscoveredSessionsResult>.value(
+          DiscoveredSessionsResult(sessions: const <ToolSessionInfo>[]),
+        ),
+      );
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: tmuxSessionName,
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pump();
+
+      expect(find.text('✨ Editing main.dart'), findsNothing);
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pumpAndSettle();
+
+      expect(find.text('✨ Editing main.dart'), findsOneWidget);
+    });
   });
+}
+
+Future<void> _pumpNavigatorHost(
+  WidgetTester tester, {
+  required TmuxService tmuxService,
+  required AgentLaunchPresetService presetService,
+  required AgentSessionDiscoveryService discoveryService,
+  required SshSession session,
+  required String tmuxSessionName,
+}) async {
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        tmuxServiceProvider.overrideWithValue(tmuxService),
+        agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+        agentSessionDiscoveryServiceProvider.overrideWithValue(
+          discoveryService,
+        ),
+      ],
+      child: MaterialApp(
+        home: Scaffold(
+          body: Consumer(
+            builder: (context, ref, _) => TextButton(
+              onPressed: () {
+                unawaited(
+                  showTmuxNavigator(
+                    context: context,
+                    ref: ref,
+                    session: session,
+                    tmuxSessionName: tmuxSessionName,
+                    isProUser: true,
+                    startClisInYoloMode: false,
+                  ),
+                );
+              },
+              child: const Text('Open'),
+            ),
+          ),
+        ),
+      ),
+    ),
+  );
+
+  await tester.pump();
+  await tester.pump();
 }
 
 class _MockTmuxService extends Mock implements TmuxService {}
