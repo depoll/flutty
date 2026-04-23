@@ -72,6 +72,8 @@ class _CountingKeyRepository extends KeyRepository {
 
 class _MockSshClient extends Mock implements SSHClient {}
 
+class _MockExecSession extends Mock implements SSHSession {}
+
 class _FakeHostKeySocket implements SSHSocket, HostKeySource {
   _FakeHostKeySocket(this._hostKeyBytes);
 
@@ -188,6 +190,7 @@ class _FakeActiveSessionsSshService extends SshService {
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+  registerFallbackValue(const SSHPtyConfig());
 
   group('SshConnectionState', () {
     test('has expected values', () {
@@ -533,6 +536,38 @@ void main() {
   });
 
   group('SshSession terminal previews', () {
+    test('forwards execute requests with an optional PTY config', () async {
+      final client = _MockSshClient();
+      final execSession = _MockExecSession();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      final result = await session.execute(
+        'tmux -CC attach-session -t test',
+        pty: const SSHPtyConfig(width: 120, height: 30),
+      );
+
+      expect(result, same(execSession));
+      verify(
+        () => client.execute(
+          'tmux -CC attach-session -t test',
+          pty: const SSHPtyConfig(width: 120, height: 30),
+        ),
+      ).called(1);
+    });
+
     test('builds preview from the latest non-empty lines', () {
       final terminal = Terminal(maxLines: 100)
         ..write('first line\r\nsecond line\r\n\r\nthird line');

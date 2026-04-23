@@ -662,6 +662,10 @@ class _TmuxWindowChangeObserver {
           session,
           buildTmuxControlModeAttachCommand(sessionName),
         ),
+        // tmux control mode stays silent over a plain exec channel on some SSH
+        // servers. Request a dedicated PTY so `%subscription-changed` events
+        // stream in real time instead of only catching up on fallback reloads.
+        pty: const SSHPtyConfig(),
       );
       if (_disposed) {
         execSession.close();
