@@ -244,7 +244,7 @@ void main() {
               return null;
           }
         });
-        when(() => localAuth.canCheckBiometrics).thenAnswer((_) async => false);
+        when(localAuth.isDeviceSupported).thenAnswer((_) async => false);
 
         await tester.pumpWidget(
           ProviderScope(
@@ -299,7 +299,7 @@ void main() {
               return null;
           }
         });
-        when(() => localAuth.canCheckBiometrics).thenAnswer((_) async => false);
+        when(localAuth.isDeviceSupported).thenAnswer((_) async => false);
 
         await tester.pumpWidget(
           ProviderScope(
@@ -324,5 +324,34 @@ void main() {
         expect(find.text('Use biometrics'), findsNothing);
       },
     );
+
+    testWidgets('balances PIN field icon spacing to keep entry centered', (
+      tester,
+    ) async {
+      final authService = _MockAuthService();
+
+      when(authService.getAuthMethod).thenAnswer((_) async => AuthMethod.pin);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            authServiceProvider.overrideWithValue(authService),
+            authStateProvider.overrideWith(_LockedAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: LockScreen()),
+        ),
+      );
+
+      await tester.pump();
+      await tester.pump();
+
+      final pinField = tester.widget<TextField>(find.byType(TextField));
+      final decoration = pinField.decoration!;
+
+      expect(decoration.prefixIcon, isNotNull);
+      expect(decoration.suffixIcon, isNotNull);
+      expect(decoration.prefixIconConstraints?.minWidth, 48);
+      expect(decoration.suffixIconConstraints?.minWidth, 48);
+    });
   });
 }

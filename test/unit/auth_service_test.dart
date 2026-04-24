@@ -199,10 +199,32 @@ void main() {
       });
     });
 
+    group('isBiometricSupported', () {
+      test('returns true when the device can check biometrics', () async {
+        when(
+          () => mockLocalAuth.isDeviceSupported(),
+        ).thenAnswer((_) async => true);
+
+        final result = await authService.isBiometricSupported();
+
+        expect(result, true);
+      });
+
+      test('returns false when the device cannot check biometrics', () async {
+        when(
+          () => mockLocalAuth.isDeviceSupported(),
+        ).thenAnswer((_) async => false);
+
+        final result = await authService.isBiometricSupported();
+
+        expect(result, false);
+      });
+    });
+
     group('isBiometricAvailable', () {
       test('returns true when biometrics available', () async {
         when(
-          () => mockLocalAuth.canCheckBiometrics,
+          () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => true);
         when(
           () => mockLocalAuth.getAvailableBiometrics(),
@@ -215,7 +237,7 @@ void main() {
 
       test('returns false when no biometrics', () async {
         when(
-          () => mockLocalAuth.canCheckBiometrics,
+          () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => true);
         when(
           () => mockLocalAuth.getAvailableBiometrics(),
@@ -228,7 +250,7 @@ void main() {
 
       test('returns false when device cannot check biometrics', () async {
         when(
-          () => mockLocalAuth.canCheckBiometrics,
+          () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => false);
 
         final result = await authService.isBiometricAvailable();
@@ -266,7 +288,7 @@ void main() {
           () => mockStorage.read(key: 'flutty_pin_salt'),
         ).thenAnswer((_) async => _validPinSalt);
         when(
-          () => mockLocalAuth.canCheckBiometrics,
+          () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => false);
 
         final result = await authService.getAuthMethod();
@@ -294,7 +316,7 @@ void main() {
             () => mockStorage.read(key: 'flutty_pin_salt'),
           ).thenAnswer((_) async => null);
           when(
-            () => mockLocalAuth.canCheckBiometrics,
+            () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => false);
 
           await expectLater(
@@ -324,7 +346,7 @@ void main() {
             () => mockStorage.read(key: 'flutty_pin_salt'),
           ).thenAnswer((_) async => '');
           when(
-            () => mockLocalAuth.canCheckBiometrics,
+            () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => false);
 
           await expectLater(
@@ -354,7 +376,7 @@ void main() {
             () => mockStorage.read(key: 'flutty_pin_salt'),
           ).thenAnswer((_) async => _validPinSalt);
           when(
-            () => mockLocalAuth.canCheckBiometrics,
+            () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => false);
 
           await expectLater(
@@ -377,7 +399,7 @@ void main() {
             () => mockStorage.read(key: 'flutty_pin_hash'),
           ).thenAnswer((_) async => 'legacy-hash-value');
           when(
-            () => mockLocalAuth.canCheckBiometrics,
+            () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => true);
           when(
             () => mockLocalAuth.getAvailableBiometrics(),
@@ -409,7 +431,7 @@ void main() {
             () => mockStorage.read(key: 'flutty_pin_salt'),
           ).thenAnswer((_) async => _validPinSalt);
           when(
-            () => mockLocalAuth.canCheckBiometrics,
+            () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => true);
           when(
             () => mockLocalAuth.getAvailableBiometrics(),
@@ -439,7 +461,7 @@ void main() {
           () => mockStorage.read(key: 'flutty_pin_salt'),
         ).thenAnswer((_) async => _validPinSalt);
         when(
-          () => mockLocalAuth.canCheckBiometrics,
+          () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => true);
         when(
           () => mockLocalAuth.getAvailableBiometrics(),

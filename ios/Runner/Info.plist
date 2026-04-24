@@ -53,6 +53,8 @@
 	<string>$(PRODUCT_NAME) needs photo library access to select files for transfer.</string>
 	<key>NSCameraUsageDescription</key>
 	<string>$(PRODUCT_NAME) needs camera access to scan sync recovery key QR codes.</string>
+	<key>NSFaceIDUsageDescription</key>
+	<string>$(PRODUCT_NAME) uses Face ID to unlock your encrypted SSH credentials.</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>

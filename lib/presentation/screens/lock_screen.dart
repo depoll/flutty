@@ -142,119 +142,155 @@ class _LockScreenState extends ConsumerState<LockScreen> {
 
     return Scaffold(
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              // Logo/icon
-              ClipRRect(
-                borderRadius: BorderRadius.circular(24),
-                child: Image.asset(
-                  'assets/icons/monkeyssh_icon.png',
-                  width: 112,
-                  height: 112,
-                ),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: BoxConstraints(
+                minHeight: constraints.maxHeight > 48
+                    ? constraints.maxHeight - 48
+                    : 0,
               ),
-              const SizedBox(height: 32),
-              Text(
-                appName,
-                style: theme.textTheme.headlineMedium?.copyWith(
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                subtitle,
-                style: theme.textTheme.bodyLarge?.copyWith(
-                  color: colorScheme.onSurface.withValues(alpha: 0.6),
-                ),
-                textAlign: TextAlign.center,
-              ),
-              const SizedBox(height: 48),
-
-              if (isInitializing) ...[
-                const CircularProgressIndicator(),
-                const SizedBox(height: 24),
-              ],
-
-              // PIN input
-              if (!isInitializing &&
-                  !showAuthMethodError &&
-                  (_authMethod == AuthMethod.pin ||
-                      _authMethod == AuthMethod.both)) ...[
-                SizedBox(
-                  width: 200,
-                  child: TextField(
-                    controller: _pinController,
-                    focusNode: _focusNode,
-                    keyboardType: TextInputType.number,
-                    textAlign: TextAlign.center,
-                    obscureText: !_showPin,
-                    maxLength: 8,
-                    style: theme.textTheme.headlineSmall?.copyWith(
-                      letterSpacing: 8,
-                    ),
-                    decoration: InputDecoration(
-                      counterText: '',
-                      hintText: '••••',
-                      errorText: _error,
-                      suffixIcon: IconButton(
-                        icon: Icon(
-                          _showPin ? Icons.visibility_off : Icons.visibility,
+              child: Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 360),
+                  child: Column(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      // Logo/icon
+                      ClipRRect(
+                        borderRadius: BorderRadius.circular(24),
+                        child: Image.asset(
+                          'assets/icons/monkeyssh_icon.png',
+                          width: 112,
+                          height: 112,
                         ),
-                        onPressed: () => setState(() => _showPin = !_showPin),
                       ),
-                    ),
-                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                    onSubmitted: (_) => _authenticateWithPin(),
-                  ),
-                ),
-                const SizedBox(height: 24),
-                SizedBox(
-                  width: 200,
-                  child: ElevatedButton(
-                    onPressed: _isLoading ? null : _authenticateWithPin,
-                    child: _isLoading
-                        ? const SizedBox(
-                            height: 20,
-                            width: 20,
-                            child: CircularProgressIndicator(strokeWidth: 2),
-                          )
-                        : const Text('Unlock'),
-                  ),
-                ),
-              ],
+                      const SizedBox(height: 32),
+                      Text(
+                        appName,
+                        style: theme.textTheme.headlineMedium?.copyWith(
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        subtitle,
+                        style: theme.textTheme.bodyLarge?.copyWith(
+                          color: colorScheme.onSurface.withValues(alpha: 0.6),
+                        ),
+                        textAlign: TextAlign.center,
+                      ),
+                      const SizedBox(height: 48),
 
-              // Biometric button
-              if (!isInitializing &&
-                  !showAuthMethodError &&
-                  (_authMethod == AuthMethod.biometric ||
-                      _authMethod == AuthMethod.both)) ...[
-                const SizedBox(height: 24),
-                TextButton.icon(
-                  onPressed: _isLoading ? null : _authenticateWithBiometrics,
-                  icon: const Icon(Icons.fingerprint),
-                  label: const Text('Use biometrics'),
-                ),
-              ],
+                      if (isInitializing) ...[
+                        const CircularProgressIndicator(),
+                        const SizedBox(height: 24),
+                      ],
 
-              if (showAuthMethodError) ...[
-                SizedBox(
-                  width: 200,
-                  child: OutlinedButton(
-                    onPressed: () {
-                      setState(() {
-                        _isCheckingAuthMethod = true;
-                        _authMethodLoadFailed = false;
-                      });
-                      unawaited(_checkAuthMethod(refreshAuthState: true));
-                    },
-                    child: const Text('Retry'),
+                      // PIN input
+                      if (!isInitializing &&
+                          !showAuthMethodError &&
+                          (_authMethod == AuthMethod.pin ||
+                              _authMethod == AuthMethod.both)) ...[
+                        SizedBox(
+                          width: double.infinity,
+                          child: TextField(
+                            controller: _pinController,
+                            focusNode: _focusNode,
+                            keyboardType: TextInputType.number,
+                            textAlign: TextAlign.center,
+                            obscureText: !_showPin,
+                            maxLength: 8,
+                            style: theme.textTheme.headlineSmall?.copyWith(
+                              letterSpacing: 8,
+                            ),
+                            decoration: InputDecoration(
+                              counterText: '',
+                              hintText: '••••',
+                              errorText: _error,
+                              prefixIcon: const SizedBox.shrink(),
+                              prefixIconConstraints:
+                                  const BoxConstraints.tightFor(
+                                    width: 48,
+                                    height: 48,
+                                  ),
+                              suffixIconConstraints:
+                                  const BoxConstraints.tightFor(
+                                    width: 48,
+                                    height: 48,
+                                  ),
+                              suffixIcon: IconButton(
+                                icon: Icon(
+                                  _showPin
+                                      ? Icons.visibility_off
+                                      : Icons.visibility,
+                                ),
+                                onPressed: () =>
+                                    setState(() => _showPin = !_showPin),
+                              ),
+                            ),
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            onSubmitted: (_) => _authenticateWithPin(),
+                          ),
+                        ),
+                        const SizedBox(height: 24),
+                        SizedBox(
+                          width: double.infinity,
+                          child: ElevatedButton(
+                            onPressed: _isLoading ? null : _authenticateWithPin,
+                            child: _isLoading
+                                ? const SizedBox(
+                                    height: 20,
+                                    width: 20,
+                                    child: CircularProgressIndicator(
+                                      strokeWidth: 2,
+                                    ),
+                                  )
+                                : const Text('Unlock'),
+                          ),
+                        ),
+                      ],
+
+                      // Biometric button
+                      if (!isInitializing &&
+                          !showAuthMethodError &&
+                          (_authMethod == AuthMethod.biometric ||
+                              _authMethod == AuthMethod.both)) ...[
+                        const SizedBox(height: 24),
+                        TextButton.icon(
+                          onPressed: _isLoading
+                              ? null
+                              : _authenticateWithBiometrics,
+                          icon: const Icon(Icons.fingerprint),
+                          label: const Text('Use biometrics'),
+                        ),
+                      ],
+
+                      if (showAuthMethodError) ...[
+                        SizedBox(
+                          width: double.infinity,
+                          child: OutlinedButton(
+                            onPressed: () {
+                              setState(() {
+                                _isCheckingAuthMethod = true;
+                                _authMethodLoadFailed = false;
+                              });
+                              unawaited(
+                                _checkAuthMethod(refreshAuthState: true),
+                              );
+                            },
+                            child: const Text('Retry'),
+                          ),
+                        ),
+                      ],
+                    ],
                   ),
                 ),
-              ],
-            ],
+              ),
+            ),
           ),
         ),
       ),

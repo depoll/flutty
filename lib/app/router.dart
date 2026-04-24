@@ -50,7 +50,7 @@ final routerProvider = Provider<GoRouter>((ref) {
       ),
       GoRoute(
         path: '/auth-setup',
-        name: 'auth-setup',
+        name: Routes.authSetup,
         builder: (context, state) => const AuthSetupScreen(),
       ),
       GoRoute(

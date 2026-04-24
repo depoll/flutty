@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
@@ -98,7 +99,13 @@ class FakeAuthService extends AuthService {
   Future<bool> isBiometricEnabled() async => false;
 
   @override
+  Future<bool> isBiometricSupported() async => false;
+
+  @override
   Future<bool> isBiometricAvailable() async => false;
+
+  @override
+  Future<List<BiometricType>> getAvailableBiometrics() async => [];
 }
 
 class FakeSecureTransferService extends SecureTransferService {

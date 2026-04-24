@@ -7,7 +7,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
+import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
@@ -22,6 +24,60 @@ import '../support/settings_import_test_helpers.dart';
 const _backgroundSshChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/ssh_service',
 );
+
+class _SupportedButUnavailableAuthService extends FakeAuthService {
+  @override
+  Future<bool> isBiometricSupported() async => true;
+}
+
+class _ToggleableBiometricAuthService extends FakeAuthService {
+  bool biometricEnabled = false;
+
+  @override
+  Future<bool> isAuthEnabled() async => true;
+
+  @override
+  Future<bool> isBiometricSupported() async => true;
+
+  @override
+  Future<bool> isBiometricAvailable() async => false;
+
+  @override
+  Future<bool> isBiometricEnabled() async => biometricEnabled;
+
+  @override
+  Future<void> setBiometricEnabled({required bool enabled}) async {
+    biometricEnabled = enabled;
+  }
+}
+
+class _UnlockedAuthStateNotifier extends AuthStateNotifier {
+  @override
+  AuthState build() => AuthState.unlocked;
+}
+
+class _UnknownAuthStateNotifier extends AuthStateNotifier {
+  @override
+  AuthState build() => AuthState.unknown;
+}
+
+class _ChangePinAuthService extends FakeAuthService {
+  bool shouldSucceed = false;
+  int changePinCallCount = 0;
+
+  @override
+  Future<bool> changePin(String currentPin, String newPin) async {
+    changePinCallCount += 1;
+    return shouldSucceed;
+  }
+}
+
+class _ThrowingChangePinAuthService extends FakeAuthService {
+  @override
+  Future<bool> changePin(String currentPin, String newPin) async {
+    throw Exception('storage unavailable');
+  }
+}
 
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
@@ -333,15 +389,253 @@ void main() {
       );
     });
 
-    testWidgets('displays security options', (tester) async {
+    testWidgets('shows security setup actions when auth is not configured', (
+      tester,
+    ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
 
       await _pumpSettingsScreen(tester, db: db);
 
-      expect(find.text('Change PIN'), findsOneWidget);
+      expect(find.text('Set up app lock'), findsOneWidget);
       expect(find.text('Biometric authentication'), findsOneWidget);
       expect(find.text('Auto-lock timeout'), findsOneWidget);
+      expect(find.text('Change PIN'), findsNothing);
+      expect(find.text('Set up app lock first'), findsOneWidget);
+      expect(find.text('Not supported on this device'), findsOneWidget);
+    });
+
+    testWidgets('keeps setup actions disabled while auth state is loading', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(_UnknownAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final setupTile = tester.widget<ListTile>(
+        find.widgetWithText(ListTile, 'Set up app lock'),
+      );
+      expect(setupTile.onTap, isNull);
+      expect(find.text('Checking security status'), findsNWidgets(3));
+    });
+
+    testWidgets('navigates to auth setup from the settings entry point', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final router = GoRouter(
+        routes: [
+          GoRoute(
+            path: '/',
+            builder: (context, state) => const SettingsScreen(),
+          ),
+          GoRoute(
+            path: '/auth-setup',
+            name: Routes.authSetup,
+            builder: (context, state) =>
+                const Scaffold(body: Text('Auth setup destination')),
+          ),
+        ],
+      );
+      addTearDown(router.dispose);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(FakeAuthService()),
+            authStateProvider.overrideWith(MockAuthStateNotifier.new),
+          ],
+          child: MaterialApp.router(routerConfig: router),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Set up app lock'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Auth setup destination'), findsOneWidget);
+    });
+
+    testWidgets(
+      'keeps biometric toggle visible when support exists but enrollment is missing',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              authServiceProvider.overrideWithValue(
+                _SupportedButUnavailableAuthService(),
+              ),
+              authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            ],
+            child: const MaterialApp(home: SettingsScreen()),
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        expect(find.text('Biometric authentication'), findsOneWidget);
+        final biometricTile = find.widgetWithText(
+          SwitchListTile,
+          'Biometric authentication',
+        );
+        expect(biometricTile, findsOneWidget);
+        expect(tester.widget<SwitchListTile>(biometricTile).value, isFalse);
+      },
+    );
+
+    testWidgets('updates biometric toggle state immediately after tapping', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final authService = _ToggleableBiometricAuthService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(authService),
+            authStateProvider.overrideWith(_UnlockedAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final biometricTile = find.widgetWithText(
+        SwitchListTile,
+        'Biometric authentication',
+      );
+      expect(tester.widget<SwitchListTile>(biometricTile).value, isFalse);
+
+      tester.widget<SwitchListTile>(biometricTile).onChanged!(true);
+      await tester.pumpAndSettle();
+
+      expect(authService.biometricEnabled, isTrue);
+      expect(tester.widget<SwitchListTile>(biometricTile).value, isTrue);
+      expect(
+        find.text('Enabled - enroll fingerprint or face to use it'),
+        findsOneWidget,
+      );
+    });
+
+    testWidgets(
+      'keeps change PIN dialog open when the current PIN is incorrect',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final authService = _ChangePinAuthService();
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              authServiceProvider.overrideWithValue(authService),
+              authStateProvider.overrideWith(_UnlockedAuthStateNotifier.new),
+            ],
+            child: const MaterialApp(home: SettingsScreen()),
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Change PIN'));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'Current PIN'),
+          '0000',
+        );
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'New PIN'),
+          '1234',
+        );
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'Confirm new PIN'),
+          '1234',
+        );
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Change'));
+        await tester.pumpAndSettle();
+
+        expect(authService.changePinCallCount, 1);
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(find.text('Current PIN is incorrect'), findsOneWidget);
+        expect(find.text('PIN changed successfully'), findsNothing);
+      },
+    );
+
+    testWidgets('recovers the change PIN dialog after unexpected failures', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final reportedErrors = <FlutterErrorDetails>[];
+      final originalOnError = FlutterError.onError;
+      FlutterError.onError = reportedErrors.add;
+      addTearDown(() => FlutterError.onError = originalOnError);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(
+              _ThrowingChangePinAuthService(),
+            ),
+            authStateProvider.overrideWith(_UnlockedAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Change PIN'));
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Current PIN'),
+        '1234',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'New PIN'),
+        '5678',
+      );
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Confirm new PIN'),
+        '5678',
+      );
+
+      await tester.tap(find.widgetWithText(FilledButton, 'Change'));
+      await tester.pumpAndSettle();
+
+      expect(find.byType(AlertDialog), findsOneWidget);
+      expect(find.text('Could not change PIN. Try again.'), findsOneWidget);
+      expect(reportedErrors, hasLength(1));
+      final cancelButton = tester.widget<TextButton>(
+        find.widgetWithText(TextButton, 'Cancel'),
+      );
+      expect(cancelButton.onPressed, isNotNull);
     });
 
     testWidgets('displays Android background reliability controls', (

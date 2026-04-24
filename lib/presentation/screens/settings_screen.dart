@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -44,6 +45,39 @@ class SettingsScreen extends ConsumerWidget {
       ],
     ),
   );
+}
+
+final _biometricSettingsStateProvider =
+    FutureProvider.autoDispose<_BiometricSettingsState>((ref) async {
+      final authService = ref.watch(authServiceProvider);
+      final isSupported = await authService.isBiometricSupported();
+      final isEnabled = await authService.isBiometricEnabled();
+
+      if (!isSupported) {
+        return _BiometricSettingsState(
+          isSupported: false,
+          isAvailable: false,
+          isEnabled: isEnabled,
+        );
+      }
+
+      return _BiometricSettingsState(
+        isSupported: true,
+        isAvailable: (await authService.getAvailableBiometrics()).isNotEmpty,
+        isEnabled: isEnabled,
+      );
+    });
+
+class _BiometricSettingsState {
+  const _BiometricSettingsState({
+    required this.isSupported,
+    required this.isAvailable,
+    required this.isEnabled,
+  });
+
+  final bool isSupported;
+  final bool isAvailable;
+  final bool isEnabled;
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -180,59 +214,87 @@ class _SecuritySection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authStateProvider);
-    final isAuthEnabled = authState != AuthState.notConfigured;
+    final isAuthKnown = authState != AuthState.unknown;
+    final isAuthConfigured =
+        authState == AuthState.locked || authState == AuthState.unlocked;
     final autoLockTimeout = ref.watch(autoLockTimeoutNotifierProvider);
+    final biometricSettings = ref.watch(_biometricSettingsStateProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(title: 'Security'),
-        ListTile(
-          leading: const Icon(Icons.pin_outlined),
-          title: const Text('Change PIN'),
-          subtitle: Text(
-            isAuthEnabled ? 'Update your PIN code' : 'PIN not set',
+        if (isAuthConfigured)
+          ListTile(
+            leading: const Icon(Icons.pin_outlined),
+            title: const Text('Change PIN'),
+            subtitle: const Text('Update your PIN code'),
+            onTap: () => _showChangePinDialog(context, ref),
+          )
+        else
+          ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('Set up app lock'),
+            subtitle: Text(
+              isAuthKnown
+                  ? 'Protect the app with a PIN and optional biometrics'
+                  : 'Checking security status',
+            ),
+            onTap: isAuthKnown
+                ? () => context.pushNamed(Routes.authSetup)
+                : null,
           ),
-          enabled: isAuthEnabled,
-          onTap: isAuthEnabled
-              ? () => _showChangePinDialog(context, ref)
-              : null,
-        ),
-        FutureBuilder<bool>(
-          future: ref.read(authServiceProvider).isBiometricAvailable(),
-          builder: (context, snapshot) {
-            final isAvailable = snapshot.data ?? false;
-            return FutureBuilder<bool>(
-              future: ref.read(authServiceProvider).isBiometricEnabled(),
-              builder: (context, enabledSnapshot) {
-                final isEnabled = enabledSnapshot.data ?? false;
-                return SwitchListTile(
-                  secondary: const Icon(Icons.fingerprint),
-                  title: const Text('Biometric authentication'),
-                  subtitle: Text(
-                    isAvailable
-                        ? 'Use fingerprint or face to unlock'
-                        : 'Not available on this device',
-                  ),
-                  value: isEnabled && isAvailable,
-                  onChanged: isAvailable && isAuthEnabled
-                      ? (value) => _toggleBiometric(ref, value)
-                      : null,
-                );
-              },
-            );
-          },
+        biometricSettings.when(
+          loading: () => const SwitchListTile(
+            secondary: Icon(Icons.fingerprint),
+            title: Text('Biometric authentication'),
+            subtitle: Text('Checking biometric availability'),
+            value: false,
+            onChanged: null,
+          ),
+          error: (_, _) => const SwitchListTile(
+            secondary: Icon(Icons.fingerprint),
+            title: Text('Biometric authentication'),
+            subtitle: Text('Biometric status unavailable'),
+            value: false,
+            onChanged: null,
+          ),
+          data: (state) => SwitchListTile(
+            secondary: const Icon(Icons.fingerprint),
+            title: const Text('Biometric authentication'),
+            subtitle: Text(
+              !isAuthKnown
+                  ? 'Checking security status'
+                  : !state.isSupported
+                  ? 'Not supported on this device'
+                  : !isAuthConfigured
+                  ? 'Set up app lock first'
+                  : state.isAvailable
+                  ? 'Use fingerprint or face to unlock'
+                  : state.isEnabled
+                  ? 'Enabled - enroll fingerprint or face to use it'
+                  : 'Enable now, then enroll fingerprint or face to use it',
+            ),
+            value: state.isEnabled,
+            onChanged: state.isSupported && isAuthConfigured
+                ? (value) => _toggleBiometric(ref, value)
+                : null,
+          ),
         ),
         ListTile(
           leading: const Icon(Icons.timer_outlined),
           title: const Text('Auto-lock timeout'),
           subtitle: Text(
-            autoLockTimeout == 0
-                ? 'Disabled'
-                : '$autoLockTimeout minute${autoLockTimeout == 1 ? '' : 's'}',
+            !isAuthKnown
+                ? 'Checking security status'
+                : isAuthConfigured
+                ? autoLockTimeout == 0
+                      ? 'Disabled'
+                      : '$autoLockTimeout minute${autoLockTimeout == 1 ? '' : 's'}'
+                : 'Set up app lock first',
           ),
-          enabled: isAuthEnabled,
-          onTap: isAuthEnabled
+          enabled: isAuthConfigured,
+          onTap: isAuthConfigured
               ? () => _showAutoLockDialog(context, ref, autoLockTimeout)
               : null,
         ),
@@ -245,87 +307,160 @@ class _SecuritySection extends ConsumerWidget {
     final newPinController = TextEditingController();
     final confirmPinController = TextEditingController();
     final formKey = GlobalKey<FormState>();
+    var currentPinErrorText = '';
+    var isChanging = false;
+
+    String? validatePin(String? value) {
+      if (value?.isEmpty ?? true) return 'Required';
+      if (value!.length < 4) return 'PIN must be 4-8 digits';
+      return null;
+    }
 
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Change PIN'),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: currentPinController,
-                decoration: const InputDecoration(labelText: 'Current PIN'),
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                validator: (v) => v?.isEmpty ?? true ? 'Required' : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: newPinController,
-                decoration: const InputDecoration(labelText: 'New PIN'),
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v?.isEmpty ?? true) return 'Required';
-                  if (v!.length < 4) return 'PIN must be at least 4 digits';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: confirmPinController,
-                decoration: const InputDecoration(labelText: 'Confirm new PIN'),
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v != newPinController.text) return 'PINs do not match';
-                  return null;
-                },
-              ),
-            ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Change PIN'),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: currentPinController,
+                  decoration: const InputDecoration(
+                    labelText: 'Current PIN',
+                    counterText: '',
+                  ),
+                  forceErrorText: currentPinErrorText.isEmpty
+                      ? null
+                      : currentPinErrorText,
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  maxLength: 8,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  validator: validatePin,
+                  onChanged: (_) {
+                    if (currentPinErrorText.isEmpty) return;
+                    setState(() => currentPinErrorText = '');
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: newPinController,
+                  decoration: const InputDecoration(
+                    labelText: 'New PIN',
+                    counterText: '',
+                  ),
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  maxLength: 8,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  validator: validatePin,
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: confirmPinController,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirm new PIN',
+                    counterText: '',
+                  ),
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  maxLength: 8,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  validator: (v) {
+                    final pinValidationError = validatePin(v);
+                    if (pinValidationError != null) return pinValidationError;
+                    if (v != newPinController.text) return 'PINs do not match';
+                    return null;
+                  },
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: isChanging ? null : () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: isChanging
+                  ? null
+                  : () async {
+                      if (!(formKey.currentState?.validate() ?? false)) return;
+
+                      setState(() {
+                        currentPinErrorText = '';
+                        isChanging = true;
+                      });
+
+                      bool success;
+                      try {
+                        success = await ref
+                            .read(authServiceProvider)
+                            .changePin(
+                              currentPinController.text,
+                              newPinController.text,
+                            );
+                      } on Object catch (error, stackTrace) {
+                        FlutterError.reportError(
+                          FlutterErrorDetails(
+                            exception: error,
+                            stack: stackTrace,
+                            library: 'auth',
+                            context: ErrorDescription(
+                              'while changing the app PIN from settings',
+                            ),
+                          ),
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Could not change PIN. Try again.'),
+                            ),
+                          );
+                        }
+                        return;
+                      } finally {
+                        if (context.mounted) {
+                          setState(() => isChanging = false);
+                        }
+                      }
+
+                      if (!context.mounted) return;
+
+                      if (success) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('PIN changed successfully'),
+                          ),
+                        );
+                        return;
+                      }
+
+                      setState(
+                        () => currentPinErrorText = 'Current PIN is incorrect',
+                      );
+                    },
+              child: isChanging
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Change'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              if (formKey.currentState?.validate() ?? false) {
-                final success = await ref
-                    .read(authServiceProvider)
-                    .changePin(
-                      currentPinController.text,
-                      newPinController.text,
-                    );
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        success
-                            ? 'PIN changed successfully'
-                            : 'Current PIN is incorrect',
-                      ),
-                    ),
-                  );
-                }
-              }
-            },
-            child: const Text('Change'),
-          ),
-        ],
       ),
     );
   }
 
   Future<void> _toggleBiometric(WidgetRef ref, bool value) async {
     await ref.read(authServiceProvider).setBiometricEnabled(enabled: value);
-    ref.invalidate(authStateProvider);
+    ref.invalidate(_biometricSettingsStateProvider);
   }
 
   void _showAutoLockDialog(BuildContext context, WidgetRef ref, int current) {

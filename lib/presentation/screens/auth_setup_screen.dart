@@ -19,6 +19,7 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
   int _step = 0; // 0: choose, 1: enter PIN, 2: confirm PIN
   bool _isLoading = false;
   String? _error;
+  bool _biometricSupported = false;
   bool _biometricAvailable = false;
   bool _enableBiometric = false;
 
@@ -30,8 +31,14 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
 
   Future<void> _checkBiometric() async {
     final authService = ref.read(authServiceProvider);
-    final available = await authService.isBiometricAvailable();
-    setState(() => _biometricAvailable = available);
+    final supported = await authService.isBiometricSupported();
+    final available =
+        supported && (await authService.getAvailableBiometrics()).isNotEmpty;
+    if (!mounted) return;
+    setState(() {
+      _biometricSupported = supported;
+      _biometricAvailable = available;
+    });
   }
 
   Future<void> _setupPin() async {
@@ -52,19 +59,21 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     });
 
     final authService = ref.read(authServiceProvider);
-    await authService.setupPin(_pinController.text);
+    try {
+      await authService.setupPin(_pinController.text);
 
-    if (_enableBiometric) {
-      await authService.setBiometricEnabled(enabled: true);
+      if (_enableBiometric) {
+        await authService.setBiometricEnabled(enabled: true);
+      }
+
+      await ref.read(authStateProvider.notifier).refresh();
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
-
-    await ref.read(authStateProvider.notifier).refresh();
-
-    setState(() => _isLoading = false);
-
-    if (mounted) {
-      Navigator.of(context).pop(true);
-    }
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
   }
 
   void _skip() {
@@ -87,12 +96,29 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Security Setup'),
-        actions: [TextButton(onPressed: _skip, child: const Text('Skip'))],
+        actions: [
+          TextButton(
+            onPressed: _isLoading ? null : _skip,
+            child: const Text('Skip'),
+          ),
+        ],
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: _buildStep(theme, colorScheme),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight > 48
+                      ? constraints.maxHeight - 48
+                      : 0,
+                  maxWidth: 420,
+                ),
+                child: _buildStep(theme, colorScheme),
+              ),
+            ),
+          ),
         ),
       ),
     );
@@ -135,11 +161,13 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
         onTap: () => setState(() => _step = 1),
       ),
       const SizedBox(height: 12),
-      if (_biometricAvailable)
+      if (_biometricSupported)
         _OptionCard(
           icon: Icons.fingerprint,
           title: 'Biometrics',
-          subtitle: 'Use fingerprint or face recognition',
+          subtitle: _biometricAvailable
+              ? 'Use fingerprint or face recognition'
+              : 'Enable now, then enroll fingerprint or face before first use',
           trailing: Switch(
             value: _enableBiometric,
             onChanged: (v) => setState(() => _enableBiometric = v),
@@ -174,6 +202,7 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
         autofocus: true,
         decoration: InputDecoration(labelText: 'PIN', errorText: _error),
         inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        onChanged: (_) => setState(() => _error = null),
         onSubmitted: (_) {
           if (_pinController.text.length >= 4) {
             setState(() {
@@ -205,72 +234,79 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     ],
   );
 
-  Widget _buildConfirmPinStep(ThemeData theme, ColorScheme colorScheme) =>
-      Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+  Widget _buildConfirmPinStep(
+    ThemeData theme,
+    ColorScheme colorScheme,
+  ) => Column(
+    crossAxisAlignment: CrossAxisAlignment.start,
+    children: [
+      Text(
+        'Confirm PIN',
+        style: theme.textTheme.headlineSmall?.copyWith(
+          fontWeight: FontWeight.bold,
+        ),
+      ),
+      const SizedBox(height: 8),
+      Text(
+        'Enter your PIN again to confirm.',
+        style: theme.textTheme.bodyLarge?.copyWith(
+          color: colorScheme.onSurface.withValues(alpha: 0.6),
+        ),
+      ),
+      const SizedBox(height: 32),
+      TextField(
+        controller: _confirmPinController,
+        keyboardType: TextInputType.number,
+        obscureText: true,
+        maxLength: 8,
+        autofocus: true,
+        decoration: InputDecoration(
+          labelText: 'Confirm PIN',
+          errorText: _error,
+        ),
+        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+        onChanged: (_) => setState(() => _error = null),
+        onSubmitted: (_) => _setupPin(),
+      ),
+      if (_biometricSupported) ...[
+        const SizedBox(height: 16),
+        SwitchListTile(
+          value: _enableBiometric,
+          onChanged: (v) => setState(() => _enableBiometric = v),
+          title: const Text('Enable biometrics'),
+          subtitle: Text(
+            _biometricAvailable
+                ? 'Also allow fingerprint/face unlock'
+                : 'Enable now, then enroll fingerprint or face before first use',
+          ),
+          contentPadding: EdgeInsets.zero,
+        ),
+      ],
+      const SizedBox(height: 24),
+      Row(
         children: [
-          Text(
-            'Confirm PIN',
-            style: theme.textTheme.headlineSmall?.copyWith(
-              fontWeight: FontWeight.bold,
-            ),
+          TextButton(
+            onPressed: () => setState(() {
+              _step = 1;
+              _error = null;
+            }),
+            child: const Text('Back'),
           ),
-          const SizedBox(height: 8),
-          Text(
-            'Enter your PIN again to confirm.',
-            style: theme.textTheme.bodyLarge?.copyWith(
-              color: colorScheme.onSurface.withValues(alpha: 0.6),
-            ),
-          ),
-          const SizedBox(height: 32),
-          TextField(
-            controller: _confirmPinController,
-            keyboardType: TextInputType.number,
-            obscureText: true,
-            maxLength: 8,
-            autofocus: true,
-            decoration: InputDecoration(
-              labelText: 'Confirm PIN',
-              errorText: _error,
-            ),
-            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-            onSubmitted: (_) => _setupPin(),
-          ),
-          if (_biometricAvailable) ...[
-            const SizedBox(height: 16),
-            SwitchListTile(
-              value: _enableBiometric,
-              onChanged: (v) => setState(() => _enableBiometric = v),
-              title: const Text('Enable biometrics'),
-              subtitle: const Text('Also allow fingerprint/face unlock'),
-              contentPadding: EdgeInsets.zero,
-            ),
-          ],
-          const SizedBox(height: 24),
-          Row(
-            children: [
-              TextButton(
-                onPressed: () => setState(() {
-                  _step = 1;
-                  _error = null;
-                }),
-                child: const Text('Back'),
-              ),
-              const Spacer(),
-              ElevatedButton(
-                onPressed: _isLoading ? null : _setupPin,
-                child: _isLoading
-                    ? const SizedBox(
-                        height: 20,
-                        width: 20,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('Complete'),
-              ),
-            ],
+          const Spacer(),
+          ElevatedButton(
+            onPressed: _isLoading ? null : _setupPin,
+            child: _isLoading
+                ? const SizedBox(
+                    height: 20,
+                    width: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : const Text('Complete'),
           ),
         ],
-      );
+      ),
+    ],
+  );
 }
 
 class _OptionCard extends StatelessWidget {
