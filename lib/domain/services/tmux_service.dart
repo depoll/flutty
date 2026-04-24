@@ -19,7 +19,14 @@ import 'ssh_service.dart';
 /// avoid redundant profile sourcing on subsequent calls.
 class TmuxService {
   /// Creates a new [TmuxService].
-  const TmuxService();
+  const TmuxService({
+    Duration execOpenTimeout = const Duration(seconds: 10),
+    Duration execOutputTimeout = const Duration(seconds: 10),
+  }) : _execOpenTimeout = execOpenTimeout,
+       _execOutputTimeout = execOutputTimeout;
+
+  final Duration _execOpenTimeout;
+  final Duration _execOutputTimeout;
 
   /// Cached tmux binary paths per SSH session (by connectionId).
   static final Map<int, String> _tmuxPathCache = {};
@@ -370,14 +377,32 @@ class TmuxService {
   ///
   /// Drains both stdout and stderr to prevent SSH channel flow-control
   /// deadlocks, and awaits channel completion.
+  Future<SSHSession> _openExec(
+    SshSession session,
+    String command, {
+    SSHPtyConfig? pty,
+  }) {
+    final openFuture = session.execute(command, pty: pty);
+    return openFuture.timeout(
+      _execOpenTimeout,
+      onTimeout: () {
+        openFuture.then((exec) => exec.close()).ignore();
+        throw TimeoutException(
+          'Timed out opening SSH exec channel',
+          _execOpenTimeout,
+        );
+      },
+    );
+  }
+
   Future<String> _exec(SshSession session, String command) async {
     final wrappedCommand = _wrapCommand(session, command);
-    final execSession = await session.execute(wrappedCommand);
+    final execSession = await _openExec(session, wrappedCommand);
     try {
       final results = await Future.wait([
         execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
         execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-      ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
+      ]).timeout(_execOutputTimeout, onTimeout: () => ['', '']);
       return results[0];
     } finally {
       execSession.close();
@@ -392,7 +417,7 @@ class TmuxService {
   void _execFireAndForget(SshSession session, String command) {
     final wrappedCommand = _wrapCommand(session, command);
     // Launch and ignore — the exec channel self-closes on completion.
-    session.execute(wrappedCommand).then((exec) {
+    _openExec(session, wrappedCommand).then((exec) {
       // Drain streams to prevent backpressure, but don't wait.
       exec.stdout.drain<void>().ignore();
       exec.stderr.drain<void>().ignore();
@@ -409,7 +434,8 @@ class TmuxService {
       // Detect login shell and resolve tmux path in a single exec.
       // Redirect stdout from profile scripts to /dev/null so greetings,
       // MOTD, or fortune output don't corrupt our parsed output.
-      final execSession = await session.execute(
+      final execSession = await _openExec(
+        session,
         r'SHELL_NAME=$(basename "$SHELL" 2>/dev/null || echo sh); '
         r'case "$SHELL_NAME" in '
         'zsh) { . ~/.zprofile; } >/dev/null 2>&1;; '
@@ -423,7 +449,7 @@ class TmuxService {
         final results = await Future.wait([
           execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
           execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-        ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
+        ]).timeout(_execOutputTimeout, onTimeout: () => ['', '']);
         final lines = results[0].trim().split('\n');
         if (lines.isNotEmpty) {
           final shellName = lines[0].trim();
@@ -717,7 +743,8 @@ class _TmuxWindowChangeObserver {
     _starting = true;
     try {
       await service._cacheTmuxPath(session);
-      final execSession = await session.execute(
+      final execSession = await service._openExec(
+        session,
         service._wrapCommand(
           session,
           buildTmuxControlModeAttachCommand(sessionName),
