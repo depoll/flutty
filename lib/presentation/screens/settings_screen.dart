@@ -297,80 +297,113 @@ class _SecuritySection extends ConsumerWidget {
     final newPinController = TextEditingController();
     final confirmPinController = TextEditingController();
     final formKey = GlobalKey<FormState>();
+    var currentPinErrorText = '';
+    var isChanging = false;
 
     showDialog<void>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Change PIN'),
-        content: Form(
-          key: formKey,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              TextFormField(
-                controller: currentPinController,
-                decoration: const InputDecoration(labelText: 'Current PIN'),
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                validator: (v) => v?.isEmpty ?? true ? 'Required' : null,
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: newPinController,
-                decoration: const InputDecoration(labelText: 'New PIN'),
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v?.isEmpty ?? true) return 'Required';
-                  if (v!.length < 4) return 'PIN must be at least 4 digits';
-                  return null;
-                },
-              ),
-              const SizedBox(height: 16),
-              TextFormField(
-                controller: confirmPinController,
-                decoration: const InputDecoration(labelText: 'Confirm new PIN'),
-                obscureText: true,
-                keyboardType: TextInputType.number,
-                validator: (v) {
-                  if (v != newPinController.text) return 'PINs do not match';
-                  return null;
-                },
-              ),
-            ],
+      builder: (context) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: const Text('Change PIN'),
+          content: Form(
+            key: formKey,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TextFormField(
+                  controller: currentPinController,
+                  decoration: InputDecoration(
+                    labelText: 'Current PIN',
+                    errorText: currentPinErrorText.isEmpty
+                        ? null
+                        : currentPinErrorText,
+                  ),
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  validator: (v) => v?.isEmpty ?? true ? 'Required' : null,
+                  onChanged: (_) {
+                    if (currentPinErrorText.isEmpty) return;
+                    setState(() => currentPinErrorText = '');
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: newPinController,
+                  decoration: const InputDecoration(labelText: 'New PIN'),
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v?.isEmpty ?? true) return 'Required';
+                    if (v!.length < 4) return 'PIN must be at least 4 digits';
+                    return null;
+                  },
+                ),
+                const SizedBox(height: 16),
+                TextFormField(
+                  controller: confirmPinController,
+                  decoration: const InputDecoration(
+                    labelText: 'Confirm new PIN',
+                  ),
+                  obscureText: true,
+                  keyboardType: TextInputType.number,
+                  validator: (v) {
+                    if (v != newPinController.text) return 'PINs do not match';
+                    return null;
+                  },
+                ),
+              ],
+            ),
           ),
+          actions: [
+            TextButton(
+              onPressed: isChanging ? null : () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: isChanging
+                  ? null
+                  : () async {
+                      if (!(formKey.currentState?.validate() ?? false)) return;
+
+                      setState(() {
+                        currentPinErrorText = '';
+                        isChanging = true;
+                      });
+
+                      final success = await ref
+                          .read(authServiceProvider)
+                          .changePin(
+                            currentPinController.text,
+                            newPinController.text,
+                          );
+
+                      if (!context.mounted) return;
+
+                      if (success) {
+                        Navigator.pop(context);
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          const SnackBar(
+                            content: Text('PIN changed successfully'),
+                          ),
+                        );
+                        return;
+                      }
+
+                      setState(() {
+                        isChanging = false;
+                        currentPinErrorText = 'Current PIN is incorrect';
+                      });
+                    },
+              child: isChanging
+                  ? const SizedBox(
+                      height: 20,
+                      width: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Text('Change'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () async {
-              if (formKey.currentState?.validate() ?? false) {
-                final success = await ref
-                    .read(authServiceProvider)
-                    .changePin(
-                      currentPinController.text,
-                      newPinController.text,
-                    );
-                if (context.mounted) {
-                  Navigator.pop(context);
-                  ScaffoldMessenger.of(context).showSnackBar(
-                    SnackBar(
-                      content: Text(
-                        success
-                            ? 'PIN changed successfully'
-                            : 'Current PIN is incorrect',
-                      ),
-                    ),
-                  );
-                }
-              }
-            },
-            child: const Text('Change'),
-          ),
-        ],
       ),
     );
   }

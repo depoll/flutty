@@ -54,6 +54,17 @@ class _UnlockedAuthStateNotifier extends AuthStateNotifier {
   AuthState build() => AuthState.unlocked;
 }
 
+class _ChangePinAuthService extends FakeAuthService {
+  bool shouldSucceed = false;
+  int changePinCallCount = 0;
+
+  @override
+  Future<bool> changePin(String currentPin, String newPin) async {
+    changePinCallCount += 1;
+    return shouldSucceed;
+  }
+}
+
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
   required AppDatabase db,
@@ -452,6 +463,52 @@ void main() {
         findsOneWidget,
       );
     });
+
+    testWidgets(
+      'keeps change PIN dialog open when the current PIN is incorrect',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final authService = _ChangePinAuthService();
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              authServiceProvider.overrideWithValue(authService),
+              authStateProvider.overrideWith(_UnlockedAuthStateNotifier.new),
+            ],
+            child: const MaterialApp(home: SettingsScreen()),
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.text('Change PIN'));
+        await tester.pumpAndSettle();
+
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'Current PIN'),
+          '0000',
+        );
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'New PIN'),
+          '1234',
+        );
+        await tester.enterText(
+          find.widgetWithText(TextFormField, 'Confirm new PIN'),
+          '1234',
+        );
+
+        await tester.tap(find.widgetWithText(FilledButton, 'Change'));
+        await tester.pumpAndSettle();
+
+        expect(authService.changePinCallCount, 1);
+        expect(find.byType(AlertDialog), findsOneWidget);
+        expect(find.text('Current PIN is incorrect'), findsOneWidget);
+        expect(find.text('PIN changed successfully'), findsNothing);
+      },
+    );
 
     testWidgets('displays Android background reliability controls', (
       tester,
