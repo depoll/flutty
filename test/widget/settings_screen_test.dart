@@ -333,15 +333,20 @@ void main() {
       );
     });
 
-    testWidgets('displays security options', (tester) async {
+    testWidgets('shows security setup actions when auth is not configured', (
+      tester,
+    ) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);
 
       await _pumpSettingsScreen(tester, db: db);
 
-      expect(find.text('Change PIN'), findsOneWidget);
+      expect(find.text('Set up app lock'), findsOneWidget);
       expect(find.text('Biometric authentication'), findsOneWidget);
       expect(find.text('Auto-lock timeout'), findsOneWidget);
+      expect(find.text('Change PIN'), findsNothing);
+      expect(find.text('Set up app lock first'), findsOneWidget);
+      expect(find.text('Not available on this device'), findsOneWidget);
     });
 
     testWidgets('displays Android background reliability controls', (

@@ -180,24 +180,30 @@ class _SecuritySection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authStateProvider);
-    final isAuthEnabled = authState != AuthState.notConfigured;
+    final isAuthConfigured =
+        authState == AuthState.locked || authState == AuthState.unlocked;
     final autoLockTimeout = ref.watch(autoLockTimeoutNotifierProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         const _SectionHeader(title: 'Security'),
-        ListTile(
-          leading: const Icon(Icons.pin_outlined),
-          title: const Text('Change PIN'),
-          subtitle: Text(
-            isAuthEnabled ? 'Update your PIN code' : 'PIN not set',
+        if (isAuthConfigured)
+          ListTile(
+            leading: const Icon(Icons.pin_outlined),
+            title: const Text('Change PIN'),
+            subtitle: const Text('Update your PIN code'),
+            onTap: () => _showChangePinDialog(context, ref),
+          )
+        else
+          ListTile(
+            leading: const Icon(Icons.lock_outline),
+            title: const Text('Set up app lock'),
+            subtitle: const Text(
+              'Protect the app with a PIN and optional biometrics',
+            ),
+            onTap: () => context.pushNamed(Routes.authSetup),
           ),
-          enabled: isAuthEnabled,
-          onTap: isAuthEnabled
-              ? () => _showChangePinDialog(context, ref)
-              : null,
-        ),
         FutureBuilder<bool>(
           future: ref.read(authServiceProvider).isBiometricAvailable(),
           builder: (context, snapshot) {
@@ -210,12 +216,14 @@ class _SecuritySection extends ConsumerWidget {
                   secondary: const Icon(Icons.fingerprint),
                   title: const Text('Biometric authentication'),
                   subtitle: Text(
-                    isAvailable
+                    !isAvailable
+                        ? 'Not available on this device'
+                        : isAuthConfigured
                         ? 'Use fingerprint or face to unlock'
-                        : 'Not available on this device',
+                        : 'Set up app lock first',
                   ),
                   value: isEnabled && isAvailable,
-                  onChanged: isAvailable && isAuthEnabled
+                  onChanged: isAvailable && isAuthConfigured
                       ? (value) => _toggleBiometric(ref, value)
                       : null,
                 );
@@ -227,12 +235,14 @@ class _SecuritySection extends ConsumerWidget {
           leading: const Icon(Icons.timer_outlined),
           title: const Text('Auto-lock timeout'),
           subtitle: Text(
-            autoLockTimeout == 0
-                ? 'Disabled'
-                : '$autoLockTimeout minute${autoLockTimeout == 1 ? '' : 's'}',
+            isAuthConfigured
+                ? autoLockTimeout == 0
+                      ? 'Disabled'
+                      : '$autoLockTimeout minute${autoLockTimeout == 1 ? '' : 's'}'
+                : 'Set up app lock first',
           ),
-          enabled: isAuthEnabled,
-          onTap: isAuthEnabled
+          enabled: isAuthConfigured,
+          onTap: isAuthConfigured
               ? () => _showAutoLockDialog(context, ref, autoLockTimeout)
               : null,
         ),
