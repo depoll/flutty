@@ -13,6 +13,24 @@ double _contrastRatio(Color a, Color b) {
   return (brightest + 0.05) / (darkest + 0.05);
 }
 
+Color _compositeOver(Color foreground, Color background) {
+  final foregroundArgb = foreground.toARGB32();
+  final backgroundArgb = background.toARGB32();
+  final alpha = ((foregroundArgb >> 24) & 0xFF) / 255;
+  final foregroundRed = (foregroundArgb >> 16) & 0xFF;
+  final foregroundGreen = (foregroundArgb >> 8) & 0xFF;
+  final foregroundBlue = foregroundArgb & 0xFF;
+  final backgroundRed = (backgroundArgb >> 16) & 0xFF;
+  final backgroundGreen = (backgroundArgb >> 8) & 0xFF;
+  final backgroundBlue = backgroundArgb & 0xFF;
+  return Color.fromARGB(
+    0xFF,
+    (foregroundRed * alpha + backgroundRed * (1 - alpha)).round(),
+    (foregroundGreen * alpha + backgroundGreen * (1 - alpha)).round(),
+    (foregroundBlue * alpha + backgroundBlue * (1 - alpha)).round(),
+  );
+}
+
 void main() {
   group('TerminalThemeData', () {
     test('creates with required fields', () {
@@ -273,26 +291,7 @@ void main() {
       expect(TerminalThemes.getById('ocean-dark'), isNotNull);
     });
 
-    test('all built-in themes keep tmux prompt colors legible', () {
-      for (final theme in TerminalThemes.all) {
-        expect(
-          _contrastRatio(theme.green, theme.black),
-          greaterThanOrEqualTo(4.5),
-          reason:
-              'Theme ${theme.name} should keep tmux black-on-green status '
-              'lines readable.',
-        );
-        expect(
-          _contrastRatio(theme.yellow, theme.black),
-          greaterThanOrEqualTo(4.5),
-          reason:
-              'Theme ${theme.name} should keep tmux black-on-yellow command '
-              'prompts readable.',
-        );
-      }
-    });
-
-    test('all built-in themes keep neutral prompt bars legible', () {
+    test('all built-in themes keep default text readable', () {
       for (final theme in TerminalThemes.all) {
         expect(
           _contrastRatio(theme.foreground, theme.background),
@@ -301,6 +300,57 @@ void main() {
               'Theme ${theme.name} should keep default terminal text readable '
               'on its background.',
         );
+      }
+    });
+
+    test(
+      'all built-in themes keep ANSI text colors readable on background',
+      () {
+        const ansiColorGetters =
+            <({String name, Color Function(TerminalThemeData) color})>[
+              (name: 'red', color: _themeRed),
+              (name: 'green', color: _themeGreen),
+              (name: 'yellow', color: _themeYellow),
+              (name: 'blue', color: _themeBlue),
+              (name: 'magenta', color: _themeMagenta),
+              (name: 'cyan', color: _themeCyan),
+              (name: 'white', color: _themeWhite),
+              (name: 'brightRed', color: _themeBrightRed),
+              (name: 'brightGreen', color: _themeBrightGreen),
+              (name: 'brightYellow', color: _themeBrightYellow),
+              (name: 'brightBlue', color: _themeBrightBlue),
+              (name: 'brightMagenta', color: _themeBrightMagenta),
+              (name: 'brightCyan', color: _themeBrightCyan),
+              (name: 'brightWhite', color: _themeBrightWhite),
+            ];
+        for (final theme in TerminalThemes.all) {
+          for (final ansiColor in ansiColorGetters) {
+            expect(
+              _contrastRatio(ansiColor.color(theme), theme.background),
+              greaterThanOrEqualTo(4.5),
+              reason:
+                  'Theme ${theme.name} should keep ANSI ${ansiColor.name} '
+                  'readable on the main background.',
+            );
+          }
+        }
+      },
+    );
+
+    test('dark built-in themes keep bright black readable on background', () {
+      for (final theme in TerminalThemes.darkThemes) {
+        expect(
+          _contrastRatio(theme.brightBlack, theme.background),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Dark theme ${theme.name} should keep ANSI bright black '
+              'readable on the main background.',
+        );
+      }
+    });
+
+    test('all built-in themes keep dim prompt bars legible', () {
+      for (final theme in TerminalThemes.all) {
         expect(
           _contrastRatio(theme.brightBlack, theme.black),
           greaterThanOrEqualTo(4.5),
@@ -308,45 +358,73 @@ void main() {
               'Theme ${theme.name} should keep dim prompt text readable on '
               'ANSI black bars.',
         );
+      }
+    });
+
+    test('all built-in themes keep cursors visible', () {
+      for (final theme in TerminalThemes.all) {
         expect(
-          _contrastRatio(theme.white, theme.black),
-          greaterThanOrEqualTo(4.5),
+          _contrastRatio(theme.cursor, theme.background),
+          greaterThanOrEqualTo(3),
           reason:
-              'Theme ${theme.name} should keep ANSI white readable on ANSI '
-              'black bars.',
-        );
-        expect(
-          _contrastRatio(theme.brightWhite, theme.black),
-          greaterThanOrEqualTo(4.5),
-          reason:
-              'Theme ${theme.name} should keep ANSI bright white readable on '
-              'ANSI black bars.',
+              'Theme ${theme.name} should keep the cursor visible on the '
+              'terminal background.',
         );
       }
     });
 
-    test('Clean White keeps tmux command prompts comfortably readable', () {
-      expect(
-        _contrastRatio(TerminalThemes.cleanWhite.yellow, Colors.black),
-        greaterThanOrEqualTo(8),
-      );
+    test('all built-in themes keep selections visible', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(
+            _compositeOver(theme.selection, theme.background),
+            theme.background,
+          ),
+          greaterThanOrEqualTo(1.25),
+          reason:
+              'Theme ${theme.name} should keep the selection overlay visible '
+              'against the terminal background.',
+        );
+      }
     });
 
-    test('Clean White keeps dim and white prompt text readable', () {
-      expect(
-        _contrastRatio(
-          TerminalThemes.cleanWhite.brightBlack,
-          TerminalThemes.cleanWhite.black,
-        ),
-        greaterThanOrEqualTo(4.5),
-      );
-      expect(
-        _contrastRatio(
-          TerminalThemes.cleanWhite.white,
-          TerminalThemes.cleanWhite.black,
-        ),
-        greaterThanOrEqualTo(4.5),
-      );
+    test('default search hit colors stay readable', () {
+      for (final theme in TerminalThemes.all) {
+        final xtermTheme = theme.toXtermTheme();
+        expect(
+          _contrastRatio(
+            xtermTheme.searchHitForeground,
+            xtermTheme.searchHitBackground,
+          ),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep default search hits readable.',
+        );
+        expect(
+          _contrastRatio(
+            xtermTheme.searchHitForeground,
+            xtermTheme.searchHitBackgroundCurrent,
+          ),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep current search hits readable.',
+        );
+      }
     });
   });
 }
+
+Color _themeRed(TerminalThemeData theme) => theme.red;
+Color _themeGreen(TerminalThemeData theme) => theme.green;
+Color _themeYellow(TerminalThemeData theme) => theme.yellow;
+Color _themeBlue(TerminalThemeData theme) => theme.blue;
+Color _themeMagenta(TerminalThemeData theme) => theme.magenta;
+Color _themeCyan(TerminalThemeData theme) => theme.cyan;
+Color _themeWhite(TerminalThemeData theme) => theme.white;
+Color _themeBrightRed(TerminalThemeData theme) => theme.brightRed;
+Color _themeBrightGreen(TerminalThemeData theme) => theme.brightGreen;
+Color _themeBrightYellow(TerminalThemeData theme) => theme.brightYellow;
+Color _themeBrightBlue(TerminalThemeData theme) => theme.brightBlue;
+Color _themeBrightMagenta(TerminalThemeData theme) => theme.brightMagenta;
+Color _themeBrightCyan(TerminalThemeData theme) => theme.brightCyan;
+Color _themeBrightWhite(TerminalThemeData theme) => theme.brightWhite;
