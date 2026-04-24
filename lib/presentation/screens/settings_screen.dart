@@ -205,27 +205,37 @@ class _SecuritySection extends ConsumerWidget {
             onTap: () => context.pushNamed(Routes.authSetup),
           ),
         FutureBuilder<bool>(
-          future: ref.read(authServiceProvider).isBiometricAvailable(),
+          future: ref.read(authServiceProvider).isBiometricSupported(),
           builder: (context, snapshot) {
-            final isAvailable = snapshot.data ?? false;
+            final isSupported = snapshot.data ?? false;
             return FutureBuilder<bool>(
-              future: ref.read(authServiceProvider).isBiometricEnabled(),
-              builder: (context, enabledSnapshot) {
-                final isEnabled = enabledSnapshot.data ?? false;
-                return SwitchListTile(
-                  secondary: const Icon(Icons.fingerprint),
-                  title: const Text('Biometric authentication'),
-                  subtitle: Text(
-                    !isAvailable
-                        ? 'Not available on this device'
-                        : isAuthConfigured
-                        ? 'Use fingerprint or face to unlock'
-                        : 'Set up app lock first',
-                  ),
-                  value: isEnabled && isAvailable,
-                  onChanged: isAvailable && isAuthConfigured
-                      ? (value) => _toggleBiometric(ref, value)
-                      : null,
+              future: ref.read(authServiceProvider).isBiometricAvailable(),
+              builder: (context, availableSnapshot) {
+                final isAvailable = availableSnapshot.data ?? false;
+                return FutureBuilder<bool>(
+                  future: ref.read(authServiceProvider).isBiometricEnabled(),
+                  builder: (context, enabledSnapshot) {
+                    final isEnabled = enabledSnapshot.data ?? false;
+                    return SwitchListTile(
+                      secondary: const Icon(Icons.fingerprint),
+                      title: const Text('Biometric authentication'),
+                      subtitle: Text(
+                        !isSupported
+                            ? 'Not supported on this device'
+                            : !isAuthConfigured
+                            ? 'Set up app lock first'
+                            : isAvailable
+                            ? 'Use fingerprint or face to unlock'
+                            : isEnabled
+                            ? 'Enabled - enroll fingerprint or face to use it'
+                            : 'Enable now, then enroll fingerprint or face to use it',
+                      ),
+                      value: isEnabled,
+                      onChanged: isSupported && isAuthConfigured
+                          ? (value) => _toggleBiometric(ref, value)
+                          : null,
+                    );
+                  },
                 );
               },
             );

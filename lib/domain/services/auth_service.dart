@@ -76,10 +76,18 @@ class AuthService {
   }
 
   /// Check if device supports biometric authentication.
+  Future<bool> isBiometricSupported() async {
+    try {
+      return await _localAuth.canCheckBiometrics;
+    } on PlatformException {
+      return false;
+    }
+  }
+
+  /// Check if biometrics are enrolled and ready to use.
   Future<bool> isBiometricAvailable() async {
     try {
-      final isAvailable = await _localAuth.canCheckBiometrics;
-      if (!isAvailable) return false;
+      if (!await isBiometricSupported()) return false;
 
       final biometrics = await _localAuth.getAvailableBiometrics();
       return biometrics.isNotEmpty;

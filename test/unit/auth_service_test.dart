@@ -199,6 +199,28 @@ void main() {
       });
     });
 
+    group('isBiometricSupported', () {
+      test('returns true when the device can check biometrics', () async {
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => true);
+
+        final result = await authService.isBiometricSupported();
+
+        expect(result, true);
+      });
+
+      test('returns false when the device cannot check biometrics', () async {
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => false);
+
+        final result = await authService.isBiometricSupported();
+
+        expect(result, false);
+      });
+    });
+
     group('isBiometricAvailable', () {
       test('returns true when biometrics available', () async {
         when(

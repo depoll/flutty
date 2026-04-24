@@ -23,6 +23,11 @@ const _backgroundSshChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/ssh_service',
 );
 
+class _SupportedButUnavailableAuthService extends FakeAuthService {
+  @override
+  Future<bool> isBiometricSupported() async => true;
+}
+
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
   required AppDatabase db,
@@ -346,8 +351,39 @@ void main() {
       expect(find.text('Auto-lock timeout'), findsOneWidget);
       expect(find.text('Change PIN'), findsNothing);
       expect(find.text('Set up app lock first'), findsOneWidget);
-      expect(find.text('Not available on this device'), findsOneWidget);
+      expect(find.text('Not supported on this device'), findsOneWidget);
     });
+
+    testWidgets(
+      'keeps biometric toggle visible when support exists but enrollment is missing',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              authServiceProvider.overrideWithValue(
+                _SupportedButUnavailableAuthService(),
+              ),
+              authStateProvider.overrideWith(MockAuthStateNotifier.new),
+            ],
+            child: const MaterialApp(home: SettingsScreen()),
+          ),
+        );
+
+        await tester.pumpAndSettle();
+
+        expect(find.text('Biometric authentication'), findsOneWidget);
+        final biometricTile = find.widgetWithText(
+          SwitchListTile,
+          'Biometric authentication',
+        );
+        expect(biometricTile, findsOneWidget);
+        expect(tester.widget<SwitchListTile>(biometricTile).value, isFalse);
+      },
+    );
 
     testWidgets('displays Android background reliability controls', (
       tester,
