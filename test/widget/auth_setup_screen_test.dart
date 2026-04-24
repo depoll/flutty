@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/presentation/screens/auth_setup_screen.dart';
 
@@ -9,7 +10,9 @@ class _BiometricAvailableAuthService extends AuthService {
   Future<bool> isBiometricSupported() async => true;
 
   @override
-  Future<bool> isBiometricAvailable() async => true;
+  Future<List<BiometricType>> getAvailableBiometrics() async => [
+    BiometricType.fingerprint,
+  ];
 }
 
 class _BiometricSupportedAuthService extends AuthService {
@@ -17,7 +20,7 @@ class _BiometricSupportedAuthService extends AuthService {
   Future<bool> isBiometricSupported() async => true;
 
   @override
-  Future<bool> isBiometricAvailable() async => false;
+  Future<List<BiometricType>> getAvailableBiometrics() async => [];
 }
 
 void main() {

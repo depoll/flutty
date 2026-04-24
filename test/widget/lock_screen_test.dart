@@ -244,7 +244,7 @@ void main() {
               return null;
           }
         });
-        when(() => localAuth.canCheckBiometrics).thenAnswer((_) async => false);
+        when(localAuth.isDeviceSupported).thenAnswer((_) async => false);
 
         await tester.pumpWidget(
           ProviderScope(
@@ -299,7 +299,7 @@ void main() {
               return null;
           }
         });
-        when(() => localAuth.canCheckBiometrics).thenAnswer((_) async => false);
+        when(localAuth.isDeviceSupported).thenAnswer((_) async => false);
 
         await tester.pumpWidget(
           ProviderScope(

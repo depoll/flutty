@@ -32,7 +32,9 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
   Future<void> _checkBiometric() async {
     final authService = ref.read(authServiceProvider);
     final supported = await authService.isBiometricSupported();
-    final available = await authService.isBiometricAvailable();
+    final available =
+        supported && (await authService.getAvailableBiometrics()).isNotEmpty;
+    if (!mounted) return;
     setState(() {
       _biometricSupported = supported;
       _biometricAvailable = available;
@@ -57,19 +59,21 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     });
 
     final authService = ref.read(authServiceProvider);
-    await authService.setupPin(_pinController.text);
+    try {
+      await authService.setupPin(_pinController.text);
 
-    if (_enableBiometric) {
-      await authService.setBiometricEnabled(enabled: true);
+      if (_enableBiometric) {
+        await authService.setBiometricEnabled(enabled: true);
+      }
+
+      await ref.read(authStateProvider.notifier).refresh();
+    } finally {
+      if (mounted) {
+        setState(() => _isLoading = false);
+      }
     }
-
-    await ref.read(authStateProvider.notifier).refresh();
-
-    setState(() => _isLoading = false);
-
-    if (mounted) {
-      Navigator.of(context).pop(true);
-    }
+    if (!mounted) return;
+    Navigator.of(context).pop(true);
   }
 
   void _skip() {
@@ -92,7 +96,12 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     return Scaffold(
       appBar: AppBar(
         title: const Text('Security Setup'),
-        actions: [TextButton(onPressed: _skip, child: const Text('Skip'))],
+        actions: [
+          TextButton(
+            onPressed: _isLoading ? null : _skip,
+            child: const Text('Skip'),
+          ),
+        ],
       ),
       body: SafeArea(
         child: LayoutBuilder(
@@ -101,7 +110,9 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
             child: Center(
               child: ConstrainedBox(
                 constraints: BoxConstraints(
-                  minHeight: constraints.maxHeight - 48,
+                  minHeight: constraints.maxHeight > 48
+                      ? constraints.maxHeight - 48
+                      : 0,
                   maxWidth: 420,
                 ),
                 child: _buildStep(theme, colorScheme),

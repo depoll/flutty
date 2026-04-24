@@ -147,7 +147,9 @@ class _LockScreenState extends ConsumerState<LockScreen> {
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
               constraints: BoxConstraints(
-                minHeight: constraints.maxHeight - 48,
+                minHeight: constraints.maxHeight > 48
+                    ? constraints.maxHeight - 48
+                    : 0,
               ),
               child: Center(
                 child: ConstrainedBox(

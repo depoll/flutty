@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -62,7 +63,7 @@ final _biometricSettingsStateProvider =
 
       return _BiometricSettingsState(
         isSupported: true,
-        isAvailable: await authService.isBiometricAvailable(),
+        isAvailable: (await authService.getAvailableBiometrics()).isNotEmpty,
         isEnabled: isEnabled,
       );
     });
@@ -213,6 +214,7 @@ class _SecuritySection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final authState = ref.watch(authStateProvider);
+    final isAuthKnown = authState != AuthState.unknown;
     final isAuthConfigured =
         authState == AuthState.locked || authState == AuthState.unlocked;
     final autoLockTimeout = ref.watch(autoLockTimeoutNotifierProvider);
@@ -233,10 +235,14 @@ class _SecuritySection extends ConsumerWidget {
           ListTile(
             leading: const Icon(Icons.lock_outline),
             title: const Text('Set up app lock'),
-            subtitle: const Text(
-              'Protect the app with a PIN and optional biometrics',
+            subtitle: Text(
+              isAuthKnown
+                  ? 'Protect the app with a PIN and optional biometrics'
+                  : 'Checking security status',
             ),
-            onTap: () => context.pushNamed(Routes.authSetup),
+            onTap: isAuthKnown
+                ? () => context.pushNamed(Routes.authSetup)
+                : null,
           ),
         biometricSettings.when(
           loading: () => const SwitchListTile(
@@ -257,7 +263,9 @@ class _SecuritySection extends ConsumerWidget {
             secondary: const Icon(Icons.fingerprint),
             title: const Text('Biometric authentication'),
             subtitle: Text(
-              !state.isSupported
+              !isAuthKnown
+                  ? 'Checking security status'
+                  : !state.isSupported
                   ? 'Not supported on this device'
                   : !isAuthConfigured
                   ? 'Set up app lock first'
@@ -277,7 +285,9 @@ class _SecuritySection extends ConsumerWidget {
           leading: const Icon(Icons.timer_outlined),
           title: const Text('Auto-lock timeout'),
           subtitle: Text(
-            isAuthConfigured
+            !isAuthKnown
+                ? 'Checking security status'
+                : isAuthConfigured
                 ? autoLockTimeout == 0
                       ? 'Disabled'
                       : '$autoLockTimeout minute${autoLockTimeout == 1 ? '' : 's'}'
@@ -300,6 +310,12 @@ class _SecuritySection extends ConsumerWidget {
     var currentPinErrorText = '';
     var isChanging = false;
 
+    String? validatePin(String? value) {
+      if (value?.isEmpty ?? true) return 'Required';
+      if (value!.length < 4) return 'PIN must be 4-8 digits';
+      return null;
+    }
+
     showDialog<void>(
       context: context,
       builder: (context) => StatefulBuilder(
@@ -312,15 +328,18 @@ class _SecuritySection extends ConsumerWidget {
               children: [
                 TextFormField(
                   controller: currentPinController,
-                  decoration: InputDecoration(
+                  decoration: const InputDecoration(
                     labelText: 'Current PIN',
-                    errorText: currentPinErrorText.isEmpty
-                        ? null
-                        : currentPinErrorText,
+                    counterText: '',
                   ),
+                  forceErrorText: currentPinErrorText.isEmpty
+                      ? null
+                      : currentPinErrorText,
                   obscureText: true,
                   keyboardType: TextInputType.number,
-                  validator: (v) => v?.isEmpty ?? true ? 'Required' : null,
+                  maxLength: 8,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  validator: validatePin,
                   onChanged: (_) {
                     if (currentPinErrorText.isEmpty) return;
                     setState(() => currentPinErrorText = '');
@@ -329,24 +348,30 @@ class _SecuritySection extends ConsumerWidget {
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: newPinController,
-                  decoration: const InputDecoration(labelText: 'New PIN'),
+                  decoration: const InputDecoration(
+                    labelText: 'New PIN',
+                    counterText: '',
+                  ),
                   obscureText: true,
                   keyboardType: TextInputType.number,
-                  validator: (v) {
-                    if (v?.isEmpty ?? true) return 'Required';
-                    if (v!.length < 4) return 'PIN must be at least 4 digits';
-                    return null;
-                  },
+                  maxLength: 8,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                  validator: validatePin,
                 ),
                 const SizedBox(height: 16),
                 TextFormField(
                   controller: confirmPinController,
                   decoration: const InputDecoration(
                     labelText: 'Confirm new PIN',
+                    counterText: '',
                   ),
                   obscureText: true,
                   keyboardType: TextInputType.number,
+                  maxLength: 8,
+                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   validator: (v) {
+                    final pinValidationError = validatePin(v);
+                    if (pinValidationError != null) return pinValidationError;
                     if (v != newPinController.text) return 'PINs do not match';
                     return null;
                   },
@@ -370,12 +395,38 @@ class _SecuritySection extends ConsumerWidget {
                         isChanging = true;
                       });
 
-                      final success = await ref
-                          .read(authServiceProvider)
-                          .changePin(
-                            currentPinController.text,
-                            newPinController.text,
+                      bool success;
+                      try {
+                        success = await ref
+                            .read(authServiceProvider)
+                            .changePin(
+                              currentPinController.text,
+                              newPinController.text,
+                            );
+                      } on Object catch (error, stackTrace) {
+                        FlutterError.reportError(
+                          FlutterErrorDetails(
+                            exception: error,
+                            stack: stackTrace,
+                            library: 'auth',
+                            context: ErrorDescription(
+                              'while changing the app PIN from settings',
+                            ),
+                          ),
+                        );
+                        if (context.mounted) {
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('Could not change PIN. Try again.'),
+                            ),
                           );
+                        }
+                        return;
+                      } finally {
+                        if (context.mounted) {
+                          setState(() => isChanging = false);
+                        }
+                      }
 
                       if (!context.mounted) return;
 
@@ -389,10 +440,9 @@ class _SecuritySection extends ConsumerWidget {
                         return;
                       }
 
-                      setState(() {
-                        isChanging = false;
-                        currentPinErrorText = 'Current PIN is incorrect';
-                      });
+                      setState(
+                        () => currentPinErrorText = 'Current PIN is incorrect',
+                      );
                     },
               child: isChanging
                   ? const SizedBox(
