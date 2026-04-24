@@ -13,6 +13,9 @@ double _contrastRatio(Color a, Color b) {
   return (brightest + 0.05) / (darkest + 0.05);
 }
 
+Color _compositeOver(Color foreground, Color background) =>
+    Color.alphaBlend(foreground, background);
+
 void main() {
   group('TerminalThemeData', () {
     test('creates with required fields', () {
@@ -273,30 +276,207 @@ void main() {
       expect(TerminalThemes.getById('ocean-dark'), isNotNull);
     });
 
-    test('all built-in themes keep tmux prompt colors legible', () {
-      for (final theme in TerminalThemes.all) {
+    test('dark built-in themes keep default text readable', () {
+      for (final theme in TerminalThemes.darkThemes) {
         expect(
-          _contrastRatio(theme.green, theme.black),
+          _contrastRatio(theme.foreground, theme.background),
           greaterThanOrEqualTo(4.5),
           reason:
-              'Theme ${theme.name} should keep tmux black-on-green status '
-              'lines readable.',
-        );
-        expect(
-          _contrastRatio(theme.yellow, theme.black),
-          greaterThanOrEqualTo(4.5),
-          reason:
-              'Theme ${theme.name} should keep tmux black-on-yellow command '
-              'prompts readable.',
+              'Theme ${theme.name} should keep default terminal text readable '
+              'on its background.',
         );
       }
     });
 
-    test('Clean White keeps tmux command prompts comfortably readable', () {
+    test(
+      'light built-in themes balance default text on backgrounds and bars',
+      () {
+        for (final theme in TerminalThemes.lightThemes) {
+          expect(
+            _contrastRatio(theme.foreground, theme.background),
+            greaterThanOrEqualTo(4.3),
+            reason:
+                'Light theme ${theme.name} should keep default terminal text '
+                'readable on its background.',
+          );
+          expect(
+            _contrastRatio(theme.foreground, theme.black),
+            greaterThanOrEqualTo(4.3),
+            reason:
+                'Light theme ${theme.name} should keep default text readable on '
+                'ANSI black prompt/input bars.',
+          );
+          expect(
+            _contrastRatio(theme.black, theme.background),
+            greaterThanOrEqualTo(4.5),
+            reason:
+                'Light theme ${theme.name} should keep ANSI black readable when '
+                'used as text on the main background.',
+          );
+        }
+      },
+    );
+
+    test(
+      'all built-in themes keep ANSI text colors readable on background',
+      () {
+        const ansiColorGetters =
+            <({String name, Color Function(TerminalThemeData) color})>[
+              (name: 'red', color: _themeRed),
+              (name: 'green', color: _themeGreen),
+              (name: 'yellow', color: _themeYellow),
+              (name: 'blue', color: _themeBlue),
+              (name: 'magenta', color: _themeMagenta),
+              (name: 'cyan', color: _themeCyan),
+              (name: 'white', color: _themeWhite),
+              (name: 'brightRed', color: _themeBrightRed),
+              (name: 'brightGreen', color: _themeBrightGreen),
+              (name: 'brightYellow', color: _themeBrightYellow),
+              (name: 'brightBlue', color: _themeBrightBlue),
+              (name: 'brightMagenta', color: _themeBrightMagenta),
+              (name: 'brightCyan', color: _themeBrightCyan),
+              (name: 'brightWhite', color: _themeBrightWhite),
+            ];
+        for (final theme in TerminalThemes.all) {
+          for (final ansiColor in ansiColorGetters) {
+            expect(
+              _contrastRatio(ansiColor.color(theme), theme.background),
+              greaterThanOrEqualTo(4.5),
+              reason:
+                  'Theme ${theme.name} should keep ANSI ${ansiColor.name} '
+                  'readable on the main background.',
+            );
+          }
+        }
+      },
+    );
+
+    test('dark built-in themes keep bright black readable on background', () {
+      for (final theme in TerminalThemes.darkThemes) {
+        expect(
+          _contrastRatio(theme.brightBlack, theme.background),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Dark theme ${theme.name} should keep ANSI bright black '
+              'readable on the main background.',
+        );
+      }
+    });
+
+    test('all built-in themes keep dim prompt bars legible', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(theme.brightBlack, theme.black),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep dim prompt text readable on '
+              'ANSI black bars.',
+        );
+      }
+    });
+
+    test('all built-in themes keep cursors visible', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(theme.cursor, theme.background),
+          greaterThanOrEqualTo(3),
+          reason:
+              'Theme ${theme.name} should keep the cursor visible on the '
+              'terminal background.',
+        );
+      }
+    });
+
+    test('all built-in themes keep selections visible', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(
+            _compositeOver(theme.selection, theme.background),
+            theme.background,
+          ),
+          greaterThanOrEqualTo(1.04),
+          reason:
+              'Theme ${theme.name} should keep the selection overlay visible '
+              'against the terminal background.',
+        );
+      }
+    });
+
+    test('all built-in themes keep selected text readable', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(
+            theme.foreground,
+            _compositeOver(theme.selection, theme.background),
+          ),
+          greaterThanOrEqualTo(3.5),
+          reason:
+              'Theme ${theme.name} should keep selected text readable against '
+              'the composited selection background.',
+        );
+      }
+    });
+
+    test('Ocean Dark and Parchment preserve selected text readability', () {
       expect(
-        _contrastRatio(TerminalThemes.cleanWhite.yellow, Colors.black),
-        greaterThanOrEqualTo(8),
+        _contrastRatio(
+          TerminalThemes.oceanDark.foreground,
+          _compositeOver(
+            TerminalThemes.oceanDark.selection,
+            TerminalThemes.oceanDark.background,
+          ),
+        ),
+        greaterThanOrEqualTo(4.5),
       );
+      expect(
+        _contrastRatio(
+          TerminalThemes.parchment.foreground,
+          _compositeOver(
+            TerminalThemes.parchment.selection,
+            TerminalThemes.parchment.background,
+          ),
+        ),
+        greaterThanOrEqualTo(3.9),
+      );
+    });
+
+    test('default search hit colors stay readable', () {
+      for (final theme in TerminalThemes.all) {
+        final xtermTheme = theme.toXtermTheme();
+        expect(
+          _contrastRatio(
+            xtermTheme.searchHitForeground,
+            xtermTheme.searchHitBackground,
+          ),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep default search hits readable.',
+        );
+        expect(
+          _contrastRatio(
+            xtermTheme.searchHitForeground,
+            xtermTheme.searchHitBackgroundCurrent,
+          ),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep current search hits readable.',
+        );
+      }
     });
   });
 }
+
+Color _themeRed(TerminalThemeData theme) => theme.red;
+Color _themeGreen(TerminalThemeData theme) => theme.green;
+Color _themeYellow(TerminalThemeData theme) => theme.yellow;
+Color _themeBlue(TerminalThemeData theme) => theme.blue;
+Color _themeMagenta(TerminalThemeData theme) => theme.magenta;
+Color _themeCyan(TerminalThemeData theme) => theme.cyan;
+Color _themeWhite(TerminalThemeData theme) => theme.white;
+Color _themeBrightRed(TerminalThemeData theme) => theme.brightRed;
+Color _themeBrightGreen(TerminalThemeData theme) => theme.brightGreen;
+Color _themeBrightYellow(TerminalThemeData theme) => theme.brightYellow;
+Color _themeBrightBlue(TerminalThemeData theme) => theme.brightBlue;
+Color _themeBrightMagenta(TerminalThemeData theme) => theme.brightMagenta;
+Color _themeBrightCyan(TerminalThemeData theme) => theme.brightCyan;
+Color _themeBrightWhite(TerminalThemeData theme) => theme.brightWhite;
