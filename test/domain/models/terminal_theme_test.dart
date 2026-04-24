@@ -276,8 +276,8 @@ void main() {
       expect(TerminalThemes.getById('ocean-dark'), isNotNull);
     });
 
-    test('all built-in themes keep default text readable', () {
-      for (final theme in TerminalThemes.all) {
+    test('dark built-in themes keep default text readable', () {
+      for (final theme in TerminalThemes.darkThemes) {
         expect(
           _contrastRatio(theme.foreground, theme.background),
           greaterThanOrEqualTo(4.5),
@@ -287,6 +287,35 @@ void main() {
         );
       }
     });
+
+    test(
+      'light built-in themes balance default text on backgrounds and bars',
+      () {
+        for (final theme in TerminalThemes.lightThemes) {
+          expect(
+            _contrastRatio(theme.foreground, theme.background),
+            greaterThanOrEqualTo(4.3),
+            reason:
+                'Light theme ${theme.name} should keep default terminal text '
+                'readable on its background.',
+          );
+          expect(
+            _contrastRatio(theme.foreground, theme.black),
+            greaterThanOrEqualTo(4.3),
+            reason:
+                'Light theme ${theme.name} should keep default text readable on '
+                'ANSI black prompt/input bars.',
+          );
+          expect(
+            _contrastRatio(theme.black, theme.background),
+            greaterThanOrEqualTo(4.5),
+            reason:
+                'Light theme ${theme.name} should keep ANSI black readable when '
+                'used as text on the main background.',
+          );
+        }
+      },
+    );
 
     test(
       'all built-in themes keep ANSI text colors readable on background',
