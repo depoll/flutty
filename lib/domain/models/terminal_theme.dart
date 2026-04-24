@@ -1,93 +1,7 @@
 import 'dart:convert';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
-
-const _terminalReadableContrastRatio = 4.5;
-
-double _contrastRatio(Color a, Color b) {
-  final luminanceA = a.computeLuminance();
-  final luminanceB = b.computeLuminance();
-  final brightest = math.max(luminanceA, luminanceB);
-  final darkest = math.min(luminanceA, luminanceB);
-  return (brightest + 0.05) / (darkest + 0.05);
-}
-
-double _minimumContrastRatio(Color color, List<Color> backgrounds) {
-  var minimumRatio = double.infinity;
-  for (final background in backgrounds) {
-    minimumRatio = math.min(minimumRatio, _contrastRatio(color, background));
-  }
-  return minimumRatio;
-}
-
-double _colorDistance(Color a, Color b) {
-  final argbA = a.toARGB32();
-  final argbB = b.toARGB32();
-  final redDelta = ((argbA >> 16) & 0xFF) - ((argbB >> 16) & 0xFF);
-  final greenDelta = ((argbA >> 8) & 0xFF) - ((argbB >> 8) & 0xFF);
-  final blueDelta = (argbA & 0xFF) - (argbB & 0xFF);
-  return (redDelta * redDelta + greenDelta * greenDelta + blueDelta * blueDelta)
-      .toDouble();
-}
-
-Color _opaqueGray(int channel) =>
-    Color.fromARGB(0xFF, channel, channel, channel);
-
-Color _ensureContrast(
-  Color color, {
-  required Iterable<Color> against,
-  required double minRatio,
-}) {
-  final backgrounds = List<Color>.unmodifiable(against);
-  if (backgrounds.isEmpty ||
-      _minimumContrastRatio(color, backgrounds) >= minRatio) {
-    return color;
-  }
-
-  var bestPassingCandidate = color;
-  var bestPassingDistance = double.infinity;
-  var fallbackCandidate = color;
-  var fallbackRatio = _minimumContrastRatio(color, backgrounds);
-  var fallbackDistance = 0.0;
-
-  void considerCandidate(Color candidate) {
-    final minimumRatio = _minimumContrastRatio(candidate, backgrounds);
-    final distance = _colorDistance(color, candidate);
-    if (minimumRatio >= minRatio && distance < bestPassingDistance) {
-      bestPassingCandidate = candidate;
-      bestPassingDistance = distance;
-    }
-    if (minimumRatio > fallbackRatio ||
-        (minimumRatio == fallbackRatio && distance < fallbackDistance)) {
-      fallbackCandidate = candidate;
-      fallbackRatio = minimumRatio;
-      fallbackDistance = distance;
-    }
-  }
-
-  for (final target in const <Color>[Colors.white, Colors.black]) {
-    for (var step = 1; step <= 200; step++) {
-      final candidate = Color.lerp(color, target, step / 200);
-      if (candidate == null) {
-        continue;
-      }
-      considerCandidate(candidate);
-      if (bestPassingDistance.isFinite) {
-        break;
-      }
-    }
-  }
-
-  for (var channel = 0; channel <= 255; channel++) {
-    considerCandidate(_opaqueGray(channel));
-  }
-
-  return bestPassingDistance.isFinite
-      ? bestPassingCandidate
-      : fallbackCandidate;
-}
 
 /// Data model for a terminal color theme.
 ///
@@ -252,59 +166,32 @@ class TerminalThemeData {
   final Color? searchHitForeground;
 
   /// Converts this theme data to xterm's [TerminalTheme].
-  TerminalTheme toXtermTheme() {
-    final readableForeground = _ensureContrast(
-      foreground,
-      against: <Color>[background],
-      minRatio: _terminalReadableContrastRatio,
-    );
-    final readableBrightBlack = _ensureContrast(
-      brightBlack,
-      against: <Color>[black],
-      minRatio: _terminalReadableContrastRatio,
-    );
-    final readableWhite = _ensureContrast(
-      white,
-      against: <Color>[black],
-      minRatio: _terminalReadableContrastRatio,
-    );
-    final readableBrightWhite = _ensureContrast(
-      brightWhite,
-      against: <Color>[black],
-      minRatio: _terminalReadableContrastRatio,
-    );
-    final readableBlack = _ensureContrast(
-      black,
-      against: <Color>[green, yellow],
-      minRatio: _terminalReadableContrastRatio,
-    );
-    return TerminalTheme(
-      cursor: cursor,
-      selection: selection,
-      foreground: readableForeground,
-      background: background,
-      black: readableBlack,
-      red: red,
-      green: green,
-      yellow: yellow,
-      blue: blue,
-      magenta: magenta,
-      cyan: cyan,
-      white: readableWhite,
-      brightBlack: readableBrightBlack,
-      brightRed: brightRed,
-      brightGreen: brightGreen,
-      brightYellow: brightYellow,
-      brightBlue: brightBlue,
-      brightMagenta: brightMagenta,
-      brightCyan: brightCyan,
-      brightWhite: readableBrightWhite,
-      searchHitBackground: searchHitBackground ?? const Color(0xFFFFDF5D),
-      searchHitBackgroundCurrent:
-          searchHitBackgroundCurrent ?? const Color(0xFFFF9632),
-      searchHitForeground: searchHitForeground ?? const Color(0xFF000000),
-    );
-  }
+  TerminalTheme toXtermTheme() => TerminalTheme(
+    cursor: cursor,
+    selection: selection,
+    foreground: foreground,
+    background: background,
+    black: black,
+    red: red,
+    green: green,
+    yellow: yellow,
+    blue: blue,
+    magenta: magenta,
+    cyan: cyan,
+    white: white,
+    brightBlack: brightBlack,
+    brightRed: brightRed,
+    brightGreen: brightGreen,
+    brightYellow: brightYellow,
+    brightBlue: brightBlue,
+    brightMagenta: brightMagenta,
+    brightCyan: brightCyan,
+    brightWhite: brightWhite,
+    searchHitBackground: searchHitBackground ?? const Color(0xFFFFDF5D),
+    searchHitBackgroundCurrent:
+        searchHitBackgroundCurrent ?? const Color(0xFFFF9632),
+    searchHitForeground: searchHitForeground ?? const Color(0xFF000000),
+  );
 
   /// Creates a copy of this theme with the given fields replaced.
   TerminalThemeData copyWith({
