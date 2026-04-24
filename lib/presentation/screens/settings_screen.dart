@@ -46,6 +46,39 @@ class SettingsScreen extends ConsumerWidget {
   );
 }
 
+final _biometricSettingsStateProvider =
+    FutureProvider.autoDispose<_BiometricSettingsState>((ref) async {
+      final authService = ref.watch(authServiceProvider);
+      final isSupported = await authService.isBiometricSupported();
+      final isEnabled = await authService.isBiometricEnabled();
+
+      if (!isSupported) {
+        return _BiometricSettingsState(
+          isSupported: false,
+          isAvailable: false,
+          isEnabled: isEnabled,
+        );
+      }
+
+      return _BiometricSettingsState(
+        isSupported: true,
+        isAvailable: await authService.isBiometricAvailable(),
+        isEnabled: isEnabled,
+      );
+    });
+
+class _BiometricSettingsState {
+  const _BiometricSettingsState({
+    required this.isSupported,
+    required this.isAvailable,
+    required this.isEnabled,
+  });
+
+  final bool isSupported;
+  final bool isAvailable;
+  final bool isEnabled;
+}
+
 class _SectionHeader extends StatelessWidget {
   const _SectionHeader({required this.title});
 
@@ -183,6 +216,7 @@ class _SecuritySection extends ConsumerWidget {
     final isAuthConfigured =
         authState == AuthState.locked || authState == AuthState.unlocked;
     final autoLockTimeout = ref.watch(autoLockTimeoutNotifierProvider);
+    final biometricSettings = ref.watch(_biometricSettingsStateProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -204,42 +238,40 @@ class _SecuritySection extends ConsumerWidget {
             ),
             onTap: () => context.pushNamed(Routes.authSetup),
           ),
-        FutureBuilder<bool>(
-          future: ref.read(authServiceProvider).isBiometricSupported(),
-          builder: (context, snapshot) {
-            final isSupported = snapshot.data ?? false;
-            return FutureBuilder<bool>(
-              future: ref.read(authServiceProvider).isBiometricAvailable(),
-              builder: (context, availableSnapshot) {
-                final isAvailable = availableSnapshot.data ?? false;
-                return FutureBuilder<bool>(
-                  future: ref.read(authServiceProvider).isBiometricEnabled(),
-                  builder: (context, enabledSnapshot) {
-                    final isEnabled = enabledSnapshot.data ?? false;
-                    return SwitchListTile(
-                      secondary: const Icon(Icons.fingerprint),
-                      title: const Text('Biometric authentication'),
-                      subtitle: Text(
-                        !isSupported
-                            ? 'Not supported on this device'
-                            : !isAuthConfigured
-                            ? 'Set up app lock first'
-                            : isAvailable
-                            ? 'Use fingerprint or face to unlock'
-                            : isEnabled
-                            ? 'Enabled - enroll fingerprint or face to use it'
-                            : 'Enable now, then enroll fingerprint or face to use it',
-                      ),
-                      value: isEnabled,
-                      onChanged: isSupported && isAuthConfigured
-                          ? (value) => _toggleBiometric(ref, value)
-                          : null,
-                    );
-                  },
-                );
-              },
-            );
-          },
+        biometricSettings.when(
+          loading: () => const SwitchListTile(
+            secondary: Icon(Icons.fingerprint),
+            title: Text('Biometric authentication'),
+            subtitle: Text('Checking biometric availability'),
+            value: false,
+            onChanged: null,
+          ),
+          error: (_, _) => const SwitchListTile(
+            secondary: Icon(Icons.fingerprint),
+            title: Text('Biometric authentication'),
+            subtitle: Text('Biometric status unavailable'),
+            value: false,
+            onChanged: null,
+          ),
+          data: (state) => SwitchListTile(
+            secondary: const Icon(Icons.fingerprint),
+            title: const Text('Biometric authentication'),
+            subtitle: Text(
+              !state.isSupported
+                  ? 'Not supported on this device'
+                  : !isAuthConfigured
+                  ? 'Set up app lock first'
+                  : state.isAvailable
+                  ? 'Use fingerprint or face to unlock'
+                  : state.isEnabled
+                  ? 'Enabled - enroll fingerprint or face to use it'
+                  : 'Enable now, then enroll fingerprint or face to use it',
+            ),
+            value: state.isEnabled,
+            onChanged: state.isSupported && isAuthConfigured
+                ? (value) => _toggleBiometric(ref, value)
+                : null,
+          ),
         ),
         ListTile(
           leading: const Icon(Icons.timer_outlined),
@@ -345,7 +377,7 @@ class _SecuritySection extends ConsumerWidget {
 
   Future<void> _toggleBiometric(WidgetRef ref, bool value) async {
     await ref.read(authServiceProvider).setBiometricEnabled(enabled: value);
-    ref.invalidate(authStateProvider);
+    ref.invalidate(_biometricSettingsStateProvider);
   }
 
   void _showAutoLockDialog(BuildContext context, WidgetRef ref, int current) {

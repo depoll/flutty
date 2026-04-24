@@ -95,9 +95,19 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
         actions: [TextButton(onPressed: _skip, child: const Text('Skip'))],
       ),
       body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: _buildStep(theme, colorScheme),
+        child: LayoutBuilder(
+          builder: (context, constraints) => SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: Center(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(
+                  minHeight: constraints.maxHeight - 48,
+                  maxWidth: 420,
+                ),
+                child: _buildStep(theme, colorScheme),
+              ),
+            ),
+          ),
         ),
       ),
     );

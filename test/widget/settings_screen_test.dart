@@ -28,6 +28,32 @@ class _SupportedButUnavailableAuthService extends FakeAuthService {
   Future<bool> isBiometricSupported() async => true;
 }
 
+class _ToggleableBiometricAuthService extends FakeAuthService {
+  bool biometricEnabled = false;
+
+  @override
+  Future<bool> isAuthEnabled() async => true;
+
+  @override
+  Future<bool> isBiometricSupported() async => true;
+
+  @override
+  Future<bool> isBiometricAvailable() async => false;
+
+  @override
+  Future<bool> isBiometricEnabled() async => biometricEnabled;
+
+  @override
+  Future<void> setBiometricEnabled({required bool enabled}) async {
+    biometricEnabled = enabled;
+  }
+}
+
+class _UnlockedAuthStateNotifier extends AuthStateNotifier {
+  @override
+  AuthState build() => AuthState.unlocked;
+}
+
 Future<void> _pumpSettingsScreen(
   WidgetTester tester, {
   required AppDatabase db,
@@ -384,6 +410,48 @@ void main() {
         expect(tester.widget<SwitchListTile>(biometricTile).value, isFalse);
       },
     );
+
+    testWidgets('updates biometric toggle state immediately after tapping', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final authService = _ToggleableBiometricAuthService();
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(authService),
+            authStateProvider.overrideWith(_UnlockedAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final biometricTile = find.widgetWithText(
+        SwitchListTile,
+        'Biometric authentication',
+      );
+      final biometricSwitch = find.descendant(
+        of: biometricTile,
+        matching: find.byType(Switch),
+      );
+
+      expect(tester.widget<SwitchListTile>(biometricTile).value, isFalse);
+
+      await tester.tap(biometricSwitch);
+      await tester.pumpAndSettle();
+
+      expect(authService.biometricEnabled, isTrue);
+      expect(tester.widget<SwitchListTile>(biometricTile).value, isTrue);
+      expect(
+        find.text('Enabled - enroll fingerprint or face to use it'),
+        findsOneWidget,
+      );
+    });
 
     testWidgets('displays Android background reliability controls', (
       tester,
