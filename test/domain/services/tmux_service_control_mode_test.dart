@@ -1,5 +1,10 @@
+import 'dart:async';
+
+import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 void main() {
@@ -245,6 +250,25 @@ void main() {
     });
   });
 
+  group('tmux exec recovery', () {
+    test(
+      'listWindows returns empty when opening the exec channel hangs',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService(execOpenTimeout: Duration(milliseconds: 1));
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) => Completer<SSHSession>().future);
+
+        final windows = await service.listWindows(session, 'main');
+
+        expect(windows, isEmpty);
+      },
+    );
+  });
+
   group('decideTmuxHeartbeatAction', () {
     const heartbeat = Duration(seconds: 5);
     const maxSilence = Duration(seconds: 30);
@@ -309,3 +333,16 @@ void main() {
     });
   });
 }
+
+SshSession _buildSession(SSHClient client) => SshSession(
+  connectionId: 1,
+  hostId: 1,
+  client: client,
+  config: const SshConnectionConfig(
+    hostname: 'example.com',
+    port: 22,
+    username: 'tester',
+  ),
+);
+
+class _MockSshClient extends Mock implements SSHClient {}
