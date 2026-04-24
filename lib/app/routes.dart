@@ -27,6 +27,9 @@ abstract final class Routes {
   /// Settings route.
   static const settings = 'settings';
 
+  /// Authentication setup route.
+  static const authSetup = 'auth-setup';
+
   /// Upgrade route.
   static const upgrade = 'upgrade';
 
