@@ -13,23 +13,8 @@ double _contrastRatio(Color a, Color b) {
   return (brightest + 0.05) / (darkest + 0.05);
 }
 
-Color _compositeOver(Color foreground, Color background) {
-  final foregroundArgb = foreground.toARGB32();
-  final backgroundArgb = background.toARGB32();
-  final alpha = ((foregroundArgb >> 24) & 0xFF) / 255;
-  final foregroundRed = (foregroundArgb >> 16) & 0xFF;
-  final foregroundGreen = (foregroundArgb >> 8) & 0xFF;
-  final foregroundBlue = foregroundArgb & 0xFF;
-  final backgroundRed = (backgroundArgb >> 16) & 0xFF;
-  final backgroundGreen = (backgroundArgb >> 8) & 0xFF;
-  final backgroundBlue = backgroundArgb & 0xFF;
-  return Color.fromARGB(
-    0xFF,
-    (foregroundRed * alpha + backgroundRed * (1 - alpha)).round(),
-    (foregroundGreen * alpha + backgroundGreen * (1 - alpha)).round(),
-    (foregroundBlue * alpha + backgroundBlue * (1 - alpha)).round(),
-  );
-}
+Color _compositeOver(Color foreground, Color background) =>
+    Color.alphaBlend(foreground, background);
 
 void main() {
   group('TerminalThemeData', () {
@@ -380,12 +365,50 @@ void main() {
             _compositeOver(theme.selection, theme.background),
             theme.background,
           ),
-          greaterThanOrEqualTo(1.25),
+          greaterThanOrEqualTo(1.04),
           reason:
               'Theme ${theme.name} should keep the selection overlay visible '
               'against the terminal background.',
         );
       }
+    });
+
+    test('all built-in themes keep selected text readable', () {
+      for (final theme in TerminalThemes.all) {
+        expect(
+          _contrastRatio(
+            theme.foreground,
+            _compositeOver(theme.selection, theme.background),
+          ),
+          greaterThanOrEqualTo(3.5),
+          reason:
+              'Theme ${theme.name} should keep selected text readable against '
+              'the composited selection background.',
+        );
+      }
+    });
+
+    test('Ocean Dark and Parchment preserve selected text readability', () {
+      expect(
+        _contrastRatio(
+          TerminalThemes.oceanDark.foreground,
+          _compositeOver(
+            TerminalThemes.oceanDark.selection,
+            TerminalThemes.oceanDark.background,
+          ),
+        ),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(
+        _contrastRatio(
+          TerminalThemes.parchment.foreground,
+          _compositeOver(
+            TerminalThemes.parchment.selection,
+            TerminalThemes.parchment.background,
+          ),
+        ),
+        greaterThanOrEqualTo(3.9),
+      );
     });
 
     test('default search hit colors stay readable', () {

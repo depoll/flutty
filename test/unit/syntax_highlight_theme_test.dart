@@ -5,7 +5,7 @@ import 'package:monkeyssh/presentation/widgets/syntax_highlight_theme.dart';
 
 void main() {
   group('buildSyntaxThemeFromTerminal', () {
-    const theme = TerminalThemeData(
+    const darkTheme = TerminalThemeData(
       id: 'test',
       name: 'Test',
       isDark: true,
@@ -31,42 +31,78 @@ void main() {
       brightWhite: Color(0xFFFFFFFF),
     );
 
+    const lightTheme = TerminalThemeData(
+      id: 'test-light',
+      name: 'Test Light',
+      isDark: false,
+      foreground: Color(0xFF222222),
+      background: Color(0xFFFFFFFF),
+      cursor: Color(0xFF222222),
+      selection: Color(0x60CCCCCC),
+      black: Color(0xFF000000),
+      red: Color(0xFFAA0000),
+      green: Color(0xFF008800),
+      yellow: Color(0xFF886600),
+      blue: Color(0xFF0055CC),
+      magenta: Color(0xFF7A22AA),
+      cyan: Color(0xFF007777),
+      white: Color(0xFF666666),
+      brightBlack: Color(0xFF999999),
+      brightRed: Color(0xFFCC4444),
+      brightGreen: Color(0xFF33AA55),
+      brightYellow: Color(0xFFAA8844),
+      brightBlue: Color(0xFF3388DD),
+      brightMagenta: Color(0xFFAA66DD),
+      brightCyan: Color(0xFF44AAAA),
+      brightWhite: Color(0xFF888888),
+    );
+
     late Map<String, TextStyle> syntaxTheme;
+    late Map<String, TextStyle> lightSyntaxTheme;
 
     setUp(() {
-      syntaxTheme = buildSyntaxThemeFromTerminal(theme);
+      syntaxTheme = buildSyntaxThemeFromTerminal(darkTheme);
+      lightSyntaxTheme = buildSyntaxThemeFromTerminal(lightTheme);
     });
 
     test('root uses foreground and background', () {
       final root = syntaxTheme['root']!;
-      expect(root.color, theme.foreground);
-      expect(root.backgroundColor, theme.background);
+      expect(root.color, darkTheme.foreground);
+      expect(root.backgroundColor, darkTheme.background);
     });
 
     test('keyword uses magenta', () {
-      expect(syntaxTheme['keyword']!.color, theme.magenta);
+      expect(syntaxTheme['keyword']!.color, darkTheme.magenta);
     });
 
     test('string uses green', () {
-      expect(syntaxTheme['string']!.color, theme.green);
+      expect(syntaxTheme['string']!.color, darkTheme.green);
     });
 
     test('number uses yellow', () {
-      expect(syntaxTheme['number']!.color, theme.yellow);
+      expect(syntaxTheme['number']!.color, darkTheme.yellow);
     });
 
     test('type uses cyan', () {
-      expect(syntaxTheme['type']!.color, theme.cyan);
+      expect(syntaxTheme['type']!.color, darkTheme.cyan);
     });
 
     test('title uses blue', () {
-      expect(syntaxTheme['title']!.color, theme.blue);
+      expect(syntaxTheme['title']!.color, darkTheme.blue);
     });
 
-    test('comment uses brightBlack with italic', () {
+    test('dark theme comment uses brightBlack with italic', () {
       final comment = syntaxTheme['comment']!;
-      expect(comment.color, theme.brightBlack);
+      expect(comment.color, darkTheme.brightBlack);
       expect(comment.fontStyle, FontStyle.italic);
+    });
+
+    test('light theme comment uses white with italic', () {
+      final comment = lightSyntaxTheme['comment']!;
+      expect(comment.color, lightTheme.white);
+      expect(comment.fontStyle, FontStyle.italic);
+      expect(lightSyntaxTheme['deletion']!.color, lightTheme.white);
+      expect(lightSyntaxTheme['meta']!.color, lightTheme.white);
     });
 
     test('strong is bold', () {

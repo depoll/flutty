@@ -2,6 +2,9 @@ import 'package:flutter/painting.dart';
 
 import '../../domain/models/terminal_theme.dart';
 
+Color _syntaxMutedColor(TerminalThemeData theme) =>
+    theme.isDark ? theme.brightBlack : theme.white;
+
 /// Builds a highlight.js–compatible `Map<String, TextStyle>` theme from a
 /// [TerminalThemeData] so that syntax colors stay visually consistent with
 /// the user's chosen terminal palette.
@@ -51,10 +54,16 @@ Map<String, TextStyle> buildSyntaxThemeFromTerminal(
   'selector-pseudo': TextStyle(color: theme.brightRed),
 
   // Comments, deletions, meta
-  'comment': TextStyle(color: theme.brightBlack, fontStyle: FontStyle.italic),
-  'deletion': TextStyle(color: theme.brightBlack),
-  'meta': TextStyle(color: theme.brightBlack),
-  'quote': TextStyle(color: theme.brightBlack, fontStyle: FontStyle.italic),
+  'comment': TextStyle(
+    color: _syntaxMutedColor(theme),
+    fontStyle: FontStyle.italic,
+  ),
+  'deletion': TextStyle(color: _syntaxMutedColor(theme)),
+  'meta': TextStyle(color: _syntaxMutedColor(theme)),
+  'quote': TextStyle(
+    color: _syntaxMutedColor(theme),
+    fontStyle: FontStyle.italic,
+  ),
 
   // Regex, links
   'regexp': TextStyle(color: theme.brightGreen),
