@@ -292,11 +292,60 @@ void main() {
       }
     });
 
+    test('converted xterm themes keep neutral prompt bars legible', () {
+      for (final theme in TerminalThemes.all) {
+        final xtermTheme = theme.toXtermTheme();
+        expect(
+          _contrastRatio(xtermTheme.foreground, xtermTheme.background),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep default terminal text readable '
+              'on its background.',
+        );
+        expect(
+          _contrastRatio(xtermTheme.brightBlack, xtermTheme.black),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep dim prompt text readable on '
+              'ANSI black bars.',
+        );
+        expect(
+          _contrastRatio(xtermTheme.white, xtermTheme.black),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep ANSI white readable on ANSI '
+              'black bars.',
+        );
+        expect(
+          _contrastRatio(xtermTheme.brightWhite, xtermTheme.black),
+          greaterThanOrEqualTo(4.5),
+          reason:
+              'Theme ${theme.name} should keep ANSI bright white readable on '
+              'ANSI black bars.',
+        );
+      }
+    });
+
     test('Clean White keeps tmux command prompts comfortably readable', () {
       expect(
         _contrastRatio(TerminalThemes.cleanWhite.yellow, Colors.black),
         greaterThanOrEqualTo(8),
       );
     });
+
+    test(
+      'Clean White converts dim and white prompt text to readable tones',
+      () {
+        final xtermTheme = TerminalThemes.cleanWhite.toXtermTheme();
+        expect(
+          _contrastRatio(xtermTheme.brightBlack, xtermTheme.black),
+          greaterThanOrEqualTo(4.5),
+        );
+        expect(
+          _contrastRatio(xtermTheme.white, xtermTheme.black),
+          greaterThanOrEqualTo(4.5),
+        );
+      },
+    );
   });
 }
