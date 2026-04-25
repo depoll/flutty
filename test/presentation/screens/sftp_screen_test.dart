@@ -217,6 +217,31 @@ void main() {
       );
     });
 
+    test('validates new folder names before creating directories', () {
+      expect(validateSftpDirectoryName(''), 'Folder name is required');
+      expect(validateSftpDirectoryName('  '), 'Folder name is required');
+      expect(
+        validateSftpDirectoryName('nested/folder'),
+        'Folder name cannot contain /',
+      );
+      expect(
+        validateSftpDirectoryName('..'),
+        'Choose a folder name, not a navigation shortcut',
+      );
+      expect(validateSftpDirectoryName('release'), isNull);
+    });
+
+    test('includes remote paths in copy and create feedback', () {
+      expect(
+        sftpCopyPathSnackBarMessage('/var/www/site config'),
+        'Copied shell-safe path for "/var/www/site config"',
+      );
+      expect(
+        sftpCreatedDirectorySnackBarMessage('/var/www/releases'),
+        'Created folder "/var/www/releases"',
+      );
+    });
+
     test('resolves directory taps as navigation', () {
       expect(
         resolveSftpFileTapIntent(isDirectory: true, filename: 'Documents'),

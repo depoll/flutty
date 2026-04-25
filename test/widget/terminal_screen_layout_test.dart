@@ -40,17 +40,66 @@ void main() {
       );
     });
 
+    test('tmux handle keeps a full touch target', () {
+      expect(tmuxHandleMinTouchExtent, greaterThanOrEqualTo(44));
+    });
+
+    test('terminal connection labels distinguish connection states', () {
+      expect(
+        describeTerminalConnectionState(
+          SshConnectionState.disconnected,
+          isConnecting: true,
+        ),
+        'Connecting',
+      );
+      expect(
+        describeTerminalConnectionState(
+          SshConnectionState.authenticating,
+          isConnecting: false,
+        ),
+        'Authenticating',
+      );
+      expect(
+        describeTerminalConnectionState(
+          SshConnectionState.error,
+          isConnecting: false,
+        ),
+        'Connection error',
+      );
+    });
+
+    test('terminal identity includes remote host and session id', () {
+      expect(
+        formatTerminalConnectionIdentity(
+          username: 'deploy',
+          hostname: 'example.com',
+          port: 2222,
+          connectionId: 7,
+        ),
+        'deploy@example.com:2222 · session #7',
+      );
+      expect(
+        formatTerminalConnectionIdentity(
+          username: null,
+          hostname: null,
+          port: null,
+          connectionId: 8,
+        ),
+        'session #8',
+      );
+    });
+
     test('tmux bar reveal stays aligned with terminal padding', () {
-      expect(resolveTmuxBarRevealBottomOffset(0), -22);
-      expect(resolveTmuxBarRevealBottomOffset(11), -11);
-      expect(resolveTmuxBarRevealBottomOffset(22), 0);
-      expect(resolveTmuxBarRevealBottomOffset(56), 34);
+      expect(resolveTmuxBarRevealBottomOffset(0), -44);
+      expect(resolveTmuxBarRevealBottomOffset(22), -22);
+      expect(resolveTmuxBarRevealBottomOffset(44), 0);
+      expect(resolveTmuxBarRevealBottomOffset(78), 34);
 
       expect(resolveTmuxBarRevealOpacity(-10), 0);
       expect(resolveTmuxBarRevealOpacity(0), 0);
-      expect(resolveTmuxBarRevealOpacity(11), 0.5);
-      expect(resolveTmuxBarRevealOpacity(22), 1);
-      expect(resolveTmuxBarRevealOpacity(40), 1);
+      expect(resolveTmuxBarRevealOpacity(22), 0.5);
+      expect(resolveTmuxBarRevealOpacity(44), 1);
+      expect(resolveTmuxBarRevealOpacity(60), 1);
     });
 
     test('uses the active tmux window title in the handle label', () {
@@ -441,4 +490,4 @@ void main() {
   });
 }
 
-const double _tmuxExpandableBarHandleHeight = 22;
+const double _tmuxExpandableBarHandleHeight = tmuxHandleMinTouchExtent;

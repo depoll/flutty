@@ -132,6 +132,26 @@ void main() {
       );
     });
 
+    testWidgets('shows an explicit close affordance in the editor app bar', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.byTooltip('Close editor'), findsOneWidget);
+      expect(find.byIcon(Icons.close), findsOneWidget);
+    });
+
     testWidgets(
       'starts at line 1 when the incoming controller selection is invalid',
       (tester) async {
