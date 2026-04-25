@@ -215,7 +215,7 @@ class SshConnectionService : Service() {
         val notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle(title)
             .setContentText(summary)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(R.drawable.ic_notification_monkey)
             .setOngoing(true)
             .setAutoCancel(false)
             .setOnlyAlertOnce(true)
