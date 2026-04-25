@@ -85,10 +85,21 @@ String? _resolveTmuxExtraFlags({
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [HostEditScreen].
-  const HostEditScreen({this.hostId, super.key});
+  const HostEditScreen({
+    this.hostId,
+    this.initialSshUrl,
+    this.useLocalhostTemplate = false,
+    super.key,
+  });
 
   /// The host ID to edit, or null for a new host.
   final int? hostId;
+
+  /// SSH URL used to prefill a new host.
+  final String? initialSshUrl;
+
+  /// Whether to prefill a local SSH test host.
+  final bool useLocalhostTemplate;
 
   @override
   ConsumerState<HostEditScreen> createState() => _HostEditScreenState();
@@ -152,7 +163,33 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
 
     if (widget.hostId != null) {
       _loadHost();
+    } else if (widget.initialSshUrl?.trim().isNotEmpty ?? false) {
+      _applySshUrl(widget.initialSshUrl!.trim());
+    } else if (widget.useLocalhostTemplate) {
+      _applyLocalhostTemplate();
     }
+  }
+
+  void _applySshUrl(String rawUrl) {
+    final uri = Uri.tryParse(rawUrl);
+    if (uri == null || uri.scheme != 'ssh' || uri.host.isEmpty) {
+      return;
+    }
+
+    _labelController.text = uri.host;
+    _hostnameController.text = uri.host;
+    if (uri.hasPort) {
+      _portController.text = uri.port.toString();
+    }
+    if (uri.userInfo.isNotEmpty) {
+      final userInfoParts = uri.userInfo.split(':');
+      _usernameController.text = Uri.decodeComponent(userInfoParts.first);
+    }
+  }
+
+  void _applyLocalhostTemplate() {
+    _labelController.text = 'Local test host';
+    _hostnameController.text = 'localhost';
   }
 
   Future<void> _loadHost() async {
@@ -1352,6 +1389,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         context: context,
         ref: ref,
         feature: MonetizationFeature.agentLaunchPresets,
+        blockedAction: 'Save coding-agent startup for this host',
+        blockedOutcome:
+            'Unlock Pro to launch your preferred agent workflow every time you '
+            'connect.',
       );
       if (!hasAccess || !mounted) {
         return;
@@ -1362,6 +1403,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         context: context,
         ref: ref,
         feature: MonetizationFeature.autoConnectAutomation,
+        blockedAction: 'Save auto-connect automation for this host',
+        blockedOutcome:
+            'Unlock Pro to run this command or saved snippet automatically '
+            'after connecting.',
       );
       if (!hasAccess || !mounted) {
         return;
@@ -1487,6 +1532,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       context: context,
       ref: ref,
       feature: MonetizationFeature.encryptedTransfers,
+      blockedAction: 'Import encrypted host file',
+      blockedOutcome:
+          'Unlock Pro to decrypt this host transfer and prefill the host form.',
     );
     if (!hasAccess) {
       return;
@@ -1637,6 +1685,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       context: context,
       ref: ref,
       feature: MonetizationFeature.hostSpecificThemes,
+      blockedAction: 'Save theme overrides on this host',
+      blockedOutcome: 'Unlock Pro to keep this host on its own terminal theme.',
     );
     if (!hasAccess || !mounted) {
       return;

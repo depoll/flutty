@@ -12,6 +12,8 @@ Future<bool> requireMonetizationFeatureAccess({
   required BuildContext context,
   required WidgetRef ref,
   required MonetizationFeature feature,
+  String? blockedAction,
+  String? blockedOutcome,
 }) async {
   final service = ref.read(monetizationServiceProvider);
   if (await service.canUseFeature(feature)) {
@@ -22,14 +24,22 @@ Future<bool> requireMonetizationFeatureAccess({
   }
   final router = GoRouter.maybeOf(context);
   if (router != null) {
-    await context.pushNamed(
-      Routes.upgrade,
-      queryParameters: {'feature': feature.name},
-    );
+    final queryParameters = <String, String>{'feature': feature.name};
+    if (blockedAction != null) {
+      queryParameters['action'] = blockedAction;
+    }
+    if (blockedOutcome != null) {
+      queryParameters['outcome'] = blockedOutcome;
+    }
+    await context.pushNamed(Routes.upgrade, queryParameters: queryParameters);
   } else {
     await Navigator.of(context).push<void>(
       MaterialPageRoute<void>(
-        builder: (context) => UpgradeScreen(feature: feature),
+        builder: (context) => UpgradeScreen(
+          feature: feature,
+          blockedAction: blockedAction,
+          blockedOutcome: blockedOutcome,
+        ),
       ),
     );
   }

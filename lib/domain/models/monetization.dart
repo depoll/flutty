@@ -117,6 +117,32 @@ extension MonetizationFeaturePresentation on MonetizationFeature {
     MonetizationFeature.hostSpecificThemes =>
       'Save terminal theme overrides for individual hosts while keeping app-wide defaults unchanged.',
   };
+
+  /// The blocked action shown at the top of feature-triggered paywalls.
+  String get blockedAction => switch (this) {
+    MonetizationFeature.encryptedTransfers =>
+      'Import or export encrypted transfer files',
+    MonetizationFeature.migrationImportExport => 'Import or export app data',
+    MonetizationFeature.autoConnectAutomation =>
+      'Save auto-connect commands and snippets',
+    MonetizationFeature.agentLaunchPresets =>
+      'Save coding-agent launch presets',
+    MonetizationFeature.hostSpecificThemes => 'Save a host-specific theme',
+  };
+
+  /// The outcome unlocked by Pro for this feature.
+  String get blockedOutcome => switch (this) {
+    MonetizationFeature.encryptedTransfers =>
+      'Unlock Pro to move hosts and keys between devices with encrypted files.',
+    MonetizationFeature.migrationImportExport =>
+      'Unlock Pro to restore or migrate all MonkeySSH data in one encrypted package.',
+    MonetizationFeature.autoConnectAutomation =>
+      'Unlock Pro to run a command or saved snippet automatically after connecting.',
+    MonetizationFeature.agentLaunchPresets =>
+      'Unlock Pro to repeat your preferred coding-agent startup flow on each host.',
+    MonetizationFeature.hostSpecificThemes =>
+      'Unlock Pro to keep this host on its own terminal theme while preserving your app defaults.',
+  };
 }
 
 /// Whether store billing can be used on the current device.

@@ -175,6 +175,10 @@ void main() {
       await _pumpSettingsScreen(tester, db: db);
 
       expect(find.text('MonkeySSH Pro'), findsOneWidget);
+      expect(
+        find.text('Subscription status and Pro-only workflows'),
+        findsOneWidget,
+      );
       expect(find.text('Subscription'), findsOneWidget);
       expect(
         find.text('Unlock transfers, automation, and agent launch presets'),
@@ -299,6 +303,13 @@ void main() {
       addTearDown(db.close);
 
       await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Clickable file paths'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
 
       expect(find.text('Clickable file paths'), findsOneWidget);
       expect(

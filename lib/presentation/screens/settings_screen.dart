@@ -81,22 +81,37 @@ class _BiometricSettingsState {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title});
+  const _SectionHeader({required this.title, this.subtitle});
 
   final String title;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 28, 16, 8),
-      child: Text(
-        title,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: theme.colorScheme.primary,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.5,
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.primary,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+            ),
+          ),
+          if (subtitle case final subtitle?) ...[
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -114,7 +129,10 @@ class _SubscriptionSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'MonkeySSH Pro'),
+        const _SectionHeader(
+          title: 'MonkeySSH Pro',
+          subtitle: 'Subscription status and Pro-only workflows',
+        ),
         ListTile(
           leading: Icon(
             state.isProUnlocked
@@ -151,7 +169,10 @@ class _AppearanceSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'Appearance'),
+        const _SectionHeader(
+          title: 'Appearance',
+          subtitle: 'App-wide color mode',
+        ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Theme'),
@@ -223,7 +244,10 @@ class _SecuritySection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'Security'),
+        const _SectionHeader(
+          title: 'Security',
+          subtitle: 'PIN, biometrics, and automatic locking',
+        ),
         if (isAuthConfigured)
           ListTile(
             leading: const Icon(Icons.pin_outlined),
@@ -523,7 +547,10 @@ class _TerminalSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'Terminal'),
+        const _SectionHeader(
+          title: 'Terminal',
+          subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
+        ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Light Mode Theme'),
@@ -933,7 +960,10 @@ class _AboutSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'About'),
+        const _SectionHeader(
+          title: 'About',
+          subtitle: 'Version, source, and licenses',
+        ),
         ListTile(
           leading: const Icon(Icons.info_outline),
           title: const Text('App version'),
@@ -1069,7 +1099,10 @@ class _AndroidBackgroundSectionState
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionHeader(title: 'Background SSH'),
+          const _SectionHeader(
+            title: 'Background SSH',
+            subtitle: 'Keep sessions alive while MonkeySSH is backgrounded',
+          ),
           ListTile(
             leading: Icon(leadingIcon),
             title: const Text('Battery optimization'),
@@ -1095,7 +1128,10 @@ class _ImportExportSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      const _SectionHeader(title: 'Import & Export'),
+      const _SectionHeader(
+        title: 'Import & Export',
+        subtitle: 'Encrypted migration packages for moving devices',
+      ),
       ListTile(
         leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
         title: const Text('Export app data'),
@@ -1122,6 +1158,10 @@ class _ImportExportSection extends ConsumerWidget {
       context: context,
       ref: ref,
       feature: MonetizationFeature.migrationImportExport,
+      blockedAction: 'Export encrypted app data',
+      blockedOutcome:
+          'Unlock Pro to package hosts, keys, snippets, and settings for '
+          'another device.',
     );
     if (!hasAccess || !context.mounted) {
       return;
@@ -1178,6 +1218,9 @@ class _ImportExportSection extends ConsumerWidget {
       context: context,
       ref: ref,
       feature: MonetizationFeature.migrationImportExport,
+      blockedAction: 'Import encrypted app data',
+      blockedOutcome:
+          'Unlock Pro to restore a MonkeySSH migration package on this device.',
     );
     if (!hasAccess || !context.mounted) {
       return;

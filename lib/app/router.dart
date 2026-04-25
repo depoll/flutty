@@ -75,7 +75,11 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/hosts/add',
         name: 'host-add',
-        builder: (context, state) => const HostEditScreen(),
+        builder: (context, state) => HostEditScreen(
+          initialSshUrl: state.uri.queryParameters['sshUrl'],
+          useLocalhostTemplate:
+              state.uri.queryParameters['template'] == 'local',
+        ),
       ),
       GoRoute(
         path: '/hosts/edit/:hostId',
@@ -93,7 +97,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/keys/add',
         name: 'key-add',
-        builder: (context, state) => const KeyAddScreen(),
+        builder: (context, state) => KeyAddScreen(
+          initialTabIndex: state.uri.queryParameters['tab'] == 'import' ? 1 : 0,
+        ),
       ),
       GoRoute(
         path: '/sftp/:hostId',
@@ -167,7 +173,11 @@ final routerProvider = Provider<GoRouter>((ref) {
           final feature = MonetizationFeature.values.firstWhereOrNull(
             (value) => value.name == featureName,
           );
-          return UpgradeScreen(feature: feature);
+          return UpgradeScreen(
+            feature: feature,
+            blockedAction: state.uri.queryParameters['action'],
+            blockedOutcome: state.uri.queryParameters['outcome'],
+          );
         },
       ),
       GoRoute(
