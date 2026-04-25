@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
+import 'package:local_auth/local_auth.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
@@ -27,7 +28,12 @@ const _backgroundSshChannel = MethodChannel(
 
 class _SupportedButUnavailableAuthService extends FakeAuthService {
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<BiometricAvailability> getBiometricAvailability() async =>
+      const BiometricAvailability(
+        isDeviceAuthSupported: true,
+        isBiometricHardwareSupported: true,
+        enrolledBiometrics: [],
+      );
 }
 
 class _ToggleableBiometricAuthService extends FakeAuthService {
@@ -37,13 +43,24 @@ class _ToggleableBiometricAuthService extends FakeAuthService {
   Future<bool> isAuthEnabled() async => true;
 
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<bool> isDeviceAuthSupported() async => true;
 
   @override
-  Future<bool> isBiometricAvailable() async => false;
+  Future<bool> isBiometricHardwareSupported() async => true;
+
+  @override
+  Future<bool> isBiometricAvailable() async => true;
 
   @override
   Future<bool> isBiometricEnabled() async => biometricEnabled;
+
+  @override
+  Future<BiometricAvailability> getBiometricAvailability() async =>
+      const BiometricAvailability(
+        isDeviceAuthSupported: true,
+        isBiometricHardwareSupported: true,
+        enrolledBiometrics: [BiometricType.fingerprint],
+      );
 
   @override
   Future<void> setBiometricEnabled({required bool enabled}) async {
@@ -402,7 +419,10 @@ void main() {
       expect(find.text('Auto-lock timeout'), findsOneWidget);
       expect(find.text('Change PIN'), findsNothing);
       expect(find.text('Set up app lock first'), findsOneWidget);
-      expect(find.text('Not supported on this device'), findsOneWidget);
+      expect(
+        find.text('Biometric hardware not supported on this device'),
+        findsOneWidget,
+      );
     });
 
     testWidgets('keeps setup actions disabled while auth state is loading', (
@@ -472,7 +492,7 @@ void main() {
     });
 
     testWidgets(
-      'keeps biometric toggle visible when support exists but enrollment is missing',
+      'disables biometric toggle when support exists but enrollment is missing',
       (tester) async {
         final db = AppDatabase.forTesting(NativeDatabase.memory());
         addTearDown(db.close);
@@ -498,9 +518,53 @@ void main() {
           'Biometric authentication',
         );
         expect(biometricTile, findsOneWidget);
-        expect(tester.widget<SwitchListTile>(biometricTile).value, isFalse);
+        final tile = tester.widget<SwitchListTile>(biometricTile);
+        expect(tile.value, isFalse);
+        expect(tile.onChanged, isNull);
+        expect(
+          find.text(
+            'Enroll fingerprint or face in system settings before enabling',
+          ),
+          findsOneWidget,
+        );
       },
     );
+
+    testWidgets('shows biometric re-check action after enrollment guidance', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            databaseProvider.overrideWithValue(db),
+            authServiceProvider.overrideWithValue(
+              _SupportedButUnavailableAuthService(),
+            ),
+            authStateProvider.overrideWith(_UnlockedAuthStateNotifier.new),
+          ],
+          child: const MaterialApp(home: SettingsScreen()),
+        ),
+      );
+
+      await tester.pumpAndSettle();
+
+      final biometricTile = find.widgetWithText(
+        SwitchListTile,
+        'Biometric authentication',
+      );
+      final tile = tester.widget<SwitchListTile>(biometricTile);
+      expect(tile.onChanged, isNull);
+      expect(
+        find.text(
+          'Enroll fingerprint or face in system settings, then return and re-check',
+        ),
+        findsOneWidget,
+      );
+      expect(find.text('Re-check biometric status'), findsOneWidget);
+    });
 
     testWidgets('updates biometric toggle state immediately after tapping', (
       tester,
@@ -533,10 +597,7 @@ void main() {
 
       expect(authService.biometricEnabled, isTrue);
       expect(tester.widget<SwitchListTile>(biometricTile).value, isTrue);
-      expect(
-        find.text('Enabled - enroll fingerprint or face to use it'),
-        findsOneWidget,
-      );
+      expect(find.text('Use fingerprint or face to unlock'), findsOneWidget);
     });
 
     testWidgets(

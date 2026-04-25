@@ -99,13 +99,24 @@ class FakeAuthService extends AuthService {
   Future<bool> isBiometricEnabled() async => false;
 
   @override
-  Future<bool> isBiometricSupported() async => false;
+  Future<bool> isDeviceAuthSupported() async => false;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => false;
 
   @override
   Future<bool> isBiometricAvailable() async => false;
 
   @override
   Future<List<BiometricType>> getAvailableBiometrics() async => [];
+
+  @override
+  Future<BiometricAvailability> getBiometricAvailability() async =>
+      const BiometricAvailability(
+        isDeviceAuthSupported: false,
+        isBiometricHardwareSupported: false,
+        enrolledBiometrics: [],
+      );
 }
 
 class FakeSecureTransferService extends SecureTransferService {
