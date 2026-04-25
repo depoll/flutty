@@ -1,8 +1,11 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:typed_data';
 
 import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
@@ -267,6 +270,170 @@ void main() {
         expect(windows, isEmpty);
       },
     );
+
+    test(
+      'listWindows completes when stdout stays open after the done marker',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(
+          stdout:
+              '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
+              '$_execDoneMarker\n',
+        );
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        final windows = await service.listWindows(session, 'main');
+
+        expect(windows, hasLength(1));
+        expect(windows.single.index, 1);
+        expect(windows.single.name, 'editor');
+        verify(execSession.close).called(1);
+      },
+    );
+
+    test(
+      'selectWindow completes when stdout stays open after the done marker',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(stdout: '$_execDoneMarker\n');
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        await service.selectWindow(session, 'main', 2);
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                'tmux -u select-window -t '
+                "'main':2",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(execSession.close).called(1);
+      },
+    );
+
+    test(
+      'killWindow waits for the done marker so failures can surface',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(stdout: '$_execDoneMarker\n');
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        await service.killWindow(session, 'main', 2);
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                'tmux -u kill-window -t '
+                "'main':2",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(execSession.close).called(1);
+      },
+    );
+
+    test('killWindow propagates missing marker failures', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildClosedExecSession(stdout: 'tmux failed\n');
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await expectLater(
+        service.killWindow(session, 'main', 2),
+        throwsA(
+          isA<TmuxCommandException>().having(
+            (error) => error.message,
+            'message',
+            contains('closed before tmux command completed'),
+          ),
+        ),
+      );
+      verify(execSession.close).called(1);
+    });
+
+    test('detectInstalledAgentTools propagates output timeouts', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService(execOutputTimeout: Duration(milliseconds: 1));
+      final execSession = _buildOpenExecSession();
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await expectLater(
+        service.detectInstalledAgentTools(session),
+        throwsA(isA<TimeoutException>()),
+      );
+      verify(execSession.close).called(1);
+    });
+
+    test(
+      'detectInstalledAgentTools reports EOF before marker separately',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildClosedExecSession(stdout: 'partial output\n');
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        await expectLater(
+          service.detectInstalledAgentTools(session),
+          throwsA(isA<TmuxCommandException>()),
+        );
+        verify(execSession.close).called(1);
+      },
+    );
+
+    test(
+      'detectInstalledAgentTools parses output before an open stdout hangs',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(
+          stdout: '/opt/homebrew/bin/claude\n$_execDoneMarker\n',
+        );
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        final tools = await service.detectInstalledAgentTools(session);
+
+        expect(tools, {AgentLaunchTool.claudeCode});
+        verify(execSession.close).called(1);
+      },
+    );
   });
 
   group('decideTmuxHeartbeatAction', () {
@@ -346,3 +513,39 @@ SshSession _buildSession(SSHClient client) => SshSession(
 );
 
 class _MockSshClient extends Mock implements SSHClient {}
+
+class _MockExecSession extends Mock implements SSHSession {}
+
+const _execDoneMarker = '__flutty_tmux_exec_done__';
+
+Stream<Uint8List> _openUtf8Stream(String value) =>
+    Stream<Uint8List>.multi((controller) {
+      if (value.isNotEmpty) {
+        scheduleMicrotask(
+          () => controller.add(Uint8List.fromList(utf8.encode(value))),
+        );
+      }
+    });
+
+Stream<Uint8List> _closedUtf8Stream(String value) =>
+    Stream<Uint8List>.fromIterable(
+      value.isEmpty ? const [] : [Uint8List.fromList(utf8.encode(value))],
+    );
+
+void _ignoreInvocation(Invocation _) {}
+
+SSHSession _buildOpenExecSession({String stdout = '', String stderr = ''}) {
+  final session = _MockExecSession();
+  when(() => session.stdout).thenAnswer((_) => _openUtf8Stream(stdout));
+  when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
+  when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
+
+SSHSession _buildClosedExecSession({String stdout = '', String stderr = ''}) {
+  final session = _MockExecSession();
+  when(() => session.stdout).thenAnswer((_) => _closedUtf8Stream(stdout));
+  when(() => session.stderr).thenAnswer((_) => _closedUtf8Stream(stderr));
+  when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}

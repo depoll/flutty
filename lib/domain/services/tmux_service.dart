@@ -9,6 +9,18 @@ import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'ssh_service.dart';
 
+/// Error thrown when a tmux command channel ends before confirming completion.
+class TmuxCommandException implements Exception {
+  /// Creates a [TmuxCommandException].
+  const TmuxCommandException(this.message);
+
+  /// Human-readable description of the command failure.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Introspects and controls tmux sessions on remote hosts via SSH exec
 /// channels.
 ///
@@ -39,6 +51,8 @@ class TmuxService {
 
   static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
   _windowObservers = {};
+
+  static const _execDoneMarker = '__flutty_tmux_exec_done__';
 
   /// Clears the cached tmux path for a connection.
   void clearCache(int connectionId) {
@@ -107,16 +121,12 @@ class TmuxService {
   ) async {
     final cached = _installedAgentToolsCache[session.connectionId];
     if (cached != null) return cached;
-    try {
-      final output = await _exec(session, buildAgentToolDetectionCommand());
-      final installed = parseInstalledAgentTools(output);
-      if (installed.isNotEmpty) {
-        _installedAgentToolsCache[session.connectionId] = installed;
-      }
-      return installed;
-    } on Object {
-      return const <AgentLaunchTool>{};
+    final output = await _exec(session, buildAgentToolDetectionCommand());
+    final installed = parseInstalledAgentTools(output);
+    if (installed.isNotEmpty) {
+      _installedAgentToolsCache[session.connectionId] = installed;
     }
+    return installed;
   }
 
   /// Lists all tmux sessions on the remote host.
@@ -322,11 +332,12 @@ class TmuxService {
   }
 
   /// Closes a window in [sessionName] via exec channel.
-  ///
-  /// Uses fire-and-forget — if this was the last window, the tmux session
-  /// ends and the interactive shell exits naturally.
-  void killWindow(SshSession session, String sessionName, int windowIndex) {
-    _execFireAndForget(
+  Future<void> killWindow(
+    SshSession session,
+    String sessionName,
+    int windowIndex,
+  ) async {
+    await _exec(
       session,
       'tmux kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
     );
@@ -370,13 +381,7 @@ class TmuxService {
     return command.replaceFirst('tmux ', 'tmux -u ');
   }
 
-  /// Runs a command via SSH exec channel and returns stdout as a string.
-  ///
-  /// Uses the cached tmux binary path when available; otherwise sources
-  /// the user's login shell profile to resolve the PATH.
-  ///
-  /// Drains both stdout and stderr to prevent SSH channel flow-control
-  /// deadlocks, and awaits channel completion.
+  /// Opens an SSH exec channel with a bounded wait for channel creation.
   Future<SSHSession> _openExec(
     SshSession session,
     String command, {
@@ -395,18 +400,49 @@ class TmuxService {
     );
   }
 
+  /// Runs a command via SSH exec channel and returns stdout as a string.
+  ///
+  /// Uses the cached tmux binary path when available; otherwise sources
+  /// the user's login shell profile to resolve the PATH.
+  ///
+  /// Appends a marker to the remote command and reads stdout only until that
+  /// marker arrives. Some SSH servers leave exec streams open after the
+  /// command exits, so waiting for stream completion can turn successful tmux
+  /// actions into apparent hangs.
   Future<String> _exec(SshSession session, String command) async {
     final wrappedCommand = _wrapCommand(session, command);
-    final execSession = await _openExec(session, wrappedCommand);
+    final execSession = await _openExec(
+      session,
+      _markCommandDone(wrappedCommand),
+    );
     try {
-      final results = await Future.wait([
-        execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-        execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-      ]).timeout(_execOutputTimeout, onTimeout: () => ['', '']);
-      return results[0];
+      execSession.stderr.drain<void>().ignore();
+      return await _readStdoutUntilDoneMarker(execSession);
     } finally {
       execSession.close();
     }
+  }
+
+  String _markCommandDone(String command) =>
+      '$command; printf ${_shellQuote('\n$_execDoneMarker\n')}';
+
+  Future<String> _readStdoutUntilDoneMarker(SSHSession execSession) async {
+    final output = StringBuffer();
+    await for (final chunk
+        in execSession.stdout
+            .cast<List<int>>()
+            .transform(utf8.decoder)
+            .timeout(_execOutputTimeout)) {
+      output.write(chunk);
+      final currentOutput = output.toString();
+      final markerIndex = currentOutput.indexOf(_execDoneMarker);
+      if (markerIndex != -1) {
+        return currentOutput.substring(0, markerIndex).trimRight();
+      }
+    }
+    throw const TmuxCommandException(
+      'SSH exec channel closed before tmux command completed',
+    );
   }
 
   /// Fire-and-forget: sends a tmux command without waiting for output.
@@ -434,7 +470,7 @@ class TmuxService {
       // Detect login shell and resolve tmux path in a single exec.
       // Redirect stdout from profile scripts to /dev/null so greetings,
       // MOTD, or fortune output don't corrupt our parsed output.
-      final execSession = await _openExec(
+      final output = await _exec(
         session,
         r'SHELL_NAME=$(basename "$SHELL" 2>/dev/null || echo sh); '
         r'case "$SHELL_NAME" in '
@@ -445,28 +481,20 @@ class TmuxService {
         r'echo "$SHELL_NAME"; '
         'command -v tmux',
       );
-      try {
-        final results = await Future.wait([
-          execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-          execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-        ]).timeout(_execOutputTimeout, onTimeout: () => ['', '']);
-        final lines = results[0].trim().split('\n');
-        if (lines.isNotEmpty) {
-          final shellName = lines[0].trim();
-          _profileSourceCache[session.connectionId] = switch (shellName) {
-            'zsh' => '{ . ~/.zprofile; } >/dev/null 2>&1; ',
-            'bash' => '{ . ~/.bash_profile; . ~/.profile; } >/dev/null 2>&1; ',
-            _ => '{ . ~/.profile; } >/dev/null 2>&1; ',
-          };
+      final lines = output.trim().split('\n');
+      if (lines.isNotEmpty) {
+        final shellName = lines[0].trim();
+        _profileSourceCache[session.connectionId] = switch (shellName) {
+          'zsh' => '{ . ~/.zprofile; } >/dev/null 2>&1; ',
+          'bash' => '{ . ~/.bash_profile; . ~/.profile; } >/dev/null 2>&1; ',
+          _ => '{ . ~/.profile; } >/dev/null 2>&1; ',
+        };
+      }
+      if (lines.length > 1) {
+        final path = lines[1].trim();
+        if (path.isNotEmpty && path.startsWith('/')) {
+          _tmuxPathCache[session.connectionId] = path;
         }
-        if (lines.length > 1) {
-          final path = lines[1].trim();
-          if (path.isNotEmpty && path.startsWith('/')) {
-            _tmuxPathCache[session.connectionId] = path;
-          }
-        }
-      } finally {
-        execSession.close();
       }
     } on Object {
       // Ignore — we'll fall back to sourcing all profiles.
