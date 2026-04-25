@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -18,27 +20,50 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
   final _confirmPinController = TextEditingController();
   int _step = 0; // 0: choose, 1: enter PIN, 2: confirm PIN
   bool _isLoading = false;
+  bool _isCheckingBiometric = true;
   String? _error;
-  bool _biometricSupported = false;
-  bool _biometricAvailable = false;
+  BiometricAvailability? _biometricAvailability;
   bool _enableBiometric = false;
 
   @override
   void initState() {
     super.initState();
-    _checkBiometric();
+    unawaited(_checkBiometric());
   }
 
   Future<void> _checkBiometric() async {
     final authService = ref.read(authServiceProvider);
-    final supported = await authService.isBiometricSupported();
-    final available =
-        supported && (await authService.getAvailableBiometrics()).isNotEmpty;
+    final availability = await authService.getBiometricAvailability();
     if (!mounted) return;
     setState(() {
-      _biometricSupported = supported;
-      _biometricAvailable = available;
+      _biometricAvailability = availability;
+      _isCheckingBiometric = false;
+      if (!availability.canAuthenticateWithBiometrics) {
+        _enableBiometric = false;
+      }
     });
+  }
+
+  bool get _biometricSupported =>
+      _biometricAvailability?.isBiometricHardwareSupported ?? false;
+
+  bool get _biometricAvailable =>
+      _biometricAvailability?.canAuthenticateWithBiometrics ?? false;
+
+  bool get _needsBiometricEnrollment =>
+      _biometricAvailability?.needsBiometricEnrollment ?? false;
+
+  String get _biometricSetupGuidance {
+    if (_isCheckingBiometric) {
+      return 'Checking biometric availability…';
+    }
+    if (!_biometricSupported) {
+      return 'Biometric hardware not supported on this device';
+    }
+    if (_biometricAvailable) {
+      return 'Use fingerprint or face recognition';
+    }
+    return 'Enroll fingerprint or face in system settings, then return and re-check';
   }
 
   Future<void> _setupPin() async {
@@ -161,19 +186,32 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
         onTap: () => setState(() => _step = 1),
       ),
       const SizedBox(height: 12),
-      if (_biometricSupported)
+      if (_isCheckingBiometric || _biometricSupported)
         _OptionCard(
           icon: Icons.fingerprint,
-          title: 'Biometrics',
-          subtitle: _biometricAvailable
-              ? 'Use fingerprint or face recognition'
-              : 'Enable now, then enroll fingerprint or face before first use',
-          trailing: Switch(
-            value: _enableBiometric,
-            onChanged: (v) => setState(() => _enableBiometric = v),
-          ),
-          onTap: () => setState(() => _enableBiometric = !_enableBiometric),
+          title: _biometricAvailable ? 'Biometrics' : 'Biometrics not ready',
+          subtitle: _biometricSetupGuidance,
+          trailing: _biometricAvailable
+              ? Switch(
+                  value: _enableBiometric,
+                  onChanged: (v) => setState(() => _enableBiometric = v),
+                )
+              : null,
+          onTap: _biometricAvailable
+              ? () => setState(() => _enableBiometric = !_enableBiometric)
+              : null,
         ),
+      if (_needsBiometricEnrollment) ...[
+        const SizedBox(height: 8),
+        TextButton.icon(
+          onPressed: () {
+            setState(() => _isCheckingBiometric = true);
+            unawaited(_checkBiometric());
+          },
+          icon: const Icon(Icons.refresh),
+          label: const Text('Re-check biometric status'),
+        ),
+      ],
     ],
   );
 
@@ -234,79 +272,91 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
     ],
   );
 
-  Widget _buildConfirmPinStep(
-    ThemeData theme,
-    ColorScheme colorScheme,
-  ) => Column(
-    crossAxisAlignment: CrossAxisAlignment.start,
-    children: [
-      Text(
-        'Confirm PIN',
-        style: theme.textTheme.headlineSmall?.copyWith(
-          fontWeight: FontWeight.bold,
-        ),
-      ),
-      const SizedBox(height: 8),
-      Text(
-        'Enter your PIN again to confirm.',
-        style: theme.textTheme.bodyLarge?.copyWith(
-          color: colorScheme.onSurface.withValues(alpha: 0.6),
-        ),
-      ),
-      const SizedBox(height: 32),
-      TextField(
-        controller: _confirmPinController,
-        keyboardType: TextInputType.number,
-        obscureText: true,
-        maxLength: 8,
-        autofocus: true,
-        decoration: InputDecoration(
-          labelText: 'Confirm PIN',
-          errorText: _error,
-        ),
-        inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-        onChanged: (_) => setState(() => _error = null),
-        onSubmitted: (_) => _setupPin(),
-      ),
-      if (_biometricSupported) ...[
-        const SizedBox(height: 16),
-        SwitchListTile(
-          value: _enableBiometric,
-          onChanged: (v) => setState(() => _enableBiometric = v),
-          title: const Text('Enable biometrics'),
-          subtitle: Text(
-            _biometricAvailable
-                ? 'Also allow fingerprint/face unlock'
-                : 'Enable now, then enroll fingerprint or face before first use',
-          ),
-          contentPadding: EdgeInsets.zero,
-        ),
-      ],
-      const SizedBox(height: 24),
-      Row(
+  Widget _buildConfirmPinStep(ThemeData theme, ColorScheme colorScheme) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          TextButton(
-            onPressed: () => setState(() {
-              _step = 1;
-              _error = null;
-            }),
-            child: const Text('Back'),
+          Text(
+            'Confirm PIN',
+            style: theme.textTheme.headlineSmall?.copyWith(
+              fontWeight: FontWeight.bold,
+            ),
           ),
-          const Spacer(),
-          ElevatedButton(
-            onPressed: _isLoading ? null : _setupPin,
-            child: _isLoading
-                ? const SizedBox(
-                    height: 20,
-                    width: 20,
-                    child: CircularProgressIndicator(strokeWidth: 2),
-                  )
-                : const Text('Complete'),
+          const SizedBox(height: 8),
+          Text(
+            'Enter your PIN again to confirm.',
+            style: theme.textTheme.bodyLarge?.copyWith(
+              color: colorScheme.onSurface.withValues(alpha: 0.6),
+            ),
+          ),
+          const SizedBox(height: 32),
+          TextField(
+            controller: _confirmPinController,
+            keyboardType: TextInputType.number,
+            obscureText: true,
+            maxLength: 8,
+            autofocus: true,
+            decoration: InputDecoration(
+              labelText: 'Confirm PIN',
+              errorText: _error,
+            ),
+            inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+            onChanged: (_) => setState(() => _error = null),
+            onSubmitted: (_) => _setupPin(),
+          ),
+          if (_isCheckingBiometric || _biometricSupported) ...[
+            const SizedBox(height: 16),
+            SwitchListTile(
+              value: _enableBiometric,
+              onChanged: _biometricAvailable
+                  ? (v) => setState(() => _enableBiometric = v)
+                  : null,
+              title: const Text('Enable biometrics'),
+              subtitle: Text(
+                _biometricAvailable
+                    ? 'Also allow fingerprint/face unlock'
+                    : _biometricSetupGuidance,
+              ),
+              contentPadding: EdgeInsets.zero,
+            ),
+            if (_needsBiometricEnrollment)
+              Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () {
+                    setState(() => _isCheckingBiometric = true);
+                    unawaited(_checkBiometric());
+                  },
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Re-check biometric status'),
+                ),
+              ),
+          ],
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              TextButton(
+                onPressed: () => setState(() {
+                  _step = 1;
+                  _error = null;
+                }),
+                child: const Text('Back'),
+              ),
+              const Spacer(),
+              ElevatedButton(
+                onPressed: _isLoading ? null : _setupPin,
+                child: _isLoading
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Complete'),
+              ),
+            ],
           ),
         ],
-      ),
-    ],
-  );
+      );
 }
 
 class _OptionCard extends StatelessWidget {
@@ -314,14 +364,14 @@ class _OptionCard extends StatelessWidget {
     required this.icon,
     required this.title,
     required this.subtitle,
-    required this.onTap,
+    this.onTap,
     this.trailing,
   });
 
   final IconData icon;
   final String title;
   final String subtitle;
-  final VoidCallback onTap;
+  final VoidCallback? onTap;
   final Widget? trailing;
 
   @override

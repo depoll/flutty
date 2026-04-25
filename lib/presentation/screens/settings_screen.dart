@@ -50,34 +50,33 @@ class SettingsScreen extends ConsumerWidget {
 final _biometricSettingsStateProvider =
     FutureProvider.autoDispose<_BiometricSettingsState>((ref) async {
       final authService = ref.watch(authServiceProvider);
-      final isSupported = await authService.isBiometricSupported();
+      final availability = await authService.getBiometricAvailability();
       final isEnabled = await authService.isBiometricEnabled();
 
-      if (!isSupported) {
-        return _BiometricSettingsState(
-          isSupported: false,
-          isAvailable: false,
-          isEnabled: isEnabled,
-        );
-      }
-
       return _BiometricSettingsState(
-        isSupported: true,
-        isAvailable: (await authService.getAvailableBiometrics()).isNotEmpty,
+        availability: availability,
         isEnabled: isEnabled,
       );
     });
 
 class _BiometricSettingsState {
   const _BiometricSettingsState({
-    required this.isSupported,
-    required this.isAvailable,
+    required this.availability,
     required this.isEnabled,
   });
 
-  final bool isSupported;
-  final bool isAvailable;
+  final BiometricAvailability availability;
   final bool isEnabled;
+
+  bool get canAuthenticateWithBiometrics =>
+      availability.canAuthenticateWithBiometrics;
+
+  bool get isBiometricHardwareSupported =>
+      availability.isBiometricHardwareSupported;
+
+  bool get isDeviceAuthSupported => availability.isDeviceAuthSupported;
+
+  bool get needsBiometricEnrollment => availability.needsBiometricEnrollment;
 }
 
 class _SectionHeader extends StatelessWidget {
@@ -263,23 +262,38 @@ class _SecuritySection extends ConsumerWidget {
             secondary: const Icon(Icons.fingerprint),
             title: const Text('Biometric authentication'),
             subtitle: Text(
-              !isAuthKnown
-                  ? 'Checking security status'
-                  : !state.isSupported
-                  ? 'Not supported on this device'
-                  : !isAuthConfigured
-                  ? 'Set up app lock first'
-                  : state.isAvailable
-                  ? 'Use fingerprint or face to unlock'
-                  : state.isEnabled
-                  ? 'Enabled - enroll fingerprint or face to use it'
-                  : 'Enable now, then enroll fingerprint or face to use it',
+              _biometricSubtitle(
+                isAuthKnown: isAuthKnown,
+                isAuthConfigured: isAuthConfigured,
+                state: state,
+              ),
             ),
-            value: state.isEnabled,
-            onChanged: state.isSupported && isAuthConfigured
+            value: state.isEnabled && state.canAuthenticateWithBiometrics,
+            onChanged: state.canAuthenticateWithBiometrics && isAuthConfigured
                 ? (value) => _toggleBiometric(ref, value)
                 : null,
           ),
+        ),
+        biometricSettings.maybeWhen(
+          data: (state) {
+            if (!isAuthConfigured || !state.needsBiometricEnrollment) {
+              return const SizedBox.shrink();
+            }
+
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () =>
+                      ref.invalidate(_biometricSettingsStateProvider),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Re-check biometric status'),
+                ),
+              ),
+            );
+          },
+          orElse: () => const SizedBox.shrink(),
         ),
         ListTile(
           leading: const Icon(Icons.timer_outlined),
@@ -300,6 +314,30 @@ class _SecuritySection extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  String _biometricSubtitle({
+    required bool isAuthKnown,
+    required bool isAuthConfigured,
+    required _BiometricSettingsState state,
+  }) {
+    if (!isAuthKnown) {
+      return 'Checking security status';
+    }
+    if (!state.isBiometricHardwareSupported) {
+      return state.isDeviceAuthSupported
+          ? 'Device lock is available, but no biometric hardware was reported'
+          : 'Biometric hardware not supported on this device';
+    }
+    if (!isAuthConfigured) {
+      return state.needsBiometricEnrollment
+          ? 'Enroll fingerprint or face in system settings before enabling'
+          : 'Set up app lock first';
+    }
+    if (state.canAuthenticateWithBiometrics) {
+      return 'Use fingerprint or face to unlock';
+    }
+    return 'Enroll fingerprint or face in system settings, then return and re-check';
   }
 
   void _showChangePinDialog(BuildContext context, WidgetRef ref) {
