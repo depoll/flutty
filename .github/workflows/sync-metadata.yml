@@ -45,9 +45,13 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
+      - name: Install screenshot validation dependencies
+        run: python3 -m pip install --quiet Pillow
+
       - name: Validate App Store metadata
         run: |
           python3 scripts/validate_app_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
+          python3 scripts/validate_store_screenshots.py ios
 
       - name: Sync private app metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
@@ -93,6 +97,7 @@ jobs:
       - name: Validate Play Store metadata
         run: |
           python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
+          python3 scripts/validate_store_screenshots.py android
 
       - name: Sync private app metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'

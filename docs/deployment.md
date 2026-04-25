@@ -158,7 +158,7 @@ Store metadata (descriptions, icons, etc.) is managed per-app in the repository.
 ```
 ios/fastlane/
 ├── screenshots/
-│   └── en-US/                  # Shared App Store phone screenshots
+│   └── en-US/                  # Shared App Store iPhone and iPad screenshots
 ├── metadata-private/        # MonkeySSH β (preview app)
 │   ├── en-US/
 │   │   ├── name.txt         # "MonkeySSH β"
@@ -191,7 +191,9 @@ android/fastlane/
 │       ├── icon.png         # 512x512 (private banner icon)
 │       ├── images/
 │       │   ├── featureGraphic.png
-│       │   └── phoneScreenshots/
+│       │   ├── phoneScreenshots/
+│       │   ├── sevenInchScreenshots/
+│       │   └── tenInchScreenshots/
 │       └── changelogs/
 │           └── default.txt
 └── metadata-production/     # MonkeySSH (production app)
@@ -204,6 +206,7 @@ Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*
 Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
 App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
 Store screenshots and feature graphics can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`).
+Generated screenshot counts and dimensions can be validated locally with `python3 scripts/validate_store_screenshots.py`.
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.

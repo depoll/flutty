@@ -10,6 +10,15 @@ from PIL import Image, ImageDraw, ImageFont
 
 ROOT = Path(__file__).resolve().parents[1]
 RESAMPLING = getattr(Image, 'Resampling', Image).LANCZOS
+IOS_SCREENSHOT_SIZES = {
+    'iphone_6_9': (1320, 2868),
+    'ipad_13': (2064, 2752),
+}
+ANDROID_SCREENSHOT_SIZES = {
+    'phoneScreenshots': (1080, 1920),
+    'sevenInchScreenshots': (1200, 1920),
+    'tenInchScreenshots': (1600, 2560),
+}
 
 
 @dataclass(frozen=True)
@@ -251,14 +260,11 @@ def _write_ios_screenshots() -> None:
     locale_dir = ROOT / 'ios/fastlane/screenshots/en-US'
     locale_dir.mkdir(parents=True, exist_ok=True)
     for index, scene in enumerate(SCENES, start=1):
-        _draw_scene((1320, 2868), scene).save(
-            locale_dir / f'{index:02d}_iphone_6_9.png',
-            optimize=True,
-        )
-        _draw_scene((1242, 2688), scene).save(
-            locale_dir / f'{index:02d}_iphone_6_5.png',
-            optimize=True,
-        )
+        for device_name, size in IOS_SCREENSHOT_SIZES.items():
+            _draw_scene(size, scene).save(
+                locale_dir / f'{index:02d}_{device_name}.png',
+                optimize=True,
+            )
 
 
 def _write_feature_graphic(path: Path, beta: bool = False) -> None:
@@ -283,14 +289,10 @@ def _write_feature_graphic(path: Path, beta: bool = False) -> None:
 
 
 def main() -> None:
-    _write_screenshot_set(
-        ROOT / 'android/fastlane/metadata-production/android/en-US/images/phoneScreenshots',
-        (1080, 1920),
-    )
-    _write_screenshot_set(
-        ROOT / 'android/fastlane/metadata-private/android/en-US/images/phoneScreenshots',
-        (1080, 1920),
-    )
+    for variant in ('production', 'private'):
+        images_dir = ROOT / f'android/fastlane/metadata-{variant}/android/en-US/images'
+        for screenshot_dir, size in ANDROID_SCREENSHOT_SIZES.items():
+            _write_screenshot_set(images_dir / screenshot_dir, size)
     _write_ios_screenshots()
     _write_feature_graphic(
         ROOT / 'android/fastlane/metadata-production/android/en-US/images/featureGraphic.png',
