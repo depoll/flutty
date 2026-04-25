@@ -199,6 +199,64 @@ SftpPreviewKind? resolveSftpPreviewKind({
   return null;
 }
 
+/// Resolves the icon shown for an SFTP file row.
+@visibleForTesting
+IconData resolveSftpFileIcon({
+  required bool isDirectory,
+  required String filename,
+}) {
+  if (isDirectory) {
+    return Icons.folder;
+  }
+  if (isPreviewableImageFileName(filename)) {
+    return Icons.image;
+  }
+  if (isPreviewableVideoFileName(filename)) {
+    return Icons.video_file;
+  }
+
+  final ext = filename.split('.').last.toLowerCase();
+  return switch (ext) {
+    'txt' || 'md' || 'log' => Icons.description,
+    'pdf' => Icons.picture_as_pdf,
+    'mp3' || 'wav' || 'flac' => Icons.audio_file,
+    'zip' || 'tar' || 'gz' || 'rar' => Icons.archive,
+    'sh' || 'bash' => Icons.terminal,
+    'py' || 'js' || 'dart' || 'java' || 'go' => Icons.code,
+    'json' || 'yaml' || 'yml' || 'xml' => Icons.data_object,
+    _ => Icons.insert_drive_file,
+  };
+}
+
+/// Builds the shell-safe clipboard text for SFTP "Copy as path".
+@visibleForTesting
+String buildSftpCopyPathClipboardText({
+  required String directory,
+  required String filename,
+}) => shellEscapePosix(joinRemotePath(directory, filename));
+
+/// Returns a user-facing image preview block reason, if preview should stop.
+@visibleForTesting
+String? resolveSftpImagePreviewBlockMessage({required int byteCount}) =>
+    byteCount > _maxPreviewBytes
+    ? 'File is too large to preview here (max 10 MB)'
+    : null;
+
+/// Returns a user-facing text edit block reason, if editing should stop.
+@visibleForTesting
+String? resolveSftpTextEditBlockMessage({
+  required int byteCount,
+  Uint8List? loadedBytes,
+}) {
+  if (byteCount > _maxEditableBytes) {
+    return 'File is too large to edit here (max 1 MB)';
+  }
+  if (loadedBytes != null && looksLikeBinaryContent(loadedBytes)) {
+    return 'Binary files cannot be edited here';
+  }
+  return null;
+}
+
 /// Formats a remote modified time stored as seconds since the Unix epoch.
 @visibleForTesting
 String? formatRemoteModifiedTime(int? modifyTime) {
@@ -1421,8 +1479,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _copyRemotePath(SftpName file) async {
-    final remotePath = _joinRemotePath(_currentPath, file.filename);
-    await Clipboard.setData(ClipboardData(text: shellEscapePosix(remotePath)));
+    final remotePath = joinRemotePath(_currentPath, file.filename);
+    await Clipboard.setData(
+      ClipboardData(
+        text: buildSftpCopyPathClipboardText(
+          directory: _currentPath,
+          filename: file.filename,
+        ),
+      ),
+    );
     if (!mounted) {
       return;
     }
@@ -1436,13 +1501,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    if ((file.attr.size ?? 0) > _maxPreviewBytes) {
+    final preflightMessage = resolveSftpImagePreviewBlockMessage(
+      byteCount: file.attr.size ?? 0,
+    );
+    if (preflightMessage != null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('File is too large to preview here (max 10 MB)'),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(preflightMessage)));
       }
       return;
     }
@@ -1457,13 +1523,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         await remoteFile.close();
       }
 
-      if (bytes.length > _maxPreviewBytes) {
+      final loadedMessage = resolveSftpImagePreviewBlockMessage(
+        byteCount: bytes.length,
+      );
+      if (loadedMessage != null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('File is too large to preview here (max 10 MB)'),
-            ),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(loadedMessage)));
         }
         return;
       }
@@ -1737,13 +1804,14 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       return;
     }
 
-    if ((file.attr.size ?? 0) > _maxEditableBytes) {
+    final preflightMessage = resolveSftpTextEditBlockMessage(
+      byteCount: file.attr.size ?? 0,
+    );
+    if (preflightMessage != null) {
       if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('File is too large to edit here (max 1 MB)'),
-          ),
-        );
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(preflightMessage)));
       }
       return;
     }
@@ -1758,22 +1826,15 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         await remoteFile.close();
       }
 
-      if (bytes.length > _maxEditableBytes) {
+      final loadedMessage = resolveSftpTextEditBlockMessage(
+        byteCount: bytes.length,
+        loadedBytes: bytes,
+      );
+      if (loadedMessage != null) {
         if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(
-              content: Text('File is too large to edit here (max 1 MB)'),
-            ),
-          );
-        }
-        return;
-      }
-
-      if (looksLikeBinaryContent(bytes)) {
-        if (mounted) {
-          ScaffoldMessenger.of(context).showSnackBar(
-            const SnackBar(content: Text('Binary files cannot be edited here')),
-          );
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text(loadedMessage)));
         }
         return;
       }
@@ -1926,7 +1987,7 @@ class _FileListTile extends StatelessWidget {
       tileColor: isHighlighted ? theme.colorScheme.primaryContainer : null,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       leading: Icon(
-        isDirectory ? Icons.folder : _getFileIcon(file.filename),
+        resolveSftpFileIcon(isDirectory: isDirectory, filename: file.filename),
         color: iconColor,
       ),
       title: Text(
@@ -1968,24 +2029,6 @@ class _FileListTile extends StatelessWidget {
       onTap: onTap,
       onLongPress: onLongPress,
     );
-  }
-
-  IconData _getFileIcon(String filename) {
-    if (isPreviewableImageFileName(filename)) {
-      return Icons.image;
-    }
-    final ext = filename.split('.').last.toLowerCase();
-    return switch (ext) {
-      'txt' || 'md' || 'log' => Icons.description,
-      'pdf' => Icons.picture_as_pdf,
-      'mp3' || 'wav' || 'flac' => Icons.audio_file,
-      'mp4' || 'mov' || 'avi' => Icons.video_file,
-      'zip' || 'tar' || 'gz' || 'rar' => Icons.archive,
-      'sh' || 'bash' => Icons.terminal,
-      'py' || 'js' || 'dart' || 'java' || 'go' => Icons.code,
-      'json' || 'yaml' || 'yml' || 'xml' => Icons.data_object,
-      _ => Icons.insert_drive_file,
-    };
   }
 }
 

@@ -46,21 +46,57 @@ void main() {
     test('rejects an unknown host without persisting trust', () async {
       final service = HostKeyVerificationService(
         knownHostsRepository: repository,
-        promptHandler: (_) async => HostKeyTrustDecision.reject,
+        promptHandler: (request) async {
+          expect(request.existingKnownHost, isNull);
+          expect(request.isReplacement, isFalse);
+          return HostKeyTrustDecision.reject;
+        },
       );
       final presentedHostKey = _verifiedHostKey('reject.example.com', 22, [
         1,
-        2,
         3,
+        5,
       ]);
 
       await expectLater(
         service.verify(presentedHostKey),
-        throwsA(isA<HostKeyVerificationException>()),
+        throwsA(
+          isA<HostKeyVerificationException>().having(
+            (error) => error.message,
+            'message',
+            contains('not trusted yet'),
+          ),
+        ),
       );
 
       expect(await repository.getByHost('reject.example.com', 22), isNull);
     });
+
+    test(
+      'fails closed for unknown hosts when no prompt is available',
+      () async {
+        final service = HostKeyVerificationService(
+          knownHostsRepository: repository,
+        );
+        final presentedHostKey = _verifiedHostKey('headless.example.com', 22, [
+          2,
+          4,
+          6,
+        ]);
+
+        await expectLater(
+          service.verify(presentedHostKey),
+          throwsA(
+            isA<HostKeyVerificationException>().having(
+              (error) => error.message,
+              'message',
+              allOf(contains('verification is required'), contains('no trust')),
+            ),
+          ),
+        );
+        expect(await repository.getByHost('headless.example.com', 22), isNull);
+      },
+    );
 
     test('rejects changed host keys by default', () async {
       final originalHostKey = _verifiedHostKey('change.example.com', 22, [
@@ -96,7 +132,57 @@ void main() {
           ),
         ),
       );
+
+      final storedHost = await repository.getByHost('change.example.com', 22);
+      expect(storedHost, isNotNull);
+      expect(storedHost!.hostKey, originalHostKey.encodedHostKey);
+      expect(storedHost.fingerprint, originalHostKey.fingerprint);
     });
+
+    test(
+      'fails closed for changed host keys when no prompt is available',
+      () async {
+        final originalHostKey = _verifiedHostKey('noprompt.example.com', 22, [
+          4,
+          5,
+          6,
+        ]);
+        await repository.upsertTrustedHost(
+          hostname: originalHostKey.hostname,
+          port: originalHostKey.port,
+          keyType: originalHostKey.keyType,
+          fingerprint: originalHostKey.fingerprint,
+          encodedHostKey: originalHostKey.encodedHostKey,
+          resetFirstSeen: true,
+        );
+        final service = HostKeyVerificationService(
+          knownHostsRepository: repository,
+        );
+        final presentedHostKey = _verifiedHostKey('noprompt.example.com', 22, [
+          7,
+          8,
+          9,
+        ]);
+
+        await expectLater(
+          service.verify(presentedHostKey),
+          throwsA(
+            isA<HostKeyVerificationException>().having(
+              (error) => error.message,
+              'message',
+              contains('replacement prompt is not available'),
+            ),
+          ),
+        );
+
+        final storedHost = await repository.getByHost(
+          'noprompt.example.com',
+          22,
+        );
+        expect(storedHost, isNotNull);
+        expect(storedHost!.hostKey, originalHostKey.encodedHostKey);
+      },
+    );
 
     test('allows explicit replacement of a changed trusted host key', () async {
       final originalHostKey = _verifiedHostKey('replace.example.com', 22, [
