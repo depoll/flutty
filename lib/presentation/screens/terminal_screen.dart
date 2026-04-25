@@ -64,11 +64,74 @@ bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
     (codeUnit >= 0x61 && codeUnit <= 0x7A);
 
+/// Minimum tmux handle touch target used by the collapsed window bar.
+@visibleForTesting
+const double tmuxHandleMinTouchExtent = 44;
+
+/// Returns a short, user-facing label for the terminal connection state.
+@visibleForTesting
+String describeTerminalConnectionState(
+  SshConnectionState state, {
+  required bool isConnecting,
+}) {
+  if (isConnecting &&
+      (state == SshConnectionState.disconnected ||
+          state == SshConnectionState.connecting)) {
+    return 'Connecting';
+  }
+
+  switch (state) {
+    case SshConnectionState.connected:
+      return 'Connected';
+    case SshConnectionState.connecting:
+      return 'Connecting';
+    case SshConnectionState.authenticating:
+      return 'Authenticating';
+    case SshConnectionState.reconnecting:
+      return 'Reconnecting';
+    case SshConnectionState.error:
+      return 'Connection error';
+    case SshConnectionState.disconnected:
+      return 'Disconnected';
+  }
+}
+
+/// Formats the remote host and session identity shown in the terminal title.
+@visibleForTesting
+String? formatTerminalConnectionIdentity({
+  required String? username,
+  required String? hostname,
+  required int? port,
+  required int? connectionId,
+}) {
+  final trimmedUsername = username?.trim();
+  final trimmedHostname = hostname?.trim();
+  final hasUsername = trimmedUsername != null && trimmedUsername.isNotEmpty;
+  final hasHostname = trimmedHostname != null && trimmedHostname.isNotEmpty;
+  final hostIdentity = hasHostname
+      ? '${hasUsername ? '$trimmedUsername@' : ''}$trimmedHostname'
+      : null;
+  final hostWithPort = hostIdentity == null
+      ? null
+      : port == null || port == 22
+      ? hostIdentity
+      : '$hostIdentity:$port';
+  final sessionLabel = connectionId == null ? null : 'session #$connectionId';
+
+  if (hostWithPort == null) {
+    return sessionLabel;
+  }
+  if (sessionLabel == null) {
+    return hostWithPort;
+  }
+  return '$hostWithPort · $sessionLabel';
+}
+
 /// Resolves how much vertical space the tmux bar can safely expand into.
 @visibleForTesting
 double resolveTmuxBarMaxContentHeight(
   double availableHeight, {
-  double handleHeight = 22,
+  double handleHeight = tmuxHandleMinTouchExtent,
   double reservedPadding = 8,
   double fallbackAvailableHeight = 0,
 }) {
@@ -171,14 +234,14 @@ EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
 @visibleForTesting
 double resolveTmuxBarRevealBottomOffset(
   double terminalBottomPadding, {
-  double handleHeight = 22,
+  double handleHeight = tmuxHandleMinTouchExtent,
 }) => terminalBottomPadding - handleHeight;
 
 /// Resolves the tmux bar's reveal opacity from the animated bottom padding.
 @visibleForTesting
 double resolveTmuxBarRevealOpacity(
   double terminalBottomPadding, {
-  double handleHeight = 22,
+  double handleHeight = tmuxHandleMinTouchExtent,
 }) {
   if (handleHeight <= 0) {
     return terminalBottomPadding > 0 ? 1 : 0;
@@ -391,7 +454,7 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Height of the collapsed handle bar. The terminal adds this as
   /// bottom padding so the handle sits over empty space.
-  static const handleHeight = 22.0;
+  static const handleHeight = tmuxHandleMinTouchExtent;
 
   @override
   State<_TmuxExpandableBar> createState() => _TmuxExpandableBarState();
@@ -867,62 +930,78 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       activeWindowTitle: resolveTmuxBarActiveWindowTitle(displayedWindows),
     );
     final activeWindowTool = resolveTmuxBarActiveWindowTool(displayedWindows);
-    return GestureDetector(
-      key: const ValueKey('tmux-handle-bar'),
-      onTap: () {
-        final wasExpanded = _expanded;
-        setState(() => _expanded = !_expanded);
-        // Refresh window list when expanding to get current active state.
-        if (!wasExpanded) {
-          _loadWindows();
-          if (widget.isProUser) {
-            unawaited(_prefetchPreferredSessionProvider());
-          }
-        }
-      },
-      child: SizedBox(
-        height: _TmuxExpandableBar.handleHeight,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 12),
-          child: Row(
-            children: [
-              AgentToolIcon(
-                tool: activeWindowTool,
-                size: 12,
-                color: theme.colorScheme.primary,
-                fallbackIcon: Icons.window_outlined,
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: Text(
-                  handleLabel,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: theme.textTheme.labelSmall?.copyWith(
-                    fontSize: 10,
-                    color: theme.colorScheme.onSurfaceVariant,
+    final tooltip = _expanded
+        ? 'Collapse tmux windows'
+        : 'Show tmux windows: $handleLabel';
+
+    return Semantics(
+      button: true,
+      toggled: _expanded,
+      label: 'tmux windows: $handleLabel',
+      hint: _expanded
+          ? 'Double tap to collapse the tmux window list'
+          : 'Double tap to show tmux windows',
+      child: Tooltip(
+        message: tooltip,
+        child: GestureDetector(
+          key: const ValueKey('tmux-handle-bar'),
+          behavior: HitTestBehavior.opaque,
+          onTap: () {
+            final wasExpanded = _expanded;
+            setState(() => _expanded = !_expanded);
+            // Refresh window list when expanding to get current active state.
+            if (!wasExpanded) {
+              _loadWindows();
+              if (widget.isProUser) {
+                unawaited(_prefetchPreferredSessionProvider());
+              }
+            }
+          },
+          child: SizedBox(
+            height: _TmuxExpandableBar.handleHeight,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  AgentToolIcon(
+                    tool: activeWindowTool,
+                    size: 16,
+                    color: theme.colorScheme.primary,
+                    fallbackIcon: Icons.window_outlined,
                   ),
-                ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      handleLabel,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: theme.colorScheme.onSurfaceVariant,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: theme.colorScheme.onSurfaceVariant.withAlpha(110),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                    child: const SizedBox(width: 28, height: 4),
+                  ),
+                  const SizedBox(width: 8),
+                  AnimatedRotation(
+                    duration: const Duration(milliseconds: 300),
+                    turns: _expanded ? 0.5 : 0,
+                    child: Icon(
+                      Icons.keyboard_arrow_up,
+                      size: 20,
+                      color: theme.colorScheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
               ),
-              const SizedBox(width: 6),
-              DecoratedBox(
-                decoration: BoxDecoration(
-                  color: theme.colorScheme.onSurfaceVariant.withAlpha(90),
-                  borderRadius: BorderRadius.circular(999),
-                ),
-                child: const SizedBox(width: 10, height: 2),
-              ),
-              const SizedBox(width: 6),
-              AnimatedRotation(
-                duration: const Duration(milliseconds: 300),
-                turns: _expanded ? 0.5 : 0,
-                child: Icon(
-                  Icons.keyboard_arrow_up,
-                  size: 14,
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-            ],
+            ),
           ),
         ),
       ),
@@ -4488,7 +4567,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionThemeOverride ??
         _currentTheme ??
         (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+    final connectionLabel = describeTerminalConnectionState(
+      connectionState,
+      isConnecting: _isConnecting,
+    );
+    final connectionIdentity = formatTerminalConnectionIdentity(
+      username: _host?.username,
+      hostname: _host?.hostname,
+      port: _host?.port,
+      connectionId: _connectionId,
+    );
     final titleSubtitleSegments = <String>[];
+    if (connectionIdentity != null) {
+      titleSubtitleSegments.add(connectionIdentity);
+    }
     if ((_iconName ?? '').isNotEmpty) {
       titleSubtitleSegments.add(_iconName!);
     }
@@ -4504,7 +4596,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           crossAxisAlignment: CrossAxisAlignment.start,
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(_host?.label ?? 'Terminal'),
+            Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Flexible(
+                  child: Text(
+                    _host?.label ?? 'Terminal',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _TerminalConnectionStatusPill(
+                  label: connectionLabel,
+                  state: connectionState,
+                  isConnecting: _isConnecting,
+                ),
+              ],
+            ),
             if (titleSubtitle.isNotEmpty)
               Text(
                 titleSubtitle,
@@ -8034,6 +8143,97 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _TerminalConnectionStatusPill extends StatelessWidget {
+  const _TerminalConnectionStatusPill({
+    required this.label,
+    required this.state,
+    required this.isConnecting,
+  });
+
+  final String label;
+  final SshConnectionState state;
+  final bool isConnecting;
+
+  IconData get _icon {
+    if (isConnecting &&
+        (state == SshConnectionState.disconnected ||
+            state == SshConnectionState.connecting)) {
+      return Icons.sync;
+    }
+
+    switch (state) {
+      case SshConnectionState.connected:
+        return Icons.check_circle_outline;
+      case SshConnectionState.connecting:
+      case SshConnectionState.authenticating:
+        return Icons.sync;
+      case SshConnectionState.reconnecting:
+        return Icons.sync_problem_outlined;
+      case SshConnectionState.error:
+        return Icons.error_outline;
+      case SshConnectionState.disconnected:
+        return Icons.link_off;
+    }
+  }
+
+  Color _color(ColorScheme colorScheme) {
+    if (isConnecting &&
+        (state == SshConnectionState.disconnected ||
+            state == SshConnectionState.connecting)) {
+      return colorScheme.tertiary;
+    }
+
+    switch (state) {
+      case SshConnectionState.connected:
+        return colorScheme.primary;
+      case SshConnectionState.connecting:
+      case SshConnectionState.authenticating:
+      case SshConnectionState.reconnecting:
+        return colorScheme.tertiary;
+      case SshConnectionState.error:
+      case SshConnectionState.disconnected:
+        return colorScheme.error;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    final statusColor = _color(colorScheme);
+
+    return Semantics(
+      label: 'Terminal connection status: $label',
+      child: Tooltip(
+        message: label,
+        child: DecoratedBox(
+          decoration: BoxDecoration(
+            color: statusColor.withAlpha(24),
+            borderRadius: BorderRadius.circular(999),
+            border: Border.all(color: statusColor.withAlpha(150)),
+          ),
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(_icon, size: 13, color: statusColor),
+                const SizedBox(width: 4),
+                Text(
+                  label,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: statusColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }

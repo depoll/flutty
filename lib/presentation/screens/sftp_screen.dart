@@ -137,6 +137,32 @@ String resolveUnreadableSftpUploadMessage(List<PlatformFile> files) {
   return 'Unable to read ${files.length} selected files';
 }
 
+/// Returns a validation error for a new remote folder name, or null if valid.
+@visibleForTesting
+String? validateSftpDirectoryName(String name) {
+  final trimmedName = name.trim();
+  if (trimmedName.isEmpty) {
+    return 'Folder name is required';
+  }
+  if (trimmedName == '.' || trimmedName == '..') {
+    return 'Choose a folder name, not a navigation shortcut';
+  }
+  if (trimmedName.contains('/')) {
+    return 'Folder name cannot contain /';
+  }
+  return null;
+}
+
+/// Formats the snackbar message shown after copying a remote path.
+@visibleForTesting
+String sftpCopyPathSnackBarMessage(String remotePath) =>
+    'Copied shell-safe path for "$remotePath"';
+
+/// Formats the snackbar message shown after creating a remote folder.
+@visibleForTesting
+String sftpCreatedDirectorySnackBarMessage(String remotePath) =>
+    'Created folder "$remotePath"';
+
 /// How a file row tap should behave in the SFTP browser.
 @visibleForTesting
 enum SftpFileTapIntent {
@@ -854,6 +880,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 _highlightedFileName == file.filename,
             onTap: () => _handleFileTap(file),
             onLongPress: () => _showFileOptions(file),
+            onShowOptions: () => _showFileOptions(file),
           );
         },
       ),
@@ -988,41 +1015,75 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Create Directory'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'Directory name'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Create'),
-          ),
-        ],
+      builder: (context) => ValueListenableBuilder<TextEditingValue>(
+        valueListenable: controller,
+        builder: (context, value, _) {
+          final validationMessage = validateSftpDirectoryName(value.text);
+          final canCreate = validationMessage == null;
+
+          return AlertDialog(
+            title: const Text('Create Folder'),
+            content: TextField(
+              controller: controller,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              decoration: InputDecoration(
+                labelText: 'Folder name',
+                helperText: 'Created inside $_currentPath',
+                errorText: value.text.isEmpty ? null : validationMessage,
+              ),
+              onSubmitted: canCreate
+                  ? (value) => Navigator.pop(context, value.trim())
+                  : null,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: canCreate
+                    ? () => Navigator.pop(context, value.text.trim())
+                    : null,
+                child: const Text('Create'),
+              ),
+            ],
+          );
+        },
       ),
     );
+    controller.dispose();
 
-    if (name != null && name.isNotEmpty && _sftp != null) {
-      try {
-        await _sftp!.mkdir(_joinRemotePath(_currentPath, name));
-        await _loadDirectory(_currentPath);
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Created "$name"')));
-        }
-      } on Exception catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
-        }
+    if (name == null || _sftp == null) {
+      return;
+    }
+
+    final validationMessage = validateSftpDirectoryName(name);
+    if (validationMessage != null) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text(validationMessage)));
+      }
+      return;
+    }
+
+    final remotePath = _joinRemotePath(_currentPath, name.trim());
+    try {
+      await _sftp!.mkdir(remotePath);
+      await _loadDirectory(_currentPath);
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(sftpCreatedDirectorySnackBarMessage(remotePath)),
+          ),
+        );
+      }
+    } on Exception catch (e) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Could not create "$remotePath": $e')),
+        );
       }
     }
   }
@@ -1227,9 +1288,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     if (!mounted) {
       return;
     }
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('Copied shell-safe path')));
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(sftpCopyPathSnackBarMessage(remotePath))),
+    );
   }
 
   Future<void> _previewImageFile(SftpName file) async {
@@ -1456,12 +1517,14 @@ class _FileListTile extends StatelessWidget {
     required this.file,
     required this.onTap,
     required this.onLongPress,
+    required this.onShowOptions,
     this.isHighlighted = false,
   });
 
   final SftpName file;
   final VoidCallback onTap;
   final VoidCallback onLongPress;
+  final VoidCallback onShowOptions;
   final bool isHighlighted;
 
   @override
@@ -1511,9 +1574,19 @@ class _FileListTile extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
             ),
-      trailing: isDirectory
-          ? Icon(Icons.chevron_right, size: 20, color: trailingIconColor)
-          : null,
+      trailing: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          if (isDirectory)
+            Icon(Icons.chevron_right, size: 20, color: trailingIconColor),
+          IconButton(
+            onPressed: onShowOptions,
+            icon: const Icon(Icons.more_vert),
+            color: trailingIconColor,
+            tooltip: 'More actions for ${file.filename}',
+          ),
+        ],
+      ),
       onTap: onTap,
       onLongPress: onLongPress,
     );

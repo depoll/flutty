@@ -622,6 +622,11 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       child: Scaffold(
         backgroundColor: colors.background,
         appBar: AppBar(
+          leading: IconButton(
+            icon: const Icon(Icons.close),
+            tooltip: 'Close editor',
+            onPressed: () => Navigator.pop(context),
+          ),
           title: Text('Edit ${widget.fileName}'),
           actions: [
             if (_showDesktopZoomButtons(theme.platform))
