@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 /// Local notification channel used for tmux activity alerts.
 const tmuxAlertNotificationChannelId = 'tmux-alerts';
+const _androidNotificationIcon = 'ic_notification_monkey';
 
 /// Service for showing local notifications inside the app.
 class LocalNotificationService {
@@ -40,6 +41,7 @@ class LocalNotificationService {
       channelDescription: 'Window activity alerts for tmux sessions.',
       importance: Importance.high,
       priority: Priority.high,
+      icon: _androidNotificationIcon,
       onlyAlertOnce: true,
     );
     const darwinDetails = DarwinNotificationDetails(
@@ -81,7 +83,7 @@ class LocalNotificationService {
 
     try {
       const initializationSettings = InitializationSettings(
-        android: AndroidInitializationSettings('@mipmap/ic_launcher'),
+        android: AndroidInitializationSettings(_androidNotificationIcon),
         iOS: DarwinInitializationSettings(),
         macOS: DarwinInitializationSettings(),
       );
