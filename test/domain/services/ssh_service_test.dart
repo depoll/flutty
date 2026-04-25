@@ -1291,13 +1291,11 @@ void main() {
         encodedHostKey: trustedHostKey.encodedHostKey,
         resetFirstSeen: true,
       );
-      final sockets = [
-        _FakeHostKeySocket(hostKeyBytes),
-        _FakeHostKeySocket(hostKeyBytes),
-      ];
+      final sockets = [_FakeHostKeySocket(hostKeyBytes)];
       final client = _MockSshClient();
       var socketIndex = 0;
       var promptCount = 0;
+      var clientFactoryCalls = 0;
 
       when(client.close).thenReturn(null);
 
@@ -1318,6 +1316,7 @@ void main() {
               identities,
               keepAliveInterval,
             }) {
+              clientFactoryCalls++;
               when(() => client.authenticated).thenAnswer((_) async {
                 final bytes = await (socket as HostKeySource).hostKeyBytes;
                 final trusted = await onVerifyHostKey!(
@@ -1339,9 +1338,194 @@ void main() {
       final result = await service.connect(config);
 
       expect(result.success, isTrue);
-      expect(socketIndex, 2);
+      expect(socketIndex, 1);
+      expect(clientFactoryCalls, 1);
       expect(promptCount, 0);
     });
+
+    test('connect replaces a changed trusted host key after prompt', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final originalHostKey = VerifiedHostKey(
+        hostname: 'replace-success.example.com',
+        port: 22,
+        keyType: 'ssh-ed25519',
+        hostKeyBytes: _ed25519HostKeyBlob([1, 2, 3]),
+      );
+      final changedHostKeyBytes = _ed25519HostKeyBlob([7, 8, 9]);
+      final changedHostKey = VerifiedHostKey(
+        hostname: 'replace-success.example.com',
+        port: 22,
+        keyType: 'ssh-ed25519',
+        hostKeyBytes: changedHostKeyBytes,
+      );
+      await knownHostsRepository.upsertTrustedHost(
+        hostname: originalHostKey.hostname,
+        port: originalHostKey.port,
+        keyType: originalHostKey.trustedKeyType,
+        fingerprint: originalHostKey.fingerprint,
+        encodedHostKey: originalHostKey.encodedHostKey,
+        resetFirstSeen: true,
+      );
+      final sockets = [
+        _FakeHostKeySocket(changedHostKeyBytes),
+        _FakeHostKeySocket(changedHostKeyBytes),
+      ];
+      final firstClient = _MockSshClient();
+      final retryClient = _MockSshClient();
+      var socketIndex = 0;
+      var clientIndex = 0;
+      var promptCount = 0;
+
+      when(firstClient.close).thenReturn(null);
+      when(retryClient.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        hostKeyPromptHandler: (request) async {
+          promptCount++;
+          expect(request.isReplacement, isTrue);
+          expect(request.existingKnownHost, isNotNull);
+          return HostKeyTrustDecision.replace;
+        },
+        socketConnector: (host, port, {timeout}) async =>
+            sockets[socketIndex++],
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              final client = clientIndex == 0 ? firstClient : retryClient;
+              clientIndex++;
+              when(() => client.authenticated).thenAnswer((_) async {
+                final bytes = await (socket as HostKeySource).hostKeyBytes;
+                final trusted = await onVerifyHostKey!(
+                  'ssh-ed25519',
+                  Uint8List.fromList(md5.convert(bytes).bytes),
+                );
+                if (!trusted) {
+                  return Future<void>.error(
+                    SSHHostkeyError('Hostkey verification failed'),
+                  );
+                }
+              });
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'replace-success.example.com',
+        port: 22,
+        username: 'tester',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isTrue);
+      expect(socketIndex, 2);
+      expect(clientIndex, 2);
+      expect(promptCount, 1);
+      final storedHost = await knownHostsRepository.getByHost(
+        'replace-success.example.com',
+        22,
+      );
+      expect(storedHost, isNotNull);
+      expect(storedHost!.hostKey, changedHostKey.encodedHostKey);
+      expect(storedHost.fingerprint, changedHostKey.fingerprint);
+    });
+
+    test(
+      'connect rejects a changed trusted host key without retrying',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final originalHostKey = VerifiedHostKey(
+          hostname: 'replace-reject.example.com',
+          port: 22,
+          keyType: 'ssh-ed25519',
+          hostKeyBytes: _ed25519HostKeyBlob([1, 2, 3]),
+        );
+        final changedHostKeyBytes = _ed25519HostKeyBlob([7, 8, 9]);
+        await knownHostsRepository.upsertTrustedHost(
+          hostname: originalHostKey.hostname,
+          port: originalHostKey.port,
+          keyType: originalHostKey.trustedKeyType,
+          fingerprint: originalHostKey.fingerprint,
+          encodedHostKey: originalHostKey.encodedHostKey,
+          resetFirstSeen: true,
+        );
+        final socket = _FakeHostKeySocket(changedHostKeyBytes);
+        final client = _MockSshClient();
+        var socketCount = 0;
+        var clientFactoryCalls = 0;
+        var promptCount = 0;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          hostKeyPromptHandler: (request) async {
+            promptCount++;
+            expect(request.isReplacement, isTrue);
+            return HostKeyTrustDecision.reject;
+          },
+          socketConnector: (host, port, {timeout}) async {
+            socketCount++;
+            return socket;
+          },
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                clientFactoryCalls++;
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  final trusted = await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                  if (!trusted) {
+                    return Future<void>.error(
+                      SSHHostkeyError('Hostkey verification failed'),
+                    );
+                  }
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'replace-reject.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isFalse);
+        expect(result.error, contains('changed'));
+        expect(socketCount, 1);
+        expect(clientFactoryCalls, 1);
+        expect(promptCount, 1);
+        final storedHost = await knownHostsRepository.getByHost(
+          'replace-reject.example.com',
+          22,
+        );
+        expect(storedHost, isNotNull);
+        expect(storedHost!.hostKey, originalHostKey.encodedHostKey);
+      },
+    );
 
     test('connect fails if host key changes after trust prompt', () async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -1480,6 +1664,109 @@ void main() {
       );
     });
 
+    test('connect uses one connection per pretrusted jump-host hop', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final jumpHostKeyBytes = _ed25519HostKeyBlob([1, 2, 3]);
+      final targetHostKeyBytes = _ed25519HostKeyBlob([4, 5, 6]);
+      final jumpHostKey = VerifiedHostKey(
+        hostname: 'jump-trusted.example.com',
+        port: 2222,
+        keyType: 'ssh-ed25519',
+        hostKeyBytes: jumpHostKeyBytes,
+      );
+      final targetHostKey = VerifiedHostKey(
+        hostname: 'target-trusted.example.com',
+        port: 22,
+        keyType: 'ssh-ed25519',
+        hostKeyBytes: targetHostKeyBytes,
+      );
+      for (final hostKey in [jumpHostKey, targetHostKey]) {
+        await knownHostsRepository.upsertTrustedHost(
+          hostname: hostKey.hostname,
+          port: hostKey.port,
+          keyType: hostKey.trustedKeyType,
+          fingerprint: hostKey.fingerprint,
+          encodedHostKey: hostKey.encodedHostKey,
+          resetFirstSeen: true,
+        );
+      }
+
+      final jumpSocket = _FakeHostKeySocket(jumpHostKeyBytes);
+      final targetSocket = _FakeForwardHostKeySocket(targetHostKeyBytes);
+      final jumpClient = _MockSshClient();
+      final targetClient = _MockSshClient();
+      var socketConnectCount = 0;
+      var forwardCount = 0;
+      var clientIndex = 0;
+      var promptCount = 0;
+
+      when(
+        () => jumpClient.forwardLocal('target-trusted.example.com', 22),
+      ).thenAnswer((_) async {
+        forwardCount++;
+        return targetSocket;
+      });
+      when(jumpClient.close).thenReturn(null);
+      when(targetClient.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        hostKeyPromptHandler: (_) async {
+          promptCount++;
+          return HostKeyTrustDecision.reject;
+        },
+        socketConnector: (host, port, {timeout}) async {
+          expect(host, 'jump-trusted.example.com');
+          expect(port, 2222);
+          socketConnectCount++;
+          return jumpSocket;
+        },
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              final client = clientIndex == 0 ? jumpClient : targetClient;
+              final hostKeyBytes = (socket as HostKeySource).hostKeyBytes;
+              clientIndex++;
+              when(() => client.authenticated).thenAnswer((_) async {
+                final bytes = await hostKeyBytes;
+                final trusted = await onVerifyHostKey!(
+                  'ssh-ed25519',
+                  Uint8List.fromList(md5.convert(bytes).bytes),
+                );
+                expect(trusted, isTrue);
+              });
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'target-trusted.example.com',
+        port: 22,
+        username: 'target',
+        jumpHost: SshConnectionConfig(
+          hostname: 'jump-trusted.example.com',
+          port: 2222,
+          username: 'jump',
+        ),
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isTrue);
+      expect(socketConnectCount, 1);
+      expect(forwardCount, 1);
+      expect(clientIndex, 2);
+      expect(promptCount, 0);
+    });
+
     test(
       'connect persists accepted TOFU trust before authentication succeeds',
       () async {
@@ -1555,15 +1842,24 @@ void main() {
           resetFirstSeen: true,
         );
 
-        final socket = _FakeHostKeySocket(_ed25519HostKeyBlob([7, 8, 9]));
-        final client = _MockSshClient();
+        final changedHostKeyBytes = _ed25519HostKeyBlob([7, 8, 9]);
+        final sockets = [
+          _FakeHostKeySocket(changedHostKeyBytes),
+          _FakeHostKeySocket(changedHostKeyBytes),
+        ];
+        final firstClient = _MockSshClient();
+        final retryClient = _MockSshClient();
+        var socketIndex = 0;
+        var clientIndex = 0;
 
-        when(client.close).thenReturn(null);
+        when(firstClient.close).thenReturn(null);
+        when(retryClient.close).thenReturn(null);
 
         final service = SshService(
           knownHostsRepository: knownHostsRepository,
           hostKeyPromptHandler: (_) async => HostKeyTrustDecision.replace,
-          socketConnector: (host, port, {timeout}) async => socket,
+          socketConnector: (host, port, {timeout}) async =>
+              sockets[socketIndex++],
           clientFactory:
               (
                 socket, {
@@ -1573,15 +1869,25 @@ void main() {
                 identities,
                 keepAliveInterval,
               }) {
+                final client = clientIndex == 0 ? firstClient : retryClient;
+                final shouldFailAuth = clientIndex == 1;
+                clientIndex++;
                 when(() => client.authenticated).thenAnswer((_) async {
                   final bytes = await (socket as HostKeySource).hostKeyBytes;
-                  await onVerifyHostKey!(
+                  final trusted = await onVerifyHostKey!(
                     'ssh-ed25519',
                     Uint8List.fromList(md5.convert(bytes).bytes),
                   );
-                  return Future<void>.error(
-                    SSHAuthFailError('Authentication failed'),
-                  );
+                  if (!trusted) {
+                    return Future<void>.error(
+                      SSHHostkeyError('Hostkey verification failed'),
+                    );
+                  }
+                  if (shouldFailAuth) {
+                    return Future<void>.error(
+                      SSHAuthFailError('Authentication failed'),
+                    );
+                  }
                 });
                 return client;
               },
@@ -1596,6 +1902,8 @@ void main() {
         final result = await service.connect(config);
 
         expect(result.success, isFalse);
+        expect(socketIndex, 2);
+        expect(clientIndex, 2);
         final storedHost = await knownHostsRepository.getByHost(
           'replace.example.com',
           22,
