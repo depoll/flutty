@@ -4619,8 +4619,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     overflow: TextOverflow.ellipsis,
                   ),
                 ),
-                const SizedBox(width: 8),
-                _TerminalConnectionStatusPill(
+                const SizedBox(width: 6),
+                _TerminalConnectionStatusIcon(
                   label: connectionLabel,
                   state: connectionState,
                   isConnecting: _isConnecting,
@@ -8164,8 +8164,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 }
 
-class _TerminalConnectionStatusPill extends StatelessWidget {
-  const _TerminalConnectionStatusPill({
+class _TerminalConnectionStatusIcon extends StatelessWidget {
+  const _TerminalConnectionStatusIcon({
     required this.label,
     required this.state,
     required this.isConnecting,
@@ -8226,30 +8226,7 @@ class _TerminalConnectionStatusPill extends StatelessWidget {
       label: 'Terminal connection status: $label',
       child: Tooltip(
         message: label,
-        child: DecoratedBox(
-          decoration: BoxDecoration(
-            color: statusColor.withAlpha(24),
-            borderRadius: BorderRadius.circular(999),
-            border: Border.all(color: statusColor.withAlpha(150)),
-          ),
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Icon(_icon, size: 13, color: statusColor),
-                const SizedBox(width: 4),
-                Text(
-                  label,
-                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                    color: statusColor,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
+        child: Icon(_icon, size: 20, color: statusColor),
       ),
     );
   }
