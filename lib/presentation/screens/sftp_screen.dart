@@ -30,6 +30,11 @@ import 'remote_text_editor_screen.dart';
 
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
+
+/// Maximum remote video size cached for inline preview playback.
+@visibleForTesting
+const maxRemoteVideoPreviewBytes = 100 * 1024 * 1024;
+
 const _requestedPathLookupTimeout = Duration(seconds: 5);
 const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
@@ -136,6 +141,35 @@ String? remoteVideoMimeTypeForFileName(String filename) =>
       '.webm' => 'video/webm',
       _ => null,
     };
+
+/// Whether a known remote video size is allowed for inline preview caching.
+@visibleForTesting
+bool isRemoteVideoPreviewSizeAllowed(
+  int? sizeBytes, {
+  int maxBytes = maxRemoteVideoPreviewBytes,
+}) => sizeBytes == null || sizeBytes <= maxBytes;
+
+/// Whether adding a streamed video chunk would exceed the preview byte cap.
+@visibleForTesting
+bool wouldRemoteVideoPreviewExceedByteCap({
+  required int downloadedBytes,
+  required int chunkBytes,
+  int maxBytes = maxRemoteVideoPreviewBytes,
+}) => downloadedBytes + chunkBytes > maxBytes;
+
+/// Describes why a remote video is too large for inline preview.
+@visibleForTesting
+String remoteVideoPreviewTooLargeMessage({
+  int? sizeBytes,
+  int maxBytes = maxRemoteVideoPreviewBytes,
+}) {
+  final sizeDetail = sizeBytes == null
+      ? 'It exceeded the streaming limit'
+      : 'It is ${formatRemoteFileSize(sizeBytes)}';
+  return 'Video is too large to preview here. $sizeDetail; '
+      'the preview limit is ${formatRemoteFileSize(maxBytes)}. '
+      'Download it instead.';
+}
 
 /// The preview type supported by the SFTP browser for a file.
 @visibleForTesting
@@ -1404,11 +1438,20 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
 
     final remotePath = _joinRemotePath(_currentPath, file.filename);
+    final knownSize = file.attr.size;
+    if (!isRemoteVideoPreviewSizeAllowed(knownSize)) {
+      _showVideoPreviewFallbackSnackBar(
+        file,
+        remoteVideoPreviewTooLargeMessage(sizeBytes: knownSize),
+      );
+      return;
+    }
+
     final progress = ValueNotifier<_RemoteVideoDownloadProgress>(
       _RemoteVideoDownloadProgress(
         remotePath: remotePath,
         downloadedBytes: 0,
-        totalBytes: file.attr.size ?? 0,
+        totalBytes: knownSize ?? 0,
       ),
     );
     final cancelToken = _SftpTransferCancelToken();
@@ -1420,47 +1463,52 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       cancelToken: cancelToken,
     );
 
-    final dialogResult = await showDialog<_RemoteVideoCacheDialogResult>(
-      context: context,
-      barrierDismissible: false,
-      builder: (context) => _RemoteVideoCachingDialog(
-        fileName: file.filename,
-        progressListenable: progress,
+    _RemoteVideoCacheDialogResult? dialogResult;
+    try {
+      dialogResult = await _showRemoteVideoCacheDialog(
+        file: file,
+        progress: progress,
         downloadFuture: downloadFuture,
-        onCancel: () {
-          cancelToken.cancel();
-          Navigator.of(
-            context,
-          ).pop(const _RemoteVideoCacheDialogResult.cancelled());
-        },
-      ),
-    );
-    progress.dispose();
+        cancelToken: cancelToken,
+      );
+    } on Object {
+      cancelToken.cancel();
+      await _discardRemoteVideoDownload(downloadFuture);
+      progress.dispose();
+      rethrow;
+    }
 
     if (!mounted || dialogResult == null) {
       cancelToken.cancel();
+      final cacheResult = dialogResult?.cacheResult;
+      if (cacheResult == null) {
+        await _discardRemoteVideoDownload(downloadFuture);
+      } else {
+        await _deleteCachedRemoteVideoFile(cacheResult.localFile);
+      }
+      progress.dispose();
       return;
     }
 
     if (dialogResult.cancelled) {
+      cancelToken.cancel();
+      await _discardRemoteVideoDownload(downloadFuture);
+      progress.dispose();
+      if (!mounted) {
+        return;
+      }
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('Video preview cancelled')));
       return;
     }
+    progress.dispose();
 
     final cacheResult = dialogResult.cacheResult;
     if (cacheResult == null) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(
-            'Video preview failed: ${_describePreviewError(dialogResult.error)}',
-          ),
-          action: SnackBarAction(
-            label: 'Download',
-            onPressed: () => unawaited(_downloadFile(file)),
-          ),
-        ),
+      _showVideoPreviewFallbackSnackBar(
+        file,
+        'Video preview failed: ${_describePreviewError(dialogResult.error)}',
       );
       return;
     }
@@ -1479,6 +1527,53 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                   file.attr.modifyTime! * 1000,
                 ),
           mimeType: remoteVideoMimeTypeForFileName(file.filename),
+        ),
+      ),
+    );
+  }
+
+  Future<_RemoteVideoCacheDialogResult?> _showRemoteVideoCacheDialog({
+    required SftpName file,
+    required ValueNotifier<_RemoteVideoDownloadProgress> progress,
+    required Future<_CachedRemoteVideo> downloadFuture,
+    required _SftpTransferCancelToken cancelToken,
+  }) async => showDialog<_RemoteVideoCacheDialogResult>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => _RemoteVideoCachingDialog(
+      fileName: file.filename,
+      progressListenable: progress,
+      downloadFuture: downloadFuture,
+      onCancel: () {
+        cancelToken.cancel();
+        Navigator.of(
+          context,
+        ).pop(const _RemoteVideoCacheDialogResult.cancelled());
+      },
+    ),
+  );
+
+  Future<void> _discardRemoteVideoDownload(
+    Future<_CachedRemoteVideo> downloadFuture,
+  ) async {
+    try {
+      final cacheResult = await downloadFuture;
+      await _deleteCachedRemoteVideoFile(cacheResult.localFile);
+    } on Object {
+      // Cancellation/errors are surfaced by the preview dialog when relevant.
+    }
+  }
+
+  void _showVideoPreviewFallbackSnackBar(SftpName file, String message) {
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        action: SnackBarAction(
+          label: 'Download',
+          onPressed: () => unawaited(_downloadFile(file)),
         ),
       ),
     );
@@ -1523,8 +1618,17 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
 
       await for (final chunk in remoteFile.read()) {
         cancelToken.throwIfCancelled();
+        final nextDownloadedBytes = downloadedBytes + chunk.length;
+        if (wouldRemoteVideoPreviewExceedByteCap(
+          downloadedBytes: downloadedBytes,
+          chunkBytes: chunk.length,
+        )) {
+          throw Exception(
+            remoteVideoPreviewTooLargeMessage(sizeBytes: nextDownloadedBytes),
+          );
+        }
         sink.add(chunk);
-        downloadedBytes += chunk.length;
+        downloadedBytes = nextDownloadedBytes;
         progress.value = progress.value.copyWith(
           downloadedBytes: downloadedBytes,
         );
@@ -1906,6 +2010,22 @@ class _CachedRemoteVideo {
   final int downloadedBytes;
 }
 
+Future<void> _deleteCachedRemoteVideoFile(File file) async {
+  try {
+    await file.delete();
+  } on FileSystemException {
+    // Best-effort cleanup; temp storage may already have removed the file.
+  }
+}
+
+void _deleteCachedRemoteVideoFileSync(File file) {
+  try {
+    file.deleteSync();
+  } on FileSystemException {
+    // Best-effort cleanup; temp storage may already have removed the file.
+  }
+}
+
 class _RemoteVideoCacheDialogResult {
   const _RemoteVideoCacheDialogResult.success(this.cacheResult)
     : error = null,
@@ -2027,6 +2147,7 @@ class _RemoteVideoViewerScreen extends StatefulWidget {
 class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
   VideoPlayerController? _controller;
   String? _error;
+  var _keepCachedFile = false;
 
   @override
   void initState() {
@@ -2090,9 +2211,20 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     final controller = _controller;
     if (controller != null) {
       controller.removeListener(_handleVideoValueChanged);
-      unawaited(controller.dispose());
+      unawaited(_disposeControllerAndCachedFile(controller));
+    } else if (!_keepCachedFile) {
+      _deleteCachedRemoteVideoFileSync(widget.localFile);
     }
     super.dispose();
+  }
+
+  Future<void> _disposeControllerAndCachedFile(
+    VideoPlayerController controller,
+  ) async {
+    await controller.dispose();
+    if (!_keepCachedFile) {
+      await _deleteCachedRemoteVideoFile(widget.localFile);
+    }
   }
 
   @override
@@ -2282,6 +2414,7 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
 
     try {
       await widget.localFile.copy(savePath);
+      _keepCachedFile = true;
       if (mounted) {
         ScaffoldMessenger.of(
           context,
@@ -2317,6 +2450,8 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('Open/share cancelled')));
+      } else {
+        _keepCachedFile = true;
       }
     } on Object catch (error, stackTrace) {
       FlutterError.reportError(

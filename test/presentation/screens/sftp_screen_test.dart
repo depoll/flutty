@@ -120,6 +120,45 @@ void main() {
       expect(remoteVideoMimeTypeForFileName('notes.txt'), isNull);
     });
 
+    test('rejects known oversized video previews', () {
+      expect(
+        isRemoteVideoPreviewSizeAllowed(maxRemoteVideoPreviewBytes),
+        isTrue,
+      );
+      expect(
+        isRemoteVideoPreviewSizeAllowed(maxRemoteVideoPreviewBytes + 1),
+        isFalse,
+      );
+
+      expect(
+        remoteVideoPreviewTooLargeMessage(
+          sizeBytes: maxRemoteVideoPreviewBytes + 1,
+        ),
+        allOf(
+          contains('Video is too large to preview here'),
+          contains('100.0 MB'),
+          contains('Download it instead'),
+        ),
+      );
+    });
+
+    test('detects streaming video preview byte cap overflow', () {
+      expect(
+        wouldRemoteVideoPreviewExceedByteCap(
+          downloadedBytes: maxRemoteVideoPreviewBytes - 1,
+          chunkBytes: 1,
+        ),
+        isFalse,
+      );
+      expect(
+        wouldRemoteVideoPreviewExceedByteCap(
+          downloadedBytes: maxRemoteVideoPreviewBytes,
+          chunkBytes: 1,
+        ),
+        isTrue,
+      );
+    });
+
     test('detects svg file names', () {
       expect(isSvgFileName('diagram.svg'), isTrue);
       expect(isSvgFileName('diagram.SVG'), isTrue);
@@ -278,6 +317,40 @@ void main() {
       expect(find.text('Cached copy'), findsOneWidget);
       expect(find.text('Save copy'), findsOneWidget);
       expect(find.text('Open/Share'), findsOneWidget);
+    });
+
+    testWidgets('video preview deletes cached files when closed', (
+      tester,
+    ) async {
+      final cacheDirectory = Directory('build/sftp-video-preview-test')
+        ..createSync(recursive: true);
+      addTearDown(() {
+        if (cacheDirectory.existsSync()) {
+          cacheDirectory.deleteSync(recursive: true);
+        }
+      });
+
+      final cachedFile = File('${cacheDirectory.path}/cached-preview.mp4')
+        ..writeAsBytesSync([1, 2, 3]);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteVideoPreviewErrorForTesting(
+            fileName: 'cached-preview.mp4',
+            remotePath: '/home/depoll/cached-preview.mp4',
+            localPath: cachedFile.path,
+            errorMessage: 'Unsupported codec',
+            sizeBytes: 3,
+            mimeType: 'video/mp4',
+          ),
+        ),
+      );
+
+      expect(cachedFile.existsSync(), isTrue);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      expect(cachedFile.existsSync(), isFalse);
     });
   });
 }
