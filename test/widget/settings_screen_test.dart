@@ -43,7 +43,10 @@ class _ToggleableBiometricAuthService extends FakeAuthService {
   Future<bool> isAuthEnabled() async => true;
 
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<bool> isDeviceAuthSupported() async => true;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => true;
 
   @override
   Future<bool> isBiometricAvailable() async => true;

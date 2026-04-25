@@ -7,7 +7,10 @@ import 'package:monkeyssh/presentation/screens/auth_setup_screen.dart';
 
 class _BiometricAvailableAuthService extends AuthService {
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<bool> isDeviceAuthSupported() async => true;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => true;
 
   @override
   Future<List<BiometricType>> getAvailableBiometrics() async => [
@@ -25,7 +28,10 @@ class _BiometricAvailableAuthService extends AuthService {
 
 class _BiometricSupportedAuthService extends AuthService {
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<bool> isDeviceAuthSupported() async => true;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => true;
 
   @override
   Future<List<BiometricType>> getAvailableBiometrics() async => [];

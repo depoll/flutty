@@ -99,7 +99,10 @@ class FakeAuthService extends AuthService {
   Future<bool> isBiometricEnabled() async => false;
 
   @override
-  Future<bool> isBiometricSupported() async => false;
+  Future<bool> isDeviceAuthSupported() async => false;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => false;
 
   @override
   Future<bool> isBiometricAvailable() async => false;

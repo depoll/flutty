@@ -200,12 +200,37 @@ void main() {
     });
 
     group('isBiometricSupported', () {
+      test('preserves legacy device-auth support semantics', () async {
+        when(
+          () => mockLocalAuth.isDeviceSupported(),
+        ).thenAnswer((_) async => true);
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => false);
+
+        final result = await authService.isBiometricSupported();
+
+        expect(result, true);
+      });
+
+      test('returns false when device auth is unsupported', () async {
+        when(
+          () => mockLocalAuth.isDeviceSupported(),
+        ).thenAnswer((_) async => false);
+
+        final result = await authService.isBiometricSupported();
+
+        expect(result, false);
+      });
+    });
+
+    group('isBiometricHardwareSupported', () {
       test('returns true when the device can check biometrics', () async {
         when(
           () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => true);
 
-        final result = await authService.isBiometricSupported();
+        final result = await authService.isBiometricHardwareSupported();
 
         expect(result, true);
       });
@@ -215,7 +240,7 @@ void main() {
           () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => false);
 
-        final result = await authService.isBiometricSupported();
+        final result = await authService.isBiometricHardwareSupported();
 
         expect(result, false);
       });

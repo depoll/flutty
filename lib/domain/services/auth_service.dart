@@ -110,8 +110,12 @@ class AuthService {
     return value == 'true';
   }
 
-  /// Check if device has biometric hardware.
-  Future<bool> isBiometricSupported() async => _isBiometricHardwareSupported();
+  /// Check if this device supports local authentication.
+  ///
+  /// This preserves the legacy contract of reporting whether the platform can
+  /// authenticate with device credentials. It can be true even when biometric
+  /// hardware is not present.
+  Future<bool> isBiometricSupported() async => isDeviceAuthSupported();
 
   /// Check if device supports local authentication.
   Future<bool> isDeviceAuthSupported() async {
@@ -124,9 +128,13 @@ class AuthService {
     }
   }
 
+  /// Check if device has biometric hardware.
+  Future<bool> isBiometricHardwareSupported() async =>
+      _isBiometricHardwareSupported();
+
   /// Check if biometrics are enrolled and ready to use.
   Future<bool> isBiometricAvailable() async {
-    if (!await _isBiometricHardwareSupported()) return false;
+    if (!await isBiometricHardwareSupported()) return false;
 
     final biometrics = await getAvailableBiometrics();
     return biometrics.isNotEmpty;
@@ -135,7 +143,7 @@ class AuthService {
   /// Get the current platform biometric readiness.
   Future<BiometricAvailability> getBiometricAvailability() async {
     final deviceAuthSupported = await isDeviceAuthSupported();
-    final biometricHardwareSupported = await _isBiometricHardwareSupported();
+    final biometricHardwareSupported = await isBiometricHardwareSupported();
     final enrolledBiometrics = biometricHardwareSupported
         ? await getAvailableBiometrics()
         : const <BiometricType>[];
