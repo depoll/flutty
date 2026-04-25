@@ -10,6 +10,9 @@ import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
+import 'package:share_plus/share_plus.dart';
+import 'package:video_player/video_player.dart';
 
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/monetization.dart';
@@ -31,6 +34,7 @@ const _requestedPathLookupTimeout = Duration(seconds: 5);
 const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
+const _videoPreviewCacheDirectoryName = 'monkeyssh-sftp-video-preview';
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -115,6 +119,63 @@ bool isPreviewableImageFileName(String filename) {
 bool isSvgFileName(String filename) =>
     path.extension(filename).toLowerCase() == '.svg';
 
+/// Whether the file name should be previewable as a video.
+@visibleForTesting
+bool isPreviewableVideoFileName(String filename) {
+  final extension = path.extension(filename).toLowerCase();
+  return {'.mp4', '.mov', '.m4v', '.webm'}.contains(extension);
+}
+
+/// Returns the best-effort MIME type for a previewable video file name.
+@visibleForTesting
+String? remoteVideoMimeTypeForFileName(String filename) =>
+    switch (path.extension(filename).toLowerCase()) {
+      '.mp4' => 'video/mp4',
+      '.mov' => 'video/quicktime',
+      '.m4v' => 'video/x-m4v',
+      '.webm' => 'video/webm',
+      _ => null,
+    };
+
+/// The preview type supported by the SFTP browser for a file.
+@visibleForTesting
+enum SftpPreviewKind {
+  /// Image preview.
+  image,
+
+  /// Video preview.
+  video,
+}
+
+/// Resolves the available preview kind for an SFTP entry.
+@visibleForTesting
+SftpPreviewKind? resolveSftpPreviewKind({
+  required bool isDirectory,
+  required String filename,
+}) {
+  if (isDirectory) {
+    return null;
+  }
+  if (isPreviewableImageFileName(filename)) {
+    return SftpPreviewKind.image;
+  }
+  if (isPreviewableVideoFileName(filename)) {
+    return SftpPreviewKind.video;
+  }
+  return null;
+}
+
+/// Formats a remote modified time stored as seconds since the Unix epoch.
+@visibleForTesting
+String? formatRemoteModifiedTime(int? modifyTime) {
+  if (modifyTime == null) {
+    return null;
+  }
+  return DateTime.fromMillisecondsSinceEpoch(
+    modifyTime * 1000,
+  ).toString().split('.').first;
+}
+
 /// Resolves the picker request used for local SFTP uploads.
 @visibleForTesting
 ({bool allowMultiple, bool withReadStream}) resolveSftpUploadPickerRequest() =>
@@ -146,6 +207,9 @@ enum SftpFileTapIntent {
   /// Preview a tapped image file.
   preview,
 
+  /// Preview a tapped video file.
+  previewVideo,
+
   /// Open a tapped non-image file in the editor.
   edit,
 }
@@ -159,11 +223,35 @@ SftpFileTapIntent resolveSftpFileTapIntent({
   if (isDirectory) {
     return SftpFileTapIntent.navigate;
   }
-  if (isPreviewableImageFileName(filename)) {
-    return SftpFileTapIntent.preview;
+  switch (resolveSftpPreviewKind(isDirectory: false, filename: filename)) {
+    case SftpPreviewKind.image:
+      return SftpFileTapIntent.preview;
+    case SftpPreviewKind.video:
+      return SftpFileTapIntent.previewVideo;
+    case null:
+      return SftpFileTapIntent.edit;
   }
-  return SftpFileTapIntent.edit;
 }
+
+/// Builds an error-state video preview screen for widget tests.
+@visibleForTesting
+Widget buildRemoteVideoPreviewErrorForTesting({
+  required String fileName,
+  required String remotePath,
+  required String localPath,
+  required String errorMessage,
+  int sizeBytes = 0,
+  DateTime? modifiedAt,
+  String? mimeType,
+}) => _RemoteVideoViewerScreen(
+  fileName: fileName,
+  localFile: File(localPath),
+  remotePath: remotePath,
+  sizeBytes: sizeBytes,
+  modifiedAt: modifiedAt,
+  mimeType: mimeType,
+  initialError: errorMessage,
+);
 
 /// SFTP file browser screen.
 class SftpScreen extends ConsumerStatefulWidget {
@@ -869,12 +957,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         unawaited(_navigateTo(_joinRemotePath(_currentPath, file.filename)));
       case SftpFileTapIntent.preview:
         unawaited(_previewImageFile(file));
+      case SftpFileTapIntent.previewVideo:
+        unawaited(_previewVideoFile(file));
       case SftpFileTapIntent.edit:
         unawaited(_editTextFile(file));
     }
   }
 
   void _showFileOptions(SftpName file) {
+    final previewKind = resolveSftpPreviewKind(
+      isDirectory: file.attr.isDirectory,
+      filename: file.filename,
+    );
     showModalBottomSheet<void>(
       context: context,
       builder: (context) => SafeArea(
@@ -889,14 +983,26 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
                 _showFileInfo(file);
               },
             ),
-            if (!file.attr.isDirectory &&
-                isPreviewableImageFileName(file.filename))
+            if (previewKind != null)
               ListTile(
-                leading: const Icon(Icons.image_outlined),
-                title: const Text('View'),
+                leading: Icon(
+                  previewKind == SftpPreviewKind.video
+                      ? Icons.video_file_outlined
+                      : Icons.image_outlined,
+                ),
+                title: Text(
+                  previewKind == SftpPreviewKind.video
+                      ? 'Preview video'
+                      : 'View',
+                ),
                 onTap: () {
                   Navigator.pop(context);
-                  unawaited(_previewImageFile(file));
+                  switch (previewKind) {
+                    case SftpPreviewKind.image:
+                      unawaited(_previewImageFile(file));
+                    case SftpPreviewKind.video:
+                      unawaited(_previewVideoFile(file));
+                  }
                 },
               ),
             if (!file.attr.isDirectory)
@@ -964,12 +1070,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           children: [
             _InfoRow('Type', file.attr.isDirectory ? 'Directory' : 'File'),
             _InfoRow('Size', formatRemoteFileSize(file.attr.size ?? 0)),
-            if (file.attr.modifyTime != null)
+            if (formatRemoteModifiedTime(file.attr.modifyTime) != null)
               _InfoRow(
                 'Modified',
-                DateTime.fromMillisecondsSinceEpoch(
-                  (file.attr.modifyTime ?? 0) * 1000,
-                ).toString().split('.').first,
+                formatRemoteModifiedTime(file.attr.modifyTime)!,
               ),
           ],
         ),
@@ -1293,6 +1397,176 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     }
   }
 
+  Future<void> _previewVideoFile(SftpName file) async {
+    final sftp = _sftp;
+    if (sftp == null) {
+      return;
+    }
+
+    final remotePath = _joinRemotePath(_currentPath, file.filename);
+    final progress = ValueNotifier<_RemoteVideoDownloadProgress>(
+      _RemoteVideoDownloadProgress(
+        remotePath: remotePath,
+        downloadedBytes: 0,
+        totalBytes: file.attr.size ?? 0,
+      ),
+    );
+    final cancelToken = _SftpTransferCancelToken();
+    final downloadFuture = _cacheRemoteVideoFile(
+      sftp: sftp,
+      file: file,
+      remotePath: remotePath,
+      progress: progress,
+      cancelToken: cancelToken,
+    );
+
+    final dialogResult = await showDialog<_RemoteVideoCacheDialogResult>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => _RemoteVideoCachingDialog(
+        fileName: file.filename,
+        progressListenable: progress,
+        downloadFuture: downloadFuture,
+        onCancel: () {
+          cancelToken.cancel();
+          Navigator.of(
+            context,
+          ).pop(const _RemoteVideoCacheDialogResult.cancelled());
+        },
+      ),
+    );
+    progress.dispose();
+
+    if (!mounted || dialogResult == null) {
+      cancelToken.cancel();
+      return;
+    }
+
+    if (dialogResult.cancelled) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('Video preview cancelled')));
+      return;
+    }
+
+    final cacheResult = dialogResult.cacheResult;
+    if (cacheResult == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            'Video preview failed: ${_describePreviewError(dialogResult.error)}',
+          ),
+          action: SnackBarAction(
+            label: 'Download',
+            onPressed: () => unawaited(_downloadFile(file)),
+          ),
+        ),
+      );
+      return;
+    }
+
+    await Navigator.of(context).push<void>(
+      MaterialPageRoute(
+        fullscreenDialog: true,
+        builder: (context) => _RemoteVideoViewerScreen(
+          fileName: file.filename,
+          localFile: cacheResult.localFile,
+          remotePath: remotePath,
+          sizeBytes: file.attr.size ?? cacheResult.downloadedBytes,
+          modifiedAt: file.attr.modifyTime == null
+              ? null
+              : DateTime.fromMillisecondsSinceEpoch(
+                  file.attr.modifyTime! * 1000,
+                ),
+          mimeType: remoteVideoMimeTypeForFileName(file.filename),
+        ),
+      ),
+    );
+  }
+
+  Future<_CachedRemoteVideo> _cacheRemoteVideoFile({
+    required SftpClient sftp,
+    required SftpName file,
+    required String remotePath,
+    required ValueNotifier<_RemoteVideoDownloadProgress> progress,
+    required _SftpTransferCancelToken cancelToken,
+  }) async {
+    final tempDirectory = await getTemporaryDirectory();
+    final cacheDirectory = Directory(
+      path.join(tempDirectory.path, _videoPreviewCacheDirectoryName),
+    );
+    await cacheDirectory.create(recursive: true);
+    cancelToken.throwIfCancelled();
+
+    final cacheFile = File(
+      path.join(
+        cacheDirectory.path,
+        '${DateTime.now().toUtc().microsecondsSinceEpoch}-'
+        '${_sanitizeVideoCacheFileName(file.filename)}',
+      ),
+    );
+
+    SftpFile? remoteFile;
+    IOSink? sink;
+    var downloadedBytes = 0;
+    var completed = false;
+
+    try {
+      remoteFile = await sftp.open(remotePath);
+      cancelToken.onCancel(() {
+        final openFile = remoteFile;
+        if (openFile != null) {
+          unawaited(openFile.close());
+        }
+      });
+      sink = cacheFile.openWrite();
+
+      await for (final chunk in remoteFile.read()) {
+        cancelToken.throwIfCancelled();
+        sink.add(chunk);
+        downloadedBytes += chunk.length;
+        progress.value = progress.value.copyWith(
+          downloadedBytes: downloadedBytes,
+        );
+      }
+
+      completed = true;
+      return _CachedRemoteVideo(
+        localFile: cacheFile,
+        downloadedBytes: downloadedBytes,
+      );
+    } finally {
+      await sink?.close();
+      await remoteFile?.close();
+      if (!completed) {
+        try {
+          await cacheFile.delete();
+        } on FileSystemException {
+          // Best-effort cleanup; failed preview caches live in temp storage.
+        }
+      }
+    }
+  }
+
+  String _sanitizeVideoCacheFileName(String filename) {
+    final sanitized = path.posix
+        .basename(filename)
+        .replaceAll(RegExp('[^A-Za-z0-9._-]+'), '-')
+        .replaceAll(RegExp('-+'), '-')
+        .replaceAll(RegExp(r'^-+|-+$'), '');
+    return sanitized.isEmpty ? 'video' : sanitized;
+  }
+
+  String _describePreviewError(Object? error) {
+    if (error == null) {
+      return 'Unknown error';
+    }
+    if (error is _SftpTransferCancelledException) {
+      return 'Cancelled';
+    }
+    return error.toString().replaceFirst(RegExp('^Exception: '), '');
+  }
+
   Future<void> _editTextFile(SftpName file) async {
     if (_sftp == null) {
       return;
@@ -1562,6 +1836,526 @@ class _InfoRow extends StatelessWidget {
       ],
     ),
   );
+}
+
+class _RemoteVideoDownloadProgress {
+  const _RemoteVideoDownloadProgress({
+    required this.remotePath,
+    required this.downloadedBytes,
+    required this.totalBytes,
+  });
+
+  final String remotePath;
+  final int downloadedBytes;
+  final int totalBytes;
+
+  double? get fraction =>
+      totalBytes <= 0 ? null : (downloadedBytes / totalBytes).clamp(0.0, 1.0);
+
+  _RemoteVideoDownloadProgress copyWith({int? downloadedBytes}) =>
+      _RemoteVideoDownloadProgress(
+        remotePath: remotePath,
+        downloadedBytes: downloadedBytes ?? this.downloadedBytes,
+        totalBytes: totalBytes,
+      );
+}
+
+class _SftpTransferCancelToken {
+  final List<VoidCallback> _cancelCallbacks = [];
+  var _isCancelled = false;
+
+  void cancel() {
+    if (_isCancelled) {
+      return;
+    }
+    _isCancelled = true;
+    for (final callback in _cancelCallbacks) {
+      callback();
+    }
+  }
+
+  void onCancel(VoidCallback callback) {
+    if (_isCancelled) {
+      callback();
+      return;
+    }
+    _cancelCallbacks.add(callback);
+  }
+
+  void throwIfCancelled() {
+    if (_isCancelled) {
+      throw const _SftpTransferCancelledException();
+    }
+  }
+}
+
+class _SftpTransferCancelledException implements Exception {
+  const _SftpTransferCancelledException();
+
+  @override
+  String toString() => 'Video preview cancelled';
+}
+
+class _CachedRemoteVideo {
+  const _CachedRemoteVideo({
+    required this.localFile,
+    required this.downloadedBytes,
+  });
+
+  final File localFile;
+  final int downloadedBytes;
+}
+
+class _RemoteVideoCacheDialogResult {
+  const _RemoteVideoCacheDialogResult.success(this.cacheResult)
+    : error = null,
+      cancelled = false;
+
+  const _RemoteVideoCacheDialogResult.failure(this.error)
+    : cacheResult = null,
+      cancelled = false;
+
+  const _RemoteVideoCacheDialogResult.cancelled()
+    : cacheResult = null,
+      error = null,
+      cancelled = true;
+
+  final _CachedRemoteVideo? cacheResult;
+  final Object? error;
+  final bool cancelled;
+}
+
+class _RemoteVideoCachingDialog extends StatefulWidget {
+  const _RemoteVideoCachingDialog({
+    required this.fileName,
+    required this.progressListenable,
+    required this.downloadFuture,
+    required this.onCancel,
+  });
+
+  final String fileName;
+  final ValueListenable<_RemoteVideoDownloadProgress> progressListenable;
+  final Future<_CachedRemoteVideo> downloadFuture;
+  final VoidCallback onCancel;
+
+  @override
+  State<_RemoteVideoCachingDialog> createState() =>
+      _RemoteVideoCachingDialogState();
+}
+
+class _RemoteVideoCachingDialogState extends State<_RemoteVideoCachingDialog> {
+  @override
+  void initState() {
+    super.initState();
+    widget.downloadFuture.then<void>(
+      (cacheResult) {
+        if (!mounted) {
+          return;
+        }
+        Navigator.of(
+          context,
+        ).pop(_RemoteVideoCacheDialogResult.success(cacheResult));
+      },
+      onError: (Object error, StackTrace _) {
+        if (!mounted) {
+          return;
+        }
+        Navigator.of(context).pop(_RemoteVideoCacheDialogResult.failure(error));
+      },
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Loading video preview'),
+    content: ValueListenableBuilder<_RemoteVideoDownloadProgress>(
+      valueListenable: widget.progressListenable,
+      builder: (context, progress, _) => Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(widget.fileName, maxLines: 1, overflow: TextOverflow.ellipsis),
+          const SizedBox(height: 8),
+          Text(
+            progress.remotePath,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.bodySmall,
+          ),
+          const SizedBox(height: 16),
+          LinearProgressIndicator(value: progress.fraction),
+          const SizedBox(height: 8),
+          Text(
+            progress.totalBytes > 0
+                ? '${formatRemoteFileSize(progress.downloadedBytes)} of '
+                      '${formatRemoteFileSize(progress.totalBytes)}'
+                : '${formatRemoteFileSize(progress.downloadedBytes)} loaded',
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(onPressed: widget.onCancel, child: const Text('Cancel')),
+    ],
+  );
+}
+
+class _RemoteVideoViewerScreen extends StatefulWidget {
+  const _RemoteVideoViewerScreen({
+    required this.fileName,
+    required this.localFile,
+    required this.remotePath,
+    required this.sizeBytes,
+    this.modifiedAt,
+    this.mimeType,
+    this.initialError,
+  });
+
+  final String fileName;
+  final File localFile;
+  final String remotePath;
+  final int sizeBytes;
+  final DateTime? modifiedAt;
+  final String? mimeType;
+  final String? initialError;
+
+  @override
+  State<_RemoteVideoViewerScreen> createState() =>
+      _RemoteVideoViewerScreenState();
+}
+
+class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
+  VideoPlayerController? _controller;
+  String? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _error = widget.initialError;
+    if (_error == null) {
+      unawaited(_initializeController());
+    }
+  }
+
+  Future<void> _initializeController() async {
+    final controller = VideoPlayerController.file(widget.localFile);
+    _controller = controller..addListener(_handleVideoValueChanged);
+    try {
+      await controller.initialize();
+      if (!mounted) {
+        return;
+      }
+      setState(() {});
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'sftp',
+          context: ErrorDescription('while initializing remote video preview'),
+        ),
+      );
+      if (mounted) {
+        setState(() {
+          _error = _playbackErrorMessage(error);
+        });
+      }
+    }
+  }
+
+  void _handleVideoValueChanged() {
+    final controller = _controller;
+    if (!mounted || controller == null) {
+      return;
+    }
+    final value = controller.value;
+    if (value.hasError) {
+      final message = _playbackErrorMessage(
+        value.errorDescription ?? 'Unknown playback error',
+      );
+      if (_error != message) {
+        setState(() {
+          _error = message;
+        });
+      }
+      return;
+    }
+    if (_error == null) {
+      setState(() {});
+    }
+  }
+
+  @override
+  void dispose() {
+    final controller = _controller;
+    if (controller != null) {
+      controller.removeListener(_handleVideoValueChanged);
+      unawaited(controller.dispose());
+    }
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final error = _error;
+    final controller = _controller;
+
+    return Scaffold(
+      appBar: AppBar(title: Text(widget.fileName)),
+      body: error != null
+          ? _buildErrorBody(context, error)
+          : controller == null || !controller.value.isInitialized
+          ? _buildLoadingBody(context)
+          : _buildPlayerBody(context, controller),
+    );
+  }
+
+  Widget _buildLoadingBody(BuildContext context) => Center(
+    child: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const CircularProgressIndicator(),
+        const SizedBox(height: 16),
+        const Text('Preparing video playback…'),
+        const SizedBox(height: 24),
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 16),
+          child: _buildMetadataCard(context),
+        ),
+      ],
+    ),
+  );
+
+  Widget _buildPlayerBody(
+    BuildContext context,
+    VideoPlayerController controller,
+  ) {
+    final theme = Theme.of(context);
+    final videoValue = controller.value;
+
+    return ListView(
+      padding: const EdgeInsets.all(16),
+      children: [
+        DecoratedBox(
+          decoration: const BoxDecoration(color: Colors.black),
+          child: AspectRatio(
+            aspectRatio: videoValue.aspectRatio == 0
+                ? 16 / 9
+                : videoValue.aspectRatio,
+            child: VideoPlayer(controller),
+          ),
+        ),
+        const SizedBox(height: 12),
+        _buildPlaybackControls(context, controller),
+        const SizedBox(height: 16),
+        Text('Remote video', style: theme.textTheme.titleMedium),
+        const SizedBox(height: 8),
+        _buildMetadataCard(context),
+      ],
+    );
+  }
+
+  Widget _buildErrorBody(BuildContext context, String error) => ListView(
+    padding: const EdgeInsets.all(24),
+    children: [
+      Icon(
+        Icons.video_file_outlined,
+        size: 64,
+        color: Theme.of(context).colorScheme.error,
+      ),
+      const SizedBox(height: 16),
+      Text(
+        'Could not play video preview',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.titleLarge,
+      ),
+      const SizedBox(height: 8),
+      Text(error, textAlign: TextAlign.center),
+      const SizedBox(height: 16),
+      Text(
+        'The cached file is still available. Save it locally or open/share it '
+        'with another app that supports this codec.',
+        textAlign: TextAlign.center,
+        style: Theme.of(context).textTheme.bodyMedium,
+      ),
+      const SizedBox(height: 24),
+      Wrap(
+        alignment: WrapAlignment.center,
+        spacing: 12,
+        runSpacing: 8,
+        children: [
+          OutlinedButton.icon(
+            onPressed: _saveCachedCopy,
+            icon: const Icon(Icons.download),
+            label: const Text('Save copy'),
+          ),
+          FilledButton.icon(
+            onPressed: _shareCachedCopy,
+            icon: const Icon(Icons.ios_share),
+            label: const Text('Open/Share'),
+          ),
+        ],
+      ),
+      const SizedBox(height: 24),
+      _buildMetadataCard(context),
+    ],
+  );
+
+  Widget _buildPlaybackControls(
+    BuildContext context,
+    VideoPlayerController controller,
+  ) {
+    final value = controller.value;
+    final duration = value.duration;
+    final position = value.position > duration ? duration : value.position;
+    final canSeek = duration.inMilliseconds > 0;
+    final max = canSeek ? duration.inMilliseconds.toDouble() : 1.0;
+    final sliderValue = canSeek
+        ? position.inMilliseconds.clamp(0, duration.inMilliseconds).toDouble()
+        : 0.0;
+
+    return Column(
+      children: [
+        Row(
+          children: [
+            IconButton.filled(
+              onPressed: () {
+                if (value.isPlaying) {
+                  unawaited(controller.pause());
+                } else {
+                  unawaited(controller.play());
+                }
+              },
+              icon: Icon(value.isPlaying ? Icons.pause : Icons.play_arrow),
+              tooltip: value.isPlaying ? 'Pause' : 'Play',
+            ),
+            const SizedBox(width: 12),
+            Text(_formatVideoDuration(position)),
+            Expanded(
+              child: Slider(
+                value: sliderValue,
+                max: max,
+                onChanged: canSeek
+                    ? (value) => unawaited(
+                        controller.seekTo(
+                          Duration(milliseconds: value.round()),
+                        ),
+                      )
+                    : null,
+              ),
+            ),
+            Text(_formatVideoDuration(duration)),
+          ],
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMetadataCard(BuildContext context) => Card(
+    child: Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          _InfoRow('Path', widget.remotePath),
+          _InfoRow('Size', formatRemoteFileSize(widget.sizeBytes)),
+          if (widget.modifiedAt != null)
+            _InfoRow(
+              'Modified',
+              widget.modifiedAt!.toString().split('.').first,
+            ),
+          _InfoRow('MIME', widget.mimeType ?? 'Unknown'),
+          _InfoRow('Cached copy', widget.localFile.path),
+        ],
+      ),
+    ),
+  );
+
+  Future<void> _saveCachedCopy() async {
+    final savePath = await FilePicker.saveFile(
+      dialogTitle: 'Save ${widget.fileName}',
+      fileName: widget.fileName,
+    );
+    if (savePath == null) {
+      return;
+    }
+
+    try {
+      await widget.localFile.copy(savePath);
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(SnackBar(content: Text('Saved "${widget.fileName}"')));
+      }
+    } on FileSystemException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('Save failed: ${error.message}')),
+        );
+      }
+    }
+  }
+
+  Future<void> _shareCachedCopy() async {
+    try {
+      final result = await SharePlus.instance.share(
+        ShareParams(
+          files: [
+            XFile(
+              widget.localFile.path,
+              mimeType: widget.mimeType,
+              name: widget.fileName,
+            ),
+          ],
+          sharePositionOrigin: _shareOriginFromContext(context),
+        ),
+      );
+      if (!mounted) {
+        return;
+      }
+      if (result.status == ShareResultStatus.dismissed) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('Open/share cancelled')));
+      }
+    } on Object catch (error, stackTrace) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          stack: stackTrace,
+          library: 'sftp',
+          context: ErrorDescription('while sharing remote video preview'),
+        ),
+      );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Failed to open share sheet')),
+        );
+      }
+    }
+  }
+
+  Rect? _shareOriginFromContext(BuildContext context) {
+    final box = context.findRenderObject() as RenderBox?;
+    if (box == null || !box.hasSize) {
+      return null;
+    }
+    return box.localToGlobal(Offset.zero) & box.size;
+  }
+
+  String _playbackErrorMessage(Object error) =>
+      'This platform could not decode or play the video. Try saving or '
+      'opening the cached copy in another app. $error';
+
+  String _formatVideoDuration(Duration duration) {
+    final hours = duration.inHours;
+    final minutes = duration.inMinutes.remainder(60).toString().padLeft(2, '0');
+    final seconds = duration.inSeconds.remainder(60).toString().padLeft(2, '0');
+    if (hours > 0) {
+      return '$hours:$minutes:$seconds';
+    }
+    return '$minutes:$seconds';
+  }
 }
 
 class _RemoteImageViewerScreen extends StatelessWidget {

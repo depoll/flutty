@@ -101,6 +101,25 @@ void main() {
       expect(isPreviewableImageFileName('notes.txt'), isFalse);
     });
 
+    test('detects previewable video file names', () {
+      expect(isPreviewableVideoFileName('screen-recording.mp4'), isTrue);
+      expect(isPreviewableVideoFileName('clip.MOV'), isTrue);
+      expect(isPreviewableVideoFileName('capture.m4v'), isTrue);
+      expect(isPreviewableVideoFileName('browser.webm'), isTrue);
+      expect(isPreviewableVideoFileName('notes.txt'), isFalse);
+    });
+
+    test('resolves video MIME candidates from file names', () {
+      expect(remoteVideoMimeTypeForFileName('recording.mp4'), 'video/mp4');
+      expect(
+        remoteVideoMimeTypeForFileName('recording.mov'),
+        'video/quicktime',
+      );
+      expect(remoteVideoMimeTypeForFileName('recording.m4v'), 'video/x-m4v');
+      expect(remoteVideoMimeTypeForFileName('recording.webm'), 'video/webm');
+      expect(remoteVideoMimeTypeForFileName('notes.txt'), isNull);
+    });
+
     test('detects svg file names', () {
       expect(isSvgFileName('diagram.svg'), isTrue);
       expect(isSvgFileName('diagram.SVG'), isTrue);
@@ -173,6 +192,35 @@ void main() {
       );
     });
 
+    test('resolves video taps as video preview', () {
+      expect(
+        resolveSftpFileTapIntent(
+          isDirectory: false,
+          filename: 'screen-recording.mp4',
+        ),
+        SftpFileTapIntent.previewVideo,
+      );
+    });
+
+    test('resolves preview kind for row action availability', () {
+      expect(
+        resolveSftpPreviewKind(isDirectory: true, filename: 'clip.mp4'),
+        isNull,
+      );
+      expect(
+        resolveSftpPreviewKind(isDirectory: false, filename: 'diagram.png'),
+        SftpPreviewKind.image,
+      );
+      expect(
+        resolveSftpPreviewKind(isDirectory: false, filename: 'clip.webm'),
+        SftpPreviewKind.video,
+      );
+      expect(
+        resolveSftpPreviewKind(isDirectory: false, filename: 'notes.txt'),
+        isNull,
+      );
+    });
+
     test('resolves other file taps as edit', () {
       expect(
         resolveSftpFileTapIntent(isDirectory: false, filename: 'notes.txt'),
@@ -203,6 +251,33 @@ void main() {
         ),
         closeTo(widths[widerButShorter]! + trailingSlack, 0.001),
       );
+    });
+
+    testWidgets('video preview errors show metadata and fallback actions', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteVideoPreviewErrorForTesting(
+            fileName: 'screen-recording.mp4',
+            remotePath: '/home/depoll/screen-recording.mp4',
+            localPath: 'build/sftp-video-preview-test/screen-recording.mp4',
+            errorMessage: 'Unsupported codec',
+            sizeBytes: 42,
+            modifiedAt: DateTime.utc(2024, 1, 2, 3, 4, 5),
+            mimeType: 'video/mp4',
+          ),
+        ),
+      );
+
+      expect(find.text('Could not play video preview'), findsOneWidget);
+      expect(find.text('Unsupported codec'), findsOneWidget);
+      expect(find.text('/home/depoll/screen-recording.mp4'), findsOneWidget);
+      expect(find.text('42 B'), findsOneWidget);
+      expect(find.text('video/mp4'), findsOneWidget);
+      expect(find.text('Cached copy'), findsOneWidget);
+      expect(find.text('Save copy'), findsOneWidget);
+      expect(find.text('Open/Share'), findsOneWidget);
     });
   });
 }
