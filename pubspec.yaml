@@ -67,6 +67,7 @@ dependencies:
   in_app_purchase_android: ^0.4.0+10
   in_app_purchase_storekit: ^0.4.8+1
   quick_actions: ^1.1.0
+  video_player: ^2.11.1
 
 dev_dependencies:
   flutter_test:
