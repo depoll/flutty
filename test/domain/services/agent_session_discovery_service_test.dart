@@ -597,6 +597,30 @@ cwd: /tmp/demo
         'Could not load Codex and Gemini CLI sessions.',
       );
     });
+
+    test('formats single-tool failures and keeps no-failure states quiet', () {
+      expect(
+        DiscoveredSessionsResult(
+          sessions: const [],
+          failedTools: const {'Claude Code'},
+        ).failureMessage,
+        'Could not load Claude Code sessions.',
+      );
+      expect(
+        DiscoveredSessionsResult(sessions: const []).failureMessage,
+        isNull,
+      );
+    });
+
+    test('tracks attempted tools separately for placeholder rows', () {
+      final result = DiscoveredSessionsResult(
+        sessions: const [],
+        attemptedTools: const {'Claude Code', 'Copilot CLI'},
+      );
+
+      expect(result.hasFailures, isFalse);
+      expect(result.attemptedTools, {'Claude Code', 'Copilot CLI'});
+    });
   });
 
   group('shouldSurfaceDiscoveryFailure', () {
@@ -610,6 +634,13 @@ cwd: /tmp/demo
     test('suppresses partial failures when sessions still loaded', () {
       expect(
         shouldSurfaceDiscoveryFailure(hadError: true, loadedSessionCount: 3),
+        isFalse,
+      );
+    });
+
+    test('suppresses healthy empty discovery results', () {
+      expect(
+        shouldSurfaceDiscoveryFailure(hadError: false, loadedSessionCount: 0),
         isFalse,
       );
     });

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
@@ -105,6 +106,63 @@ void main() {
       expect(isSvgFileName('diagram.svg'), isTrue);
       expect(isSvgFileName('diagram.SVG'), isTrue);
       expect(isSvgFileName('diagram.png'), isFalse);
+    });
+
+    test('detects video fixtures for placeholder icon coverage', () {
+      expect(isVideoFileName('demo.mp4'), isTrue);
+      expect(isVideoFileName('demo.MOV'), isTrue);
+      expect(isVideoFileName('demo.avi'), isTrue);
+      expect(isVideoFileName('demo.png'), isFalse);
+      expect(
+        resolveSftpFileIcon(isDirectory: false, filename: 'demo.mp4'),
+        Icons.video_file,
+      );
+      expect(
+        resolveSftpFileIcon(isDirectory: false, filename: 'diagram.svg'),
+        Icons.image,
+      );
+    });
+
+    test('builds shell-safe clipboard text for copied remote paths', () {
+      expect(
+        buildSftpCopyPathClipboardText(
+          directory: '/home/demo/Project Files',
+          filename: "today's notes.txt",
+        ),
+        r"'/home/demo/Project Files/today'\''s notes.txt'",
+      );
+    });
+
+    test('blocks oversized image previews before reading remote bytes', () {
+      expect(
+        resolveSftpImagePreviewBlockMessage(byteCount: 10 * 1024 * 1024 + 1),
+        'File is too large to preview here (max 10 MB)',
+      );
+      expect(
+        resolveSftpImagePreviewBlockMessage(byteCount: 10 * 1024 * 1024),
+        isNull,
+      );
+    });
+
+    test('blocks oversized and binary text edits', () {
+      expect(
+        resolveSftpTextEditBlockMessage(byteCount: 1024 * 1024 + 1),
+        'File is too large to edit here (max 1 MB)',
+      );
+      expect(
+        resolveSftpTextEditBlockMessage(
+          byteCount: 4,
+          loadedBytes: Uint8List.fromList([0x66, 0x6f, 0x00, 0x6f]),
+        ),
+        'Binary files cannot be edited here',
+      );
+      expect(
+        resolveSftpTextEditBlockMessage(
+          byteCount: 5,
+          loadedBytes: Uint8List.fromList('hello'.codeUnits),
+        ),
+        isNull,
+      );
     });
 
     test('allows selecting multiple files for SFTP uploads', () {
