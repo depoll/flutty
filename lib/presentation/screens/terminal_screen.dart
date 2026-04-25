@@ -8226,6 +8226,7 @@ class _TerminalConnectionStatusIcon extends StatelessWidget {
       label: 'Terminal connection status: $label',
       child: Tooltip(
         message: label,
+        excludeFromSemantics: true,
         child: Icon(_icon, size: 20, color: statusColor),
       ),
     );
