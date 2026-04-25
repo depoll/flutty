@@ -4016,23 +4016,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final session = _sessionsNotifier?.getSession(connectionId);
     if (session == null) return;
 
-    switch (action) {
-      case TmuxSwitchWindowAction(:final windowIndex):
-        await _switchTmuxWindow(session, windowIndex);
-      case TmuxNewWindowAction(:final command, :final windowName):
-        await _createTmuxWindow(session, command: command, name: windowName);
-      case TmuxResumeSessionAction(
-        :final resumeCommand,
-        :final workingDirectory,
-      ):
-        await _createTmuxWindow(
-          session,
-          command: resumeCommand,
-          workingDirectory: workingDirectory,
-        );
-      case TmuxCloseWindowAction(:final windowIndex):
-        _closeTmuxWindow(session, windowIndex);
-    }
+    await _performTmuxNavigatorAction(session, action);
   }
 
   /// Opens the tmux window navigator bottom sheet and handles the
@@ -4067,23 +4051,46 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (!mounted || action == null) return;
 
-    switch (action) {
-      case TmuxSwitchWindowAction(:final windowIndex):
-        await _switchTmuxWindow(session, windowIndex);
-      case TmuxNewWindowAction(:final command, :final windowName):
-        await _createTmuxWindow(session, command: command, name: windowName);
-      case TmuxResumeSessionAction(
-        :final resumeCommand,
-        :final workingDirectory,
-      ):
-        await _createTmuxWindow(
-          session,
-          command: resumeCommand,
-          workingDirectory: workingDirectory,
-        );
-      case TmuxCloseWindowAction(:final windowIndex):
-        _closeTmuxWindow(session, windowIndex);
+    await _performTmuxNavigatorAction(session, action);
+  }
+
+  Future<void> _performTmuxNavigatorAction(
+    SshSession session,
+    TmuxNavigatorAction action,
+  ) async {
+    try {
+      switch (action) {
+        case TmuxSwitchWindowAction(:final windowIndex):
+          await _switchTmuxWindow(session, windowIndex);
+        case TmuxNewWindowAction(:final command, :final windowName):
+          await _createTmuxWindow(session, command: command, name: windowName);
+        case TmuxResumeSessionAction(
+          :final resumeCommand,
+          :final workingDirectory,
+        ):
+          await _createTmuxWindow(
+            session,
+            command: resumeCommand,
+            workingDirectory: workingDirectory,
+          );
+        case TmuxCloseWindowAction(:final windowIndex):
+          _closeTmuxWindow(session, windowIndex);
+      }
+    } on Exception catch (error) {
+      _showTmuxActionFailure(error);
     }
+  }
+
+  void _showTmuxActionFailure(Exception error) {
+    if (!mounted) return;
+    final message = switch (error) {
+      TimeoutException() =>
+        'Timed out waiting for tmux. Reconnect if actions keep failing.',
+      _ => 'tmux action failed: $error',
+    };
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// Switches to a different tmux window via exec channel.

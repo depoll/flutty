@@ -103,6 +103,27 @@ void main() {
       },
     );
 
+    testWidgets('falls back to all tools when detection fails', (tester) async {
+      final completer = Completer<Set<AgentLaunchTool>>();
+      await tester.pumpWidget(
+        _wrap(
+          TmuxToolPickerSheet(
+            isProUser: true,
+            installedToolsFuture: completer.future,
+            onToolSelected: (_) {},
+            onEmptyWindow: () {},
+          ),
+        ),
+      );
+      completer.completeError(StateError('detection failed'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('No supported CLIs found on PATH.'), findsNothing);
+      for (final tool in AgentLaunchTool.values) {
+        expect(find.text(tool.label), findsOneWidget);
+      }
+    });
+
     testWidgets('invokes callback when a detected tool is tapped', (
       tester,
     ) async {
