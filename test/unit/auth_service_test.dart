@@ -200,17 +200,20 @@ void main() {
     });
 
     group('isBiometricSupported', () {
-      test('returns true when the device can check biometrics', () async {
+      test('preserves legacy device-auth support semantics', () async {
         when(
           () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => true);
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => false);
 
         final result = await authService.isBiometricSupported();
 
         expect(result, true);
       });
 
-      test('returns false when the device cannot check biometrics', () async {
+      test('returns false when device auth is unsupported', () async {
         when(
           () => mockLocalAuth.isDeviceSupported(),
         ).thenAnswer((_) async => false);
@@ -221,10 +224,32 @@ void main() {
       });
     });
 
+    group('isBiometricHardwareSupported', () {
+      test('returns true when the device can check biometrics', () async {
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => true);
+
+        final result = await authService.isBiometricHardwareSupported();
+
+        expect(result, true);
+      });
+
+      test('returns false when the device cannot check biometrics', () async {
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => false);
+
+        final result = await authService.isBiometricHardwareSupported();
+
+        expect(result, false);
+      });
+    });
+
     group('isBiometricAvailable', () {
       test('returns true when biometrics available', () async {
         when(
-          () => mockLocalAuth.isDeviceSupported(),
+          () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => true);
         when(
           () => mockLocalAuth.getAvailableBiometrics(),
@@ -237,7 +262,7 @@ void main() {
 
       test('returns false when no biometrics', () async {
         when(
-          () => mockLocalAuth.isDeviceSupported(),
+          () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => true);
         when(
           () => mockLocalAuth.getAvailableBiometrics(),
@@ -250,13 +275,84 @@ void main() {
 
       test('returns false when device cannot check biometrics', () async {
         when(
-          () => mockLocalAuth.isDeviceSupported(),
+          () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => false);
 
         final result = await authService.isBiometricAvailable();
 
         expect(result, false);
       });
+    });
+
+    group('getBiometricAvailability', () {
+      test(
+        'distinguishes device credentials from biometric hardware',
+        () async {
+          when(
+            () => mockLocalAuth.isDeviceSupported(),
+          ).thenAnswer((_) async => true);
+          when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => false);
+
+          final result = await authService.getBiometricAvailability();
+
+          expect(result.isDeviceAuthSupported, true);
+          expect(result.isBiometricHardwareSupported, false);
+          expect(result.supportsDeviceCredentialOnly, true);
+          expect(result.canAuthenticateWithBiometrics, false);
+          verifyNever(() => mockLocalAuth.getAvailableBiometrics());
+        },
+      );
+    });
+
+    group('setBiometricEnabled', () {
+      test('does not enable biometrics before enrollment is ready', () async {
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
+        ).thenAnswer((_) async => true);
+        when(
+          () => mockLocalAuth.getAvailableBiometrics(),
+        ).thenAnswer((_) async => []);
+
+        await authService.setBiometricEnabled(enabled: true);
+
+        verify(
+          () => mockStorage.write(
+            key: 'flutty_biometric_enabled',
+            value: 'false',
+          ),
+        ).called(1);
+      });
+    });
+
+    group('authenticateWithBiometrics', () {
+      test(
+        'does not open a platform prompt before enrollment is ready',
+        () async {
+          when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => true);
+          when(
+            () => mockLocalAuth.getAvailableBiometrics(),
+          ).thenAnswer((_) async => []);
+
+          final result = await authService.authenticateWithBiometrics(
+            reason: 'Unlock MonkeySSH',
+          );
+
+          expect(result, false);
+          verifyNever(
+            () => mockLocalAuth.authenticate(
+              localizedReason: any(named: 'localizedReason'),
+              biometricOnly: any(named: 'biometricOnly'),
+              persistAcrossBackgrounding: any(
+                named: 'persistAcrossBackgrounding',
+              ),
+            ),
+          );
+        },
+      );
     });
 
     group('getAuthMethod', () {
@@ -402,6 +498,9 @@ void main() {
             () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => true);
           when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => true);
+          when(
             () => mockLocalAuth.getAvailableBiometrics(),
           ).thenAnswer((_) async => [BiometricType.fingerprint]);
 
@@ -434,6 +533,9 @@ void main() {
             () => mockLocalAuth.isDeviceSupported(),
           ).thenAnswer((_) async => true);
           when(
+            () => mockLocalAuth.canCheckBiometrics,
+          ).thenAnswer((_) async => true);
+          when(
             () => mockLocalAuth.getAvailableBiometrics(),
           ).thenAnswer((_) async => [BiometricType.fingerprint]);
 
@@ -462,6 +564,9 @@ void main() {
         ).thenAnswer((_) async => _validPinSalt);
         when(
           () => mockLocalAuth.isDeviceSupported(),
+        ).thenAnswer((_) async => true);
+        when(
+          () => mockLocalAuth.canCheckBiometrics,
         ).thenAnswer((_) async => true);
         when(
           () => mockLocalAuth.getAvailableBiometrics(),

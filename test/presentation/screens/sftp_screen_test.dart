@@ -102,6 +102,64 @@ void main() {
       expect(isPreviewableImageFileName('notes.txt'), isFalse);
     });
 
+    test('detects previewable video file names', () {
+      expect(isPreviewableVideoFileName('screen-recording.mp4'), isTrue);
+      expect(isPreviewableVideoFileName('clip.MOV'), isTrue);
+      expect(isPreviewableVideoFileName('capture.m4v'), isTrue);
+      expect(isPreviewableVideoFileName('browser.webm'), isTrue);
+      expect(isPreviewableVideoFileName('notes.txt'), isFalse);
+    });
+
+    test('resolves video MIME candidates from file names', () {
+      expect(remoteVideoMimeTypeForFileName('recording.mp4'), 'video/mp4');
+      expect(
+        remoteVideoMimeTypeForFileName('recording.mov'),
+        'video/quicktime',
+      );
+      expect(remoteVideoMimeTypeForFileName('recording.m4v'), 'video/x-m4v');
+      expect(remoteVideoMimeTypeForFileName('recording.webm'), 'video/webm');
+      expect(remoteVideoMimeTypeForFileName('notes.txt'), isNull);
+    });
+
+    test('rejects known oversized video previews', () {
+      expect(
+        isRemoteVideoPreviewSizeAllowed(maxRemoteVideoPreviewBytes),
+        isTrue,
+      );
+      expect(
+        isRemoteVideoPreviewSizeAllowed(maxRemoteVideoPreviewBytes + 1),
+        isFalse,
+      );
+
+      expect(
+        remoteVideoPreviewTooLargeMessage(
+          sizeBytes: maxRemoteVideoPreviewBytes + 1,
+        ),
+        allOf(
+          contains('Video is too large to preview here'),
+          contains('100.0 MB'),
+          contains('Download it instead'),
+        ),
+      );
+    });
+
+    test('detects streaming video preview byte cap overflow', () {
+      expect(
+        wouldRemoteVideoPreviewExceedByteCap(
+          downloadedBytes: maxRemoteVideoPreviewBytes - 1,
+          chunkBytes: 1,
+        ),
+        isFalse,
+      );
+      expect(
+        wouldRemoteVideoPreviewExceedByteCap(
+          downloadedBytes: maxRemoteVideoPreviewBytes,
+          chunkBytes: 1,
+        ),
+        isTrue,
+      );
+    });
+
     test('detects svg file names', () {
       expect(isSvgFileName('diagram.svg'), isTrue);
       expect(isSvgFileName('diagram.SVG'), isTrue);
@@ -109,10 +167,11 @@ void main() {
     });
 
     test('detects video fixtures for placeholder icon coverage', () {
-      expect(isVideoFileName('demo.mp4'), isTrue);
-      expect(isVideoFileName('demo.MOV'), isTrue);
-      expect(isVideoFileName('demo.avi'), isTrue);
-      expect(isVideoFileName('demo.png'), isFalse);
+      expect(isPreviewableVideoFileName('demo.mp4'), isTrue);
+      expect(isPreviewableVideoFileName('demo.MOV'), isTrue);
+      expect(isPreviewableVideoFileName('demo.webm'), isTrue);
+      expect(isPreviewableVideoFileName('demo.avi'), isFalse);
+      expect(isPreviewableVideoFileName('demo.png'), isFalse);
       expect(
         resolveSftpFileIcon(isDirectory: false, filename: 'demo.mp4'),
         Icons.video_file,
@@ -217,6 +276,31 @@ void main() {
       );
     });
 
+    test('validates new folder names before creating directories', () {
+      expect(validateSftpDirectoryName(''), 'Folder name is required');
+      expect(validateSftpDirectoryName('  '), 'Folder name is required');
+      expect(
+        validateSftpDirectoryName('nested/folder'),
+        'Folder name cannot contain /',
+      );
+      expect(
+        validateSftpDirectoryName('..'),
+        'Choose a folder name, not a navigation shortcut',
+      );
+      expect(validateSftpDirectoryName('release'), isNull);
+    });
+
+    test('includes remote paths in copy and create feedback', () {
+      expect(
+        sftpCopyPathSnackBarMessage('/var/www/site config'),
+        'Copied shell-safe path for "/var/www/site config"',
+      );
+      expect(
+        sftpCreatedDirectorySnackBarMessage('/var/www/releases'),
+        'Created folder "/var/www/releases"',
+      );
+    });
+
     test('resolves directory taps as navigation', () {
       expect(
         resolveSftpFileTapIntent(isDirectory: true, filename: 'Documents'),
@@ -228,6 +312,35 @@ void main() {
       expect(
         resolveSftpFileTapIntent(isDirectory: false, filename: 'diagram.png'),
         SftpFileTapIntent.preview,
+      );
+    });
+
+    test('resolves video taps as video preview', () {
+      expect(
+        resolveSftpFileTapIntent(
+          isDirectory: false,
+          filename: 'screen-recording.mp4',
+        ),
+        SftpFileTapIntent.previewVideo,
+      );
+    });
+
+    test('resolves preview kind for row action availability', () {
+      expect(
+        resolveSftpPreviewKind(isDirectory: true, filename: 'clip.mp4'),
+        isNull,
+      );
+      expect(
+        resolveSftpPreviewKind(isDirectory: false, filename: 'diagram.png'),
+        SftpPreviewKind.image,
+      );
+      expect(
+        resolveSftpPreviewKind(isDirectory: false, filename: 'clip.webm'),
+        SftpPreviewKind.video,
+      );
+      expect(
+        resolveSftpPreviewKind(isDirectory: false, filename: 'notes.txt'),
+        isNull,
       );
     });
 
@@ -261,6 +374,67 @@ void main() {
         ),
         closeTo(widths[widerButShorter]! + trailingSlack, 0.001),
       );
+    });
+
+    testWidgets('video preview errors show metadata and fallback actions', (
+      tester,
+    ) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteVideoPreviewErrorForTesting(
+            fileName: 'screen-recording.mp4',
+            remotePath: '/home/depoll/screen-recording.mp4',
+            localPath: 'build/sftp-video-preview-test/screen-recording.mp4',
+            errorMessage: 'Unsupported codec',
+            sizeBytes: 42,
+            modifiedAt: DateTime.utc(2024, 1, 2, 3, 4, 5),
+            mimeType: 'video/mp4',
+          ),
+        ),
+      );
+
+      expect(find.text('Could not play video preview'), findsOneWidget);
+      expect(find.text('Unsupported codec'), findsOneWidget);
+      expect(find.text('/home/depoll/screen-recording.mp4'), findsOneWidget);
+      expect(find.text('42 B'), findsOneWidget);
+      expect(find.text('video/mp4'), findsOneWidget);
+      expect(find.text('Cached copy'), findsOneWidget);
+      expect(find.text('Save copy'), findsOneWidget);
+      expect(find.text('Open/Share'), findsOneWidget);
+    });
+
+    testWidgets('video preview deletes cached files when closed', (
+      tester,
+    ) async {
+      final cacheDirectory = Directory('build/sftp-video-preview-test')
+        ..createSync(recursive: true);
+      addTearDown(() {
+        if (cacheDirectory.existsSync()) {
+          cacheDirectory.deleteSync(recursive: true);
+        }
+      });
+
+      final cachedFile = File('${cacheDirectory.path}/cached-preview.mp4')
+        ..writeAsBytesSync([1, 2, 3]);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteVideoPreviewErrorForTesting(
+            fileName: 'cached-preview.mp4',
+            remotePath: '/home/depoll/cached-preview.mp4',
+            localPath: cachedFile.path,
+            errorMessage: 'Unsupported codec',
+            sizeBytes: 3,
+            mimeType: 'video/mp4',
+          ),
+        ),
+      );
+
+      expect(cachedFile.existsSync(), isTrue);
+
+      await tester.pumpWidget(const SizedBox.shrink());
+
+      expect(cachedFile.existsSync(), isFalse);
     });
   });
 }

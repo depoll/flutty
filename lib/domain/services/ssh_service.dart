@@ -501,6 +501,7 @@ class SshService {
   }) async {
     SSHClient? client;
     final dependentClients = <SSHClient>[];
+    SSHClient? jumpClient;
     void report(SshConnectionState state, String message) {
       onProgress?.call(
         ConnectionProgressUpdate(state: state, message: message),
@@ -508,7 +509,7 @@ class SshService {
     }
 
     try {
-      SSHSocket socket;
+      final verificationService = _createHostKeyVerificationService(config);
 
       // Handle jump host
       if (config.jumpHost != null) {
@@ -527,92 +528,123 @@ class SshService {
         dependentClients
           ..add(jumpResult.client!)
           ..addAll(jumpResult.dependentClients);
+        jumpClient = jumpResult.client;
+      }
 
-        // Create forwarded connection through jump host
-        // SSHForwardChannel implements SSHSocket
-        report(SshConnectionState.connecting, 'Opening tunnel to destination…');
-        socket = await jumpResult.client!.forwardLocal(
-          config.hostname,
-          config.port,
-        );
-      } else {
+      Future<SSHSocket> openEndpointSocket() async {
+        if (jumpClient != null) {
+          // Create forwarded connection through jump host.
+          // SSHForwardChannel implements SSHSocket.
+          report(
+            SshConnectionState.connecting,
+            'Opening tunnel to destination…',
+          );
+          return jumpClient.forwardLocal(config.hostname, config.port);
+        }
+
         report(
           SshConnectionState.connecting,
           isJumpHost
               ? 'Opening jump host connection…'
               : 'Opening network connection…',
         );
-        socket = await _socketConnector(
+        return _socketConnector(
           config.hostname,
           config.port,
           timeout: config.connectionTimeout,
         );
       }
 
-      final verificationSocket = socket is HostKeySource
-          ? socket
-          : _HostKeyCapturingSocket(socket);
-      final hostKeySource = verificationSocket as HostKeySource;
-      PendingHostTrustUpdate? pendingHostTrustUpdate;
+      final knownHosts = knownHostsRepository!;
+      final trustedHost = await knownHosts.getByHost(
+        config.hostname,
+        config.port,
+      );
+
+      if (trustedHost == null) {
+        report(
+          SshConnectionState.connecting,
+          isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
+        );
+        final presentedHostKey = await _probeHostKey(
+          await openEndpointSocket(),
+          config: config,
+        );
+        final pendingHostTrustUpdate = await verificationService.verify(
+          presentedHostKey,
+        );
+        await pendingHostTrustUpdate.persistTrustDecision(knownHosts);
+
+        final socket = await openEndpointSocket();
+
+        report(
+          SshConnectionState.authenticating,
+          isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
+        );
+        client = _clientFactory(
+          socket,
+          username: config.username,
+          onVerifyHostKey: (_, fingerprint) {
+            if (!_probedHostKeyMatchesCallback(presentedHostKey, fingerprint)) {
+              throw HostKeyVerificationException(
+                'The host key for ${config.hostname}:${config.port} changed '
+                'between verification and authentication.',
+              );
+            }
+            return true;
+          },
+          onPasswordRequest: config.password != null
+              ? () => config.password!
+              : null,
+          identities: _parseIdentities(config),
+          keepAliveInterval: config.keepAliveInterval,
+        );
+
+        // Bound authentication waits so the progress dialog can surface a
+        // recoverable error instead of hanging indefinitely.
+        await client.authenticated.timeout(
+          config.connectionTimeout,
+          onTimeout: () => throw TimeoutException(
+            isJumpHost
+                ? 'Jump host authentication timed out'
+                : 'Authentication timed out',
+          ),
+        );
+        report(
+          SshConnectionState.connected,
+          isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
+        );
+        await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
+
+        return SshConnectionResult(
+          success: true,
+          client: client,
+          dependentClients: dependentClients,
+        );
+      }
+
+      final preparedSocket = _prepareHostKeyCapture(await openEndpointSocket());
+      String? callbackKeyType;
+      String? rejectedCallbackFingerprint;
+      var rejectedTrustedHostKey = false;
 
       report(
         SshConnectionState.authenticating,
         isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
       );
       client = _clientFactory(
-        verificationSocket,
+        preparedSocket.socket,
         username: config.username,
-        onVerifyHostKey: (type, fingerprint) async {
-          report(
-            SshConnectionState.connecting,
-            isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
-          );
-          final verificationService = knownHostsRepository == null
-              ? null
-              : HostKeyVerificationService(
-                  knownHostsRepository: knownHostsRepository!,
-                  promptHandler: hostKeyPromptHandler,
-                );
-          if (verificationService == null) {
-            throw HostKeyVerificationException(
-              'SSH host key verification is unavailable for '
-              '${config.hostname}:${config.port}.',
+        onVerifyHostKey: (type, fingerprint) {
+          callbackKeyType = type;
+          final trusted = _trustedHostMatchesCallback(trustedHost, fingerprint);
+          rejectedTrustedHostKey = !trusted;
+          if (!trusted) {
+            rejectedCallbackFingerprint = _formatLegacyFingerprintBytes(
+              fingerprint,
             );
           }
-
-          final hostKeyBytes = await hostKeySource.hostKeyBytes.timeout(
-            config.connectionTimeout,
-            onTimeout: () => throw HostKeyVerificationException(
-              'Timed out while reading the host key for '
-              '${config.hostname}:${config.port}.',
-            ),
-          );
-          final presentedHostKey = VerifiedHostKey(
-            hostname: config.hostname,
-            port: config.port,
-            keyType: type,
-            hostKeyBytes: hostKeyBytes,
-          );
-          final legacyFingerprint = formatLegacySshHostKeyFingerprint(
-            hostKeyBytes,
-          );
-          final callbackFingerprint = fingerprint
-              .map((value) => value.toRadixString(16).padLeft(2, '0'))
-              .join(':');
-          if (legacyFingerprint != callbackFingerprint) {
-            throw HostKeyVerificationException(
-              'Failed to confirm the presented host key for '
-              '${config.hostname}:${config.port}.',
-            );
-          }
-
-          pendingHostTrustUpdate = await verificationService.verify(
-            presentedHostKey,
-          );
-          await pendingHostTrustUpdate!.persistTrustDecision(
-            knownHostsRepository!,
-          );
-          return true;
+          return trusted;
         },
         onPasswordRequest: config.password != null
             ? () => config.password!
@@ -621,25 +653,97 @@ class SshService {
         keepAliveInterval: config.keepAliveInterval,
       );
 
-      // Bound authentication waits so the progress dialog can surface a
-      // recoverable error instead of hanging indefinitely.
-      await client.authenticated.timeout(
-        config.connectionTimeout,
-        onTimeout: () => throw TimeoutException(
-          isJumpHost
-              ? 'Jump host authentication timed out'
-              : 'Authentication timed out',
-        ),
-      );
+      try {
+        await client.authenticated.timeout(
+          config.connectionTimeout,
+          onTimeout: () => throw TimeoutException(
+            isJumpHost
+                ? 'Jump host authentication timed out'
+                : 'Authentication timed out',
+          ),
+        );
+      } on SSHHostkeyError {
+        if (!rejectedTrustedHostKey) {
+          rethrow;
+        }
+
+        client.close();
+        client = null;
+
+        report(
+          SshConnectionState.connecting,
+          isJumpHost ? 'Verifying jump host key…' : 'Verifying host key…',
+        );
+        final changedHostKey = await _readPresentedHostKey(
+          preparedSocket.hostKeySource,
+          config: config,
+          keyType: callbackKeyType,
+        );
+        _confirmCapturedHostKeyMatchesCallback(
+          changedHostKey,
+          rejectedCallbackFingerprint,
+          config: config,
+        );
+        final pendingHostTrustUpdate = await verificationService.verify(
+          changedHostKey,
+        );
+
+        final retrySocket = await openEndpointSocket();
+        report(
+          SshConnectionState.authenticating,
+          isJumpHost ? 'Authenticating with jump host…' : 'Authenticating…',
+        );
+        client = _clientFactory(
+          retrySocket,
+          username: config.username,
+          onVerifyHostKey: (_, fingerprint) {
+            if (!_probedHostKeyMatchesCallback(changedHostKey, fingerprint)) {
+              throw HostKeyVerificationException(
+                'The host key for ${config.hostname}:${config.port} changed '
+                'between verification and authentication.',
+              );
+            }
+            return true;
+          },
+          onPasswordRequest: config.password != null
+              ? () => config.password!
+              : null,
+          identities: _parseIdentities(config),
+          keepAliveInterval: config.keepAliveInterval,
+        );
+
+        await client.authenticated.timeout(
+          config.connectionTimeout,
+          onTimeout: () => throw TimeoutException(
+            isJumpHost
+                ? 'Jump host authentication timed out'
+                : 'Authentication timed out',
+          ),
+        );
+        report(
+          SshConnectionState.connected,
+          isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
+        );
+        await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
+
+        return SshConnectionResult(
+          success: true,
+          client: client,
+          dependentClients: dependentClients,
+        );
+      }
+
       report(
         SshConnectionState.connected,
         isJumpHost ? 'Jump host connected.' : 'SSH connection established.',
       );
-      if (pendingHostTrustUpdate != null && knownHostsRepository != null) {
-        await pendingHostTrustUpdate!.commitAfterAuthentication(
-          knownHostsRepository!,
-        );
-      }
+      await knownHosts.markTrustedHostSeen(
+        hostname: trustedHost.hostname,
+        port: trustedHost.port,
+        keyType: trustedHost.keyType,
+        fingerprint: trustedHost.fingerprint,
+        encodedHostKey: trustedHost.hostKey,
+      );
 
       return SshConnectionResult(
         success: true,
@@ -684,6 +788,129 @@ class SshService {
       return SshConnectionResult(success: false, error: 'Connection error: $e');
     }
   }
+
+  HostKeyVerificationService _createHostKeyVerificationService(
+    SshConnectionConfig config,
+  ) {
+    final repository = knownHostsRepository;
+    if (repository == null) {
+      throw HostKeyVerificationException(
+        'SSH host key verification is unavailable for '
+        '${config.hostname}:${config.port}.',
+      );
+    }
+
+    return HostKeyVerificationService(
+      knownHostsRepository: repository,
+      promptHandler: hostKeyPromptHandler,
+    );
+  }
+
+  Future<VerifiedHostKey> _probeHostKey(
+    SSHSocket socket, {
+    required SshConnectionConfig config,
+  }) async {
+    final verificationSocket = _prepareHostKeyCapture(socket);
+    SSHClient? probeClient;
+    String? callbackKeyType;
+    String? callbackFingerprint;
+
+    if (socket is! HostKeySource) {
+      probeClient = _clientFactory(
+        verificationSocket.socket,
+        username: config.username,
+        onVerifyHostKey: (type, fingerprint) {
+          callbackKeyType = type;
+          callbackFingerprint = _formatLegacyFingerprintBytes(fingerprint);
+          return true;
+        },
+      );
+      unawaited(probeClient.authenticated.catchError((_) {}));
+    }
+
+    try {
+      final presentedHostKey = await _readPresentedHostKey(
+        verificationSocket.hostKeySource,
+        config: config,
+        keyType: callbackKeyType,
+      );
+      _confirmCapturedHostKeyMatchesCallback(
+        presentedHostKey,
+        callbackFingerprint,
+        config: config,
+      );
+      return presentedHostKey;
+    } finally {
+      probeClient?.close();
+      await verificationSocket.socket.close();
+    }
+  }
+
+  _PreparedHostKeySocket _prepareHostKeyCapture(SSHSocket socket) {
+    final verificationSocket = socket is HostKeySource
+        ? socket
+        : _HostKeyCapturingSocket(socket);
+    return _PreparedHostKeySocket(
+      socket: verificationSocket,
+      hostKeySource: verificationSocket as HostKeySource,
+    );
+  }
+
+  Future<VerifiedHostKey> _readPresentedHostKey(
+    HostKeySource hostKeySource, {
+    required SshConnectionConfig config,
+    required String? keyType,
+  }) async {
+    final hostKeyBytes = await hostKeySource.hostKeyBytes.timeout(
+      config.connectionTimeout,
+      onTimeout: () => throw HostKeyVerificationException(
+        'Timed out while reading the host key for '
+        '${config.hostname}:${config.port}.',
+      ),
+    );
+    return VerifiedHostKey(
+      hostname: config.hostname,
+      port: config.port,
+      keyType:
+          keyType ?? canonicalizeSshHostKeyType('', hostKeyBytes: hostKeyBytes),
+      hostKeyBytes: hostKeyBytes,
+    );
+  }
+
+  void _confirmCapturedHostKeyMatchesCallback(
+    VerifiedHostKey presentedHostKey,
+    String? callbackFingerprint, {
+    required SshConnectionConfig config,
+  }) {
+    if (callbackFingerprint != null &&
+        callbackFingerprint != presentedHostKey.md5Fingerprint) {
+      throw HostKeyVerificationException(
+        'Failed to confirm the presented host key for '
+        '${config.hostname}:${config.port}.',
+      );
+    }
+  }
+
+  bool _trustedHostMatchesCallback(
+    KnownHost trustedHost,
+    Uint8List fingerprint,
+  ) => sshHostTrustMatches(
+    firstFingerprint: trustedHost.fingerprint,
+    firstEncodedHostKey: trustedHost.hostKey,
+    secondFingerprint: _formatLegacyFingerprintBytes(fingerprint),
+    secondEncodedHostKey: '',
+  );
+
+  bool _probedHostKeyMatchesCallback(
+    VerifiedHostKey presentedHostKey,
+    Uint8List fingerprint,
+  ) =>
+      presentedHostKey.md5Fingerprint ==
+      _formatLegacyFingerprintBytes(fingerprint);
+
+  String _formatLegacyFingerprintBytes(Uint8List fingerprint) => fingerprint
+      .map((value) => value.toRadixString(16).padLeft(2, '0'))
+      .join(':');
 
   /// Disconnect a session by connection ID.
   Future<void> disconnect(int connectionId) async {
@@ -858,6 +1085,16 @@ class _FiniteChunkSshSocket implements SSHSocket {
 
   @override
   void destroy() {}
+}
+
+class _PreparedHostKeySocket {
+  const _PreparedHostKeySocket({
+    required this.socket,
+    required this.hostKeySource,
+  });
+
+  final SSHSocket socket;
+  final HostKeySource hostKeySource;
 }
 
 class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {

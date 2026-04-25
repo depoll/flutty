@@ -10,10 +10,21 @@ import '../widgets/premium_badge.dart';
 /// Upgrade screen for MonkeySSH Pro.
 class UpgradeScreen extends ConsumerStatefulWidget {
   /// Creates a new [UpgradeScreen].
-  const UpgradeScreen({this.feature, super.key});
+  const UpgradeScreen({
+    this.feature,
+    this.blockedAction,
+    this.blockedOutcome,
+    super.key,
+  });
 
   /// Feature that triggered the upgrade flow, when known.
   final MonetizationFeature? feature;
+
+  /// User action that was blocked by the paywall.
+  final String? blockedAction;
+
+  /// Outcome the user gets after upgrading for the blocked action.
+  final String? blockedOutcome;
 
   @override
   ConsumerState<UpgradeScreen> createState() => _UpgradeScreenState();
@@ -243,7 +254,11 @@ class _UpgradeScreenState extends ConsumerState<UpgradeScreen> {
           ),
           if (feature != null) ...[
             const SizedBox(height: 20),
-            _UpgradeReasonCard(feature: feature),
+            _UpgradeReasonCard(
+              feature: feature,
+              blockedAction: widget.blockedAction,
+              blockedOutcome: widget.blockedOutcome,
+            ),
           ],
           if (progressMessage case final message?) ...[
             const SizedBox(height: 20),
@@ -680,9 +695,15 @@ class _UpgradeProgressBanner extends StatelessWidget {
 }
 
 class _UpgradeReasonCard extends StatelessWidget {
-  const _UpgradeReasonCard({required this.feature});
+  const _UpgradeReasonCard({
+    required this.feature,
+    this.blockedAction,
+    this.blockedOutcome,
+  });
 
   final MonetizationFeature feature;
+  final String? blockedAction;
+  final String? blockedOutcome;
 
   @override
   Widget build(BuildContext context) => Card(
@@ -692,11 +713,11 @@ class _UpgradeReasonCard extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           Text(
-            '${feature.label} is part of MonkeySSH Pro',
+            blockedAction ?? feature.blockedAction,
             style: Theme.of(context).textTheme.titleMedium,
           ),
           const SizedBox(height: 8),
-          Text(feature.description),
+          Text(blockedOutcome ?? feature.blockedOutcome),
         ],
       ),
     ),

@@ -16,7 +16,10 @@ import 'transfer_screen.dart';
 /// Screen for adding or importing SSH keys.
 class KeyAddScreen extends ConsumerStatefulWidget {
   /// Creates a new [KeyAddScreen].
-  const KeyAddScreen({super.key});
+  const KeyAddScreen({this.initialTabIndex = 0, super.key});
+
+  /// Initially selected tab index.
+  final int initialTabIndex;
 
   @override
   ConsumerState<KeyAddScreen> createState() => _KeyAddScreenState();
@@ -29,7 +32,15 @@ class _KeyAddScreenState extends ConsumerState<KeyAddScreen>
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 2, vsync: this);
+    _tabController = TabController(
+      length: 2,
+      initialIndex: widget.initialTabIndex < 0
+          ? 0
+          : widget.initialTabIndex > 1
+          ? 1
+          : widget.initialTabIndex,
+      vsync: this,
+    );
   }
 
   @override
@@ -493,6 +504,9 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
       context: context,
       ref: ref,
       feature: MonetizationFeature.encryptedTransfers,
+      blockedAction: 'Import encrypted key file',
+      blockedOutcome:
+          'Unlock Pro to decrypt this key transfer and add it to your keyring.',
     );
     if (!hasAccess) {
       return;

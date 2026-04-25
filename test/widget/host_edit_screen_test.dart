@@ -72,6 +72,7 @@ class _FakeHostRepository extends HostRepository {
 
   Host _host;
   Host? updatedHost;
+  HostsCompanion? insertedHost;
 
   @override
   Future<Host?> getById(int id) async => id == _host.id ? _host : null;
@@ -84,6 +85,12 @@ class _FakeHostRepository extends HostRepository {
     _host = host;
     updatedHost = host;
     return true;
+  }
+
+  @override
+  Future<int> insert(HostsCompanion host) async {
+    insertedHost = host;
+    return 2;
   }
 }
 
@@ -146,9 +153,155 @@ MonetizationService _buildProMonetizationService() {
   when(
     () => service.states,
   ).thenAnswer((_) => Stream.value(_proMonetizationState));
+  when(
+    () => service.canUseFeature(MonetizationFeature.autoConnectAutomation),
+  ).thenAnswer((_) async => true);
+  when(
+    () => service.canUseFeature(MonetizationFeature.agentLaunchPresets),
+  ).thenAnswer((_) async => true);
   // ignore: unnecessary_lambdas
   when(() => service.initialize()).thenAnswer((_) => Future<void>.value());
   return service;
+}
+
+class _HostEditTestHarness {
+  const _HostEditTestHarness({required this.hostRepository});
+
+  final _FakeHostRepository hostRepository;
+}
+
+Future<_HostEditTestHarness> _pumpHostCreateScreen(
+  WidgetTester tester, {
+  bool hasPro = false,
+  List<Snippet> snippets = const [],
+}) async {
+  final database = AppDatabase.forTesting(NativeDatabase.memory());
+  final encryptionService = SecretEncryptionService.forTesting();
+  addTearDown(database.close);
+  addTearDown(() => tester.binding.setSurfaceSize(null));
+  await tester.binding.setSurfaceSize(const Size(420, 900));
+
+  final hostRepository = _FakeHostRepository(
+    host: _testHost(
+      id: 1,
+      label: 'Unused Host',
+      autoConnectRequiresConfirmation: false,
+    ),
+    database: database,
+    encryptionService: encryptionService,
+  );
+  final presetService = _MockAgentLaunchPresetService();
+  when(
+    () => presetService.getPresetForHost(any()),
+  ).thenAnswer((_) async => null);
+  when(
+    () => presetService.setPresetForHost(any(), any()),
+  ).thenAnswer((_) async {});
+  when(() => presetService.deletePresetForHost(any())).thenAnswer((_) async {});
+
+  final router = GoRouter(
+    routes: [
+      GoRoute(
+        path: '/',
+        builder: (context, state) => const Scaffold(body: SizedBox.shrink()),
+      ),
+      GoRoute(
+        path: '/add',
+        builder: (context, state) => const HostEditScreen(),
+      ),
+    ],
+  );
+  addTearDown(router.dispose);
+
+  await tester.pumpWidget(
+    ProviderScope(
+      overrides: [
+        if (hasPro) ...[
+          monetizationServiceProvider.overrideWithValue(
+            _buildProMonetizationService(),
+          ),
+          monetizationStateProvider.overrideWith(
+            (ref) => Stream.value(_proMonetizationState),
+          ),
+        ],
+        databaseProvider.overrideWithValue(database),
+        hostRepositoryProvider.overrideWithValue(hostRepository),
+        agentLaunchPresetServiceProvider.overrideWithValue(presetService),
+        keyRepositoryProvider.overrideWithValue(
+          _FakeKeyRepository(
+            database: database,
+            encryptionService: encryptionService,
+          ),
+        ),
+        snippetRepositoryProvider.overrideWithValue(
+          _FakeSnippetRepository(snippets: snippets, database: database),
+        ),
+        portForwardRepositoryProvider.overrideWithValue(
+          _FakePortForwardRepository(database: database),
+        ),
+      ],
+      child: MaterialApp.router(routerConfig: router),
+    ),
+  );
+
+  unawaited(router.push('/add'));
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+
+  return _HostEditTestHarness(hostRepository: hostRepository);
+}
+
+Future<void> _fillRequiredHostFields(WidgetTester tester) async {
+  await tester.enterText(find.byKey(const Key('host-label-field')), 'New Host');
+  await tester.enterText(
+    find.byKey(const Key('host-hostname-field')),
+    'new.example.com',
+  );
+  await tester.enterText(find.byKey(const Key('host-username-field')), 'root');
+}
+
+Future<void> _selectStartupMode(WidgetTester tester, String label) async {
+  final formScroll = find.byType(Scrollable).first;
+  final startupModeField = find.byKey(const Key('host-startup-mode-field'));
+  await tester.scrollUntilVisible(
+    startupModeField,
+    200,
+    scrollable: formScroll,
+  );
+  await tester.ensureVisible(startupModeField);
+  await tester.tap(find.text('Do nothing'), warnIfMissed: false);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+  await tester.tap(find.text(label).last, warnIfMissed: false);
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 300));
+}
+
+Future<void> _tapBottomSave(WidgetTester tester) async {
+  final saveButton = find.byKey(
+    const Key('host-save-button'),
+    skipOffstage: false,
+  );
+  await tester.scrollUntilVisible(
+    saveButton,
+    200,
+    scrollable: find.byType(Scrollable).first,
+  );
+  await tester.ensureVisible(saveButton);
+  tester.widget<FilledButton>(saveButton).onPressed!();
+  await tester.pump();
+  await tester.pump(const Duration(milliseconds: 600));
+  await tester.pump();
+}
+
+bool _textFieldHasFocus(WidgetTester tester, Key fieldKey) {
+  final editableText = tester.widget<EditableText>(
+    find.descendant(
+      of: find.byKey(fieldKey),
+      matching: find.byType(EditableText),
+    ),
+  );
+  return editableText.focusNode.hasFocus;
 }
 
 void main() {
@@ -157,6 +310,98 @@ void main() {
   });
 
   group('HostEditScreen', () {
+    testWidgets(
+      'scrolls to the first base field and summarizes validation errors',
+      (tester) async {
+        final harness = await _pumpHostCreateScreen(tester);
+
+        await _tapBottomSave(tester);
+
+        expect(find.text('Fix label to save this host'), findsOneWidget);
+        expect(find.text('Please enter a label'), findsOneWidget);
+        expect(
+          _textFieldHasFocus(tester, const Key('host-label-field')),
+          isTrue,
+        );
+        expect(harness.hostRepository.insertedHost, isNull);
+      },
+    );
+
+    testWidgets('scrolls to missing tmux session when saving tmux startup', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(tester);
+      await _fillRequiredHostFields(tester);
+      await _selectStartupMode(tester, 'Open tmux session');
+
+      await _tapBottomSave(tester);
+
+      expect(
+        find.text('Fix tmux session name to save this host'),
+        findsOneWidget,
+      );
+      expect(find.text('Enter a tmux session name'), findsOneWidget);
+      expect(
+        _textFieldHasFocus(tester, const Key('host-tmux-session-field')),
+        isTrue,
+      );
+      expect(harness.hostRepository.insertedHost, isNull);
+    });
+
+    testWidgets(
+      'scrolls to missing custom command when saving custom startup',
+      (tester) async {
+        final harness = await _pumpHostCreateScreen(tester, hasPro: true);
+        await _fillRequiredHostFields(tester);
+        await _selectStartupMode(tester, 'Run custom command');
+
+        await _tapBottomSave(tester);
+
+        expect(
+          find.text('Fix custom command to save this host'),
+          findsOneWidget,
+        );
+        expect(
+          find.text('Enter a command or choose "Do nothing"'),
+          findsOneWidget,
+        );
+        expect(
+          _textFieldHasFocus(
+            tester,
+            const Key('host-auto-connect-command-field'),
+          ),
+          isTrue,
+        );
+        expect(harness.hostRepository.insertedHost, isNull);
+      },
+    );
+
+    testWidgets('scrolls to missing snippet when saving snippet startup', (
+      tester,
+    ) async {
+      final harness = await _pumpHostCreateScreen(
+        tester,
+        hasPro: true,
+        snippets: [
+          _testSnippet(id: 7, name: 'Bootstrap', command: 'bootstrap.sh'),
+        ],
+      );
+      await _fillRequiredHostFields(tester);
+      await _selectStartupMode(tester, 'Run saved snippet');
+
+      await _tapBottomSave(tester);
+
+      expect(
+        find.text('Choose a startup snippet to save this host'),
+        findsOneWidget,
+      );
+      expect(
+        find.text('Choose a snippet or select "Do nothing"'),
+        findsOneWidget,
+      );
+      expect(harness.hostRepository.insertedHost, isNull);
+    });
+
     testWidgets(
       'preserves imported auto-connect review when saving unrelated edits',
       (tester) async {
@@ -905,9 +1150,20 @@ void main() {
       await tester.ensureVisible(saveButton);
       tester.widget<FilledButton>(saveButton).onPressed!();
       await tester.pump();
-      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(milliseconds: 350));
 
+      expect(
+        find.text('Fix agent tmux flags to save this host'),
+        findsOneWidget,
+      );
       verifyNever(() => presetService.setPresetForHost(1, any()));
+      expect(
+        _textFieldHasFocus(
+          tester,
+          const Key('host-agent-tmux-extra-flags-field'),
+        ),
+        isTrue,
+      );
     });
 
     testWidgets(

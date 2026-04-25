@@ -35,9 +35,16 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
   @override
   void initState() {
     super.initState();
+    _contentController.addListener(_handleCommandChanged);
     unawaited(_loadFolders());
     if (widget.snippetId != null) {
       unawaited(_loadSnippet());
+    }
+  }
+
+  void _handleCommandChanged() {
+    if (mounted) {
+      setState(() {});
     }
   }
 
@@ -67,6 +74,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
 
   @override
   void dispose() {
+    _contentController.removeListener(_handleCommandChanged);
     _nameController.dispose();
     _contentController.dispose();
     _descriptionController.dispose();
@@ -167,7 +175,8 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
                   ),
                   const SizedBox(height: 8),
                   Text(
-                    'Use {{variable}} for substitution',
+                    'Use {{variable}} placeholders. Examples: '
+                    '{{container}}, {{branch}}, {{log_file}}.',
                     style: Theme.of(context).textTheme.bodySmall?.copyWith(
                       color: Theme.of(context).colorScheme.outline,
                     ),
@@ -299,8 +308,9 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
               Text('Examples:', style: TextStyle(fontWeight: FontWeight.bold)),
               SizedBox(height: 8),
               Text('• ssh {{user}}@{{host}}'),
-              Text('• docker exec -it {{container}} bash'),
-              Text('• git push origin {{branch}}'),
+              Text('• tail -f {{log_file}}'),
+              Text('• docker restart {{container}}'),
+              Text('• git pull && {{restart_command}}'),
               SizedBox(height: 16),
               Text('When executing, you\'ll be prompted to fill in values.'),
             ],

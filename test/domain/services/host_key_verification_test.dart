@@ -230,6 +230,39 @@ void main() {
       expect(storedHost.fingerprint, replacementHostKey.fingerprint);
     });
 
+    test('accepts a pretrusted host key without prompting', () async {
+      final trustedHostKey = _verifiedHostKey('trusted.example.com', 22, [
+        1,
+        2,
+        3,
+      ]);
+      await repository.upsertTrustedHost(
+        hostname: trustedHostKey.hostname,
+        port: trustedHostKey.port,
+        keyType: trustedHostKey.keyType,
+        fingerprint: trustedHostKey.fingerprint,
+        encodedHostKey: trustedHostKey.encodedHostKey,
+        resetFirstSeen: true,
+      );
+
+      var prompted = false;
+      final service = HostKeyVerificationService(
+        knownHostsRepository: repository,
+        promptHandler: (_) async {
+          prompted = true;
+          return HostKeyTrustDecision.reject;
+        },
+      );
+
+      final update = await service.verify(trustedHostKey);
+      await update.commitAfterAuthentication(repository);
+
+      expect(prompted, isFalse);
+      final storedHost = await repository.getByHost('trusted.example.com', 22);
+      expect(storedHost, isNotNull);
+      expect(storedHost!.hostKey, trustedHostKey.encodedHostKey);
+    });
+
     test('accepts RSA host keys across signature algorithm variants', () async {
       final storedHostKey = _rsaVerifiedHostKey(
         'rsa.example.com',

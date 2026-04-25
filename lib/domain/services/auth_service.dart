@@ -41,6 +41,41 @@ enum AuthMethod {
   both,
 }
 
+/// Current platform biometric readiness.
+@immutable
+class BiometricAvailability {
+  /// Creates a new [BiometricAvailability].
+  const BiometricAvailability({
+    required this.isDeviceAuthSupported,
+    required this.isBiometricHardwareSupported,
+    required this.enrolledBiometrics,
+  });
+
+  /// Whether the device supports local authentication at all.
+  ///
+  /// This can be true for device PIN/pattern/passcode even when no biometric
+  /// hardware is present.
+  final bool isDeviceAuthSupported;
+
+  /// Whether biometric hardware is supported on this device.
+  final bool isBiometricHardwareSupported;
+
+  /// Biometrics enrolled and currently available to local_auth.
+  final List<BiometricType> enrolledBiometrics;
+
+  /// Whether biometric authentication can be used without setup elsewhere.
+  bool get canAuthenticateWithBiometrics =>
+      isBiometricHardwareSupported && enrolledBiometrics.isNotEmpty;
+
+  /// Whether biometric hardware exists but the user must enroll first.
+  bool get needsBiometricEnrollment =>
+      isBiometricHardwareSupported && enrolledBiometrics.isEmpty;
+
+  /// Whether only non-biometric device credentials are supported.
+  bool get supportsDeviceCredentialOnly =>
+      isDeviceAuthSupported && !isBiometricHardwareSupported;
+}
+
 /// Service for handling app authentication (PIN/biometric).
 class AuthService {
   /// Creates a new [AuthService].
@@ -75,23 +110,57 @@ class AuthService {
     return value == 'true';
   }
 
-  /// Check if device supports biometric authentication.
-  Future<bool> isBiometricSupported() async {
+  /// Check if this device supports local authentication.
+  ///
+  /// This preserves the legacy contract of reporting whether the platform can
+  /// authenticate with device credentials. It can be true even when biometric
+  /// hardware is not present.
+  Future<bool> isBiometricSupported() async => isDeviceAuthSupported();
+
+  /// Check if device supports local authentication.
+  Future<bool> isDeviceAuthSupported() async {
     try {
       return await _localAuth.isDeviceSupported();
     } on PlatformException {
       return false;
+    } on LocalAuthException {
+      return false;
     }
   }
 
+  /// Check if device has biometric hardware.
+  Future<bool> isBiometricHardwareSupported() async =>
+      _isBiometricHardwareSupported();
+
   /// Check if biometrics are enrolled and ready to use.
   Future<bool> isBiometricAvailable() async {
-    try {
-      if (!await isBiometricSupported()) return false;
+    if (!await isBiometricHardwareSupported()) return false;
 
-      final biometrics = await _localAuth.getAvailableBiometrics();
-      return biometrics.isNotEmpty;
+    final biometrics = await getAvailableBiometrics();
+    return biometrics.isNotEmpty;
+  }
+
+  /// Get the current platform biometric readiness.
+  Future<BiometricAvailability> getBiometricAvailability() async {
+    final deviceAuthSupported = await isDeviceAuthSupported();
+    final biometricHardwareSupported = await isBiometricHardwareSupported();
+    final enrolledBiometrics = biometricHardwareSupported
+        ? await getAvailableBiometrics()
+        : const <BiometricType>[];
+
+    return BiometricAvailability(
+      isDeviceAuthSupported: deviceAuthSupported,
+      isBiometricHardwareSupported: biometricHardwareSupported,
+      enrolledBiometrics: enrolledBiometrics,
+    );
+  }
+
+  Future<bool> _isBiometricHardwareSupported() async {
+    try {
+      return await _localAuth.canCheckBiometrics;
     } on PlatformException {
+      return false;
+    } on LocalAuthException {
       return false;
     }
   }
@@ -101,6 +170,8 @@ class AuthService {
     try {
       return await _localAuth.getAvailableBiometrics();
     } on PlatformException {
+      return [];
+    } on LocalAuthException {
       return [];
     }
   }
@@ -112,7 +183,7 @@ class AuthService {
 
     final hasUsablePin = await _hasUsablePin();
     final biometricEnabled = await isBiometricEnabled();
-    final biometricAvailable = await isBiometricAvailable();
+    final biometricAvailable = biometricEnabled && await isBiometricAvailable();
 
     if (biometricEnabled && biometricAvailable) {
       return hasUsablePin ? AuthMethod.both : AuthMethod.biometric;
@@ -134,7 +205,11 @@ class AuthService {
 
   /// Enable or disable biometric authentication.
   Future<void> setBiometricEnabled({required bool enabled}) async {
-    await _storage.write(key: _biometricEnabledKey, value: enabled.toString());
+    final canEnable = !enabled || await isBiometricAvailable();
+    await _storage.write(
+      key: _biometricEnabledKey,
+      value: (enabled && canEnable).toString(),
+    );
   }
 
   /// Verify PIN.
@@ -169,6 +244,10 @@ class AuthService {
 
   /// Authenticate with biometrics.
   Future<bool> authenticateWithBiometrics({String? reason}) async {
+    if (!await isBiometricAvailable()) {
+      return false;
+    }
+
     try {
       final localizedReason = reason ?? await _defaultLocalizedReason();
       return await _localAuth.authenticate(
@@ -177,6 +256,8 @@ class AuthService {
         persistAcrossBackgrounding: true,
       );
     } on PlatformException {
+      return false;
+    } on LocalAuthException {
       return false;
     }
   }

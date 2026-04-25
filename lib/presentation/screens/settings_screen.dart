@@ -50,53 +50,67 @@ class SettingsScreen extends ConsumerWidget {
 final _biometricSettingsStateProvider =
     FutureProvider.autoDispose<_BiometricSettingsState>((ref) async {
       final authService = ref.watch(authServiceProvider);
-      final isSupported = await authService.isBiometricSupported();
+      final availability = await authService.getBiometricAvailability();
       final isEnabled = await authService.isBiometricEnabled();
 
-      if (!isSupported) {
-        return _BiometricSettingsState(
-          isSupported: false,
-          isAvailable: false,
-          isEnabled: isEnabled,
-        );
-      }
-
       return _BiometricSettingsState(
-        isSupported: true,
-        isAvailable: (await authService.getAvailableBiometrics()).isNotEmpty,
+        availability: availability,
         isEnabled: isEnabled,
       );
     });
 
 class _BiometricSettingsState {
   const _BiometricSettingsState({
-    required this.isSupported,
-    required this.isAvailable,
+    required this.availability,
     required this.isEnabled,
   });
 
-  final bool isSupported;
-  final bool isAvailable;
+  final BiometricAvailability availability;
   final bool isEnabled;
+
+  bool get canAuthenticateWithBiometrics =>
+      availability.canAuthenticateWithBiometrics;
+
+  bool get isBiometricHardwareSupported =>
+      availability.isBiometricHardwareSupported;
+
+  bool get isDeviceAuthSupported => availability.isDeviceAuthSupported;
+
+  bool get needsBiometricEnrollment => availability.needsBiometricEnrollment;
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title});
+  const _SectionHeader({required this.title, this.subtitle});
 
   final String title;
+  final String? subtitle;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return Padding(
       padding: const EdgeInsets.fromLTRB(16, 28, 16, 8),
-      child: Text(
-        title,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: theme.colorScheme.primary,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.5,
-        ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            title,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.primary,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 0.5,
+            ),
+          ),
+          if (subtitle case final subtitle?) ...[
+            const SizedBox(height: 2),
+            Text(
+              subtitle,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ],
       ),
     );
   }
@@ -114,7 +128,10 @@ class _SubscriptionSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'MonkeySSH Pro'),
+        const _SectionHeader(
+          title: 'MonkeySSH Pro',
+          subtitle: 'Subscription status and Pro-only workflows',
+        ),
         ListTile(
           leading: Icon(
             state.isProUnlocked
@@ -151,7 +168,10 @@ class _AppearanceSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'Appearance'),
+        const _SectionHeader(
+          title: 'Appearance',
+          subtitle: 'App-wide color mode',
+        ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Theme'),
@@ -223,7 +243,10 @@ class _SecuritySection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'Security'),
+        const _SectionHeader(
+          title: 'Security',
+          subtitle: 'PIN, biometrics, and automatic locking',
+        ),
         if (isAuthConfigured)
           ListTile(
             leading: const Icon(Icons.pin_outlined),
@@ -263,23 +286,38 @@ class _SecuritySection extends ConsumerWidget {
             secondary: const Icon(Icons.fingerprint),
             title: const Text('Biometric authentication'),
             subtitle: Text(
-              !isAuthKnown
-                  ? 'Checking security status'
-                  : !state.isSupported
-                  ? 'Not supported on this device'
-                  : !isAuthConfigured
-                  ? 'Set up app lock first'
-                  : state.isAvailable
-                  ? 'Use fingerprint or face to unlock'
-                  : state.isEnabled
-                  ? 'Enabled - enroll fingerprint or face to use it'
-                  : 'Enable now, then enroll fingerprint or face to use it',
+              _biometricSubtitle(
+                isAuthKnown: isAuthKnown,
+                isAuthConfigured: isAuthConfigured,
+                state: state,
+              ),
             ),
-            value: state.isEnabled,
-            onChanged: state.isSupported && isAuthConfigured
+            value: state.isEnabled && state.canAuthenticateWithBiometrics,
+            onChanged: state.canAuthenticateWithBiometrics && isAuthConfigured
                 ? (value) => _toggleBiometric(ref, value)
                 : null,
           ),
+        ),
+        biometricSettings.maybeWhen(
+          data: (state) {
+            if (!isAuthConfigured || !state.needsBiometricEnrollment) {
+              return const SizedBox.shrink();
+            }
+
+            return Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: TextButton.icon(
+                  onPressed: () =>
+                      ref.invalidate(_biometricSettingsStateProvider),
+                  icon: const Icon(Icons.refresh),
+                  label: const Text('Re-check biometric status'),
+                ),
+              ),
+            );
+          },
+          orElse: () => const SizedBox.shrink(),
         ),
         ListTile(
           leading: const Icon(Icons.timer_outlined),
@@ -300,6 +338,30 @@ class _SecuritySection extends ConsumerWidget {
         ),
       ],
     );
+  }
+
+  String _biometricSubtitle({
+    required bool isAuthKnown,
+    required bool isAuthConfigured,
+    required _BiometricSettingsState state,
+  }) {
+    if (!isAuthKnown) {
+      return 'Checking security status';
+    }
+    if (!state.isBiometricHardwareSupported) {
+      return state.isDeviceAuthSupported
+          ? 'Device lock is available, but no biometric hardware was reported'
+          : 'Biometric hardware not supported on this device';
+    }
+    if (!isAuthConfigured) {
+      return state.needsBiometricEnrollment
+          ? 'Enroll fingerprint or face in system settings before enabling'
+          : 'Set up app lock first';
+    }
+    if (state.canAuthenticateWithBiometrics) {
+      return 'Use fingerprint or face to unlock';
+    }
+    return 'Enroll fingerprint or face in system settings, then return and re-check';
   }
 
   void _showChangePinDialog(BuildContext context, WidgetRef ref) {
@@ -523,7 +585,10 @@ class _TerminalSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'Terminal'),
+        const _SectionHeader(
+          title: 'Terminal',
+          subtitle: 'Themes, fonts, links, keyboard, and clipboard behavior',
+        ),
         ListTile(
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Light Mode Theme'),
@@ -933,7 +998,10 @@ class _AboutSection extends ConsumerWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const _SectionHeader(title: 'About'),
+        const _SectionHeader(
+          title: 'About',
+          subtitle: 'Version, source, and licenses',
+        ),
         ListTile(
           leading: const Icon(Icons.info_outline),
           title: const Text('App version'),
@@ -1069,7 +1137,10 @@ class _AndroidBackgroundSectionState
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          const _SectionHeader(title: 'Background SSH'),
+          const _SectionHeader(
+            title: 'Background SSH',
+            subtitle: 'Keep sessions alive while MonkeySSH is backgrounded',
+          ),
           ListTile(
             leading: Icon(leadingIcon),
             title: const Text('Battery optimization'),
@@ -1095,7 +1166,10 @@ class _ImportExportSection extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) => Column(
     crossAxisAlignment: CrossAxisAlignment.start,
     children: [
-      const _SectionHeader(title: 'Import & Export'),
+      const _SectionHeader(
+        title: 'Import & Export',
+        subtitle: 'Encrypted migration packages for moving devices',
+      ),
       ListTile(
         leading: Icon(useShareSheet ? Icons.share : Icons.save_alt),
         title: const Text('Export app data'),
@@ -1122,6 +1196,10 @@ class _ImportExportSection extends ConsumerWidget {
       context: context,
       ref: ref,
       feature: MonetizationFeature.migrationImportExport,
+      blockedAction: 'Export encrypted app data',
+      blockedOutcome:
+          'Unlock Pro to package hosts, keys, snippets, and settings for '
+          'another device.',
     );
     if (!hasAccess || !context.mounted) {
       return;
@@ -1178,6 +1256,9 @@ class _ImportExportSection extends ConsumerWidget {
       context: context,
       ref: ref,
       feature: MonetizationFeature.migrationImportExport,
+      blockedAction: 'Import encrypted app data',
+      blockedOutcome:
+          'Unlock Pro to restore a MonkeySSH migration package on this device.',
     );
     if (!hasAccess || !context.mounted) {
       return;

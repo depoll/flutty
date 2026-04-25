@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:collection';
 
-import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -161,6 +160,9 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         context: context,
         ref: ref,
         feature: MonetizationFeature.encryptedTransfers,
+        blockedAction: 'Open incoming encrypted transfer',
+        blockedOutcome:
+            'Unlock Pro to decrypt this transfer and import its hosts or keys.',
       );
       if (!hasAccess || !mounted) {
         return;
@@ -576,6 +578,72 @@ class _NavItem extends StatelessWidget {
   }
 }
 
+class _EmptyStateAction {
+  const _EmptyStateAction({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+}
+
+class _GuidedEmptyState extends StatelessWidget {
+  const _GuidedEmptyState({
+    required this.icon,
+    required this.title,
+    required this.subtitle,
+    required this.primaryLabel,
+    required this.onPrimary,
+    this.primaryIcon = Icons.add,
+    this.secondaryActions = const [],
+  });
+
+  final IconData icon;
+  final String title;
+  final String subtitle;
+  final String primaryLabel;
+  final IconData primaryIcon;
+  final VoidCallback onPrimary;
+  final List<_EmptyStateAction> secondaryActions;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    mainAxisSize: MainAxisSize.min,
+    children: [
+      FluttyTheme.buildEmptyState(
+        context: context,
+        icon: icon,
+        title: title,
+        subtitle: subtitle,
+        onAction: onPrimary,
+        actionLabel: primaryLabel,
+        actionIcon: primaryIcon,
+        centered: false,
+        padded: false,
+      ),
+      if (secondaryActions.isNotEmpty) ...[
+        const SizedBox(height: FluttyTheme.spacingMd),
+        Wrap(
+          alignment: WrapAlignment.center,
+          spacing: FluttyTheme.spacingSm,
+          runSpacing: FluttyTheme.spacingSm,
+          children: [
+            for (final action in secondaryActions)
+              OutlinedButton.icon(
+                onPressed: action.onTap,
+                icon: Icon(action.icon, size: 18),
+                label: Text(action.label),
+              ),
+          ],
+        ),
+      ],
+    ],
+  );
+}
+
 /// Panel for displaying and managing hosts inline.
 class HostsPanel extends ConsumerWidget {
   /// Creates a [HostsPanel].
@@ -653,17 +721,73 @@ class HostsPanel extends ConsumerWidget {
   );
 
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
-    child: FluttyTheme.buildEmptyState(
-      context: context,
+    child: _GuidedEmptyState(
       icon: Icons.dns_outlined,
       title: 'No hosts yet',
-      subtitle: 'Add a host to get started',
-      onAction: () => context.push('/hosts/add'),
-      actionLabel: 'Add Host',
-      centered: false,
-      padded: false,
+      subtitle:
+          'Add an SSH server, paste an ssh:// URL, or prefill localhost after '
+          'running the local test setup.',
+      primaryLabel: 'Add Host',
+      onPrimary: () => context.push('/hosts/add'),
+      secondaryActions: [
+        _EmptyStateAction(
+          icon: Icons.file_open_outlined,
+          label: 'Import config',
+          onTap: () => _showOpenSshImportMessage(context),
+        ),
+        _EmptyStateAction(
+          icon: Icons.content_paste_go_outlined,
+          label: 'Paste SSH URL',
+          onTap: () => unawaited(_openPastedSshUrl(context)),
+        ),
+        _EmptyStateAction(
+          icon: Icons.computer_outlined,
+          label: 'Try local test host',
+          onTap: () => context.push('/hosts/add?template=local'),
+        ),
+      ],
     ),
   );
+
+  void _showOpenSshImportMessage(BuildContext context) {
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text(
+          'OpenSSH config import is not available yet. Add a host manually or '
+          'paste an ssh:// URL.',
+        ),
+      ),
+    );
+  }
+
+  Future<void> _openPastedSshUrl(BuildContext context) async {
+    final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
+    final sshUrl = clipboard?.text?.trim();
+    if (sshUrl == null || sshUrl.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Copy an ssh:// URL first.')),
+        );
+      }
+      return;
+    }
+    final uri = Uri.tryParse(sshUrl);
+    if (uri == null || uri.scheme != 'ssh' || uri.host.isEmpty) {
+      if (context.mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Clipboard does not contain an ssh:// URL.'),
+          ),
+        );
+      }
+      return;
+    }
+    if (context.mounted) {
+      unawaited(
+        context.push('/hosts/add?sshUrl=${Uri.encodeQueryComponent(sshUrl)}'),
+      );
+    }
+  }
 
   Widget _buildCenteredHostsState({required Widget child}) => CustomScrollView(
     physics: const AlwaysScrollableScrollPhysics(),
@@ -1309,6 +1433,9 @@ class _HostRow extends ConsumerWidget {
       context: context,
       ref: ref,
       feature: MonetizationFeature.encryptedTransfers,
+      blockedAction: 'Export encrypted host file',
+      blockedOutcome:
+          'Unlock Pro to share this host securely with another device.',
     );
     if (!hasAccess || !context.mounted) {
       return;
@@ -1631,7 +1758,9 @@ class _ConnectionsPanel extends ConsumerWidget {
     context: context,
     icon: Icons.link_off,
     title: 'No active connections',
-    subtitle: 'Open a host to create one',
+    subtitle:
+        'Connections appear here while terminals are open. Choose a host to '
+        'connect, then jump back to live sessions from this tab.',
   );
 }
 
@@ -1814,14 +1943,27 @@ class _KeysPanel extends ConsumerWidget {
     );
   }
 
-  Widget _buildEmptyState(BuildContext context) => FluttyTheme.buildEmptyState(
-    context: context,
-    icon: Icons.key_outlined,
-    title: 'No SSH keys yet',
-    subtitle: 'Generate or import a key',
-    onAction: () => context.push('/keys/add'),
-    actionLabel: 'Add Key',
-    actionIcon: Icons.add,
+  Widget _buildEmptyState(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 24),
+      child: _GuidedEmptyState(
+        icon: Icons.key_outlined,
+        title: 'No SSH keys yet',
+        subtitle:
+            'Keys let you sign in without saving server passwords. Generate a '
+            'new Ed25519 key or import an existing private key.',
+        primaryLabel: 'Generate Key',
+        primaryIcon: Icons.enhanced_encryption,
+        onPrimary: () => context.push('/keys/add'),
+        secondaryActions: [
+          _EmptyStateAction(
+            icon: Icons.upload_file_outlined,
+            label: 'Import Key',
+            onTap: () => context.push('/keys/add?tab=import'),
+          ),
+        ],
+      ),
+    ),
   );
 
   Widget _buildKeysList(
@@ -1944,6 +2086,9 @@ class _KeyRow extends ConsumerWidget {
       context: context,
       ref: ref,
       feature: MonetizationFeature.encryptedTransfers,
+      blockedAction: 'Export encrypted key file',
+      blockedOutcome:
+          'Unlock Pro to move this SSH key securely to another device.',
     );
     if (!hasAccess || !context.mounted) {
       return;
@@ -2126,7 +2271,7 @@ class SnippetsPanel extends ConsumerWidget {
               _ActionButton(
                 icon: Icons.add,
                 label: 'Add Snippet',
-                onTap: () => _showAddEditSnippetDialog(context, ref, null),
+                onTap: () => context.push('/snippets/add'),
                 primary: true,
               ),
             ],
@@ -2153,8 +2298,11 @@ class SnippetsPanel extends ConsumerWidget {
         context: context,
         icon: Icons.code_outlined,
         title: 'No snippets yet',
-        subtitle: 'Save commands you use often',
-        onAction: () => _showAddEditSnippetDialog(context, ref, null),
+        subtitle:
+            'Save commands you run often. Try templates such as '
+            '`tail -f {{log_file}}`, `docker restart {{container}}`, or '
+            '`git pull && {{restart_command}}`.',
+        onAction: () => context.push('/snippets/add'),
         actionLabel: 'Add Snippet',
       );
 
@@ -2197,173 +2345,6 @@ class SnippetsPanel extends ConsumerWidget {
       newIndex: newIndex,
     );
     await ref.read(snippetRepositoryProvider).reorderByIds(reorderedIds);
-  }
-
-  static Future<void> _showAddEditSnippetDialog(
-    BuildContext context,
-    WidgetRef ref,
-    Snippet? existing,
-  ) async {
-    final nameController = TextEditingController(text: existing?.name ?? '');
-    final commandController = TextEditingController(
-      text: existing?.command ?? '',
-    );
-    final descriptionController = TextEditingController(
-      text: existing?.description ?? '',
-    );
-    final formKey = GlobalKey<FormState>();
-
-    final result = await showModalBottomSheet<bool>(
-      context: context,
-      isScrollControlled: true,
-      builder: (context) => Padding(
-        padding: EdgeInsets.only(
-          bottom: MediaQuery.of(context).viewInsets.bottom,
-        ),
-        child: DraggableScrollableSheet(
-          maxChildSize: 0.9,
-          minChildSize: 0.5,
-          initialChildSize: 0.7,
-          expand: false,
-          builder: (context, scrollController) => Form(
-            key: formKey,
-            child: ListView(
-              controller: scrollController,
-              padding: const EdgeInsets.all(20),
-              children: [
-                // Handle bar
-                Center(
-                  child: Container(
-                    width: 40,
-                    height: 4,
-                    decoration: BoxDecoration(
-                      color: Theme.of(context).colorScheme.outline,
-                      borderRadius: BorderRadius.circular(2),
-                    ),
-                  ),
-                ),
-                const SizedBox(height: 20),
-                Text(
-                  existing == null ? 'Add Snippet' : 'Edit Snippet',
-                  style: Theme.of(context).textTheme.titleLarge,
-                ),
-                const SizedBox(height: 20),
-                TextFormField(
-                  controller: nameController,
-                  decoration: const InputDecoration(
-                    labelText: 'Name',
-                    hintText: 'Restart Docker',
-                    prefixIcon: Icon(Icons.label),
-                  ),
-                  textInputAction: TextInputAction.next,
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter a name';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: descriptionController,
-                  decoration: const InputDecoration(
-                    labelText: 'Description (optional)',
-                    hintText: 'What this snippet does',
-                    prefixIcon: Icon(Icons.description),
-                  ),
-                  textInputAction: TextInputAction.next,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: commandController,
-                  decoration: const InputDecoration(
-                    labelText: 'Command',
-                    hintText: 'docker restart {{container}}',
-                    alignLabelWithHint: true,
-                  ),
-                  maxLines: 4,
-                  style: FluttyTheme.monoStyle.copyWith(fontSize: 14),
-                  validator: (value) {
-                    if (value == null || value.isEmpty) {
-                      return 'Please enter a command';
-                    }
-                    return null;
-                  },
-                ),
-                const SizedBox(height: 8),
-                Text(
-                  'Use {{variable}} for substitution',
-                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                    color: Theme.of(context).colorScheme.outline,
-                  ),
-                ),
-                const SizedBox(height: 24),
-                Row(
-                  children: [
-                    Expanded(
-                      child: OutlinedButton(
-                        onPressed: () => Navigator.pop(context, false),
-                        child: const Text('Cancel'),
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: FilledButton(
-                        onPressed: () {
-                          if (formKey.currentState!.validate()) {
-                            Navigator.pop(context, true);
-                          }
-                        },
-                        child: Text(existing == null ? 'Add' : 'Save'),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-
-    if (result ?? false) {
-      final repo = ref.read(snippetRepositoryProvider);
-      final description = descriptionController.text.isEmpty
-          ? null
-          : descriptionController.text;
-
-      if (existing != null) {
-        await repo.update(
-          existing.copyWith(
-            name: nameController.text,
-            command: commandController.text,
-            description: drift.Value(description),
-          ),
-        );
-      } else {
-        await repo.insert(
-          SnippetsCompanion.insert(
-            name: nameController.text,
-            command: commandController.text,
-            description: drift.Value(description),
-          ),
-        );
-      }
-
-      if (context.mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              existing == null ? 'Snippet added' : 'Snippet updated',
-            ),
-          ),
-        );
-      }
-    }
-
-    nameController.dispose();
-    commandController.dispose();
-    descriptionController.dispose();
   }
 }
 
@@ -2442,11 +2423,7 @@ class _SnippetRow extends ConsumerWidget {
               _SmallIconButton(
                 icon: Icons.edit_outlined,
                 tooltip: 'Edit',
-                onTap: () => SnippetsPanel._showAddEditSnippetDialog(
-                  context,
-                  ref,
-                  snippet,
-                ),
+                onTap: () => context.push('/snippets/edit/${snippet.id}'),
               ),
               _SmallIconButton(
                 icon: Icons.delete_outline,
@@ -2675,6 +2652,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     context: context,
     ref: ref,
     feature: MonetizationFeature.agentLaunchPresets,
+    blockedAction: 'Open coding-agent sessions from tmux',
+    blockedOutcome:
+        'Unlock Pro to discover and jump back into Codex, Claude Code, '
+        'Copilot CLI, or OpenCode sessions.',
   );
 
   String? _resolveRecentSessionScopeWorkingDirectory(SshSession session) {

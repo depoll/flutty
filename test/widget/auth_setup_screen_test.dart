@@ -7,20 +7,42 @@ import 'package:monkeyssh/presentation/screens/auth_setup_screen.dart';
 
 class _BiometricAvailableAuthService extends AuthService {
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<bool> isDeviceAuthSupported() async => true;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => true;
 
   @override
   Future<List<BiometricType>> getAvailableBiometrics() async => [
     BiometricType.fingerprint,
   ];
+
+  @override
+  Future<BiometricAvailability> getBiometricAvailability() async =>
+      const BiometricAvailability(
+        isDeviceAuthSupported: true,
+        isBiometricHardwareSupported: true,
+        enrolledBiometrics: [BiometricType.fingerprint],
+      );
 }
 
 class _BiometricSupportedAuthService extends AuthService {
   @override
-  Future<bool> isBiometricSupported() async => true;
+  Future<bool> isDeviceAuthSupported() async => true;
+
+  @override
+  Future<bool> isBiometricHardwareSupported() async => true;
 
   @override
   Future<List<BiometricType>> getAvailableBiometrics() async => [];
+
+  @override
+  Future<BiometricAvailability> getBiometricAvailability() async =>
+      const BiometricAvailability(
+        isDeviceAuthSupported: true,
+        isBiometricHardwareSupported: true,
+        enrolledBiometrics: [],
+      );
 }
 
 void main() {
@@ -49,43 +71,47 @@ void main() {
     expect(tester.widget<ElevatedButton>(nextButton).onPressed, isNotNull);
   });
 
-  testWidgets(
-    'shows biometric opt-in when biometrics are supported but not enrolled',
-    (tester) async {
-      await tester.pumpWidget(
-        ProviderScope(
-          overrides: [
-            authServiceProvider.overrideWithValue(
-              _BiometricSupportedAuthService(),
-            ),
-          ],
-          child: const MaterialApp(home: AuthSetupScreen()),
-        ),
-      );
-      await tester.pumpAndSettle();
+  testWidgets('explains when biometrics are supported but not enrolled', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          authServiceProvider.overrideWithValue(
+            _BiometricSupportedAuthService(),
+          ),
+        ],
+        child: const MaterialApp(home: AuthSetupScreen()),
+      ),
+    );
+    await tester.pumpAndSettle();
 
-      expect(find.text('Biometrics'), findsOneWidget);
-      expect(
-        find.text(
-          'Enable now, then enroll fingerprint or face before first use',
-        ),
-        findsOneWidget,
-      );
+    expect(find.text('Biometrics not ready'), findsOneWidget);
+    expect(
+      find.text(
+        'Enroll fingerprint or face in system settings, then return and re-check',
+      ),
+      findsOneWidget,
+    );
+    expect(find.text('Re-check biometric status'), findsOneWidget);
 
-      await tester.tap(find.text('PIN Code'));
-      await tester.pumpAndSettle();
-      await tester.enterText(find.byType(TextField).first, '1234');
-      await tester.pump();
-      await tester.tap(find.widgetWithText(ElevatedButton, 'Next'));
-      await tester.pumpAndSettle();
+    await tester.tap(find.text('PIN Code'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.byType(TextField).first, '1234');
+    await tester.pump();
+    await tester.tap(find.widgetWithText(ElevatedButton, 'Next'));
+    await tester.pumpAndSettle();
 
-      expect(find.text('Enable biometrics'), findsOneWidget);
-      expect(
-        find.text(
-          'Enable now, then enroll fingerprint or face before first use',
-        ),
-        findsOneWidget,
-      );
-    },
-  );
+    expect(find.text('Enable biometrics'), findsOneWidget);
+    final biometricSwitch = tester.widget<SwitchListTile>(
+      find.widgetWithText(SwitchListTile, 'Enable biometrics'),
+    );
+    expect(biometricSwitch.onChanged, isNull);
+    expect(
+      find.text(
+        'Enroll fingerprint or face in system settings, then return and re-check',
+      ),
+      findsOneWidget,
+    );
+  });
 }

@@ -58,11 +58,35 @@ class KeysScreen extends ConsumerWidget {
     List<SshKey> keys,
   ) {
     if (keys.isEmpty) {
-      return FluttyTheme.buildEmptyState(
-        context: context,
-        icon: Icons.vpn_key_outlined,
-        title: 'No SSH keys yet',
-        subtitle: 'Tap + to generate or import a key',
+      return Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 24),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              FluttyTheme.buildEmptyState(
+                context: context,
+                icon: Icons.vpn_key_outlined,
+                title: 'No SSH keys yet',
+                subtitle:
+                    'Keys let you sign in without saving server passwords. '
+                    'Generate a new Ed25519 key or import an existing private '
+                    'key.',
+                onAction: () => context.push('/keys/add'),
+                actionLabel: 'Generate Key',
+                actionIcon: Icons.enhanced_encryption,
+                centered: false,
+                padded: false,
+              ),
+              const SizedBox(height: FluttyTheme.spacingMd),
+              OutlinedButton.icon(
+                onPressed: () => context.push('/keys/add?tab=import'),
+                icon: const Icon(Icons.upload_file_outlined, size: 18),
+                label: const Text('Import Key'),
+              ),
+            ],
+          ),
+        ),
       );
     }
 
