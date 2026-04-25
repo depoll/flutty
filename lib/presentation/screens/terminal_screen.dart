@@ -4074,7 +4074,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             workingDirectory: workingDirectory,
           );
         case TmuxCloseWindowAction(:final windowIndex):
-          _closeTmuxWindow(session, windowIndex);
+          await _closeTmuxWindow(session, windowIndex);
       }
     } on Exception catch (error) {
       _showTmuxActionFailure(error);
@@ -4156,11 +4156,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   /// Closes a tmux window via exec channel.
-  void _closeTmuxWindow(SshSession session, int windowIndex) {
+  Future<void> _closeTmuxWindow(SshSession session, int windowIndex) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    ref.read(tmuxServiceProvider).killWindow(session, sessionName, windowIndex);
+    await ref
+        .read(tmuxServiceProvider)
+        .killWindow(session, sessionName, windowIndex);
   }
 
   Future<void> _reattachTmuxIfNeeded(

@@ -325,6 +325,58 @@ void main() {
       },
     );
 
+    test(
+      'killWindow waits for the done marker so failures can surface',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(stdout: '$_execDoneMarker\n');
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        await service.killWindow(session, 'main', 2);
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                'tmux -u kill-window -t '
+                "'main':2",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(execSession.close).called(1);
+      },
+    );
+
+    test('killWindow propagates missing marker failures', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildClosedExecSession(stdout: 'tmux failed\n');
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await expectLater(
+        service.killWindow(session, 'main', 2),
+        throwsA(
+          isA<TmuxCommandException>().having(
+            (error) => error.message,
+            'message',
+            contains('closed before tmux command completed'),
+          ),
+        ),
+      );
+      verify(execSession.close).called(1);
+    });
+
     test('detectInstalledAgentTools propagates output timeouts', () async {
       final client = _MockSshClient();
       final session = _buildSession(client);
@@ -341,6 +393,26 @@ void main() {
       );
       verify(execSession.close).called(1);
     });
+
+    test(
+      'detectInstalledAgentTools reports EOF before marker separately',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildClosedExecSession(stdout: 'partial output\n');
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        await expectLater(
+          service.detectInstalledAgentTools(session),
+          throwsA(isA<TmuxCommandException>()),
+        );
+        verify(execSession.close).called(1);
+      },
+    );
 
     test(
       'detectInstalledAgentTools parses output before an open stdout hangs',
@@ -455,12 +527,25 @@ Stream<Uint8List> _openUtf8Stream(String value) =>
       }
     });
 
+Stream<Uint8List> _closedUtf8Stream(String value) =>
+    Stream<Uint8List>.fromIterable(
+      value.isEmpty ? const [] : [Uint8List.fromList(utf8.encode(value))],
+    );
+
 void _ignoreInvocation(Invocation _) {}
 
 SSHSession _buildOpenExecSession({String stdout = '', String stderr = ''}) {
   final session = _MockExecSession();
   when(() => session.stdout).thenAnswer((_) => _openUtf8Stream(stdout));
   when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
+  when(session.close).thenAnswer(_ignoreInvocation);
+  return session;
+}
+
+SSHSession _buildClosedExecSession({String stdout = '', String stderr = ''}) {
+  final session = _MockExecSession();
+  when(() => session.stdout).thenAnswer((_) => _closedUtf8Stream(stdout));
+  when(() => session.stderr).thenAnswer((_) => _closedUtf8Stream(stderr));
   when(session.close).thenAnswer(_ignoreInvocation);
   return session;
 }

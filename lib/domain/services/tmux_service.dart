@@ -9,6 +9,18 @@ import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'ssh_service.dart';
 
+/// Error thrown when a tmux command channel ends before confirming completion.
+class TmuxCommandException implements Exception {
+  /// Creates a [TmuxCommandException].
+  const TmuxCommandException(this.message);
+
+  /// Human-readable description of the command failure.
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
 /// Introspects and controls tmux sessions on remote hosts via SSH exec
 /// channels.
 ///
@@ -320,11 +332,12 @@ class TmuxService {
   }
 
   /// Closes a window in [sessionName] via exec channel.
-  ///
-  /// Uses fire-and-forget — if this was the last window, the tmux session
-  /// ends and the interactive shell exits naturally.
-  void killWindow(SshSession session, String sessionName, int windowIndex) {
-    _execFireAndForget(
+  Future<void> killWindow(
+    SshSession session,
+    String sessionName,
+    int windowIndex,
+  ) async {
+    await _exec(
       session,
       'tmux kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
     );
@@ -421,12 +434,13 @@ class TmuxService {
             .transform(utf8.decoder)
             .timeout(_execOutputTimeout)) {
       output.write(chunk);
-      final markerIndex = output.toString().indexOf(_execDoneMarker);
+      final currentOutput = output.toString();
+      final markerIndex = currentOutput.indexOf(_execDoneMarker);
       if (markerIndex != -1) {
-        return output.toString().substring(0, markerIndex).trimRight();
+        return currentOutput.substring(0, markerIndex).trimRight();
       }
     }
-    throw TimeoutException(
+    throw const TmuxCommandException(
       'SSH exec channel closed before tmux command completed',
     );
   }
