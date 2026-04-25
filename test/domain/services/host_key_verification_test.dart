@@ -43,6 +43,25 @@ void main() {
       expect(storedHost.fingerprint, presentedHostKey.fingerprint);
     });
 
+    test('rejects an unknown host without persisting trust', () async {
+      final service = HostKeyVerificationService(
+        knownHostsRepository: repository,
+        promptHandler: (_) async => HostKeyTrustDecision.reject,
+      );
+      final presentedHostKey = _verifiedHostKey('reject.example.com', 22, [
+        1,
+        2,
+        3,
+      ]);
+
+      await expectLater(
+        service.verify(presentedHostKey),
+        throwsA(isA<HostKeyVerificationException>()),
+      );
+
+      expect(await repository.getByHost('reject.example.com', 22), isNull);
+    });
+
     test('rejects changed host keys by default', () async {
       final originalHostKey = _verifiedHostKey('change.example.com', 22, [
         4,
@@ -123,6 +142,39 @@ void main() {
       expect(storedHost, isNotNull);
       expect(storedHost!.hostKey, replacementHostKey.encodedHostKey);
       expect(storedHost.fingerprint, replacementHostKey.fingerprint);
+    });
+
+    test('accepts a pretrusted host key without prompting', () async {
+      final trustedHostKey = _verifiedHostKey('trusted.example.com', 22, [
+        1,
+        2,
+        3,
+      ]);
+      await repository.upsertTrustedHost(
+        hostname: trustedHostKey.hostname,
+        port: trustedHostKey.port,
+        keyType: trustedHostKey.keyType,
+        fingerprint: trustedHostKey.fingerprint,
+        encodedHostKey: trustedHostKey.encodedHostKey,
+        resetFirstSeen: true,
+      );
+
+      var prompted = false;
+      final service = HostKeyVerificationService(
+        knownHostsRepository: repository,
+        promptHandler: (_) async {
+          prompted = true;
+          return HostKeyTrustDecision.reject;
+        },
+      );
+
+      final update = await service.verify(trustedHostKey);
+      await update.commitAfterAuthentication(repository);
+
+      expect(prompted, isFalse);
+      final storedHost = await repository.getByHost('trusted.example.com', 22);
+      expect(storedHost, isNotNull);
+      expect(storedHost!.hostKey, trustedHostKey.encodedHostKey);
     });
 
     test('accepts RSA host keys across signature algorithm variants', () async {

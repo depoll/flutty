@@ -92,8 +92,8 @@ class _FakeHostKeySocket implements SSHSocket, HostKeySource {
 
   @override
   Future<void> close() async {
-    await _streamController.close();
-    await _sinkController.close();
+    unawaited(_streamController.close());
+    unawaited(_sinkController.close());
   }
 
   @override
@@ -121,8 +121,8 @@ class _FakeForwardHostKeySocket implements SSHForwardChannel, HostKeySource {
 
   @override
   Future<void> close() async {
-    await _streamController.close();
-    await _sinkController.close();
+    unawaited(_streamController.close());
+    unawaited(_sinkController.close());
   }
 
   @override
@@ -1156,6 +1156,243 @@ void main() {
 
       expect(result.success, isFalse);
       expect(result.error, isNotNull);
+    });
+
+    test(
+      'connect prompts for unknown host before auth client creation',
+      () async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+        final knownHostsRepository = KnownHostsRepository(db);
+        final hostKeyBytes = _ed25519HostKeyBlob([1, 2, 3]);
+        final sockets = [
+          _FakeHostKeySocket(hostKeyBytes),
+          _FakeHostKeySocket(hostKeyBytes),
+        ];
+        final client = _MockSshClient();
+        var socketIndex = 0;
+        var promptCount = 0;
+        var clientFactoryCalls = 0;
+
+        when(client.close).thenReturn(null);
+
+        final service = SshService(
+          knownHostsRepository: knownHostsRepository,
+          hostKeyPromptHandler: (request) async {
+            promptCount++;
+            expect(request.isReplacement, isFalse);
+            expect(clientFactoryCalls, 0);
+            return HostKeyTrustDecision.trust;
+          },
+          socketConnector: (host, port, {timeout}) async {
+            expect(host, 'new.example.com');
+            expect(port, 22);
+            return sockets[socketIndex++];
+          },
+          clientFactory:
+              (
+                socket, {
+                required username,
+                onVerifyHostKey,
+                onPasswordRequest,
+                identities,
+                keepAliveInterval,
+              }) {
+                clientFactoryCalls++;
+                when(() => client.authenticated).thenAnswer((_) async {
+                  final bytes = await (socket as HostKeySource).hostKeyBytes;
+                  final trusted = await onVerifyHostKey!(
+                    'ssh-ed25519',
+                    Uint8List.fromList(md5.convert(bytes).bytes),
+                  );
+                  expect(trusted, isTrue);
+                });
+                return client;
+              },
+        );
+
+        const config = SshConnectionConfig(
+          hostname: 'new.example.com',
+          port: 22,
+          username: 'tester',
+        );
+
+        final result = await service.connect(config);
+
+        expect(result.success, isTrue);
+        expect(socketIndex, 2);
+        expect(promptCount, 1);
+        expect(clientFactoryCalls, 1);
+        expect(
+          await knownHostsRepository.getByHost('new.example.com', 22),
+          isNotNull,
+        );
+      },
+    );
+
+    test('connect rejects unknown host without starting auth', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final socket = _FakeHostKeySocket(_ed25519HostKeyBlob([1, 2, 3]));
+      var clientFactoryCalls = 0;
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        hostKeyPromptHandler: (_) async => HostKeyTrustDecision.reject,
+        socketConnector: (host, port, {timeout}) async => socket,
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              clientFactoryCalls++;
+              return _MockSshClient();
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'reject.example.com',
+        port: 22,
+        username: 'tester',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isFalse);
+      expect(result.error, contains('not trusted yet'));
+      expect(clientFactoryCalls, 0);
+      expect(
+        await knownHostsRepository.getByHost('reject.example.com', 22),
+        isNull,
+      );
+    });
+
+    test('connect accepts pretrusted host without prompting', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final hostKeyBytes = _ed25519HostKeyBlob([4, 5, 6]);
+      final trustedHostKey = VerifiedHostKey(
+        hostname: 'trusted.example.com',
+        port: 22,
+        keyType: 'ssh-ed25519',
+        hostKeyBytes: hostKeyBytes,
+      );
+      await knownHostsRepository.upsertTrustedHost(
+        hostname: trustedHostKey.hostname,
+        port: trustedHostKey.port,
+        keyType: trustedHostKey.trustedKeyType,
+        fingerprint: trustedHostKey.fingerprint,
+        encodedHostKey: trustedHostKey.encodedHostKey,
+        resetFirstSeen: true,
+      );
+      final sockets = [
+        _FakeHostKeySocket(hostKeyBytes),
+        _FakeHostKeySocket(hostKeyBytes),
+      ];
+      final client = _MockSshClient();
+      var socketIndex = 0;
+      var promptCount = 0;
+
+      when(client.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        hostKeyPromptHandler: (_) async {
+          promptCount++;
+          return HostKeyTrustDecision.reject;
+        },
+        socketConnector: (host, port, {timeout}) async =>
+            sockets[socketIndex++],
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              when(() => client.authenticated).thenAnswer((_) async {
+                final bytes = await (socket as HostKeySource).hostKeyBytes;
+                final trusted = await onVerifyHostKey!(
+                  'ssh-ed25519',
+                  Uint8List.fromList(md5.convert(bytes).bytes),
+                );
+                expect(trusted, isTrue);
+              });
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'trusted.example.com',
+        port: 22,
+        username: 'tester',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isTrue);
+      expect(socketIndex, 2);
+      expect(promptCount, 0);
+    });
+
+    test('connect fails if host key changes after trust prompt', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final knownHostsRepository = KnownHostsRepository(db);
+      final probeHostKeyBytes = _ed25519HostKeyBlob([1, 2, 3]);
+      final changedHostKeyBytes = _ed25519HostKeyBlob([7, 8, 9]);
+      final sockets = [
+        _FakeHostKeySocket(probeHostKeyBytes),
+        _FakeHostKeySocket(changedHostKeyBytes),
+      ];
+      final client = _MockSshClient();
+      var socketIndex = 0;
+
+      when(client.close).thenReturn(null);
+
+      final service = SshService(
+        knownHostsRepository: knownHostsRepository,
+        hostKeyPromptHandler: (_) async => HostKeyTrustDecision.trust,
+        socketConnector: (host, port, {timeout}) async =>
+            sockets[socketIndex++],
+        clientFactory:
+            (
+              socket, {
+              required username,
+              onVerifyHostKey,
+              onPasswordRequest,
+              identities,
+              keepAliveInterval,
+            }) {
+              when(() => client.authenticated).thenAnswer((_) async {
+                final bytes = await (socket as HostKeySource).hostKeyBytes;
+                await onVerifyHostKey!(
+                  'ssh-ed25519',
+                  Uint8List.fromList(md5.convert(bytes).bytes),
+                );
+              });
+              return client;
+            },
+      );
+
+      const config = SshConnectionConfig(
+        hostname: 'race.example.com',
+        port: 22,
+        username: 'tester',
+      );
+
+      final result = await service.connect(config);
+
+      expect(result.success, isFalse);
+      expect(result.error, contains('changed between verification'));
     });
 
     test('connect verifies jump-host and destination host keys', () async {
