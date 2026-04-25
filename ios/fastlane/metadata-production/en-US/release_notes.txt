@@ -1,1 +1,1 @@
-Bug fixes and improvements.
+Initial release of MonkeySSH, a mobile SSH workspace for terminals, SFTP, tmux-aware sessions, coding-agent launch flows, snippets, port forwarding, and local-first credential security.

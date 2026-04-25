@@ -1,1 +1,1 @@
-Bug fixes and improvements.
+Initial release with mobile SSH, SFTP, tmux-aware resume flows, coding-agent launch presets, snippets, port forwarding, and local-first security.

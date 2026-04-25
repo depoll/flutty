@@ -1,1 +1,1 @@
-SSH client with SFTP, key management, terminal tabs, and multi-session support.
+Mobile SSH workspace for terminals, SFTP, tmux, and coding agents.

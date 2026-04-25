@@ -130,7 +130,7 @@ platform :android do
       metadata_path: upload_metadata_path,
       skip_upload_metadata: skip_meta,
       skip_upload_images: skip_meta,
-      skip_upload_screenshots: true,
+      skip_upload_screenshots: skip_meta,
       skip_upload_changelogs: upload_metadata_path.nil?,
       changes_not_sent_for_review: true,
     )
@@ -160,49 +160,36 @@ platform :android do
       metadata_path: skip_meta ? nil : meta_path,
       skip_upload_metadata: skip_meta,
       skip_upload_images: skip_meta,
-      skip_upload_screenshots: true,
+      skip_upload_screenshots: skip_meta,
       skip_upload_changelogs: skip_meta,
       changes_not_sent_for_review: true,
     )
   end
 
-  desc 'Sync metadata to Play Store (no build required)'
+  desc 'Sync metadata, images, and screenshots to Play Store (no build required)'
   lane :sync_metadata do |options|
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
     meta_path = METADATA_DIRS[package] || File.expand_path('metadata-production/android', __dir__)
-    lang_dir = File.join(meta_path, 'en-US')
 
-    client = play_store_client(package_name: package)
-    client.begin_edit(package_name: package)
-
-    title = File.read(File.join(lang_dir, 'title.txt')).strip
-    short_desc = File.read(File.join(lang_dir, 'short_description.txt')).strip
-    full_desc = File.read(File.join(lang_dir, 'full_description.txt')).strip
-
-    client.update_listing_for_language(
-      language: 'en-US',
-      title: title,
-      full_description: full_desc,
-      short_description: short_desc,
+    upload_to_play_store(
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      metadata_path: meta_path,
+      skip_upload_apk: true,
+      skip_upload_aab: true,
+      skip_upload_metadata: false,
+      skip_upload_changelogs: true,
+      skip_upload_images: false,
+      skip_upload_screenshots: false,
+      changes_not_sent_for_review: true,
     )
-    UI.message('Listing updated')
-
-    icon = File.join(lang_dir, 'icon.png')
-    client.upload_image(image_path: icon, image_type: 'icon', language: 'en-US') if File.exist?(icon)
-
-    fg = File.join(lang_dir, 'images', 'featureGraphic.png')
-    client.upload_image(image_path: fg, image_type: 'featureGraphic', language: 'en-US') if File.exist?(fg)
-
-    begin
-      client.commit_current_edit!
-    rescue StandardError => e
-      if e.message.include?('draft app')
-        UI.important('Could not commit edit (app is still in draft). Complete the Play Console setup checklist first.')
-        UI.important('Listing data was still sent — check Play Console to verify.')
-      else
-        raise e
-      end
-    end
     UI.success("Successfully synced metadata for #{package}")
+  rescue StandardError => e
+    if e.message.include?('draft app')
+      UI.important('Could not commit edit (app is still in draft). Complete the Play Console setup checklist first.')
+      UI.important('Listing data was still sent - check Play Console to verify.')
+    else
+      raise e
+    end
   end
 end

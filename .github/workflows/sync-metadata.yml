@@ -1,6 +1,13 @@
 name: Sync Store Metadata
 
 on:
+  push:
+    branches: [main]
+    paths:
+      - 'assets/icons/**'
+      - 'android/fastlane/metadata-*/**'
+      - 'ios/fastlane/metadata-*/**'
+      - 'ios/fastlane/screenshots/**'
   workflow_dispatch:
     inputs:
       platform:
@@ -26,7 +33,7 @@ permissions:
 jobs:
   sync-ios:
     name: Sync iOS Metadata
-    if: inputs.platform == 'both' || inputs.platform == 'ios'
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'ios'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -38,8 +45,12 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
+      - name: Validate App Store metadata
+        run: |
+          python3 scripts/validate_app_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
+
       - name: Sync private app metadata
-        if: inputs.app == 'both' || inputs.app == 'private'
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
@@ -50,7 +61,7 @@ jobs:
           bundle exec fastlane sync_metadata app_identifier:xyz.depollsoft.monkeyssh.private
 
       - name: Sync production app metadata
-        if: inputs.app == 'both' || inputs.app == 'production'
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
         env:
           APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
           APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
@@ -62,7 +73,7 @@ jobs:
 
   sync-android:
     name: Sync Android Metadata
-    if: inputs.platform == 'both' || inputs.platform == 'android'
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'android'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -81,10 +92,10 @@ jobs:
 
       - name: Validate Play Store metadata
         run: |
-          python3 scripts/validate_play_store_metadata.py ${{ inputs.app }}
+          python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
 
       - name: Sync private app metadata
-        if: inputs.app == 'both' || inputs.app == 'private'
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
@@ -93,7 +104,7 @@ jobs:
           bundle exec fastlane sync_metadata package_name:xyz.depollsoft.monkeyssh.private
 
       - name: Sync production app metadata
-        if: inputs.app == 'both' || inputs.app == 'production'
+        if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'production'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
           BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
