@@ -5,10 +5,12 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/snippet_repository.dart';
+import 'package:monkeyssh/presentation/screens/snippet_edit_screen.dart';
 import 'package:monkeyssh/presentation/screens/snippets_screen.dart';
 
 class _MockSnippetRepository extends Mock implements SnippetRepository {}
@@ -65,6 +67,77 @@ void main() {
       await tester.pump(const Duration(milliseconds: 100));
 
       expect(find.text('Imported snippet'), findsOneWidget);
+    });
+
+    testWidgets('routes empty-state creation to the full snippet editor', (
+      tester,
+    ) async {
+      final snippetRepository = _MockSnippetRepository();
+      when(
+        snippetRepository.watchAll,
+      ).thenAnswer((_) => Stream.value(const <Snippet>[]));
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: MaterialApp.router(
+            routerConfig: GoRouter(
+              routes: [
+                GoRoute(
+                  path: '/',
+                  builder: (context, state) => const SnippetsScreen(),
+                ),
+                GoRoute(
+                  path: '/snippets/add',
+                  builder: (context, state) =>
+                      const Scaffold(body: Text('Full snippet editor')),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('No snippets yet'), findsOneWidget);
+      expect(find.textContaining('tail -f {{log_file}}'), findsOneWidget);
+
+      await tester.tap(find.text('Add Snippet').last);
+      await tester.pumpAndSettle();
+
+      expect(find.text('Full snippet editor'), findsOneWidget);
+    });
+
+    testWidgets('full editor updates variable preview as command changes', (
+      tester,
+    ) async {
+      final snippetRepository = _MockSnippetRepository();
+      when(
+        snippetRepository.getAllFolders,
+      ).thenAnswer((_) async => const <SnippetFolder>[]);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: const MaterialApp(home: SnippetEditScreen()),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.enterText(
+        find.widgetWithText(TextFormField, 'Command'),
+        'docker restart {{container}} && git checkout {{branch}}',
+      );
+      await tester.pump();
+
+      expect(find.text('Variables'), findsOneWidget);
+      expect(find.text('container'), findsOneWidget);
+      expect(find.text('branch'), findsOneWidget);
     });
 
     testWidgets('reordering snippets persists the new order', (tester) async {

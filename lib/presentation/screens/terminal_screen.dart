@@ -3750,7 +3750,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             behavior: SnackBarBehavior.floating,
             margin: EdgeInsets.fromLTRB(16, 0, 16, bottomMargin),
             content: const Text(
-              'MonkeySSH Pro unlocks auto-connect commands and snippets.',
+              'This auto-connect workflow needs MonkeySSH Pro to run.',
             ),
             action: SnackBarAction(
               label: 'Upgrade',
@@ -3758,6 +3758,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 Routes.upgrade,
                 queryParameters: <String, String>{
                   'feature': MonetizationFeature.autoConnectAutomation.name,
+                  'action': 'Run this auto-connect workflow',
+                  'outcome':
+                      'Unlock Pro to run saved commands or snippets '
+                      'automatically when a terminal opens.',
                 },
               ),
             ),
@@ -5066,6 +5070,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       context: context,
       ref: ref,
       feature: MonetizationFeature.hostSpecificThemes,
+      blockedAction: 'Save this theme to the host',
+      blockedOutcome:
+          'Unlock Pro to keep this host on the selected terminal theme.',
     );
     if (!hasAccess || !mounted) {
       return;

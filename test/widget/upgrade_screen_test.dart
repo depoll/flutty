@@ -24,6 +24,50 @@ void _stubRestorePurchases(_MockMonetizationService service) {
 }
 
 void main() {
+  testWidgets('feature-triggered paywall leads with the blocked action', (
+    tester,
+  ) async {
+    final service = _MockMonetizationService();
+    const state = MonetizationState(
+      billingAvailability: MonetizationBillingAvailability.available,
+      entitlements: MonetizationEntitlements.free(),
+      offers: [],
+      debugUnlockAvailable: false,
+      debugUnlocked: false,
+    );
+
+    when(() => service.currentState).thenReturn(state);
+    _stubRestorePurchases(service);
+
+    await tester.pumpWidget(
+      ProviderScope(
+        overrides: [
+          monetizationServiceProvider.overrideWithValue(service),
+          monetizationStateProvider.overrideWith((ref) => Stream.value(state)),
+        ],
+        child: const MaterialApp(
+          home: UpgradeScreen(
+            feature: MonetizationFeature.autoConnectAutomation,
+            blockedAction: 'Run this auto-connect workflow',
+            blockedOutcome:
+                'Unlock Pro to run saved commands or snippets automatically.',
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+
+    expect(find.text('Run this auto-connect workflow'), findsOneWidget);
+    expect(
+      find.text('Unlock Pro to run saved commands or snippets automatically.'),
+      findsOneWidget,
+    );
+    expect(
+      find.text('Auto-connect automation is part of MonkeySSH Pro'),
+      findsNothing,
+    );
+  });
+
   testWidgets('plan cards stay legible in dark mode', (tester) async {
     final service = _MockMonetizationService();
     const state = MonetizationState(

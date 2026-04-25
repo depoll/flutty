@@ -477,6 +477,66 @@ void main() {
     });
   });
 
+  group('HomeScreen empty states', () {
+    testWidgets('hosts empty state offers first-run actions', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('No hosts yet'), findsOneWidget);
+      expect(find.text('Import config'), findsOneWidget);
+      expect(find.text('Paste SSH URL'), findsOneWidget);
+      expect(find.text('Try local test host'), findsOneWidget);
+    });
+
+    testWidgets('connections empty state explains where sessions appear', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await tester.pumpWidget(
+        buildMobileHomeScreen(
+          db: db,
+          overrides: [
+            activeSessionsProvider.overrideWith(
+              _TestActiveSessionsNotifier.new,
+            ),
+            allHostsProvider.overrideWith(
+              (ref) => Stream.value(const <Host>[]),
+            ),
+          ],
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      await tester.tap(find.text('Connections').first);
+      await tester.pump();
+
+      expect(find.text('No active connections'), findsOneWidget);
+      expect(
+        find.textContaining('Connections appear here while terminals are open'),
+        findsOneWidget,
+      );
+    });
+  });
+
   testWidgets('small icon actions expose semantics labels', (tester) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);

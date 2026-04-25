@@ -32,6 +32,29 @@ ProviderScope _buildKeyScreen() => ProviderScope(
 
 void main() {
   group('KeysScreen', () {
+    testWidgets('explains key choices in the empty state', (tester) async {
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            allKeysProvider.overrideWith(
+              (ref) => Stream.value(const <SshKey>[]),
+            ),
+          ],
+          child: const MaterialApp(home: KeysScreen()),
+        ),
+      );
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 100));
+
+      expect(find.text('No SSH keys yet'), findsOneWidget);
+      expect(
+        find.textContaining('without saving server passwords'),
+        findsOneWidget,
+      );
+      expect(find.text('Generate Key'), findsOneWidget);
+      expect(find.text('Import Key'), findsOneWidget);
+    });
+
     testWidgets(
       'shows loading indicator initially',
       (tester) async {
