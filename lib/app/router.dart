@@ -83,6 +83,8 @@ final routerProvider = Provider<GoRouter>((ref) {
             connectionId: connectionId,
             initialTmuxSessionName: initialTmuxSessionName,
             initialTmuxWindowIndex: initialTmuxWindowIndex,
+            initiallyExpandTmuxWindows:
+                state.uri.queryParameters['expandTmux'] == '1',
           );
         },
       ),

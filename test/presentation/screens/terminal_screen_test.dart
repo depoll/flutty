@@ -268,7 +268,7 @@ void main() {
     }
 
     testWidgets(
-      'initial tmux target selects the alerted window on the source connection',
+      'initial tmux target selects the alerted window and can start expanded',
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'alerts';
@@ -320,6 +320,7 @@ void main() {
                 connectionId: session.connectionId,
                 initialTmuxSessionName: tmuxSessionName,
                 initialTmuxWindowIndex: targetWindowIndex,
+                initiallyExpandTmuxWindows: true,
               ),
             ),
           ),
@@ -336,6 +337,8 @@ void main() {
             targetWindowIndex,
           ),
         ).called(1);
+        expect(find.text('shell'), findsOneWidget);
+        expect(find.text('agent'), findsOneWidget);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );

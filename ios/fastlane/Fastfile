@@ -25,6 +25,8 @@ platform :ios do
     'xyz.depollsoft.monkeyssh' => './fastlane/metadata-production',
   }.freeze
 
+  SCREENSHOTS_PATH = './fastlane/screenshots'.freeze
+
   TEAM_ID = '43AWMS3YJX'.freeze
 
   private_lane :get_api_key do
@@ -400,7 +402,7 @@ platform :ios do
     sync_metadata(app_identifier: app_id) unless skip_meta
   end
 
-  desc 'Sync metadata and app icon to App Store Connect (no build required)'
+  desc 'Sync metadata, app icon, and screenshots to App Store Connect (no build required)'
   lane :sync_metadata do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh'
     meta_path = METADATA_DIRS[app_id] || './fastlane/metadata-production'
@@ -410,8 +412,9 @@ platform :ios do
         api_key: get_api_key,
         app_identifier: app_id,
         metadata_path: meta_path,
+        screenshots_path: SCREENSHOTS_PATH,
         skip_binary_upload: true,
-        skip_screenshots: true,
+        skip_screenshots: false,
         submit_for_review: false,
         automatic_release: false,
         force: true,

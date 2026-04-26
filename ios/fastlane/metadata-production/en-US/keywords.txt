@@ -1,1 +1,1 @@
-ssh,terminal,sftp,remote,server,shell,linux,key,emulator
+ssh,terminal,sftp,tmux,agent,coding,server,shell,keys,portforward,remote

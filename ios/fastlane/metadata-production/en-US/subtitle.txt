@@ -1,1 +1,1 @@
-SSH Client & Terminal Emulator
+SSH for coding agents

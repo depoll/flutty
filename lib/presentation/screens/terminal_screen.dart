@@ -59,6 +59,13 @@ bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x0A ||
     codeUnit == 0x0D;
 
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
+const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
+  'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
+);
+
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
@@ -424,6 +431,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.availableHeight,
     required this.isProUser,
     required this.startClisInYoloMode,
+    required this.initiallyExpanded,
     required this.ref,
     required this.onAction,
     this.scopeWorkingDirectory,
@@ -445,6 +453,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Whether supported coding CLIs should launch in YOLO mode for this host.
   final bool startClisInYoloMode;
+
+  /// Whether the tmux window list should start expanded.
+  final bool initiallyExpanded;
 
   /// Riverpod ref.
   final WidgetRef ref;
@@ -477,7 +488,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   final Set<int> _seenAlertWindows = <int>{};
-  bool _expanded = false;
+  late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
@@ -509,6 +520,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void initState() {
     super.initState();
+    _expanded = widget.initiallyExpanded;
     _bounceController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -1275,7 +1287,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
-    final secondaryTitle = window.secondaryTitle;
+    final title = _redactStoreScreenshotIdentities
+        ? switch (window.name.trim()) {
+            'claude' || 'claude-code' => 'Claude Code Workspace',
+            'copilot' => 'Mobile Copilot Workspace',
+            final name when name.isNotEmpty => name,
+            _ => window.displayTitle,
+          }
+        : window.displayTitle;
+    final secondaryTitle = _redactStoreScreenshotIdentities
+        ? null
+        : window.secondaryTitle;
     final iconColor = isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
@@ -1322,7 +1344,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              window.displayTitle,
+              title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: isActive
@@ -2834,6 +2856,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.connectionId,
     this.initialTmuxSessionName,
     this.initialTmuxWindowIndex,
+    this.initiallyExpandTmuxWindows = false,
     super.key,
   });
 
@@ -2848,6 +2871,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
 
   /// Optional tmux window to focus after opening the terminal.
   final int? initialTmuxWindowIndex;
+
+  /// Whether the tmux window selector should start expanded.
+  final bool initiallyExpandTmuxWindows;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -2884,7 +2910,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
-  bool _showKeyboardToolbar = true;
+  bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
@@ -4405,6 +4431,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       availableHeight: availableHeight,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,
+      initiallyExpanded: widget.initiallyExpandTmuxWindows,
       ref: ref,
       onAction: _handleTmuxAction,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
@@ -4936,9 +4963,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isConnecting: _isConnecting,
     );
     final connectionIdentity = formatTerminalConnectionIdentity(
-      username: _host?.username,
-      hostname: _host?.hostname,
-      port: _host?.port,
+      username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
+      hostname: _redactStoreScreenshotIdentities
+          ? 'local-demo'
+          : _host?.hostname,
+      port: _redactStoreScreenshotIdentities ? null : _host?.port,
       connectionId: _connectionId,
     );
     final titleSubtitleSegments = <String>[];

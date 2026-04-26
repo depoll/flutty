@@ -97,7 +97,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 
 ### PR Preview (`preview.yml`)
 
-Triggered automatically on PRs to `main` or `develop`. Builds the **private** flavor and:
+Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
 - **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
 - **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
 
@@ -139,7 +139,7 @@ Android release workflows fail early if the signing secrets or local `android/ap
 
 ### Sync Metadata (`sync-metadata.yml`)
 
-Manually triggered workflow to sync store metadata without a new build. Useful for updating app descriptions, icons, or other listing details.
+Triggered automatically on pushes to `main` that touch repository-managed store assets, and can also be run manually to sync store metadata without a new build. Useful for updating app descriptions, screenshots, icons, or other listing details.
 
 Supports selecting:
 - **Platform**: iOS, Android, or both
@@ -157,6 +157,8 @@ Store metadata (descriptions, icons, etc.) is managed per-app in the repository.
 
 ```
 ios/fastlane/
+├── screenshots/
+│   └── en-US/                  # Shared App Store iPhone and iPad screenshots
 ├── metadata-private/        # MonkeySSH β (preview app)
 │   ├── en-US/
 │   │   ├── name.txt         # "MonkeySSH β"
@@ -187,6 +189,11 @@ android/fastlane/
 │       ├── short_description.txt
 │       ├── full_description.txt
 │       ├── icon.png         # 512x512 (private banner icon)
+│       ├── images/
+│       │   ├── featureGraphic.png
+│       │   ├── phoneScreenshots/
+│       │   ├── sevenInchScreenshots/
+│       │   └── tenInchScreenshots/
 │       └── changelogs/
 │           └── default.txt
 └── metadata-production/     # MonkeySSH (production app)
@@ -197,6 +204,10 @@ android/fastlane/
 Edit these files and metadata will sync on the next release deploy, or trigger the **Sync Metadata** workflow manually.
 Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*.png` during deploy/metadata-sync workflows, so marketplace icons stay aligned with the app icon assets.
 Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
+App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
+Store screenshots can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`). The generator starts a temporary local `sshd` and uniquely named `tmux` workspace, boots the normal MonkeySSH app on iOS simulators and an Android emulator with release-demo data, drives real app navigation through a real Copilot CLI terminal, hosts, snippets, the tmux window selector, SFTP, and a real Claude Code terminal, then captures native device screenshots into the Fastlane folders. The generator fails instead of substituting mock screenshots if the real SSH/tmux workspace cannot be created.
+Generated screenshot counts, dimensions, and OCR content can be validated locally on macOS with `python3 scripts/validate_store_screenshots.py` after installing Pillow.
+The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.
 

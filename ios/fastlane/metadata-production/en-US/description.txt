@@ -1,11 +1,13 @@
-MonkeySSH is a cross-platform SSH client and terminal emulator.
+MonkeySSH is the SSH workspace for agentic coding on the go. Connect to your servers, jump back into tmux, resume coding agents, browse files, forward ports, and keep long-running work alive from your phone.
 
-Features:
-• SSH2 Protocol — Password and key-based authentication, jump hosts
-• Terminal Emulator — xterm-256color with customizable themes
-• Rich Keyboard — Modifier keys, function keys, macros, gestures
-• SFTP — Browse, upload, download, edit remote files
-• Key Management — Generate, import, export Ed25519/RSA keys
-• Snippets — Save and run frequently used commands
-• Multi-Session — Multiple concurrent SSH sessions with tabs
-• Host Organization — Groups, tags, and search
+Built for modern remote development:
+
+- Mobile terminal with xterm-256color, themes, gestures, modifier keys, function keys, macros, and IME-friendly typing.
+- Agent workflows with recent-session discovery and saved launch presets for popular coding CLIs.
+- Tmux-aware resume flows for sessions and windows that survive reconnects.
+- SFTP workspace for browsing, uploading, downloading, and editing remote files.
+- SSH key management with Ed25519/RSA generation, import, export, and host-key verification.
+- Snippets, auto-connect commands, and port forwarding for repeatable remote workflows.
+- Local-first security with PIN/biometrics, encrypted transfer bundles, and no required cloud sync.
+
+MonkeySSH keeps the core SSH experience fast and practical while adding the workflow shortcuts remote developers need when they are away from a laptop.
