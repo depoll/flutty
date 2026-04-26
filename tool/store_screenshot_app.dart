@@ -4,36 +4,55 @@ import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
+import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/app/app_metadata.dart';
-import 'package:monkeyssh/app/theme.dart';
+import 'package:monkeyssh/app/router.dart';
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/data/repositories/host_repository.dart';
+import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
-import 'package:monkeyssh/domain/models/terminal_themes.dart';
+import 'package:monkeyssh/domain/services/host_key_prompt_handler_provider.dart';
+import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
-import 'package:monkeyssh/presentation/screens/home_screen.dart';
-import 'package:monkeyssh/presentation/screens/port_forwards_screen.dart';
-import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
-import 'package:monkeyssh/presentation/screens/snippets_screen.dart';
-import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
 const _terminalHostId = 1;
-const _terminalConnectionId = 101;
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
-
-class _MockSshClient extends Mock implements SSHClient {}
-
-class _MockShellChannel extends Mock implements SSHSession {}
+const _sshPort = int.fromEnvironment('STORE_SCREENSHOT_SSH_PORT');
+const _sshUsername = String.fromEnvironment('STORE_SCREENSHOT_SSH_USERNAME');
+const _sshPrivateKeyB64 = String.fromEnvironment(
+  'STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64',
+);
+const _sshHostKeyB64 = String.fromEnvironment(
+  'STORE_SCREENSHOT_SSH_HOST_KEY_B64',
+);
+const _sshHostKeyFingerprint = String.fromEnvironment(
+  'STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT',
+);
+const _tmuxSessionName = String.fromEnvironment(
+  'STORE_SCREENSHOT_TMUX_SESSION',
+);
+const _fallbackOffer = MonetizationOffer(
+  id: 'fallback',
+  productId: 'store-screenshot-fallback',
+  billingPeriod: MonetizationBillingPeriod.monthly,
+  planLabel: 'Monthly',
+  priceLabel: r'$0.00',
+  displayPriceLabel: r'$0.00 / month',
+  rawPrice: 0,
+  currencyCode: 'USD',
+  currencySymbol: r'$',
+);
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
 
@@ -44,250 +63,19 @@ class _ScreenshotTarget {
   final List<List<String>> pathsByScene;
 }
 
-class _ScreenshotScene {
-  const _ScreenshotScene({required this.name, required this.builder});
-
-  final String name;
-  final Widget Function(_ScreenshotHarness harness) builder;
-}
-
-class _ScreenshotHarness {
-  _ScreenshotHarness({
-    required this.database,
-    required this.terminalSession,
-    required this.monetizationService,
-  });
-
-  final AppDatabase database;
-  final SshSession terminalSession;
-  final MonetizationService monetizationService;
-
-  // Riverpod does not export its Override type through flutter_riverpod.
-  // ignore: always_declare_return_types, strict_top_level_inference, type_annotate_public_apis
-  get overrides => [
-    databaseProvider.overrideWithValue(database),
-    appDisplayNameProvider.overrideWithValue(defaultAppName),
-    monetizationServiceProvider.overrideWithValue(monetizationService),
-    monetizationStateProvider.overrideWith((ref) => monetizationService.states),
-    sharedClipboardProvider.overrideWith((ref) async => false),
-    activeSessionsProvider.overrideWith(
-      () => _ScreenshotActiveSessionsNotifier(terminalSession),
-    ),
-  ];
-}
-
-class _ScreenshotActiveSessionsNotifier extends ActiveSessionsNotifier {
-  _ScreenshotActiveSessionsNotifier(this.session);
-
-  final SshSession session;
-
-  @override
-  Map<int, SshConnectionState> build() => <int, SshConnectionState>{
-    session.connectionId: SshConnectionState.connected,
-  };
-
-  @override
-  ConnectionAttemptStatus? getConnectionAttempt(int hostId) => null;
-
-  @override
-  List<int> getConnectionsForHost(int hostId) =>
-      hostId == session.hostId ? <int>[session.connectionId] : const <int>[];
-
-  @override
-  ActiveConnection? getActiveConnection(int connectionId) =>
-      connectionId == session.connectionId
-      ? ActiveConnection(
-          connectionId: session.connectionId,
-          hostId: session.hostId,
-          state: SshConnectionState.connected,
-          createdAt: DateTime(2026),
-          config: session.config,
-          preview: _terminalPreview,
-          windowTitle: 'agent-api:vim',
-          iconName: 'tmux',
-          workingDirectory: Uri.parse('file://devbox/home/monkey/src/api'),
-          shellStatus: TerminalShellStatus.prompt,
-        )
-      : null;
-
-  @override
-  List<ActiveConnection> getActiveConnections() => [
-    getActiveConnection(session.connectionId)!,
-  ];
-
-  @override
-  SshSession? getSession(int connectionId) =>
-      connectionId == session.connectionId ? session : null;
-
-  @override
-  Future<void> syncBackgroundStatus() async {}
-}
-
-class _StoreScreenshotApp extends StatefulWidget {
-  const _StoreScreenshotApp({required this.harness, required this.target});
-
-  final _ScreenshotHarness harness;
-  final _ScreenshotTarget target;
-
-  @override
-  State<_StoreScreenshotApp> createState() => _StoreScreenshotAppState();
-}
-
-class _StoreScreenshotAppState extends State<_StoreScreenshotApp> {
-  var _sceneIndex = 0;
-  Timer? _timer;
-
-  @override
-  void initState() {
-    super.initState();
-    _announceReady();
-  }
-
-  @override
-  void dispose() {
-    _timer?.cancel();
-    unawaited(widget.harness.database.close());
-    super.dispose();
-  }
-
-  void _announceReady() {
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _timer = Timer(const Duration(milliseconds: 1600), () {
-        FocusManager.instance.primaryFocus?.unfocus();
-        unawaited(
-          SystemChannels.textInput.invokeMethod<void>('TextInput.hide'),
-        );
-        _timer = Timer(const Duration(milliseconds: 500), () {
-          final scene = _scenes[_sceneIndex];
-          debugPrint(
-            'STORE_SCREENSHOT_READY ${jsonEncode({'scene': scene.name, 'index': _sceneIndex + 1, 'paths': widget.target.pathsByScene[_sceneIndex]})}',
-          );
-          _timer = Timer(const Duration(seconds: 3), _advanceScene);
-        });
-      });
-    });
-  }
-
-  void _advanceScene() {
-    if (!mounted) {
-      return;
-    }
-    if (_sceneIndex == _scenes.length - 1) {
-      debugPrint('STORE_SCREENSHOT_DONE');
-      Timer(const Duration(milliseconds: 500), () => exit(0));
-      return;
-    }
-    setState(() {
-      _sceneIndex += 1;
-    });
-    _announceReady();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final scene = _scenes[_sceneIndex];
-    return ProviderScope(
-      overrides: widget.harness.overrides,
-      child: MaterialApp(
-        title: defaultAppName,
-        debugShowCheckedModeBanner: false,
-        theme: FluttyTheme.light,
-        darkTheme: FluttyTheme.dark,
-        themeMode: ThemeMode.dark,
-        home: scene.builder(widget.harness),
-      ),
-    );
-  }
-}
-
-class _AgentPromptScene extends StatefulWidget {
-  const _AgentPromptScene();
-
-  @override
-  State<_AgentPromptScene> createState() => _AgentPromptSceneState();
-}
-
-class _AgentPromptSceneState extends State<_AgentPromptScene> {
-  late final TextEditingController _controller;
-
-  @override
-  void initState() {
-    super.initState();
-    _controller = TextEditingController(text: _agentPromptFile);
-  }
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => RemoteTextEditorScreen(
-    fileName: 'AGENTS.md',
-    controller: _controller,
-    fontFamily: 'monospace',
-    initialFontSize: 14,
-    terminalTheme: TerminalThemes.velvet,
-  );
-}
-
-const _monthlyOffer = MonetizationOffer(
-  id: 'monthly',
-  productId: MonetizationProductIds.iosMonthlyProd,
-  billingPeriod: MonetizationBillingPeriod.monthly,
-  planLabel: 'Monthly',
-  priceLabel: r'$4.99',
-  displayPriceLabel: r'$4.99 / month',
-  rawPrice: 4.99,
-  currencyCode: 'USD',
-  currencySymbol: r'$',
-  detailLabel: 'Billed monthly. Cancel anytime.',
-);
-
-const _annualOffer = MonetizationOffer(
-  id: 'annual',
-  productId: MonetizationProductIds.iosAnnualProd,
-  billingPeriod: MonetizationBillingPeriod.annual,
-  planLabel: 'Annual',
-  priceLabel: r'$39.99',
-  displayPriceLabel: r'$39.99 / year',
-  rawPrice: 39.99,
-  currencyCode: 'USD',
-  currencySymbol: r'$',
-  detailLabel: 'Best value for multi-device workflows.',
-);
-
-const _monetizationState = MonetizationState(
-  billingAvailability: MonetizationBillingAvailability.available,
-  entitlements: MonetizationEntitlements.free(),
-  offers: [_monthlyOffer, _annualOffer],
-  debugUnlockAvailable: false,
-  debugUnlocked: false,
-);
-
-final _scenes = <_ScreenshotScene>[
-  _ScreenshotScene(name: 'hosts', builder: (_) => const HomeScreen()),
-  _ScreenshotScene(
-    name: 'terminal',
-    builder: (_) => const TerminalScreen(
-      hostId: _terminalHostId,
-      connectionId: _terminalConnectionId,
-    ),
-  ),
-  _ScreenshotScene(name: 'snippets', builder: (_) => const SnippetsScreen()),
-  _ScreenshotScene(name: 'ports', builder: (_) => const PortForwardsScreen()),
-  _ScreenshotScene(
-    name: 'agent_prompt',
-    builder: (_) => const _AgentPromptScene(),
-  ),
+const _sceneNames = <String>[
+  'hosts',
+  'terminal_claude',
+  'terminal_copilot',
+  'terminal_agents',
+  'hosts_connected',
 ];
 
 final _targets = <String, _ScreenshotTarget>{
   'ios_phone': _ScreenshotTarget(
     platform: TargetPlatform.iOS,
     pathsByScene: [
-      for (var index = 1; index <= _scenes.length; index += 1)
+      for (var index = 1; index <= _sceneNames.length; index += 1)
         [
           'ios/fastlane/screenshots/en-US/${index.toString().padLeft(2, '0')}_iphone_6_9.png',
         ],
@@ -296,7 +84,7 @@ final _targets = <String, _ScreenshotTarget>{
   'ios_ipad': _ScreenshotTarget(
     platform: TargetPlatform.iOS,
     pathsByScene: [
-      for (var index = 1; index <= _scenes.length; index += 1)
+      for (var index = 1; index <= _sceneNames.length; index += 1)
         [
           'ios/fastlane/screenshots/en-US/${index.toString().padLeft(2, '0')}_ipad_13.png',
         ],
@@ -305,7 +93,7 @@ final _targets = <String, _ScreenshotTarget>{
   'android_phone': _ScreenshotTarget(
     platform: TargetPlatform.android,
     pathsByScene: [
-      for (var index = 1; index <= _scenes.length; index += 1)
+      for (var index = 1; index <= _sceneNames.length; index += 1)
         [
           'android/fastlane/metadata-production/android/en-US/images/phoneScreenshots/$index.png',
           'android/fastlane/metadata-private/android/en-US/images/phoneScreenshots/$index.png',
@@ -315,7 +103,7 @@ final _targets = <String, _ScreenshotTarget>{
   'android_7_tablet': _ScreenshotTarget(
     platform: TargetPlatform.android,
     pathsByScene: [
-      for (var index = 1; index <= _scenes.length; index += 1)
+      for (var index = 1; index <= _sceneNames.length; index += 1)
         [
           'android/fastlane/metadata-production/android/en-US/images/sevenInchScreenshots/$index.png',
           'android/fastlane/metadata-private/android/en-US/images/sevenInchScreenshots/$index.png',
@@ -325,7 +113,7 @@ final _targets = <String, _ScreenshotTarget>{
   'android_10_tablet': _ScreenshotTarget(
     platform: TargetPlatform.android,
     pathsByScene: [
-      for (var index = 1; index <= _scenes.length; index += 1)
+      for (var index = 1; index <= _sceneNames.length; index += 1)
         [
           'android/fastlane/metadata-production/android/en-US/images/tenInchScreenshots/$index.png',
           'android/fastlane/metadata-private/android/en-US/images/tenInchScreenshots/$index.png',
@@ -336,9 +124,6 @@ final _targets = <String, _ScreenshotTarget>{
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
-  registerFallbackValue(const SSHPtyConfig());
-  registerFallbackValue(Uint8List(0));
-  registerFallbackValue(MonetizationFeature.agentLaunchPresets);
 
   final target = _targets[_targetName];
   if (target == null) {
@@ -348,160 +133,186 @@ Future<void> main() async {
     );
     exit(64);
   }
+  if (_sshPort <= 0 ||
+      _sshUsername.isEmpty ||
+      _sshPrivateKeyB64.isEmpty ||
+      _sshHostKeyB64.isEmpty ||
+      _sshHostKeyFingerprint.isEmpty) {
+    stderr.writeln(
+      'STORE_SCREENSHOT_SSH_PORT, STORE_SCREENSHOT_SSH_USERNAME, '
+      'STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64, STORE_SCREENSHOT_SSH_HOST_KEY_B64, '
+      'and STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT are required.',
+    );
+    exit(64);
+  }
+  if (_tmuxSessionName.isEmpty) {
+    stderr.writeln('STORE_SCREENSHOT_TMUX_SESSION is required.');
+    exit(64);
+  }
+  registerFallbackValue(MonetizationFeature.agentLaunchPresets);
+  registerFallbackValue(_fallbackOffer);
+
   debugDefaultTargetPlatformOverride = target.platform;
 
-  final harness = await _createHarness();
-  runApp(_StoreScreenshotApp(harness: harness, target: target));
-}
-
-Future<_ScreenshotHarness> _createHarness() async {
   final database = AppDatabase.forTesting(NativeDatabase.memory());
-  await _seedDatabase(database);
+  final secrets = SecretEncryptionService.forTesting();
+  await _seedDatabase(database, secrets, target);
+  final monetizationService = _createMonetizationService();
 
-  final sshClient = _MockSshClient();
-  final shellChannel = _MockShellChannel();
-  when(
-    () => sshClient.shell(pty: any(named: 'pty')),
-  ).thenAnswer((_) async => shellChannel);
-  when(
-    () => shellChannel.stdout,
-  ).thenAnswer((_) => const Stream<Uint8List>.empty());
-  when(
-    () => shellChannel.stderr,
-  ).thenAnswer((_) => const Stream<Uint8List>.empty());
-  when(() => shellChannel.done).thenAnswer((_) => Completer<void>().future);
-  when(() => shellChannel.write(any())).thenReturn(null);
-  // ignore: unnecessary_lambdas
-  when(() => shellChannel.close()).thenReturn(null);
-
-  final terminalSession = SshSession(
-    connectionId: _terminalConnectionId,
-    hostId: _terminalHostId,
-    client: sshClient,
-    config: const SshConnectionConfig(
-      hostname: 'devbox.example.com',
-      port: 22,
-      username: 'monkey',
+  runApp(
+    ProviderScope(
+      overrides: [
+        databaseProvider.overrideWithValue(database),
+        secretEncryptionServiceProvider.overrideWithValue(secrets),
+        appDisplayNameProvider.overrideWithValue(defaultAppName),
+        hostKeyPromptHandlerProvider.overrideWith(
+          (_) =>
+              (_) async => HostKeyTrustDecision.trust,
+        ),
+        monetizationServiceProvider.overrideWithValue(monetizationService),
+        monetizationStateProvider.overrideWith(
+          (ref) => monetizationService.states,
+        ),
+        sharedClipboardProvider.overrideWith((ref) async => false),
+      ],
+      child: _StoreScreenshotFlow(target: target),
     ),
   );
-  terminalSession.getOrCreateTerminal().write(
-    _terminalTranscript.trim().replaceAll('\n', '\r\n'),
-  );
+}
 
-  final monetizationService = _MockMonetizationService();
-  when(() => monetizationService.currentState).thenReturn(_monetizationState);
-  when(
-    () => monetizationService.states,
-  ).thenAnswer((_) => Stream<MonetizationState>.value(_monetizationState));
+MonetizationService _createMonetizationService() {
+  const state = MonetizationState(
+    billingAvailability: MonetizationBillingAvailability.unavailable,
+    entitlements: MonetizationEntitlements.free(),
+    offers: [],
+    debugUnlockAvailable: false,
+    debugUnlocked: false,
+  );
+  final service = _MockMonetizationService();
+  when(() => service.currentState).thenReturn(state);
+  when(() => service.states).thenAnswer((_) => Stream.value(state));
   // ignore: unnecessary_lambdas
-  when(() => monetizationService.initialize()).thenAnswer((_) async {});
-  when(
-    () => monetizationService.canUseFeature(any()),
-  ).thenAnswer((_) async => false);
-  when(() => monetizationService.purchaseOffer(any())).thenAnswer(
+  when(() => service.initialize()).thenAnswer((_) => Future<void>.value());
+  when(() => service.canUseFeature(any())).thenAnswer((_) async => false);
+  when(() => service.purchaseOffer(any())).thenAnswer(
     (_) async => const MonetizationActionResult.cancelled(
       'Purchases are disabled for screenshots.',
     ),
   );
   // ignore: unnecessary_lambdas
-  when(() => monetizationService.restorePurchases()).thenAnswer(
-    (_) async => const MonetizationActionResult.cancelled(
-      'Restore is disabled for screenshots.',
+  when(() => service.restorePurchases()).thenAnswer(
+    (_) => Future.value(
+      const MonetizationActionResult.cancelled(
+        'Restore is disabled for screenshots.',
+      ),
+    ),
+  );
+  // ignore: unnecessary_lambdas
+  when(() => service.dispose()).thenAnswer((_) => Future<void>.value());
+  return service;
+}
+
+Future<void> _seedDatabase(
+  AppDatabase database,
+  SecretEncryptionService secrets,
+  _ScreenshotTarget target,
+) async {
+  final keyRepository = KeyRepository(database, secrets);
+  final hostRepository = HostRepository(database, secrets);
+  final privateKey = utf8.decode(base64Decode(_sshPrivateKeyB64));
+  final publicKey = _derivePublicKeyCommentFree(privateKey);
+  final hostname = target.platform == TargetPlatform.android
+      ? '10.0.2.2'
+      : '127.0.0.1';
+
+  await database
+      .into(database.knownHosts)
+      .insert(
+        KnownHostsCompanion.insert(
+          hostname: hostname,
+          port: _sshPort,
+          keyType: 'ssh-ed25519',
+          fingerprint: _sshHostKeyFingerprint,
+          hostKey: _sshHostKeyB64,
+        ),
+      );
+
+  final keyId = await keyRepository.insert(
+    SshKeysCompanion.insert(
+      name: 'Store demo key',
+      keyType: 'ed25519',
+      publicKey: publicKey,
+      privateKey: privateKey,
+      fingerprint: const Value('SHA256:store-demo-key'),
     ),
   );
 
-  return _ScreenshotHarness(
-    database: database,
-    terminalSession: terminalSession,
-    monetizationService: monetizationService,
-  );
-}
-
-Future<void> _seedDatabase(AppDatabase database) async {
-  final keyId = await database
-      .into(database.sshKeys)
-      .insert(
-        SshKeysCompanion.insert(
-          name: 'Deploy Ed25519',
-          keyType: 'ed25519',
-          publicKey:
-              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMonkeySSHStoreScreenshot streamer-redacted',
-          privateKey: 'store-screenshot-private-key-placeholder',
-          fingerprint: const Value('SHA256:monkeyssh-demo-key'),
-        ),
-      );
   final groupId = await database
       .into(database.groups)
       .insert(
         GroupsCompanion.insert(
-          name: 'Production',
+          name: 'Agent Workspaces',
           color: const Value('#00C9FF'),
-          icon: const Value('cloud'),
+          icon: const Value('terminal'),
         ),
       );
 
-  await database
-      .into(database.hosts)
-      .insert(
-        HostsCompanion.insert(
-          label: 'Claude + Copilot devbox',
-          hostname: 'devbox.example.com',
-          username: 'monkey',
-          keyId: Value(keyId),
-          groupId: Value(groupId),
-          isFavorite: const Value(true),
-          color: const Value('#00C9FF'),
-          tags: const Value('agent,tmux,prod'),
-          notes: const Value('Primary remote coding workspace.'),
-          lastConnectedAt: Value(DateTime(2026, 4, 24, 21, 30)),
-          terminalThemeDarkId: const Value('velvet'),
-          terminalFontFamily: const Value('monospace'),
-          tmuxSessionName: const Value('agent-api'),
-          tmuxWorkingDirectory: const Value('~/src/api'),
-          autoConnectCommand: const Value('tmux new-session -A -s agent-api'),
-          autoConnectRequiresConfirmation: const Value(true),
-          sortOrder: const Value(0),
-        ),
-      );
-  await database
-      .into(database.hosts)
-      .insert(
-        HostsCompanion.insert(
-          label: 'Staging jump host',
-          hostname: 'jump.staging.example.com',
-          username: 'deploy',
-          keyId: Value(keyId),
-          isFavorite: const Value(true),
-          color: const Value('#34C759'),
-          tags: const Value('staging,jump'),
-          sortOrder: const Value(1),
-        ),
-      );
-  await database
-      .into(database.hosts)
-      .insert(
-        HostsCompanion.insert(
-          label: 'Build runner',
-          hostname: 'runner.internal',
-          username: 'ci',
-          keyId: Value(keyId),
-          color: const Value('#FF9500'),
-          tags: const Value('ci,logs'),
-          sortOrder: const Value(2),
-        ),
-      );
+  await hostRepository.insert(
+    HostsCompanion.insert(
+      label: 'Claude + Copilot tmux',
+      hostname: hostname,
+      port: const Value(_sshPort),
+      username: _sshUsername,
+      keyId: Value(keyId),
+      groupId: Value(groupId),
+      isFavorite: const Value(true),
+      color: const Value('#00C9FF'),
+      tags: const Value('agent,tmux,store-demo'),
+      notes: const Value('Local release-demo workspace for store captures.'),
+      terminalThemeDarkId: const Value('velvet'),
+      terminalFontFamily: const Value('monospace'),
+      tmuxSessionName: const Value(_tmuxSessionName),
+      tmuxWorkingDirectory: const Value('/tmp/monkeyssh-store-demo'),
+      sortOrder: const Value(0),
+    ),
+  );
+
+  await hostRepository.insert(
+    HostsCompanion.insert(
+      label: 'Production bastion',
+      hostname: 'bastion.internal',
+      username: 'ops',
+      keyId: Value(keyId),
+      isFavorite: const Value(true),
+      color: const Value('#34C759'),
+      tags: const Value('prod,jump'),
+      sortOrder: const Value(1),
+    ),
+  );
+
+  await hostRepository.insert(
+    HostsCompanion.insert(
+      label: 'Build runner',
+      hostname: 'runner.internal',
+      username: 'ci',
+      keyId: Value(keyId),
+      color: const Value('#FF9500'),
+      tags: const Value('ci,logs'),
+      sortOrder: const Value(2),
+    ),
+  );
 
   await database
       .into(database.portForwards)
       .insert(
         PortForwardsCompanion.insert(
-          name: 'Vite preview',
+          name: 'Preview server',
           hostId: _terminalHostId,
           forwardType: 'local',
           localPort: 5173,
           remoteHost: '127.0.0.1',
           remotePort: 5173,
-          autoStart: const Value(true),
+          autoStart: const Value(false),
         ),
       );
   await database
@@ -522,11 +333,11 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .insert(
         SnippetsCompanion.insert(
           name: 'Resume Copilot safely',
-          command: 'copilot resume --recent --streamer-mode',
+          command:
+              'copilot --no-remote --log-level none --secret-env-vars=USER,EMAIL --resume',
           description: const Value(
-            'Jump back into a redacted Copilot coding-agent session.',
+            'Resume a Copilot session with identity details redacted.',
           ),
-          autoExecute: const Value(false),
           usageCount: const Value(18),
           sortOrder: const Value(0),
         ),
@@ -536,9 +347,9 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .insert(
         SnippetsCompanion.insert(
           name: 'Open Claude Code safely',
-          command: 'claude --continue --streamer-mode',
+          command: 'claude --bare --continue',
           description: const Value(
-            'Resume Claude Code with private identity details hidden.',
+            'Resume Claude Code without loading user or project identity state.',
           ),
           usageCount: const Value(12),
           sortOrder: const Value(1),
@@ -549,9 +360,9 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .insert(
         SnippetsCompanion.insert(
           name: 'Open tmux workspace',
-          command: 'tmux new-session -A -s agent-api -c ~/src/api',
+          command: 'tmux new-session -A -s $_tmuxSessionName',
           description: const Value(
-            'Attach to the persistent remote workspace.',
+            'Attach to the persistent remote agent workspace.',
           ),
           autoExecute: const Value(true),
           usageCount: const Value(9),
@@ -566,57 +377,123 @@ Future<void> _seedDatabase(AppDatabase database) async {
   await settings.setBool(SettingKeys.terminalPathLinks, value: false);
 }
 
-const _terminalPreview = r'''
-monkey@devbox ~/src/api
-$ tmux attach -t agent-api
-0:claude 1:copilot 2:tests 3:logs
-Streamer mode is on for both agents.''';
+String _derivePublicKeyCommentFree(String privateKey) {
+  final firstLine = privateKey
+      .split('\n')
+      .firstWhere(
+        (line) => line.trim().isNotEmpty,
+        orElse: () => 'store-demo-key',
+      );
+  return 'ssh-ed25519 ${base64Encode(utf8.encode(firstLine))} store-demo-key';
+}
 
-const _terminalTranscript = r'''
-monkey@devbox:~/src/api$ tmux attach -t agent-api
-[agent-api] 0:claude* 1:copilot 2:tests 3:logs
+class _StoreScreenshotFlow extends ConsumerStatefulWidget {
+  const _StoreScreenshotFlow({required this.target});
 
-pane 0 - Claude Code (streamer mode)
-monkey@devbox:api$ claude --continue --streamer-mode
-Claude> Streamer mode is on
-Claude> Identity details hidden
-Claude> Reviewing tmux reconnect flow
-Claude> Patch ready in lib/domain/services
+  final _ScreenshotTarget target;
 
-pane 1 - Copilot CLI (streamer mode)
-monkey@devbox:api$ copilot resume --recent --streamer-mode
-Copilot> Streamer mode is on
-Copilot> Found session "store assets"
-Copilot> Updating screenshots from real UI
+  @override
+  ConsumerState<_StoreScreenshotFlow> createState() =>
+      _StoreScreenshotFlowState();
+}
 
-pane 2 - tests
-monkey@devbox:api$ flutter test
-00:03 +42: All tests passed!
+class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
+  Future<void>? _flow;
+  int? _connectionId;
 
-pane 3 - logs
-api    health check       200 OK
-agent  tmux window sync   complete
-''';
+  @override
+  void initState() {
+    super.initState();
+    _flow = _runFlow();
+  }
 
-const _agentPromptFile = '''
-# Agent workspace
+  @override
+  void dispose() {
+    unawaited(_flow?.catchError((_) {}));
+    super.dispose();
+  }
 
-Open the persistent tmux session before starting work:
+  @override
+  Widget build(BuildContext context) => const FluttyApp();
 
-    tmux attach -t agent-api
+  Future<void> _runFlow() async {
+    try {
+      await _waitForApp();
+      await _announceScene(0);
 
-Windows:
+      final result = await ref
+          .read(activeSessionsProvider.notifier)
+          .connect(_terminalHostId);
+      if (!result.success || result.connectionId == null) {
+        throw StateError(result.error ?? 'SSH connection did not open.');
+      }
+      _connectionId = result.connectionId;
 
-1. claude  - Claude Code with streamer mode enabled
-2. copilot - Copilot CLI with streamer mode enabled
-3. tests   - Flutter and domain test runs
-4. logs    - API and SSH diagnostic logs
+      _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
+      await Future<void>.delayed(const Duration(seconds: 6));
+      await _announceScene(1);
 
-Current release task:
+      await _sendTmuxWindowKey('1');
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await _announceScene(2);
 
-- Polish screenshots from the real MonkeySSH app
-- Keep terminal and editor themes visually matched
-- Show tmux, Claude Code, and Copilot working together
-- Keep emails, usernames, and private identifiers hidden
-- Avoid subscription or checkout screens in store assets
-''';
+      await _sendTmuxWindowKey('2');
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await _announceScene(3);
+
+      _go('/');
+      await Future<void>.delayed(const Duration(seconds: 2));
+      await _announceScene(4);
+
+      debugPrint('STORE_SCREENSHOT_DONE');
+      await ref.read(databaseProvider).close();
+      exit(0);
+    } on Object catch (error, stackTrace) {
+      debugPrint('STORE_SCREENSHOT_ERROR $error');
+      debugPrint('$stackTrace');
+      await ref.read(databaseProvider).close();
+      exit(1);
+    }
+  }
+
+  Future<void> _waitForApp() async {
+    while (appNavigatorKey.currentContext == null) {
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+    await Future<void>.delayed(const Duration(seconds: 2));
+  }
+
+  Future<void> _announceScene(int index) async {
+    FocusManager.instance.primaryFocus?.unfocus();
+    final payload = {
+      'scene': _sceneNames[index],
+      'index': index + 1,
+      'paths': widget.target.pathsByScene[index],
+    };
+    debugPrint('STORE_SCREENSHOT_READY ${jsonEncode(payload)}');
+    await Future<void>.delayed(const Duration(seconds: 2));
+  }
+
+  void _go(String location) {
+    final context = appNavigatorKey.currentContext;
+    if (context == null) {
+      throw StateError('Navigator context is unavailable.');
+    }
+    GoRouter.of(context).go(location);
+  }
+
+  Future<void> _sendTmuxWindowKey(String key) async {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      throw StateError('SSH connection is unavailable.');
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      throw StateError('SSH session is unavailable.');
+    }
+    final shell = await session.getShell();
+    shell.write(utf8.encode('\x02$key'));
+  }
+}

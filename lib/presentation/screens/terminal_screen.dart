@@ -59,6 +59,13 @@ bool _isPromptReturnWhitespaceCodeUnit(int codeUnit) =>
     codeUnit == 0x0A ||
     codeUnit == 0x0D;
 
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
+const _hideStoreScreenshotKeyboardToolbar = bool.fromEnvironment(
+  'STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR',
+);
+
 bool _isPromptReturnAsciiLetterOrDigit(int codeUnit) =>
     (codeUnit >= 0x30 && codeUnit <= 0x39) ||
     (codeUnit >= 0x41 && codeUnit <= 0x5A) ||
@@ -2666,7 +2673,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   StreamSubscription<String>? _shellStdoutSubscription;
   bool _isConnecting = true;
   String? _error;
-  bool _showKeyboardToolbar = true;
+  bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   bool _hasTerminalSelection = false;
@@ -4585,9 +4592,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       isConnecting: _isConnecting,
     );
     final connectionIdentity = formatTerminalConnectionIdentity(
-      username: _host?.username,
-      hostname: _host?.hostname,
-      port: _host?.port,
+      username: _redactStoreScreenshotIdentities ? 'store' : _host?.username,
+      hostname: _redactStoreScreenshotIdentities
+          ? 'local-demo'
+          : _host?.hostname,
+      port: _redactStoreScreenshotIdentities ? null : _host?.port,
       connectionId: _connectionId,
     );
     final titleSubtitleSegments = <String>[];

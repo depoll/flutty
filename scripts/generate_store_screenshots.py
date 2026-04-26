@@ -3,9 +3,13 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import getpass
+import hashlib
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -72,8 +76,9 @@ def main() -> None:
     _prefer_stable_xcode()
     args = _parse_args()
     targets = _targets_for_platform(args.platform)
-    for target in targets:
-        _run_target(target)
+    with StoreDemoEnvironment() as demo:
+        for target in targets:
+            _run_target(target, demo)
 
 
 def _parse_args() -> argparse.Namespace:
@@ -102,8 +107,9 @@ def _targets_for_platform(platform: str) -> list[ScreenshotTarget]:
     return list(TARGETS.values())
 
 
-def _run_target(target: ScreenshotTarget) -> None:
+def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
     print(f'Generating {target.name} screenshots...')
+    demo.reset_tmux()
     if target.platform == 'ios':
         device_id = _boot_ios_simulator(target.simulator_name or '')
         restore_android = None
@@ -112,13 +118,17 @@ def _run_target(target: ScreenshotTarget) -> None:
         restore_android = _configure_android_display(target, device_id)
 
     try:
-        _run_flutter_capture(target, device_id)
+        _run_flutter_capture(target, device_id, demo)
     finally:
         if restore_android is not None:
             restore_android()
 
 
-def _run_flutter_capture(target: ScreenshotTarget, device_id: str) -> None:
+def _run_flutter_capture(
+    target: ScreenshotTarget,
+    device_id: str,
+    demo: StoreDemoEnvironment,
+) -> None:
     env = os.environ.copy()
     java_home = _java_home_17()
     if java_home:
@@ -133,6 +143,14 @@ def _run_flutter_capture(target: ScreenshotTarget, device_id: str) -> None:
         '-t',
         'tool/store_screenshot_app.dart',
         f'--dart-define=STORE_SCREENSHOT_TARGET={target.name}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_PORT={demo.port}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_USERNAME={demo.username}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_PRIVATE_KEY_B64={demo.private_key_b64}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_B64={demo.host_key_b64}',
+        f'--dart-define=STORE_SCREENSHOT_SSH_HOST_KEY_FINGERPRINT={demo.host_key_fingerprint}',
+        f'--dart-define=STORE_SCREENSHOT_TMUX_SESSION={demo.tmux_session}',
+        '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
+        '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
     ]
     if target.platform in ('android', 'ios'):
         command.extend(['--flavor', 'production'])
@@ -178,6 +196,334 @@ def _run_flutter_capture(target: ScreenshotTarget, device_id: str) -> None:
         if process.returncode not in (0, None):
             raise subprocess.CalledProcessError(process.returncode, command)
         raise RuntimeError(f'{target.name} run ended before all screenshots were captured')
+
+
+class StoreDemoEnvironment:
+    def __init__(self) -> None:
+        self._tmpdir = Path(tempfile.mkdtemp(prefix='monkeyssh-store-demo-'))
+        self.username = getpass.getuser()
+        self.port = _free_local_port()
+        self.tmux_session = 'agent-workspace'
+        self.demo_dir = Path('/tmp/monkeyssh-store-demo')
+        self._process: subprocess.Popen[str] | None = None
+        self._tmux = shutil.which('tmux')
+        if self._tmux is None:
+            raise RuntimeError('tmux is required to capture real terminal screenshots.')
+
+    @property
+    def private_key_b64(self) -> str:
+        return base64.b64encode((self._tmpdir / 'client_key').read_bytes()).decode()
+
+    @property
+    def host_key_b64(self) -> str:
+        return (self._tmpdir / 'host_key.pub').read_text().split()[1]
+
+    @property
+    def host_key_fingerprint(self) -> str:
+        digest = hashlib.sha256(base64.b64decode(self.host_key_b64)).digest()
+        return f'SHA256:{base64.b64encode(digest).decode().rstrip("=")}'
+
+    def __enter__(self) -> StoreDemoEnvironment:
+        self._create_keys()
+        self._start_sshd()
+        self._setup_tmux()
+        return self
+
+    def __exit__(self, exc_type, exc, tb) -> None:
+        self._teardown_tmux()
+        self._stop_sshd()
+        shutil.rmtree(self._tmpdir, ignore_errors=True)
+
+    def reset_tmux(self) -> None:
+        subprocess.run(
+            [self._tmux or 'tmux', 'select-window', '-t', f'{self.tmux_session}:claude'],
+            check=False,
+        )
+
+    def _create_keys(self) -> None:
+        host_key = self._tmpdir / 'host_key'
+        client_key = self._tmpdir / 'client_key'
+        subprocess.run(
+            ['ssh-keygen', '-t', 'ed25519', '-f', str(host_key), '-N', '', '-q'],
+            check=True,
+        )
+        subprocess.run(
+            [
+                'ssh-keygen',
+                '-t',
+                'ed25519',
+                '-f',
+                str(client_key),
+                '-N',
+                '',
+                '-C',
+                'monkeyssh-store-demo',
+                '-q',
+            ],
+            check=True,
+        )
+        authorized_keys = self._tmpdir / 'authorized_keys'
+        authorized_keys.write_text((self._tmpdir / 'client_key.pub').read_text())
+        os.chmod(client_key, 0o600)
+        os.chmod(authorized_keys, 0o600)
+
+    def _start_sshd(self) -> None:
+        config = self._tmpdir / 'sshd_config'
+        config.write_text(
+            '\n'.join(
+                [
+                    f'Port {self.port}',
+                    'ListenAddress 127.0.0.1',
+                    f'HostKey {self._tmpdir / "host_key"}',
+                    f'PidFile {self._tmpdir / "sshd.pid"}',
+                    f'AuthorizedKeysFile {self._tmpdir / "authorized_keys"}',
+                    'PasswordAuthentication no',
+                    'ChallengeResponseAuthentication no',
+                    'KbdInteractiveAuthentication no',
+                    'UsePAM no',
+                    'PermitRootLogin no',
+                    'StrictModes no',
+                    f'AllowUsers {self.username}',
+                    'PermitTTY yes',
+                    'Subsystem sftp internal-sftp',
+                    'LogLevel ERROR',
+                    '',
+                ]
+            )
+        )
+        subprocess.run(['/usr/sbin/sshd', '-t', '-f', str(config)], check=True)
+        self._process = subprocess.Popen(
+            ['/usr/sbin/sshd', '-D', '-e', '-f', str(config)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+        self._wait_for_sshd()
+
+    def _wait_for_sshd(self) -> None:
+        command = [
+            'ssh',
+            '-i',
+            str(self._tmpdir / 'client_key'),
+            '-p',
+            str(self.port),
+            '-o',
+            'BatchMode=yes',
+            '-o',
+            'StrictHostKeyChecking=no',
+            '-o',
+            'UserKnownHostsFile=/dev/null',
+            f'{self.username}@127.0.0.1',
+            'true',
+        ]
+        deadline = time.time() + 10
+        while time.time() < deadline:
+            if self._process is not None and self._process.poll() is not None:
+                output = self._process.stdout.read() if self._process.stdout else ''
+                raise RuntimeError(f'sshd exited before accepting connections: {output}')
+            result = subprocess.run(
+                command,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if result.returncode == 0:
+                return
+            time.sleep(0.2)
+        raise RuntimeError(f'Timed out waiting for demo sshd on port {self.port}')
+
+    def _setup_tmux(self) -> None:
+        self.demo_dir.mkdir(parents=True, exist_ok=True)
+        (self.demo_dir / 'AGENTS.md').write_text(
+            '\n'.join(
+                [
+                    '# Agent workspace',
+                    '',
+                    'Use the persistent tmux session for release work.',
+                    '',
+                    '1. claude  - Claude Code review and edits',
+                    '2. copilot - Copilot CLI follow-up and checks',
+                    '3. agents  - shared agent instructions',
+                    '4. logs    - SSH and app diagnostics',
+                    '',
+                    'Streamer-safe capture rule: keep emails, usernames, and private identifiers hidden.',
+                    '',
+                ]
+            )
+        )
+        self._teardown_tmux()
+        self._write_pane_script(
+            'claude',
+            """
+            clear
+            printf 'Claude Code\\n'
+            printf 'Streamer-safe mode: identity details hidden\\n\\n'
+            printf '$ claude --version\\n'
+            claude --version 2>/dev/null || printf 'Claude Code installed\\n'
+            printf '\\n$ claude --bare --continue\\n'
+            printf 'Plan accepted: inspect terminal reconnect flow\\n'
+            printf 'Patch ready: tmux navigator keeps windows in sync\\n'
+            printf 'Next: run store asset validation\\n'
+            """,
+        )
+        self._write_pane_script(
+            'copilot',
+            """
+            clear
+            printf 'GitHub Copilot CLI\\n'
+            printf 'Streamer-safe mode: private identifiers redacted\\n\\n'
+            printf '$ copilot --no-color version\\n'
+            copilot --no-color version 2>/dev/null || printf 'GitHub Copilot CLI installed\\n'
+            printf '\\n$ copilot --no-remote --log-level none --resume\\n'
+            printf 'Reviewing PR asset updates\\n'
+            printf 'Checks queued: screenshots, metadata, Fastlane\\n'
+            printf 'No private identifiers in visible output\\n'
+            """,
+        )
+        self._write_pane_script(
+            'agents',
+            """
+            clear
+            printf '$ sed -n "1,12p" AGENTS.md\\n'
+            sed -n '1,12p' AGENTS.md
+            """,
+        )
+        self._write_pane_script(
+            'logs',
+            """
+            clear
+            printf 'ssh       connected to local demo server\\n'
+            printf 'tmux      window sync complete\\n'
+            printf 'fastlane  screenshots ready for upload\\n'
+            """,
+        )
+        self._tmux_run(
+            'new-session',
+            '-d',
+            '-s',
+            self.tmux_session,
+            '-n',
+            'claude',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'claude-pane.sh'),
+        )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
+            'copilot',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'copilot-pane.sh'),
+        )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
+            'agents',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'agents-pane.sh'),
+        )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
+            'logs',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'logs-pane.sh'),
+        )
+        self._configure_tmux_status()
+        self.reset_tmux()
+
+    def _write_pane_script(self, window: str, body: str) -> None:
+        rcfile = self._tmpdir / f'{window}-bashrc'
+        rcfile.write_text(
+            '\n'.join(
+                [
+                    'export BASH_SILENCE_DEPRECATION_WARNING=1',
+                    f"PS1='store-demo {window} % '",
+                    '',
+                ]
+            )
+        )
+        script = self._tmpdir / f'{window}-pane.sh'
+        script.write_text(
+            '\n'.join(
+                [
+                    '#!/bin/bash',
+                    'set -e',
+                    'export BASH_SILENCE_DEPRECATION_WARNING=1',
+                    f'cd {self.demo_dir}',
+                    body.strip(),
+                    f"exec bash --rcfile {rcfile} -i",
+                    '',
+                ]
+            )
+        )
+        os.chmod(script, 0o700)
+
+    def _configure_tmux_status(self) -> None:
+        self._tmux_run('set-option', '-t', self.tmux_session, 'status', 'on')
+        self._tmux_run(
+            'set-option',
+            '-t',
+            self.tmux_session,
+            'status-left',
+            '[MonkeySSH demo] ',
+        )
+        self._tmux_run('set-option', '-t', self.tmux_session, 'status-right', '%H:%M')
+        self._tmux_run(
+            'set-option',
+            '-t',
+            self.tmux_session,
+            'window-status-format',
+            '#I:#W',
+        )
+        self._tmux_run(
+            'set-option',
+            '-t',
+            self.tmux_session,
+            'window-status-current-format',
+            '#I:#W*',
+        )
+
+    def _tmux_run(self, *args: str) -> None:
+        subprocess.run([self._tmux or 'tmux', *args], check=True)
+
+    def _teardown_tmux(self) -> None:
+        if self._tmux is None:
+            return
+        subprocess.run(
+            [self._tmux, 'kill-session', '-t', self.tmux_session],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+
+    def _stop_sshd(self) -> None:
+        if self._process is None:
+            return
+        if self._process.poll() is None:
+            self._process.terminate()
+            try:
+                self._process.wait(timeout=10)
+            except subprocess.TimeoutExpired:
+                self._process.kill()
+                self._process.wait(timeout=10)
+        if self._process.stdout is not None:
+            self._process.stdout.close()
+
+
+def _free_local_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(('127.0.0.1', 0))
+        return int(sock.getsockname()[1])
 
 
 def _capture_native_screenshot(

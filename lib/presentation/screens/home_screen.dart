@@ -39,6 +39,10 @@ import '../widgets/reorder_helpers.dart';
 import '../widgets/tmux_window_status_badge.dart';
 import 'transfer_screen.dart';
 
+const _redactStoreScreenshotIdentities = bool.fromEnvironment(
+  'STORE_SCREENSHOT_REDACT_IDENTITIES',
+);
+
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
   /// Creates a new [HomeScreen].
@@ -1054,7 +1058,9 @@ class _HostRow extends ConsumerWidget {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          '${host.username}@${host.hostname}',
+                          _redactStoreScreenshotIdentities
+                              ? 'store@local-demo'
+                              : '${host.username}@${host.hostname}',
                           style: FluttyTheme.monoStyle.copyWith(
                             fontSize: 11,
                             color: colorScheme.onSurface.withAlpha(100),
