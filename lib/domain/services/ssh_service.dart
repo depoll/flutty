@@ -14,6 +14,7 @@ import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
+import 'diagnostics_log_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'terminal_hyperlink_tracker.dart';
@@ -387,7 +388,17 @@ class SshService {
     ConnectionProgressCallback? onProgress,
     bool useHostThemeOverrides = true,
   }) async {
+    DiagnosticsLogService.instance.info(
+      'ssh.connect',
+      'connect_to_host_start',
+      fields: {'hostId': hostId},
+    );
     if (hostRepository == null) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_to_host_unavailable',
+        fields: {'hostId': hostId, 'reason': 'missing_host_repository'},
+      );
       return const SshConnectionResult(
         success: false,
         error: 'Host repository not available',
@@ -396,6 +407,11 @@ class SshService {
 
     final host = await hostRepository!.getById(hostId);
     if (host == null) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_to_host_missing_host',
+        fields: {'hostId': hostId},
+      );
       return const SshConnectionResult(success: false, error: 'Host not found');
     }
 
@@ -482,6 +498,17 @@ class SshService {
 
       // Update last connected timestamp
       await hostRepository!.updateLastConnected(hostId);
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'connect_to_host_success',
+        fields: {
+          'hostId': hostId,
+          'connectionId': connectionId,
+          'usesJumpHost': config.jumpHost != null,
+          'usesPassword': config.password != null,
+          'identityCount': config.identityKeys?.length ?? 0,
+        },
+      );
       return SshConnectionResult(
         success: true,
         client: result.client,
@@ -490,6 +517,14 @@ class SshService {
       );
     }
 
+    DiagnosticsLogService.instance.warning(
+      'ssh.connect',
+      'connect_to_host_failed',
+      fields: {
+        'hostId': hostId,
+        'errorType': _diagnosticSshResultErrorKind(result.error),
+      },
+    );
     return result;
   }
 
@@ -503,12 +538,30 @@ class SshService {
     final dependentClients = <SSHClient>[];
     SSHClient? jumpClient;
     void report(SshConnectionState state, String message) {
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'progress',
+        fields: {'state': state, 'isJumpHost': isJumpHost},
+      );
       onProgress?.call(
         ConnectionProgressUpdate(state: state, message: message),
       );
     }
 
     try {
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'connect_start',
+        fields: {
+          'isJumpHost': isJumpHost,
+          'hasJumpHost': config.jumpHost != null,
+          'usesPassword': config.password != null,
+          'identityCount': config.identityKeys?.length ?? 0,
+          'hasExplicitKey': config.privateKey != null,
+          'keepAliveSeconds': config.keepAliveInterval.inSeconds,
+          'timeoutSeconds': config.connectionTimeout.inSeconds,
+        },
+      );
       final verificationService = _createHostKeyVerificationService(config);
 
       // Handle jump host
@@ -616,6 +669,11 @@ class SshService {
         );
         await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
 
+        DiagnosticsLogService.instance.info(
+          'ssh.connect',
+          'connect_success',
+          fields: {'isJumpHost': isJumpHost, 'trustedHostKnown': false},
+        );
         return SshConnectionResult(
           success: true,
           client: client,
@@ -726,6 +784,11 @@ class SshService {
         );
         await pendingHostTrustUpdate.commitAfterAuthentication(knownHosts);
 
+        DiagnosticsLogService.instance.info(
+          'ssh.connect',
+          'connect_success',
+          fields: {'isJumpHost': isJumpHost, 'trustedHostKnown': true},
+        );
         return SshConnectionResult(
           success: true,
           client: client,
@@ -745,16 +808,31 @@ class SshService {
         encodedHostKey: trustedHost.hostKey,
       );
 
+      DiagnosticsLogService.instance.info(
+        'ssh.connect',
+        'connect_success',
+        fields: {'isJumpHost': isJumpHost, 'trustedHostKnown': true},
+      );
       return SshConnectionResult(
         success: true,
         client: client,
         dependentClients: dependentClients,
       );
     } on HostKeyVerificationException catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
       client?.close();
       _closeClients(dependentClients);
       return SshConnectionResult(success: false, error: e.message);
     } on SSHHostkeyError catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
       client?.close();
       _closeClients(dependentClients);
       return SshConnectionResult(
@@ -762,6 +840,11 @@ class SshService {
         error: 'Host key verification failed: ${e.message}',
       );
     } on SSHAuthFailError catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
       client?.close();
       _closeClients(dependentClients);
       return SshConnectionResult(
@@ -769,6 +852,11 @@ class SshService {
         error: 'Authentication failed: ${e.message}',
       );
     } on SocketException catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
       client?.close();
       _closeClients(dependentClients);
       return SshConnectionResult(
@@ -776,6 +864,11 @@ class SshService {
         error: 'Connection failed: ${e.message}',
       );
     } on TimeoutException catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
       client?.close();
       _closeClients(dependentClients);
       return SshConnectionResult(
@@ -783,6 +876,11 @@ class SshService {
         error: e.message ?? 'Connection timed out',
       );
     } on Exception catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'ssh.connect',
+        'connect_failed',
+        fields: {'isJumpHost': isJumpHost, 'errorType': e.runtimeType},
+      );
       client?.close();
       _closeClients(dependentClients);
       return SshConnectionResult(success: false, error: 'Connection error: $e');
@@ -914,12 +1012,22 @@ class SshService {
 
   /// Disconnect a session by connection ID.
   Future<void> disconnect(int connectionId) async {
+    DiagnosticsLogService.instance.info(
+      'ssh.session',
+      'disconnect',
+      fields: {'connectionId': connectionId},
+    );
     final session = _sessions.remove(connectionId);
     await session?.close();
   }
 
   /// Disconnect all sessions.
   Future<void> disconnectAll() async {
+    DiagnosticsLogService.instance.info(
+      'ssh.session',
+      'disconnect_all',
+      fields: {'connectionCount': _sessions.length},
+    );
     for (final session in _sessions.values) {
       await session.close();
     }
@@ -1095,6 +1203,42 @@ class _PreparedHostKeySocket {
 
   final SSHSocket socket;
   final HostKeySource hostKeySource;
+}
+
+String _diagnosticSshResultErrorKind(String? error) {
+  if (error == null || error.isEmpty) {
+    return 'unknown';
+  }
+  if (error.startsWith('Authentication failed')) {
+    return 'authentication_failed';
+  }
+  if (error.startsWith('Host key verification failed')) {
+    return 'host_key_verification_failed';
+  }
+  if (error.startsWith('Connection failed')) {
+    return 'connection_failed';
+  }
+  if (error.contains('timed out')) {
+    return 'timeout';
+  }
+  return 'connection_error';
+}
+
+String _diagnosticSshCommandKind(String command) {
+  final trimmed = command.trimLeft();
+  if (trimmed.startsWith('tmux ') ||
+      trimmed.startsWith('tmux -u ') ||
+      trimmed.contains(' tmux ') ||
+      trimmed.contains('/tmux ')) {
+    return 'tmux';
+  }
+  if (trimmed.contains('command -v')) {
+    return 'command_detection';
+  }
+  if (trimmed.contains('__flutty_tmux_exec_done__')) {
+    return 'tmux_marked_exec';
+  }
+  return 'ssh_exec';
 }
 
 class _HostKeyCapturingSocket implements SSHSocket, HostKeySource {
@@ -1306,6 +1450,7 @@ class SshSession {
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
+  static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
   static const _previewLineCount = 3;
   static const _previewMaxChars = 220;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
@@ -1352,6 +1497,13 @@ class SshSession {
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
   Timer? _previewRefreshTimer;
+  Timer? _shellIoDiagnosticsTimer;
+  int _shellStdoutChunkCount = 0;
+  int _shellStdoutCharCount = 0;
+  int _shellStderrChunkCount = 0;
+  int _shellStderrCharCount = 0;
+  int _shellStdinWriteCount = 0;
+  int _shellStdinCharCount = 0;
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
@@ -1454,7 +1606,41 @@ class SshSession {
     if (forceNew) {
       await closeShell();
     }
-    _shell ??= await client.shell(pty: pty ?? const SSHPtyConfig());
+    if (_shell == null) {
+      DiagnosticsLogService.instance.info(
+        'ssh.shell',
+        'open_start',
+        fields: {
+          'connectionId': connectionId,
+          'hostId': hostId,
+          'requestedPty': pty != null,
+        },
+      );
+      try {
+        _shell = await client.shell(pty: pty ?? const SSHPtyConfig());
+        DiagnosticsLogService.instance.info(
+          'ssh.shell',
+          'open_success',
+          fields: {'connectionId': connectionId},
+        );
+      } on Object catch (error) {
+        DiagnosticsLogService.instance.error(
+          'ssh.shell',
+          'open_failed',
+          fields: {
+            'connectionId': connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        rethrow;
+      }
+    } else {
+      DiagnosticsLogService.instance.debug(
+        'ssh.shell',
+        'reuse_existing',
+        fields: {'connectionId': connectionId},
+      );
+    }
     _ensureShellStreamPipes();
     return _shell!;
   }
@@ -1473,6 +1659,14 @@ class SshSession {
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell() async {
+    _flushShellIoDiagnostics();
+    _shellIoDiagnosticsTimer?.cancel();
+    _shellIoDiagnosticsTimer = null;
+    DiagnosticsLogService.instance.info(
+      'ssh.shell',
+      'close_start',
+      fields: {'connectionId': connectionId, 'hadShell': _shell != null},
+    );
     _previewRefreshTimer?.cancel();
     _previewRefreshTimer = null;
     await _shellStdoutSubscription?.cancel();
@@ -1497,6 +1691,11 @@ class SshSession {
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
+    DiagnosticsLogService.instance.info(
+      'ssh.shell',
+      'close_complete',
+      fields: {'connectionId': connectionId},
+    );
   }
 
   void _ensureShellStreamPipes() {
@@ -1513,29 +1712,132 @@ class SshSession {
     _shellStdoutSubscription = shell.stdout
         .cast<List<int>>()
         .transform(utf8.decoder)
-        .listen((data) {
-          terminal.write(data);
-          _scheduleTerminalPreviewRefresh();
-          _shellStdoutController!.add(data);
-        }, onError: _shellStdoutController!.addError);
+        .listen(
+          (data) {
+            _recordShellIo(stdoutChars: data.length);
+            terminal.write(data);
+            _scheduleTerminalPreviewRefresh();
+            _shellStdoutController!.add(data);
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            DiagnosticsLogService.instance.error(
+              'ssh.shell',
+              'stdout_error',
+              fields: {
+                'connectionId': connectionId,
+                'errorType': error.runtimeType,
+              },
+            );
+            _shellStdoutController!.addError(error, stackTrace);
+          },
+        );
     _shellStderrSubscription = shell.stderr
         .cast<List<int>>()
         .transform(utf8.decoder)
-        .listen((data) {
-          terminal.write(data);
-          _scheduleTerminalPreviewRefresh();
-          _shellStderrController!.add(data);
-        }, onError: _shellStderrController!.addError);
+        .listen(
+          (data) {
+            _recordShellIo(stderrChars: data.length);
+            terminal.write(data);
+            _scheduleTerminalPreviewRefresh();
+            _shellStderrController!.add(data);
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            DiagnosticsLogService.instance.error(
+              'ssh.shell',
+              'stderr_error',
+              fields: {
+                'connectionId': connectionId,
+                'errorType': error.runtimeType,
+              },
+            );
+            _shellStderrController!.addError(error, stackTrace);
+          },
+        );
     _shellDoneSubscription = shell.done.asStream().listen(
-      (_) => _shellDoneController!.add(null),
-      onError: _shellDoneController!.addError,
+      (_) {
+        DiagnosticsLogService.instance.info(
+          'ssh.shell',
+          'done',
+          fields: {'connectionId': connectionId},
+        );
+        _shellDoneController!.add(null);
+      },
+      onError: (Object error, StackTrace stackTrace) {
+        DiagnosticsLogService.instance.error(
+          'ssh.shell',
+          'done_error',
+          fields: {
+            'connectionId': connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        _shellDoneController!.addError(error, stackTrace);
+      },
     );
 
     // Wire terminal keyboard output → shell stdin (persistent).
     terminal.onOutput = (data) {
+      _recordShellIo(stdinChars: data.length);
       shell.write(utf8.encode(data));
     };
     _refreshTerminalPreview();
+  }
+
+  void _recordShellIo({
+    int stdoutChars = 0,
+    int stderrChars = 0,
+    int stdinChars = 0,
+  }) {
+    if (!DiagnosticsLogService.instance.enabled) {
+      return;
+    }
+    if (stdoutChars > 0) {
+      _shellStdoutChunkCount += 1;
+      _shellStdoutCharCount += stdoutChars;
+    }
+    if (stderrChars > 0) {
+      _shellStderrChunkCount += 1;
+      _shellStderrCharCount += stderrChars;
+    }
+    if (stdinChars > 0) {
+      _shellStdinWriteCount += 1;
+      _shellStdinCharCount += stdinChars;
+    }
+    if (!(_shellIoDiagnosticsTimer?.isActive ?? false)) {
+      _shellIoDiagnosticsTimer = Timer(
+        _shellIoDiagnosticsInterval,
+        _flushShellIoDiagnostics,
+      );
+    }
+  }
+
+  void _flushShellIoDiagnostics() {
+    _shellIoDiagnosticsTimer?.cancel();
+    _shellIoDiagnosticsTimer = null;
+    if (_shellStdoutChunkCount == 0 &&
+        _shellStderrChunkCount == 0 &&
+        _shellStdinWriteCount == 0) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'ssh.shell',
+      'io_summary',
+      fields: {
+        'connectionId': connectionId,
+        'stdoutChunks': _shellStdoutChunkCount,
+        'stdoutChars': _shellStdoutCharCount,
+        'stderrChunks': _shellStderrChunkCount,
+        'stderrChars': _shellStderrCharCount,
+        'stdinWrites': _shellStdinWriteCount,
+        'stdinChars': _shellStdinCharCount,
+      },
+    );
+    _shellStdoutChunkCount = 0;
+    _shellStdoutCharCount = 0;
+    _shellStderrChunkCount = 0;
+    _shellStderrCharCount = 0;
+    _shellStdinWriteCount = 0;
+    _shellStdinCharCount = 0;
   }
 
   void _scheduleTerminalPreviewRefresh() {
@@ -1556,6 +1858,15 @@ class SshSession {
       return;
     }
     _terminalPreview = nextPreview;
+    DiagnosticsLogService.instance.debug(
+      'ssh.preview',
+      'changed',
+      fields: {
+        'connectionId': connectionId,
+        'hasPreview': nextPreview != null,
+        'charCount': nextPreview?.length ?? 0,
+      },
+    );
     _notifyPreviewChanged();
   }
 
@@ -1565,6 +1876,14 @@ class SshSession {
       return;
     }
     _windowTitle = sanitizedTitle;
+    DiagnosticsLogService.instance.debug(
+      'ssh.metadata',
+      'window_title_changed',
+      fields: {
+        'connectionId': connectionId,
+        'hasTitle': sanitizedTitle != null,
+      },
+    );
     _notifyMetadataChanged();
   }
 
@@ -1574,6 +1893,14 @@ class SshSession {
       return;
     }
     _iconName = sanitizedIconName;
+    DiagnosticsLogService.instance.debug(
+      'ssh.metadata',
+      'icon_name_changed',
+      fields: {
+        'connectionId': connectionId,
+        'hasIcon': sanitizedIconName != null,
+      },
+    );
     _notifyMetadataChanged();
   }
 
@@ -1586,6 +1913,14 @@ class SshSession {
         return;
       }
       _workingDirectory = nextWorkingDirectory;
+      DiagnosticsLogService.instance.debug(
+        'ssh.metadata',
+        'working_directory_changed',
+        fields: {
+          'connectionId': connectionId,
+          'hasWorkingDirectory': nextWorkingDirectory != null,
+        },
+      );
       _notifyMetadataChanged();
       return;
     }
@@ -1607,6 +1942,15 @@ class SshSession {
       }
       _shellStatus = nextShellState.status;
       _lastExitCode = nextShellState.lastExitCode;
+      DiagnosticsLogService.instance.debug(
+        'ssh.metadata',
+        'shell_status_changed',
+        fields: {
+          'connectionId': connectionId,
+          'shellStatus': nextShellState.status,
+          'lastExitCode': nextShellState.lastExitCode,
+        },
+      );
       _notifyMetadataChanged();
     }
   }
@@ -1700,8 +2044,42 @@ class SshSession {
   }
 
   /// Execute a command.
-  Future<SSHSession> execute(String command, {SSHPtyConfig? pty}) =>
-      client.execute(command, pty: pty);
+  Future<SSHSession> execute(String command, {SSHPtyConfig? pty}) async {
+    DiagnosticsLogService.instance.debug(
+      'ssh.exec',
+      'open_start',
+      fields: {
+        'connectionId': connectionId,
+        'commandKind': _diagnosticSshCommandKind(command),
+        'pty': pty != null,
+      },
+    );
+    try {
+      final execSession = await client.execute(command, pty: pty);
+      DiagnosticsLogService.instance.debug(
+        'ssh.exec',
+        'open_success',
+        fields: {
+          'connectionId': connectionId,
+          'commandKind': _diagnosticSshCommandKind(command),
+          'pty': pty != null,
+        },
+      );
+      return execSession;
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.error(
+        'ssh.exec',
+        'open_failed',
+        fields: {
+          'connectionId': connectionId,
+          'commandKind': _diagnosticSshCommandKind(command),
+          'pty': pty != null,
+          'errorType': error.runtimeType,
+        },
+      );
+      rethrow;
+    }
+  }
 
   /// Start an SFTP session.
   Future<SftpClient> sftp() => client.sftp();
@@ -2029,6 +2407,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (!forceNew) {
       final existingConnectionId = getPreferredConnectionForHost(hostId);
       if (existingConnectionId != null) {
+        DiagnosticsLogService.instance.info(
+          'ssh.active',
+          'reuse_connection',
+          fields: {'hostId': hostId, 'connectionId': existingConnectionId},
+        );
         unawaited(_queueBackgroundStatusSync());
         return SshConnectionResult(
           success: true,
@@ -2079,11 +2462,26 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       );
     }
 
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'connect_result',
+      fields: {
+        'hostId': hostId,
+        'success': result.success,
+        'connectionId': result.connectionId,
+        'errorType': _diagnosticSshResultErrorKind(result.error),
+      },
+    );
     return result;
   }
 
   /// Disconnect from a connection.
   Future<void> disconnect(int connectionId) async {
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'disconnect',
+      fields: {'connectionId': connectionId},
+    );
     _detachSessionListeners(connectionId);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);
@@ -2094,6 +2492,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
 
   /// Disconnect all active sessions.
   Future<void> disconnectAll() async {
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'disconnect_all',
+      fields: {'connectionCount': _sshService.sessions.length},
+    );
     for (final session in _sshService.sessions.values) {
       _detachSessionListeners(session.connectionId, session: session);
     }
@@ -2289,6 +2692,11 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
       latestMessage: update.message,
       logLines: List.unmodifiable(nextLogLines),
     );
+    DiagnosticsLogService.instance.info(
+      'ssh.active',
+      'attempt_update',
+      fields: {'hostId': hostId, 'state': update.state},
+    );
     state = {...state};
   }
 
@@ -2311,9 +2719,19 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     final hostId = _connectionHostIds[connectionId];
     final session = _sshService.getSession(connectionId);
     if (hostId == null && session == null && !state.containsKey(connectionId)) {
+      DiagnosticsLogService.instance.debug(
+        'ssh.active',
+        'unexpected_disconnect_ignored',
+        fields: {'connectionId': connectionId},
+      );
       return;
     }
 
+    DiagnosticsLogService.instance.warning(
+      'ssh.active',
+      'unexpected_disconnect',
+      fields: {'connectionId': connectionId, 'hostId': hostId},
+    );
     _detachSessionListeners(connectionId, session: session);
     await _sshService.disconnect(connectionId);
     _connectionHostIds.remove(connectionId);

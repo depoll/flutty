@@ -161,6 +161,23 @@ void main() {
     );
   });
 
+  group('diagnosticTmuxControlLineKind', () {
+    test('returns only the control marker category', () {
+      expect(
+        diagnosticTmuxControlLineKind(
+          r'%subscription-changed flutty-1-42 $1 @1 1 %1 : private details',
+        ),
+        'subscription_changed',
+      );
+      expect(
+        diagnosticTmuxControlLineKind('%window-renamed @1 private-name'),
+        'window_renamed',
+      );
+      expect(diagnosticTmuxControlLineKind(''), 'empty');
+      expect(diagnosticTmuxControlLineKind('unrecognized payload'), 'other');
+    });
+  });
+
   group('shouldScheduleTmuxWindowReloadFallback', () {
     const subscriptionName = 'flutty-1-42';
 
