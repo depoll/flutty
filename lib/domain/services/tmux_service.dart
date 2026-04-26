@@ -48,7 +48,11 @@ class TmuxService {
   static final Map<int, String> _profileSourceCache = {};
 
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
-  static final Map<int, Set<AgentLaunchTool>> _installedAgentToolsCache = {};
+  static final Map<int, _CachedInstalledAgentTools> _installedAgentToolsCache =
+      {};
+
+  static final Map<int, Future<Set<AgentLaunchTool>>>
+  _installedAgentToolRequests = {};
 
   static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
   _windowObservers = {};
@@ -56,6 +60,7 @@ class TmuxService {
   _windowListRequests = {};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
+  static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
   static final RegExp _execDoneMarkerLinePattern = RegExp(
     '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
   );
@@ -75,6 +80,7 @@ class TmuxService {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _installedAgentToolsCache.remove(connectionId);
+    _installedAgentToolRequests.remove(connectionId);
     _windowListRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -183,35 +189,91 @@ class TmuxService {
   ) async {
     final cached = _installedAgentToolsCache[session.connectionId];
     if (cached != null) {
+      final age = DateTime.now().difference(cached.cachedAt);
       DiagnosticsLogService.instance.info(
         'tmux.agent',
         'tool_detection_cached',
         fields: {
           'connectionId': session.connectionId,
-          'toolCount': cached.length,
+          'toolCount': cached.tools.length,
+          'ageMs': age.inMilliseconds,
         },
       );
-      return cached;
+      if (age >= _installedAgentToolsFreshTtl) {
+        unawaited(_refreshInstalledAgentTools(session));
+      }
+      return cached.tools;
     }
+
+    return _refreshInstalledAgentTools(session);
+  }
+
+  /// Warms the installed agent CLI cache in the background.
+  Future<void> prefetchInstalledAgentTools(SshSession session) async {
+    final cached = _installedAgentToolsCache[session.connectionId];
+    if (cached != null &&
+        DateTime.now().difference(cached.cachedAt) <
+            _installedAgentToolsFreshTtl) {
+      return;
+    }
+    try {
+      await _refreshInstalledAgentTools(session);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'tool_detection_prefetch_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+  }
+
+  Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(SshSession session) {
+    final existingRequest = _installedAgentToolRequests[session.connectionId];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'tool_detection_join',
+        fields: {'connectionId': session.connectionId},
+      );
+      return existingRequest;
+    }
+
     DiagnosticsLogService.instance.info(
       'tmux.agent',
       'tool_detection_start',
       fields: {'connectionId': session.connectionId},
     );
-    final output = await _exec(session, buildAgentToolDetectionCommand());
-    final installed = parseInstalledAgentTools(output);
-    if (installed.isNotEmpty) {
-      _installedAgentToolsCache[session.connectionId] = installed;
-    }
-    DiagnosticsLogService.instance.info(
-      'tmux.agent',
-      'tool_detection_complete',
-      fields: {
-        'connectionId': session.connectionId,
-        'toolCount': installed.length,
-      },
-    );
-    return installed;
+    final request = () async {
+      final output = await _exec(session, buildAgentToolDetectionCommand());
+      final installed = parseInstalledAgentTools(output);
+      _installedAgentToolsCache[session.connectionId] =
+          _CachedInstalledAgentTools(
+            tools: Set<AgentLaunchTool>.unmodifiable(installed),
+            cachedAt: DateTime.now(),
+          );
+      DiagnosticsLogService.instance.info(
+        'tmux.agent',
+        'tool_detection_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'toolCount': installed.length,
+        },
+      );
+      return installed;
+    }();
+    _installedAgentToolRequests[session.connectionId] = request;
+    request.whenComplete(() {
+      if (identical(
+        _installedAgentToolRequests[session.connectionId],
+        request,
+      )) {
+        _installedAgentToolRequests.remove(session.connectionId);
+      }
+    }).ignore();
+    return request;
   }
 
   /// Lists all tmux sessions on the remote host.
@@ -1000,6 +1062,16 @@ AgentLaunchTool? _agentToolForCreatedWindow({
 }) =>
     agentLaunchToolForCommandName(name) ??
     agentLaunchToolForCommandText(command);
+
+class _CachedInstalledAgentTools {
+  const _CachedInstalledAgentTools({
+    required this.tools,
+    required this.cachedAt,
+  });
+
+  final Set<AgentLaunchTool> tools;
+  final DateTime cachedAt;
+}
 
 String _diagnosticTmuxCommandKind(String command) {
   if (command.contains('attach-session')) {

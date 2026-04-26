@@ -41,6 +41,43 @@ void main() {
         );
       },
     );
+
+    test('detectInstalledAgentTools caches empty results', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 20);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      final first = await service.detectInstalledAgentTools(session);
+      final second = await service.detectInstalledAgentTools(session);
+
+      expect(first, isEmpty);
+      expect(second, isEmpty);
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
+
+    test('prefetchInstalledAgentTools warms the detection cache', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 21);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(
+        stdout: '/opt/homebrew/bin/gemini\n${_doneMarker()}',
+      );
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.prefetchInstalledAgentTools(session);
+      final tools = await service.detectInstalledAgentTools(session);
+
+      expect(tools, {AgentLaunchTool.geminiCli});
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
   });
 
   group('parseTmuxWindowChangeEventFromControlLine', () {
@@ -673,16 +710,17 @@ void main() {
   });
 }
 
-SshSession _buildSession(SSHClient client) => SshSession(
-  connectionId: 1,
-  hostId: 1,
-  client: client,
-  config: const SshConnectionConfig(
-    hostname: 'example.com',
-    port: 22,
-    username: 'tester',
-  ),
-);
+SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
+    SshSession(
+      connectionId: connectionId,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'tester',
+      ),
+    );
 
 class _MockSshClient extends Mock implements SSHClient {}
 

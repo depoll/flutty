@@ -289,6 +289,9 @@ void main() {
       when(
         () => tmuxService.detectInstalledAgentTools(session),
       ).thenAnswer((_) async => const <AgentLaunchTool>{});
+      when(
+        () => tmuxService.prefetchInstalledAgentTools(session),
+      ).thenAnswer((_) async {});
 
       await tester.pumpWidget(
         ProviderScope(
@@ -349,6 +352,9 @@ void main() {
         when(
           () => tmuxService.watchWindowChanges(session, tmuxSessionName),
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
           ProviderScope(
