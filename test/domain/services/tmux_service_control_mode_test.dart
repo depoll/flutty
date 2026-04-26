@@ -311,6 +311,39 @@ void main() {
       },
     );
 
+    test('listWindows coalesces duplicate in-flight reloads', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final openCompleter = Completer<SSHSession>();
+      final execSession = _buildOpenExecSession(
+        stdout:
+            '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
+            '${_doneMarker()}',
+      );
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) => openCompleter.future);
+
+      final first = service.listWindows(session, 'main');
+      final second = service.listWindows(session, 'main');
+      openCompleter.complete(execSession);
+
+      final results = await Future.wait([first, second]);
+
+      expect(results[0], hasLength(1));
+      expect(results[1], orderedEquals(results[0]));
+      expect(
+        () => results[0].add(
+          const TmuxWindow(index: 2, name: 'other', isActive: false),
+        ),
+        throwsUnsupportedError,
+      );
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+      verify(execSession.close).called(1);
+    });
+
     test('listWindows ignores done-marker text inside tmux fields', () async {
       final client = _MockSshClient();
       final session = _buildSession(client);
@@ -498,14 +531,12 @@ void main() {
 
   group('decideTmuxHeartbeatAction', () {
     const heartbeat = Duration(seconds: 5);
-    const maxSilence = Duration(seconds: 30);
 
     test('noop while control-mode notifications are flowing', () {
       expect(
         decideTmuxHeartbeatAction(
           silence: Duration.zero,
           heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
         ),
         TmuxControlHeartbeatAction.noop,
       );
@@ -513,7 +544,6 @@ void main() {
         decideTmuxHeartbeatAction(
           silence: const Duration(milliseconds: 4999),
           heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
         ),
         TmuxControlHeartbeatAction.noop,
       );
@@ -525,7 +555,6 @@ void main() {
         decideTmuxHeartbeatAction(
           silence: heartbeat,
           heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
         ),
         TmuxControlHeartbeatAction.refresh,
       );
@@ -533,31 +562,23 @@ void main() {
         decideTmuxHeartbeatAction(
           silence: const Duration(seconds: 20),
           heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
         ),
         TmuxControlHeartbeatAction.refresh,
       );
     });
 
-    test('restarts the control session once silence exceeds the dead-channel '
-        'threshold', () {
-      expect(
-        decideTmuxHeartbeatAction(
-          silence: maxSilence,
-          heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
-        ),
-        TmuxControlHeartbeatAction.restart,
-      );
-      expect(
-        decideTmuxHeartbeatAction(
-          silence: const Duration(minutes: 5),
-          heartbeatInterval: heartbeat,
-          maxSilenceBeforeRestart: maxSilence,
-        ),
-        TmuxControlHeartbeatAction.restart,
-      );
-    });
+    test(
+      'continues refreshing instead of restarting after prolonged silence',
+      () {
+        expect(
+          decideTmuxHeartbeatAction(
+            silence: const Duration(minutes: 5),
+            heartbeatInterval: heartbeat,
+          ),
+          TmuxControlHeartbeatAction.refresh,
+        );
+      },
+    );
   });
 }
 

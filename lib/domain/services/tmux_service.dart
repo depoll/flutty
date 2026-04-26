@@ -52,6 +52,8 @@ class TmuxService {
 
   static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
   _windowObservers = {};
+  static final Map<_TmuxWindowWatchKey, Future<List<TmuxWindow>>>
+  _windowListRequests = {};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static final RegExp _execDoneMarkerLinePattern = RegExp(
@@ -73,6 +75,9 @@ class TmuxService {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _installedAgentToolsCache.remove(connectionId);
+    _windowListRequests.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
     final observerKeys = _windowObservers.keys
         .where((key) => key.connectionId == connectionId)
         .toList(growable: false);
@@ -364,6 +369,37 @@ class TmuxService {
     SshSession session,
     String sessionName,
   ) async {
+    final key = _TmuxWindowWatchKey(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+    );
+    final existingRequest = _windowListRequests[key];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'list_windows_join',
+        fields: {
+          'connectionId': session.connectionId,
+          'sessionHash': sessionName.hashCode.abs(),
+        },
+      );
+      return existingRequest;
+    }
+
+    final request = _listWindows(session, sessionName);
+    _windowListRequests[key] = request;
+    request.whenComplete(() {
+      if (identical(_windowListRequests[key], request)) {
+        _windowListRequests.remove(key);
+      }
+    }).ignore();
+    return request;
+  }
+
+  Future<List<TmuxWindow>> _listWindows(
+    SshSession session,
+    String sessionName,
+  ) async {
     DiagnosticsLogService.instance.debug(
       'tmux.query',
       'list_windows_start',
@@ -377,7 +413,9 @@ class TmuxService {
       '#{pane_current_command}|#{pane_current_path}|'
       "#{window_flags}|#{pane_title}|#{window_activity}'",
     );
-    final windows = _parseLines(output, TmuxWindow.fromTmuxFormat);
+    final windows = List<TmuxWindow>.unmodifiable(
+      _parseLines(output, TmuxWindow.fromTmuxFormat),
+    );
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'list_windows_complete',
@@ -1124,34 +1162,25 @@ TmuxWindowChangeEvent? parseTmuxWindowChangeEventFromControlLine(
   return null;
 }
 
-/// Action the tmux control-mode heartbeat decides to take based on how
-/// long the channel has been silent.
+/// Action the tmux control-mode heartbeat decides to take based on how long
+/// the channel has been silent.
 @visibleForTesting
 enum TmuxControlHeartbeatAction {
   /// No action — control-mode notifications have arrived recently.
   noop,
 
-  /// Synthesize a refresh event so listeners refetch window state via a
-  /// separate exec channel.
+  /// Synthesize a refresh event so listeners refetch window state.
   refresh,
-
-  /// Tear down and restart the control session — silence has exceeded
-  /// the dead-channel threshold.
-  restart,
 }
 
 /// Pure decision function used by the control-mode observer's heartbeat
 /// to keep the UI in sync when push notifications are dropped or the SSH
-/// channel is half-open.
+/// channel is quiet.
 @visibleForTesting
 TmuxControlHeartbeatAction decideTmuxHeartbeatAction({
   required Duration silence,
   required Duration heartbeatInterval,
-  required Duration maxSilenceBeforeRestart,
 }) {
-  if (silence >= maxSilenceBeforeRestart) {
-    return TmuxControlHeartbeatAction.restart;
-  }
   if (silence >= heartbeatInterval) {
     return TmuxControlHeartbeatAction.refresh;
   }
@@ -1195,16 +1224,10 @@ class _TmuxWindowChangeObserver {
 
   static const _eventDebounce = Duration(milliseconds: 150);
 
-  /// How often to check whether the control-mode session has gone silent
-  /// and synthesize a refresh event when it has. Keeps the UI in sync
-  /// even if `%subscription-changed` notifications are dropped (e.g. due
-  /// to a half-open SSH channel that did not surface as `done`).
+  /// How often to check whether the control-mode session has gone quiet and
+  /// synthesize a refresh event when it has. Keeps the UI in sync even if
+  /// `%subscription-changed` notifications are dropped.
   static const _heartbeatInterval = Duration(seconds: 5);
-
-  /// If no control-mode line arrives for this long, treat the session as
-  /// dead and force a reconnect even though the SSH `done` callback never
-  /// fired.
-  static const _maxSilenceBeforeRestart = Duration(seconds: 30);
 
   final TmuxService service;
   final SshSession session;
@@ -1460,16 +1483,13 @@ class _TmuxWindowChangeObserver {
     _heartbeatTimer = null;
   }
 
-  /// Heartbeat tick. Two responsibilities:
+  /// Heartbeat tick:
   ///
-  /// 1. If the control session has been silent for [_heartbeatInterval],
-  ///    synthesize a refresh event so listeners refetch window state via
-  ///    a separate exec channel. This keeps alerts visible in real time
-  ///    even when control-mode notifications are dropped or delayed.
-  /// 2. If the silence exceeds [_maxSilenceBeforeRestart], assume the SSH
-  ///    channel is half-open and tear down + restart it; tmux normally
-  ///    emits some traffic at least every few seconds, so prolonged
-  ///    silence is a strong signal of a dead channel.
+  /// If the control session has been quiet for [_heartbeatInterval],
+  /// synthesize a refresh event so listeners refetch window state. Do not
+  /// restart a quiet control session; tmux can legitimately stay silent after
+  /// its initial subscription snapshot, and frequent restarts consume SSH
+  /// session channels on servers with low `MaxSessions` limits.
   void _onHeartbeat() {
     if (_disposed) return;
     final lastActivity = _lastControlActivity;
@@ -1477,7 +1497,6 @@ class _TmuxWindowChangeObserver {
     final action = decideTmuxHeartbeatAction(
       silence: _now().difference(lastActivity),
       heartbeatInterval: _heartbeatInterval,
-      maxSilenceBeforeRestart: _maxSilenceBeforeRestart,
     );
     switch (action) {
       case TmuxControlHeartbeatAction.noop:
@@ -1492,17 +1511,6 @@ class _TmuxWindowChangeObserver {
           },
         );
         _scheduleReloadEvent();
-        return;
-      case TmuxControlHeartbeatAction.restart:
-        DiagnosticsLogService.instance.warning(
-          'tmux.watch',
-          'heartbeat_restart',
-          fields: {
-            'connectionId': session.connectionId,
-            'silenceMs': _now().difference(lastActivity).inMilliseconds,
-          },
-        );
-        _handleControlClosed();
         return;
     }
   }
