@@ -31,7 +31,7 @@ platform :android do
         upload_worker = create_meta_upload_worker
         upload_worker.batch_enqueue(
           all_languages.reject { |lang| lang.start_with?('.') }.map do |lang|
-            UploadJob.new(lang, nil, release_notes_queue)
+            Supply::Uploader::UploadJob.new(lang, nil, release_notes_queue)
           end
         )
         upload_worker.start
