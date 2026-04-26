@@ -425,7 +425,7 @@ Future<void> _seedDatabase(AppDatabase database) async {
           name: 'Deploy Ed25519',
           keyType: 'ed25519',
           publicKey:
-              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMonkeySSHStoreScreenshot deploy@example',
+              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMonkeySSHStoreScreenshot streamer-redacted',
           privateKey: 'store-screenshot-private-key-placeholder',
           fingerprint: const Value('SHA256:monkeyssh-demo-key'),
         ),
@@ -521,10 +521,10 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .into(database.snippets)
       .insert(
         SnippetsCompanion.insert(
-          name: 'Resume Copilot',
-          command: 'copilot resume --recent',
+          name: 'Resume Copilot safely',
+          command: 'copilot resume --recent --streamer-mode',
           description: const Value(
-            'Jump back into the latest Copilot coding-agent session.',
+            'Jump back into a redacted Copilot coding-agent session.',
           ),
           autoExecute: const Value(false),
           usageCount: const Value(18),
@@ -535,10 +535,10 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .into(database.snippets)
       .insert(
         SnippetsCompanion.insert(
-          name: 'Open Claude Code',
-          command: 'claude --continue',
+          name: 'Open Claude Code safely',
+          command: 'claude --continue --streamer-mode',
           description: const Value(
-            'Resume the Claude Code conversation in this workspace.',
+            'Resume Claude Code with private identity details hidden.',
           ),
           usageCount: const Value(12),
           sortOrder: const Value(1),
@@ -570,19 +570,22 @@ const _terminalPreview = r'''
 monkey@devbox ~/src/api
 $ tmux attach -t agent-api
 0:claude 1:copilot 2:tests 3:logs
-Claude Code and Copilot are both live.''';
+Streamer mode is on for both agents.''';
 
 const _terminalTranscript = r'''
 monkey@devbox:~/src/api$ tmux attach -t agent-api
 [agent-api] 0:claude* 1:copilot 2:tests 3:logs
 
-pane 0 - Claude Code
-monkey@devbox:api$ claude --continue
+pane 0 - Claude Code (streamer mode)
+monkey@devbox:api$ claude --continue --streamer-mode
+Claude> Streamer mode is on
+Claude> Identity details hidden
 Claude> Reviewing tmux reconnect flow
 Claude> Patch ready in lib/domain/services
 
-pane 1 - Copilot CLI
-monkey@devbox:api$ copilot resume --recent
+pane 1 - Copilot CLI (streamer mode)
+monkey@devbox:api$ copilot resume --recent --streamer-mode
+Copilot> Streamer mode is on
 Copilot> Found session "store assets"
 Copilot> Updating screenshots from real UI
 
@@ -591,7 +594,7 @@ monkey@devbox:api$ flutter test
 00:03 +42: All tests passed!
 
 pane 3 - logs
-api    GET /health        200 OK
+api    health check       200 OK
 agent  tmux window sync   complete
 ''';
 
@@ -604,8 +607,8 @@ Open the persistent tmux session before starting work:
 
 Windows:
 
-1. claude  - Claude Code for deeper edits
-2. copilot - Copilot CLI for review and follow-up
+1. claude  - Claude Code with streamer mode enabled
+2. copilot - Copilot CLI with streamer mode enabled
 3. tests   - Flutter and domain test runs
 4. logs    - API and SSH diagnostic logs
 
@@ -614,5 +617,6 @@ Current release task:
 - Polish screenshots from the real MonkeySSH app
 - Keep terminal and editor themes visually matched
 - Show tmux, Claude Code, and Copilot working together
+- Keep emails, usernames, and private identifiers hidden
 - Avoid subscription or checkout screens in store assets
 ''';
