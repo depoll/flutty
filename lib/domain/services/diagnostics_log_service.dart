@@ -78,7 +78,7 @@ class DiagnosticsLogEntry {
   }
 }
 
-/// Preview-only diagnostics log with strict field sanitization.
+/// Preview/beta-only diagnostics log with strict field sanitization.
 class DiagnosticsLogService extends ChangeNotifier {
   /// Creates a diagnostics logger.
   DiagnosticsLogService({
@@ -89,7 +89,9 @@ class DiagnosticsLogService extends ChangeNotifier {
        _maxEntries = maxEntries < 1 ? 1 : maxEntries;
 
   /// Shared diagnostics logger used by app services.
-  static final instance = DiagnosticsLogService(enabled: isPreviewBuild);
+  static final instance = DiagnosticsLogService(
+    enabled: isDiagnosticsLoggingEnabled,
+  );
 
   static const _redacted = '[redacted]';
   static const _maxStringLength = 160;

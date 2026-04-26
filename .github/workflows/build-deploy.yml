@@ -26,6 +26,11 @@ on:
         type: string
         default: ''
         description: 'Pull request title for preview-derived builds'
+      enable-diagnostics:
+        required: false
+        type: boolean
+        default: false
+        description: 'Whether to enable copyable in-app diagnostics logging'
       flavor:
         required: true
         type: string
@@ -183,6 +188,7 @@ jobs:
     env:
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
+      FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
@@ -313,7 +319,8 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
       - name: Build unsigned AAB
         if: inputs.build-android-unsigned-aab && inputs.android-reuse-aab-artifact-name == '' && inputs.deploy-android-to == 'none'
@@ -327,7 +334,8 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
       - name: Build debug APK
         if: inputs.deploy-android-to == 'none'
@@ -339,7 +347,8 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
       - name: Download reusable AAB artifact
         if: inputs.android-reuse-aab-artifact-name != ''
@@ -507,6 +516,7 @@ jobs:
       DEVELOPER_DIR: /Applications/Xcode.app/Contents/Developer
       FLUTTY_PR_NUMBER: ${{ inputs.pr-number }}
       FLUTTY_PR_TITLE: ${{ inputs.pr-title }}
+      FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
     outputs:
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
@@ -613,7 +623,8 @@ jobs:
             --build-name=${{ inputs.build-name }} \
             --build-number=${{ inputs.build-number }} \
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE"
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
       - name: Package unsigned IPA
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'

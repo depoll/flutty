@@ -10,10 +10,16 @@ const _versionCodenameAssetPath = 'assets/version_codenames.json';
 
 const _pullRequestNumber = String.fromEnvironment('FLUTTY_PR_NUMBER');
 const _pullRequestTitle = String.fromEnvironment('FLUTTY_PR_TITLE');
+const _diagnosticsBuildEnabled = bool.fromEnvironment(
+  'FLUTTY_DIAGNOSTICS_ENABLED',
+);
 Future<Map<int, String>>? _versionCodenameLookup;
 
 /// Whether this binary was produced from a pull-request preview build.
 const isPreviewBuild = _pullRequestNumber != '';
+
+/// Whether this binary should retain and expose diagnostics logs.
+const isDiagnosticsLoggingEnabled = isPreviewBuild || _diagnosticsBuildEnabled;
 
 /// Provides the current platform app name with a safe fallback.
 final appDisplayNameProvider = Provider<String>((ref) {

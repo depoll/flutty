@@ -658,6 +658,7 @@ jobs:
       build-codename: ${{ needs.finalize-version.outputs.build-codename }}
       pr-number: ${{ inputs.pr-number }}
       pr-title: ${{ needs.validate-pr.outputs.pr-title }}
+      enable-diagnostics: true
       flavor: private
       source-ref: ${{ needs.validate-pr.outputs.deploy-sha }}
       deploy-ios-to: testflight
