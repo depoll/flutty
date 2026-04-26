@@ -561,6 +561,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       if (await _loadDirectory(
         _fallbackDirectoryPath!,
         nextHistory: [_fallbackDirectoryPath!],
+        rethrowTimeout: true,
         showError: false,
       )) {
         return;
@@ -622,12 +623,23 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     addCandidate('/');
 
     for (final candidatePath in candidatePaths) {
-      if (await _loadDirectory(
-        candidatePath,
-        nextHistory: [candidatePath],
-        showError: false,
-      )) {
-        _pendingInitialPath = null;
+      try {
+        if (await _loadDirectory(
+          candidatePath,
+          nextHistory: [candidatePath],
+          rethrowTimeout: true,
+          showError: false,
+        )) {
+          _pendingInitialPath = null;
+          return;
+        }
+      } on TimeoutException {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _error = sftpTimeoutMessage('opening the SFTP browser');
+          });
+        }
         return;
       }
     }
@@ -644,6 +656,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   Future<bool> _loadDirectory(
     String path, {
     List<String>? nextHistory,
+    bool rethrowTimeout = false,
     bool showError = true,
   }) async {
     if (_sftp == null) {
@@ -683,6 +696,9 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _queueScrollBreadcrumbTailIntoView();
       return true;
     } on Exception catch (e) {
+      if (e is TimeoutException && rethrowTimeout) {
+        rethrow;
+      }
       if (!mounted) {
         return false;
       }
