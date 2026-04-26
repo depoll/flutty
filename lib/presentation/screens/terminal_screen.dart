@@ -3259,7 +3259,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (_isAndroidPlatform) {
       try {
-        return Pasteboard.text;
+        return await Pasteboard.text;
       } on PlatformException {
         return null;
       }
