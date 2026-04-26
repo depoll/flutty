@@ -8,6 +8,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -112,6 +113,7 @@ def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
     demo.reset_tmux()
     if target.platform == 'ios':
         device_id = _boot_ios_simulator(target.simulator_name or '')
+        _reset_ios_app_state(device_id)
         restore_android = None
     else:
         device_id = _android_device_id()
@@ -151,6 +153,7 @@ def _run_flutter_capture(
         f'--dart-define=STORE_SCREENSHOT_TMUX_SESSION={demo.tmux_session}',
         '--dart-define=STORE_SCREENSHOT_REDACT_IDENTITIES=true',
         '--dart-define=STORE_SCREENSHOT_HIDE_KEYBOARD_TOOLBAR=true',
+        '--dart-define=STORE_SCREENSHOT_DISABLE_NOTIFICATIONS=true',
     ]
     if target.platform in ('android', 'ios'):
         command.extend(['--flavor', 'production'])
@@ -204,11 +207,17 @@ class StoreDemoEnvironment:
         self.username = getpass.getuser()
         self.port = _free_local_port()
         self.tmux_session = 'agent-workspace'
-        self.demo_dir = Path('/tmp/monkeyssh-store-demo')
+        self.demo_dir = Path('/Users/Shared/monkeyssh-store-demo')
         self._process: subprocess.Popen[str] | None = None
         self._tmux = shutil.which('tmux')
         if self._tmux is None:
             raise RuntimeError('tmux is required to capture real terminal screenshots.')
+        self._claude = shutil.which('claude')
+        if self._claude is None:
+            raise RuntimeError('Claude Code CLI is required for store screenshots.')
+        self._copilot = shutil.which('copilot')
+        if self._copilot is None:
+            raise RuntimeError('GitHub Copilot CLI is required for store screenshots.')
 
     @property
     def private_key_b64(self) -> str:
@@ -232,6 +241,7 @@ class StoreDemoEnvironment:
     def __exit__(self, exc_type, exc, tb) -> None:
         self._teardown_tmux()
         self._stop_sshd()
+        self._remove_demo_dir()
         shutil.rmtree(self._tmpdir, ignore_errors=True)
 
     def reset_tmux(self) -> None:
@@ -333,59 +343,35 @@ class StoreDemoEnvironment:
         raise RuntimeError(f'Timed out waiting for demo sshd on port {self.port}')
 
     def _setup_tmux(self) -> None:
-        self.demo_dir.mkdir(parents=True, exist_ok=True)
-        (self.demo_dir / 'AGENTS.md').write_text(
-            '\n'.join(
-                [
-                    '# Agent workspace',
-                    '',
-                    'Use the persistent tmux session for release work.',
-                    '',
-                    '1. claude  - Claude Code review and edits',
-                    '2. copilot - Copilot CLI follow-up and checks',
-                    '3. agents  - shared agent instructions',
-                    '4. logs    - SSH and app diagnostics',
-                    '',
-                    'Streamer-safe capture rule: keep emails, usernames, and private identifiers hidden.',
-                    '',
-                ]
-            )
-        )
+        self._prepare_demo_dir()
         self._teardown_tmux()
         self._write_pane_script(
             'claude',
-            """
-            clear
-            printf 'Claude Code\\n'
-            printf 'Streamer-safe mode: identity details hidden\\n\\n'
-            printf '$ claude --version\\n'
-            claude --version 2>/dev/null || printf 'Claude Code installed\\n'
-            printf '\\n$ claude --bare --continue\\n'
-            printf 'Plan accepted: inspect terminal reconnect flow\\n'
-            printf 'Patch ready: tmux navigator keeps windows in sync\\n'
-            printf 'Next: run store asset validation\\n'
+            f"""
+            exec env CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 CLAUDE_CODE_HIDE_CWD=1 \\
+              {self._shell_quote(self._claude)} \\
+              --bare \\
+              --name 'Store demo Claude' \\
+              --permission-mode plan
             """,
         )
         self._write_pane_script(
             'copilot',
-            """
-            clear
-            printf 'GitHub Copilot CLI\\n'
-            printf 'Streamer-safe mode: private identifiers redacted\\n\\n'
-            printf '$ copilot --no-color version\\n'
-            copilot --no-color version 2>/dev/null || printf 'GitHub Copilot CLI installed\\n'
-            printf '\\n$ copilot --no-remote --log-level none --resume\\n'
-            printf 'Reviewing PR asset updates\\n'
-            printf 'Checks queued: screenshots, metadata, Fastlane\\n'
-            printf 'No private identifiers in visible output\\n'
+            f"""
+            exec env COPILOT_ALLOW_ALL=0 \\
+              {self._shell_quote(self._copilot)} \\
+              --no-remote \\
+              --log-level none \\
+              --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
+              --name 'Store demo Copilot'
             """,
         )
         self._write_pane_script(
             'agents',
             """
             clear
-            printf '$ sed -n "1,12p" AGENTS.md\\n'
-            sed -n '1,12p' AGENTS.md
+            printf '$ sed -n "1,14p" AGENTS.md\\n'
+            sed -n '1,14p' AGENTS.md
             """,
         )
         self._write_pane_script(
@@ -394,9 +380,88 @@ class StoreDemoEnvironment:
             clear
             printf 'ssh       connected to local demo server\\n'
             printf 'tmux      window sync complete\\n'
+            printf 'claude    real Claude Code TUI captured\\n'
+            printf 'copilot   real GitHub Copilot CLI TUI captured\\n'
             printf 'fastlane  screenshots ready for upload\\n'
             """,
         )
+        self._start_tmux_windows()
+        self._configure_tmux_status()
+        self._drive_agent_clis()
+        self.reset_tmux()
+
+    def _prepare_demo_dir(self) -> None:
+        marker = self.demo_dir / '.monkeyssh-store-demo'
+        if self.demo_dir.exists():
+            if not marker.exists():
+                raise RuntimeError(
+                    f'{self.demo_dir} already exists and was not created by this script.',
+                )
+            shutil.rmtree(self.demo_dir)
+        self.demo_dir.mkdir(parents=True)
+        marker.write_text('release screenshot demo workspace\n')
+        (self.demo_dir / 'AGENTS.md').write_text(
+            '\n'.join(
+                [
+                    '# Agent workspace',
+                    '',
+                    'Use this streamer-safe workspace for release screenshots.',
+                    '',
+                    '- Do not show emails, usernames, hostnames, tokens, or private identifiers.',
+                    '- Prefer concise checks that fit in a mobile terminal screenshot.',
+                    '- Keep terminal output focused on SSH, tmux, agent, and store asset workflows.',
+                    '',
+                    'Windows:',
+                    '1. claude  - Claude Code review and edits',
+                    '2. copilot - Copilot CLI follow-up and checks',
+                    '3. agents  - shared agent instructions',
+                    '4. logs    - SSH and app diagnostics',
+                    '',
+                ]
+            )
+        )
+        (self.demo_dir / 'reconnect_plan.md').write_text(
+            '\n'.join(
+                [
+                    '# SSH terminal reconnect plan',
+                    '',
+                    '- Verify keepalive settings detect dropped links promptly.',
+                    '- Confirm tmux reattach restores the same shell, panes, and scrollback.',
+                    '- Validate reconnect behavior after suspend, network change, and app resume.',
+                    '- Keep logs streamer-safe by hiding account and host identifiers.',
+                    '',
+                ]
+            )
+        )
+        (self.demo_dir / 'store_assets.md').write_text(
+            '\n'.join(
+                [
+                    '# Store screenshot assets',
+                    '',
+                    '| Platform | Form factors | Scenes |',
+                    '| --- | --- | --- |',
+                    '| App Store | iPhone 6.9, iPad 13 | Hosts, Claude, Copilot, tmux agents, connected hosts |',
+                    '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
+                    '',
+                    'Validation checklist:',
+                    '',
+                    '- Capture from the normal MonkeySSH app, not a direct-mounted screen harness.',
+                    '- Use a live SSH connection into this tmux workspace.',
+                    '- Show real Claude Code and GitHub Copilot CLI interfaces.',
+                    '- Avoid subscription or checkout screens.',
+                    '- Scan visible output for emails, usernames, tokens, and private identifiers.',
+                    '',
+                    '',
+                ]
+            )
+        )
+
+    def _remove_demo_dir(self) -> None:
+        marker = self.demo_dir / '.monkeyssh-store-demo'
+        if marker.exists():
+            shutil.rmtree(self.demo_dir, ignore_errors=True)
+
+    def _start_tmux_windows(self) -> None:
         self._tmux_run(
             'new-session',
             '-d',
@@ -438,8 +503,6 @@ class StoreDemoEnvironment:
             str(self.demo_dir),
             str(self._tmpdir / 'logs-pane.sh'),
         )
-        self._configure_tmux_status()
-        self.reset_tmux()
 
     def _write_pane_script(self, window: str, body: str) -> None:
         rcfile = self._tmpdir / f'{window}-bashrc'
@@ -467,6 +530,102 @@ class StoreDemoEnvironment:
             )
         )
         os.chmod(script, 0o700)
+
+    def _drive_agent_clis(self) -> None:
+        time.sleep(4)
+        self._tmux_send_keys('claude', 'Enter')
+        self._tmux_send_keys('copilot', 'Enter')
+        time.sleep(8)
+        self._ensure_copilot_streamer_mode()
+        self._tmux_send_literal(
+            'claude',
+            'In streamer-safe mode, inspect reconnect_plan.md and produce '
+            'a polished release-readiness checklist with 64 concise numbered '
+            'lines. Do not mention emails, usernames, hostnames, tokens, '
+            'accounts, billing, organizations, names, or private identifiers.',
+        )
+        self._tmux_send_keys('claude', 'Enter')
+        self._tmux_send_literal(
+            'copilot',
+            'In streamer-safe mode, inspect store_assets.md and suggest '
+            "the next two checks. Start your answer with exactly 'Next two "
+            "checks:'. Do not mention emails, usernames, hostnames, tokens, "
+            'or private identifiers.',
+        )
+        self._tmux_send_keys('copilot', 'Enter')
+        self._wait_for_agent_output('claude', ['64.', 'sign-off'])
+        self._wait_for_agent_output('copilot', ['Next two checks', 'Confirm the screenshot'])
+        self._assert_visible_panes_streamer_safe()
+
+    def _ensure_copilot_streamer_mode(self) -> None:
+        self._tmux_send_literal('copilot', '/streamer')
+        self._tmux_send_keys('copilot', 'Enter')
+        time.sleep(2)
+        text = self._capture_visible_pane('copilot')
+        if 'Streamer mode enabled.' in text:
+            return
+        if 'Streamer mode disabled.' in text:
+            self._tmux_send_literal('copilot', '/streamer')
+            self._tmux_send_keys('copilot', 'Enter')
+            time.sleep(2)
+            text = self._capture_visible_pane('copilot')
+            if 'Streamer mode enabled.' in text:
+                return
+        raise RuntimeError('Could not enable GitHub Copilot CLI streamer mode.')
+
+    def _assert_visible_panes_streamer_safe(self) -> None:
+        for window in ('claude', 'copilot'):
+            text = self._capture_visible_pane(window)
+            private_patterns = [
+                (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
+                (r'(ghp_|github_pat_|sk-)[A-Za-z0-9_\-]+', 'token'),
+                (re.escape(str(Path.home())), 'home directory'),
+                (rf'\b{re.escape(self.username)}\b', 'local username'),
+                (r'Welcome back', 'account welcome banner'),
+                (r'Organization', 'account organization'),
+                (r'Billing', 'account billing'),
+            ]
+            for pattern, label in private_patterns:
+                if re.search(pattern, text, flags=re.IGNORECASE):
+                    raise RuntimeError(
+                        f'{window} pane still shows {label}; refusing to capture store screenshot.',
+                    )
+
+    def _wait_for_agent_output(self, window: str, markers: list[str]) -> None:
+        deadline = time.time() + 90
+        while time.time() < deadline:
+            text = self._capture_visible_pane(window)
+            if any(marker in text for marker in markers):
+                return
+            time.sleep(2)
+        raise RuntimeError(
+            f'{window} pane did not render expected real CLI response markers.',
+        )
+
+    def _capture_visible_pane(self, window: str) -> str:
+        result = subprocess.run(
+            [
+                self._tmux or 'tmux',
+                'capture-pane',
+                '-p',
+                '-t',
+                f'{self.tmux_session}:{window}',
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        return result.stdout
+
+    def _tmux_send_keys(self, window: str, *keys: str) -> None:
+        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', *keys)
+
+    def _tmux_send_literal(self, window: str, text: str) -> None:
+        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', '-l', text)
+
+    @staticmethod
+    def _shell_quote(value: str) -> str:
+        return "'" + value.replace("'", "'\"'\"'") + "'"
 
     def _configure_tmux_status(self) -> None:
         self._tmux_run('set-option', '-t', self.tmux_session, 'status', 'on')
@@ -583,6 +742,19 @@ def _boot_ios_simulator(name: str) -> str:
                 )
                 return device_id
     raise RuntimeError(f'Unable to find available iOS simulator named {name!r}')
+
+
+def _reset_ios_app_state(device_id: str) -> None:
+    for bundle_id in (
+        'xyz.depollsoft.monkeyssh',
+        'xyz.depollsoft.monkeyssh.private',
+    ):
+        subprocess.run(
+            ['xcrun', 'simctl', 'uninstall', device_id, bundle_id],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
 
 
 def _android_device_id() -> str:

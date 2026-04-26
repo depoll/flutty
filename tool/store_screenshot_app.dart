@@ -22,6 +22,7 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/host_key_prompt_handler_provider.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
+import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -55,6 +56,21 @@ const _fallbackOffer = MonetizationOffer(
 );
 
 class _MockMonetizationService extends Mock implements MonetizationService {}
+
+class _NoOpLocalNotificationService extends LocalNotificationService {
+  @override
+  Future<bool> initialize() async => false;
+
+  @override
+  Future<void> showTmuxAlert({
+    required int notificationId,
+    required String title,
+    required String body,
+  }) async {}
+
+  @override
+  Future<void> clearTmuxAlert(int notificationId) async {}
+}
 
 class _ScreenshotTarget {
   const _ScreenshotTarget({required this.platform, required this.pathsByScene});
@@ -173,6 +189,9 @@ Future<void> main() async {
         monetizationStateProvider.overrideWith(
           (ref) => monetizationService.states,
         ),
+        localNotificationServiceProvider.overrideWithValue(
+          _NoOpLocalNotificationService(),
+        ),
         sharedClipboardProvider.overrideWith((ref) async => false),
       ],
       child: _StoreScreenshotFlow(target: target),
@@ -272,7 +291,7 @@ Future<void> _seedDatabase(
       terminalThemeDarkId: const Value('velvet'),
       terminalFontFamily: const Value('monospace'),
       tmuxSessionName: const Value(_tmuxSessionName),
-      tmuxWorkingDirectory: const Value('/tmp/monkeyssh-store-demo'),
+      tmuxWorkingDirectory: const Value('/Users/Shared/monkeyssh-store-demo'),
       sortOrder: const Value(0),
     ),
   );
@@ -334,7 +353,7 @@ Future<void> _seedDatabase(
         SnippetsCompanion.insert(
           name: 'Resume Copilot safely',
           command:
-              'copilot --no-remote --log-level none --secret-env-vars=USER,EMAIL --resume',
+              'copilot --no-remote --log-level none --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN',
           description: const Value(
             'Resume a Copilot session with identity details redacted.',
           ),
@@ -347,7 +366,7 @@ Future<void> _seedDatabase(
       .insert(
         SnippetsCompanion.insert(
           name: 'Open Claude Code safely',
-          command: 'claude --bare --continue',
+          command: 'claude --bare --permission-mode plan',
           description: const Value(
             'Resume Claude Code without loading user or project identity state.',
           ),
@@ -431,6 +450,8 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
 
       _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
       await Future<void>.delayed(const Duration(seconds: 6));
+      await _sendTerminalBytes('\x0c');
+      await Future<void>.delayed(const Duration(seconds: 1));
       await _announceScene(1);
 
       await _sendTmuxWindowKey('1');
@@ -495,5 +516,20 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     }
     final shell = await session.getShell();
     shell.write(utf8.encode('\x02$key'));
+  }
+
+  Future<void> _sendTerminalBytes(String value) async {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      throw StateError('SSH connection is unavailable.');
+    }
+    final session = ref
+        .read(activeSessionsProvider.notifier)
+        .getSession(connectionId);
+    if (session == null) {
+      throw StateError('SSH session is unavailable.');
+    }
+    final shell = await session.getShell();
+    shell.write(utf8.encode(value));
   }
 }

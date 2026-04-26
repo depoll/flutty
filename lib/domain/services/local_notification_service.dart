@@ -6,6 +6,9 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 /// Local notification channel used for tmux activity alerts.
 const tmuxAlertNotificationChannelId = 'tmux-alerts';
 const _androidNotificationIcon = 'ic_notification_monkey';
+const _disableNotificationsForStoreScreenshots = bool.fromEnvironment(
+  'STORE_SCREENSHOT_DISABLE_NOTIFICATIONS',
+);
 
 /// Service for showing local notifications inside the app.
 class LocalNotificationService {
@@ -80,6 +83,7 @@ class LocalNotificationService {
 
   Future<bool> _initializeInternal() async {
     if (kIsWeb) return false;
+    if (_disableNotificationsForStoreScreenshots) return false;
 
     try {
       const initializationSettings = InitializationSettings(
