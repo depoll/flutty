@@ -1295,14 +1295,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           }
         : window.displayTitle;
     final secondaryTitle = _redactStoreScreenshotIdentities
-        ? switch (window.currentCommand?.trim()) {
-            final command
-                when command != null &&
-                    command.isNotEmpty &&
-                    command.toLowerCase() != title.toLowerCase() =>
-              command,
-            _ => null,
-          }
+        ? null
         : window.secondaryTitle;
     final iconColor = isActive
         ? theme.colorScheme.primary

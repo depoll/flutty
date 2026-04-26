@@ -206,7 +206,7 @@ Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*
 Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
 App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
 Store screenshots can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`). The generator starts a temporary local `sshd` and uniquely named `tmux` workspace, boots the normal MonkeySSH app on iOS simulators and an Android emulator with release-demo data, drives real app navigation through a real Copilot CLI terminal, hosts, snippets, the tmux window selector, SFTP, and a real Claude Code terminal, then captures native device screenshots into the Fastlane folders. The generator fails instead of substituting mock screenshots if the real SSH/tmux workspace cannot be created.
-Generated screenshot counts and dimensions can be validated locally with `python3 scripts/validate_store_screenshots.py`.
+Generated screenshot counts, dimensions, and OCR content can be validated locally on macOS with `python3 scripts/validate_store_screenshots.py` after installing Pillow.
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
 > **Note:** Apple and Google require unique app names per account. The private app uses "MonkeySSH β" to distinguish it from the production "MonkeySSH" listing.

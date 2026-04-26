@@ -31,9 +31,61 @@ permissions:
   contents: read
 
 jobs:
+  changes:
+    name: Detect Changed Metadata
+    runs-on: ubuntu-latest
+    outputs:
+      ios: ${{ steps.filter.outputs.ios }}
+      android: ${{ steps.filter.outputs.android }}
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - id: filter
+        name: Detect platform metadata changes
+        shell: bash
+        run: |
+          ios=false
+          android=false
+
+          if [[ "${{ github.event_name }}" == "workflow_dispatch" ]]; then
+            case "${{ inputs.platform }}" in
+              both)
+                ios=true
+                android=true
+                ;;
+              ios)
+                ios=true
+                ;;
+              android)
+                android=true
+                ;;
+            esac
+          else
+            changed_files="$(git diff --name-only "${{ github.event.before }}" "${{ github.sha }}")"
+            while IFS= read -r changed_path; do
+              case "$changed_path" in
+                assets/icons/*|ios/fastlane/metadata-*|ios/fastlane/metadata-*/*|ios/fastlane/screenshots/*)
+                  ios=true
+                  ;;
+              esac
+              case "$changed_path" in
+                assets/icons/*|android/fastlane/metadata-*|android/fastlane/metadata-*/*)
+                  android=true
+                  ;;
+              esac
+            done <<< "$changed_files"
+          fi
+
+          echo "ios=$ios" >> "$GITHUB_OUTPUT"
+          echo "android=$android" >> "$GITHUB_OUTPUT"
+
   validate-screenshots:
     name: Validate Store Screenshots
-    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'ios' || inputs.platform == 'android'
+    needs: changes
+    if: needs.changes.outputs.ios == 'true' || needs.changes.outputs.android == 'true'
     runs-on: macos-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -44,12 +96,21 @@ jobs:
         run: python3 -m pip install --quiet Pillow
 
       - name: Validate screenshots with OCR
-        run: python3 scripts/validate_store_screenshots.py ${{ github.event_name == 'push' && 'both' || inputs.platform }}
+        shell: bash
+        run: |
+          if [[ "${{ needs.changes.outputs.ios }}" == "true" && "${{ needs.changes.outputs.android }}" == "true" ]]; then
+            platform=both
+          elif [[ "${{ needs.changes.outputs.ios }}" == "true" ]]; then
+            platform=ios
+          else
+            platform=android
+          fi
+          python3 scripts/validate_store_screenshots.py "$platform"
 
   sync-ios:
     name: Sync iOS Metadata
-    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'ios'
-    needs: validate-screenshots
+    needs: [changes, validate-screenshots]
+    if: needs.changes.outputs.ios == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -88,8 +149,8 @@ jobs:
 
   sync-android:
     name: Sync Android Metadata
-    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'android'
-    needs: validate-screenshots
+    needs: [changes, validate-screenshots]
+    if: needs.changes.outputs.android == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6

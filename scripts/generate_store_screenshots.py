@@ -21,7 +21,7 @@ from pathlib import Path
 from PIL import Image, ImageOps
 
 ROOT = Path(__file__).resolve().parents[1]
-ADB = Path.home() / 'Library/Android/sdk/platform-tools/adb'
+ADB: Path | None = None
 READY_MARKER = 'STORE_SCREENSHOT_READY '
 DONE_MARKER = 'STORE_SCREENSHOT_DONE'
 
@@ -112,7 +112,7 @@ def _run_target(target: ScreenshotTarget, demo: StoreDemoEnvironment) -> None:
     print(f'Generating {target.name} screenshots...')
     demo.reset_tmux()
     if target.platform == 'ios':
-        device_id = _boot_ios_simulator(target.simulator_name or '')
+        device_id = _boot_ios_simulator(_ios_simulator_name(target))
         _reset_ios_app_state(device_id)
         restore_android = None
     else:
@@ -724,7 +724,7 @@ def _capture_native_screenshot(
             )
         else:
             result = subprocess.run(
-                [str(ADB), '-s', device_id, 'exec-out', 'screencap', '-p'],
+                [str(_adb_path()), '-s', device_id, 'exec-out', 'screencap', '-p'],
                 cwd=ROOT,
                 check=True,
                 stdout=subprocess.PIPE,
@@ -767,6 +767,13 @@ def _boot_ios_simulator(name: str) -> str:
     raise RuntimeError(f'Unable to find available iOS simulator named {name!r}')
 
 
+def _ios_simulator_name(target: ScreenshotTarget) -> str:
+    override_name = os.environ.get(
+        f'STORE_SCREENSHOT_{target.name.upper()}_SIMULATOR',
+    )
+    return override_name or target.simulator_name or ''
+
+
 def _reset_ios_app_state(device_id: str) -> None:
     for bundle_id in (
         'xyz.depollsoft.monkeyssh',
@@ -781,9 +788,8 @@ def _reset_ios_app_state(device_id: str) -> None:
 
 
 def _android_device_id() -> str:
-    if not ADB.exists():
-        raise RuntimeError(f'adb not found at {ADB}')
-    result = subprocess.check_output([str(ADB), 'devices'], text=True)
+    adb = _adb_path()
+    result = subprocess.check_output([str(adb), 'devices'], text=True)
     for line in result.splitlines()[1:]:
         parts = line.split()
         if len(parts) >= 2 and parts[1] == 'device':
@@ -795,22 +801,23 @@ def _configure_android_display(
     target: ScreenshotTarget,
     device_id: str,
 ):
+    adb = _adb_path()
     original_size = subprocess.check_output(
-        [str(ADB), '-s', device_id, 'shell', 'wm', 'size'],
+        [str(adb), '-s', device_id, 'shell', 'wm', 'size'],
         text=True,
     )
     original_density = subprocess.check_output(
-        [str(ADB), '-s', device_id, 'shell', 'wm', 'density'],
+        [str(adb), '-s', device_id, 'shell', 'wm', 'density'],
         text=True,
     )
 
     subprocess.run(
-        [str(ADB), '-s', device_id, 'shell', 'wm', 'size', target.android_size or 'reset'],
+        [str(adb), '-s', device_id, 'shell', 'wm', 'size', target.android_size or 'reset'],
         check=True,
     )
     subprocess.run(
         [
-            str(ADB),
+            str(adb),
             '-s',
             device_id,
             'shell',
@@ -824,25 +831,50 @@ def _configure_android_display(
     def restore() -> None:
         if 'Override size:' in original_size:
             size = original_size.split('Override size:', 1)[1].splitlines()[0].strip()
-            subprocess.run([str(ADB), '-s', device_id, 'shell', 'wm', 'size', size], check=True)
+            subprocess.run([str(adb), '-s', device_id, 'shell', 'wm', 'size', size], check=True)
         else:
-            subprocess.run([str(ADB), '-s', device_id, 'shell', 'wm', 'size', 'reset'], check=True)
+            subprocess.run([str(adb), '-s', device_id, 'shell', 'wm', 'size', 'reset'], check=True)
 
         if 'Override density:' in original_density:
             density = (
                 original_density.split('Override density:', 1)[1].splitlines()[0].strip()
             )
             subprocess.run(
-                [str(ADB), '-s', device_id, 'shell', 'wm', 'density', density],
+                [str(adb), '-s', device_id, 'shell', 'wm', 'density', density],
                 check=True,
             )
         else:
             subprocess.run(
-                [str(ADB), '-s', device_id, 'shell', 'wm', 'density', 'reset'],
+                [str(adb), '-s', device_id, 'shell', 'wm', 'density', 'reset'],
                 check=True,
             )
 
     return restore
+
+
+def _adb_path() -> Path:
+    global ADB
+    if ADB is not None:
+        return ADB
+
+    candidates: list[Path] = []
+    for env_var in ('ANDROID_HOME', 'ANDROID_SDK_ROOT'):
+        sdk_root = os.environ.get(env_var)
+        if sdk_root:
+            candidates.append(Path(sdk_root) / 'platform-tools' / 'adb')
+    if found_adb := shutil.which('adb'):
+        candidates.append(Path(found_adb))
+    candidates.append(
+        Path.home() / 'Library' / 'Android' / 'sdk' / 'platform-tools' / 'adb',
+    )
+
+    for candidate in candidates:
+        if candidate.exists():
+            ADB = candidate
+            return candidate
+    raise RuntimeError(
+        'adb not found. Set ANDROID_HOME or ANDROID_SDK_ROOT, or put adb on PATH.',
+    )
 
 
 def _java_home_17() -> str | None:

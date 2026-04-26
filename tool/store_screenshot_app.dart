@@ -244,7 +244,7 @@ Future<int> _seedDatabase(
   final keyRepository = KeyRepository(database, secrets);
   final hostRepository = HostRepository(database, secrets);
   final privateKey = utf8.decode(base64Decode(_sshPrivateKeyB64));
-  final publicKey = _derivePublicKeyCommentFree(privateKey);
+  final publicKey = _placeholderPublicKeyFromPrivateKey(privateKey);
   final hostname = target.platform == TargetPlatform.android
       ? '10.0.2.2'
       : '127.0.0.1';
@@ -473,7 +473,7 @@ Future<int> _seedDatabase(
   return terminalHostId;
 }
 
-String _derivePublicKeyCommentFree(String privateKey) {
+String _placeholderPublicKeyFromPrivateKey(String privateKey) {
   final firstLine = privateKey
       .split('\n')
       .firstWhere(
