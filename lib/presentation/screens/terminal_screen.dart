@@ -430,6 +430,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.availableHeight,
     required this.isProUser,
     required this.startClisInYoloMode,
+    required this.initiallyExpanded,
     required this.ref,
     required this.onAction,
     this.scopeWorkingDirectory,
@@ -449,6 +450,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Whether supported coding CLIs should launch in YOLO mode for this host.
   final bool startClisInYoloMode;
+
+  /// Whether the tmux window list should start expanded.
+  final bool initiallyExpanded;
 
   /// Riverpod ref.
   final WidgetRef ref;
@@ -478,7 +482,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   final Set<int> _seenAlertWindows = <int>{};
-  bool _expanded = false;
+  late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
   bool _hasInitializedSessionProviders = false;
@@ -509,6 +513,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void initState() {
     super.initState();
+    _expanded = widget.initiallyExpanded;
     _bounceController = AnimationController(
       vsync: this,
       duration: const Duration(milliseconds: 600),
@@ -1234,7 +1239,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   Widget _buildWindowTile(ThemeData theme, TmuxWindow window) {
     final isActive = window.isActive;
-    final secondaryTitle = window.secondaryTitle;
+    final title = _redactStoreScreenshotIdentities
+        ? switch (window.name.trim()) {
+            'claude' => 'Store demo Claude',
+            final name when name.isNotEmpty => name,
+            _ => window.displayTitle,
+          }
+        : window.displayTitle;
+    final secondaryTitle = _redactStoreScreenshotIdentities
+        ? switch (window.currentCommand?.trim()) {
+            final command
+                when command != null &&
+                    command.isNotEmpty &&
+                    command.toLowerCase() != title.toLowerCase() =>
+              command,
+            _ => null,
+          }
+        : window.secondaryTitle;
     final iconColor = isActive
         ? theme.colorScheme.primary
         : theme.colorScheme.onSurfaceVariant;
@@ -1281,7 +1302,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              window.displayTitle,
+              title,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: isActive
@@ -2640,13 +2661,21 @@ bool didTerminalScrollPolicyChange({
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
-  const TerminalScreen({required this.hostId, this.connectionId, super.key});
+  const TerminalScreen({
+    required this.hostId,
+    this.connectionId,
+    this.initiallyExpandTmuxWindows = false,
+    super.key,
+  });
 
   /// The host ID to connect to.
   final int hostId;
 
   /// Optional existing connection ID to reuse.
   final int? connectionId;
+
+  /// Whether the tmux window selector should start expanded.
+  final bool initiallyExpandTmuxWindows;
 
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
@@ -4089,6 +4118,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       availableHeight: availableHeight,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,
+      initiallyExpanded: widget.initiallyExpandTmuxWindows,
       ref: ref,
       onAction: _handleTmuxAction,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(

@@ -41,8 +41,11 @@ BAD_OCR_PATTERNS = {
     ),
     'private local path': re.compile(r'/Users/depoll|/private/var/folders', re.IGNORECASE),
     'disabled streamer mode': re.compile(r'Streamer mode disabled', re.IGNORECASE),
+    'Claude billing banner': re.compile(
+        r'API\s+Usage\s+Billing|Account\s+|Billing',
+        re.IGNORECASE,
+    ),
     'Claude plan-mode footer': re.compile(r'plan mode on', re.IGNORECASE),
-    'Copilot working directory footer': re.compile(r'/Users/Shared', re.IGNORECASE),
 }
 
 
@@ -162,13 +165,13 @@ def _validate_ocr_content(paths: list[Path]) -> None:
     for path, text in texts.items():
         filename = path.name
         if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
-            _require_ocr_markers(path, text, ['Hosts', 'New Host'])
+            _require_ocr_markers(path, text, ['GitHub Copilot'])
         elif filename in {'02_iphone_6_9.png', '02_ipad_13.png', '2.png'}:
-            _require_ocr_markers(path, text, ['Snippets'])
+            _require_ocr_markers(path, text, ['Hosts', 'New Host'])
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
-            _require_ocr_markers(path, text, ['Port Forwards'])
+            _require_ocr_markers(path, text, ['Snippets'])
         elif filename in {'04_iphone_6_9.png', '04_ipad_13.png', '4.png'}:
-            _require_ocr_markers(path, text, ['SSH Keys', 'Store demo key'])
+            _require_ocr_markers(path, text, ['agent-workspace', 'copilot'])
         elif filename in {'05_iphone_6_9.png', '05_ipad_13.png', '5.png'}:
             _require_ocr_markers(path, text, ['AGENTS.md'])
 

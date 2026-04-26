@@ -80,10 +80,10 @@ class _ScreenshotTarget {
 }
 
 const _sceneNames = <String>[
+  'terminal_copilot',
   'hosts',
   'snippets',
-  'port_forwards',
-  'keys',
+  'tmux_windows',
   'sftp',
 ];
 
@@ -507,8 +507,6 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runFlow() async {
     try {
       await _waitForApp();
-      await _announceScene(0);
-
       final result = await ref
           .read(activeSessionsProvider.notifier)
           .connect(_terminalHostId);
@@ -517,16 +515,23 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       }
       _connectionId = result.connectionId;
 
-      _go('/snippets');
+      _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
+      await Future<void>.delayed(const Duration(seconds: 6));
+      await _announceScene(0);
+
+      _go('/');
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(1);
 
-      _go('/port-forwards');
+      _go('/snippets');
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(2);
 
-      _go('/keys');
-      await Future<void>.delayed(const Duration(seconds: 2));
+      _go(
+        '/terminal/$_terminalHostId?connectionId=$_connectionId'
+        '&expandTmux=1',
+      );
+      await Future<void>.delayed(const Duration(seconds: 4));
       await _announceScene(3);
 
       _go(

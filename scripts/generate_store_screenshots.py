@@ -8,6 +8,7 @@ import getpass
 import hashlib
 import json
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -211,6 +212,9 @@ class StoreDemoEnvironment:
         self._tmux = shutil.which('tmux')
         if self._tmux is None:
             raise RuntimeError('tmux is required for the release-demo SSH workspace.')
+        self._copilot = shutil.which('copilot')
+        if self._copilot is None:
+            raise RuntimeError('GitHub Copilot CLI is required for the first store screenshot.')
 
     @property
     def private_key_b64(self) -> str:
@@ -239,7 +243,7 @@ class StoreDemoEnvironment:
 
     def reset_tmux(self) -> None:
         subprocess.run(
-            [self._tmux or 'tmux', 'select-window', '-t', f'{self.tmux_session}:logs'],
+            [self._tmux or 'tmux', 'select-window', '-t', f'{self.tmux_session}:copilot'],
             check=False,
         )
 
@@ -339,6 +343,17 @@ class StoreDemoEnvironment:
         self._prepare_demo_dir()
         self._teardown_tmux()
         self._write_pane_script(
+            'copilot',
+            f"""
+            exec env COPILOT_ALLOW_ALL=0 \\
+              {self._shell_quote(self._copilot)} \\
+              --no-remote \\
+              --log-level none \\
+              --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
+              --name 'Store demo Copilot'
+            """,
+        )
+        self._write_pane_script(
             'agents',
             """
             clear
@@ -375,6 +390,7 @@ class StoreDemoEnvironment:
         )
         self._start_tmux_windows()
         self._configure_tmux_status()
+        self._drive_copilot_start_screen()
         self.reset_tmux()
 
     def _prepare_demo_dir(self) -> None:
@@ -454,6 +470,16 @@ class StoreDemoEnvironment:
             '-s',
             self.tmux_session,
             '-n',
+            'copilot',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'copilot-pane.sh'),
+        )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
             'agents',
             '-c',
             str(self.demo_dir),
@@ -478,16 +504,6 @@ class StoreDemoEnvironment:
             '-c',
             str(self.demo_dir),
             str(self._tmpdir / 'files-pane.sh'),
-        )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
-            'shell',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'shell-pane.sh'),
         )
 
     def _write_pane_script(self, window: str, body: str) -> None:
@@ -516,6 +532,81 @@ class StoreDemoEnvironment:
             )
         )
         os.chmod(script, 0o700)
+
+    def _drive_copilot_start_screen(self) -> None:
+        time.sleep(4)
+        self._tmux_send_keys('copilot', 'Enter')
+        time.sleep(8)
+        self._ensure_copilot_streamer_mode()
+        self._tmux_send_keys('copilot', 'C-l')
+        time.sleep(2)
+        self._wait_for_visible_text('copilot', ['GitHub Copilot'])
+        self._assert_copilot_pane_streamer_safe()
+
+    def _ensure_copilot_streamer_mode(self) -> None:
+        self._wait_for_visible_text('copilot', ['GitHub Copilot'])
+        self._tmux_send_literal('copilot', '/streamer')
+        self._tmux_send_keys('copilot', 'Enter')
+        time.sleep(4)
+        text = self._capture_visible_pane('copilot')
+        if 'Streamer mode enabled.' in text:
+            return
+        if 'Streamer mode disabled.' in text:
+            self._tmux_send_literal('copilot', '/streamer')
+            self._tmux_send_keys('copilot', 'Enter')
+            time.sleep(4)
+            text = self._capture_visible_pane('copilot')
+            if 'Streamer mode enabled.' in text:
+                return
+        raise RuntimeError('Could not enable GitHub Copilot CLI streamer mode.')
+
+    def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            text = self._capture_visible_pane(window)
+            if all(marker in text for marker in markers):
+                return
+            time.sleep(1)
+        raise RuntimeError(
+            f'{window} pane did not show expected text: {", ".join(markers)}.',
+        )
+
+    def _assert_copilot_pane_streamer_safe(self) -> None:
+        text = self._capture_visible_pane('copilot')
+        private_patterns = [
+            (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
+            (r'(ghp_|github_pat_|sk-)[A-Za-z0-9_\-]+', 'token'),
+            (re.escape(str(Path.home())), 'home directory'),
+            (rf'\b{re.escape(self.username)}\b', 'local username'),
+            (r'\bDavid\b', 'account display name'),
+            (r'Organization', 'account organization'),
+        ]
+        for pattern, label in private_patterns:
+            if re.search(pattern, text, flags=re.IGNORECASE):
+                raise RuntimeError(
+                    f'Copilot pane still shows {label}; refusing to capture store screenshot.',
+                )
+
+    def _capture_visible_pane(self, window: str) -> str:
+        result = subprocess.run(
+            [
+                self._tmux or 'tmux',
+                'capture-pane',
+                '-p',
+                '-t',
+                f'{self.tmux_session}:{window}',
+            ],
+            check=True,
+            stdout=subprocess.PIPE,
+            text=True,
+        )
+        return result.stdout
+
+    def _tmux_send_keys(self, window: str, *keys: str) -> None:
+        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', *keys)
+
+    def _tmux_send_literal(self, window: str, text: str) -> None:
+        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', '-l', text)
 
     @staticmethod
     def _shell_quote(value: str) -> str:

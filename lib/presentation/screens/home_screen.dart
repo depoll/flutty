@@ -1111,7 +1111,8 @@ class _HostRow extends ConsumerWidget {
                   ),
                 ],
               ),
-              if (previewEntries.isNotEmpty) ...[
+              if (previewEntries.isNotEmpty &&
+                  !_redactStoreScreenshotIdentities) ...[
                 const SizedBox(height: 8),
                 Padding(
                   padding: const EdgeInsets.only(left: 20),

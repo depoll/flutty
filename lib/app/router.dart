@@ -64,7 +64,12 @@ final routerProvider = Provider<GoRouter>((ref) {
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
-          return TerminalScreen(hostId: hostId, connectionId: connectionId);
+          return TerminalScreen(
+            hostId: hostId,
+            connectionId: connectionId,
+            initiallyExpandTmuxWindows:
+                state.uri.queryParameters['expandTmux'] == '1',
+          );
         },
       ),
       GoRoute(
