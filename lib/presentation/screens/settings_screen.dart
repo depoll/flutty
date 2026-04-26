@@ -12,6 +12,7 @@ import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/background_ssh_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -41,6 +42,7 @@ class SettingsScreen extends ConsumerWidget {
         const _ImportExportSection(),
         if (BackgroundSshService.supportsBatteryOptimizationControls)
           const _AndroidBackgroundSection(),
+        if (isPreviewBuild) const _DiagnosticsSection(),
         const _AboutSection(),
       ],
     ),
@@ -983,6 +985,92 @@ class _TerminalSection extends ConsumerWidget {
         ),
       ),
     );
+  }
+}
+
+class _DiagnosticsSection extends ConsumerStatefulWidget {
+  const _DiagnosticsSection();
+
+  @override
+  ConsumerState<_DiagnosticsSection> createState() =>
+      _DiagnosticsSectionState();
+}
+
+class _DiagnosticsSectionState extends ConsumerState<_DiagnosticsSection> {
+  late final DiagnosticsLogService _diagnosticsLog;
+
+  @override
+  void initState() {
+    super.initState();
+    _diagnosticsLog = ref.read(diagnosticsLogServiceProvider)
+      ..addListener(_handleDiagnosticsChanged);
+  }
+
+  @override
+  void dispose() {
+    _diagnosticsLog.removeListener(_handleDiagnosticsChanged);
+    super.dispose();
+  }
+
+  void _handleDiagnosticsChanged() {
+    if (mounted) {
+      setState(() {});
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final appMetadata = ref.watch(appMetadataProvider).asData?.value;
+    final entryCount = _diagnosticsLog.entryCount;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        const _SectionHeader(
+          title: 'Diagnostics',
+          subtitle: 'Preview-only troubleshooting logs',
+        ),
+        ListTile(
+          leading: const Icon(Icons.bug_report_outlined),
+          title: const Text('Copy diagnostics log'),
+          subtitle: Text(
+            entryCount == 0
+                ? 'No diagnostic events recorded yet'
+                : '$entryCount sanitized event${entryCount == 1 ? '' : 's'} ready to copy',
+          ),
+          onTap: entryCount == 0
+              ? null
+              : () => _copyDiagnostics(context, appMetadata),
+        ),
+        ListTile(
+          leading: const Icon(Icons.delete_outline),
+          title: const Text('Clear diagnostics log'),
+          subtitle: const Text('Remove the in-memory troubleshooting log'),
+          enabled: entryCount > 0,
+          onTap: entryCount == 0 ? null : () => _clearDiagnostics(context),
+        ),
+      ],
+    );
+  }
+
+  Future<void> _copyDiagnostics(
+    BuildContext context,
+    AppMetadata? appMetadata,
+  ) async {
+    final text = _diagnosticsLog.exportText(appMetadata: appMetadata);
+    await Clipboard.setData(ClipboardData(text: text));
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Diagnostics log copied')));
+  }
+
+  void _clearDiagnostics(BuildContext context) {
+    _diagnosticsLog.clear();
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('Diagnostics log cleared')));
   }
 }
 

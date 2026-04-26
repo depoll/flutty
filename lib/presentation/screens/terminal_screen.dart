@@ -31,6 +31,7 @@ import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/local_notification_service.dart';
 import '../../domain/services/monetization_service.dart';
@@ -607,6 +608,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   void _subscribeToWindowChanges() {
     final generation = ++_windowEventGeneration;
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'bar_subscribe',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'generation': generation,
+      },
+    );
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
         .listen((event) => _handleWindowChangeEvent(event, generation));
@@ -616,17 +625,38 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (!mounted) return;
     if (generation != _windowEventGeneration) return;
     if (event is TmuxWindowReloadEvent) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_reload_event',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': generation,
+        },
+      );
       _loadWindows();
       return;
     }
     final currentWindows = _windows;
     if (currentWindows == null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_snapshot_without_state',
+        fields: {'connectionId': widget.session.connectionId},
+      );
       _loadWindows();
       return;
     }
     _windowReloadGeneration += 1;
     _resetWindowReloadRecovery();
     final windows = applyTmuxWindowChangeEvent(currentWindows, event);
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'bar_snapshot_applied',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'windowCount': windows.length,
+      },
+    );
     _applyWindows(windows);
     if (widget.isProUser) {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
@@ -724,6 +754,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
     final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
     _windowRetryAttempts += 1;
+    DiagnosticsLogService.instance.warning(
+      'tmux.ui',
+      'bar_retry_scheduled',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'attempt': _windowRetryAttempts,
+        'delayMs': delay.inMilliseconds,
+      },
+    );
     _windowRetryTimer = Timer(delay, () {
       _windowRetryTimer = null;
       if (mounted) {
@@ -740,6 +779,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       return;
     }
     _windowReloadRecoveryRequested = true;
+    DiagnosticsLogService.instance.warning(
+      'tmux.ui',
+      'bar_recovery_requested',
+      fields: {'connectionId': widget.session.connectionId},
+    );
     final onWindowLoadStalled = widget.onWindowLoadStalled;
     if (onWindowLoadStalled != null) {
       unawaited(onWindowLoadStalled(widget.session, widget.tmuxSessionName));
@@ -788,10 +832,23 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
       _pendingWindowReload = true;
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_reload_queued',
+        fields: {'connectionId': widget.session.connectionId},
+      );
       return;
     }
     _loadingWindows = true;
     final reloadGeneration = ++_windowReloadGeneration;
+    DiagnosticsLogService.instance.debug(
+      'tmux.ui',
+      'bar_reload_start',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'generation': reloadGeneration,
+      },
+    );
     try {
       final reloadedWindows = await _tmux.listWindows(
         widget.session,
@@ -805,6 +862,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       } else {
         _resetWindowReloadRecovery();
       }
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'bar_reload_result',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': reloadGeneration,
+          'windowCount': reloadedWindows.length,
+          'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
+        },
+      );
       final windows = resolveTmuxReloadedWindows(
         shouldPreserveTmuxWindowSnapshotOnEmptyReload(
               _windows,
@@ -815,6 +882,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         reloadedWindows,
       );
       if (windows == null) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.ui',
+          'bar_reload_preserved_previous',
+          fields: {
+            'connectionId': widget.session.connectionId,
+            'generation': reloadGeneration,
+          },
+        );
         final shouldRecover = _shouldRequestWindowReloadRecovery;
         _scheduleWindowRetry();
         if (shouldRecover) {
@@ -844,7 +919,16 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       if (widget.isProUser) {
         unawaited(_prefetchPreferredSessionProvider(windows: windows));
       }
-    } on Object {
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'bar_reload_failed',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': reloadGeneration,
+          'errorType': error.runtimeType,
+        },
+      );
       if (!mounted) return;
       final shouldRecover = _shouldRequestWindowReloadRecovery;
       _scheduleWindowRetry();
@@ -3880,6 +3964,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           height: _terminal.viewHeight,
         ),
       );
+      DiagnosticsLogService.instance.info(
+        'terminal',
+        'shell_opened',
+        fields: {'connectionId': session.connectionId, 'reusedTerminal': false},
+      );
 
       _wireTerminalCallbacks(session);
       await _applySharedClipboardSetting(
@@ -3907,6 +3996,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // command launches a tmux session.
       unawaited(_detectTmux(session));
     } on Object catch (e) {
+      DiagnosticsLogService.instance.error(
+        'terminal',
+        'shell_open_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': e.runtimeType,
+        },
+      );
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
@@ -3919,6 +4016,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _wireTerminalCallbacks(SshSession session) {
     // Listen for shell close events.
     _doneSubscription = session.shellDoneStream.listen((_) {
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'shell_done_stream',
+        fields: {'connectionId': session.connectionId},
+      );
       if (mounted) {
         _handleShellClosed();
       }
@@ -3928,6 +4030,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onError: (Object error, StackTrace stackTrace) {
         debugPrint('Terminal stdout stream error: $error');
         debugPrint('$stackTrace');
+        DiagnosticsLogService.instance.error(
+          'terminal',
+          'stdout_listener_error',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
       },
     );
 
@@ -4304,6 +4414,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final active = candidateSessionName != null
             ? await tmux.hasSession(session, candidateSessionName)
             : await tmux.isTmuxActive(session);
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'detection_attempt',
+          fields: {
+            'connectionId': session.connectionId,
+            'active': active,
+            'hasCandidate': candidateSessionName != null,
+          },
+        );
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
@@ -4321,6 +4440,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
         if (sessionName == null) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.ui',
+            'detection_no_session_name',
+            fields: {'connectionId': session.connectionId},
+          );
           continue;
         }
 
@@ -4336,6 +4460,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
         if (windows.isEmpty) {
+          DiagnosticsLogService.instance.debug(
+            'tmux.ui',
+            'detection_empty_windows',
+            fields: {'connectionId': session.connectionId},
+          );
           continue;
         }
 
@@ -4362,6 +4491,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
         });
+        DiagnosticsLogService.instance.info(
+          'tmux.ui',
+          'detection_success',
+          fields: {
+            'connectionId': session.connectionId,
+            'windowCount': windows.length,
+          },
+        );
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return;
       }
@@ -4375,7 +4512,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!preserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
-    } on Object {
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'detection_inactive',
+        fields: {'connectionId': session.connectionId},
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'detection_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
@@ -4579,6 +4729,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final session = _sessionsNotifier?.getSession(connectionId);
     if (session == null) return;
 
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'navigator_action',
+      fields: {
+        'connectionId': connectionId,
+        'action': diagnosticTmuxNavigatorActionKind(action),
+      },
+    );
     await _performTmuxNavigatorAction(session, action);
   }
 
@@ -4661,6 +4819,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           await _closeTmuxWindow(session, windowIndex);
       }
     } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'navigator_action_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'action': diagnosticTmuxNavigatorActionKind(action),
+          'errorType': error.runtimeType,
+        },
+      );
       _showTmuxActionFailure(error);
     }
   }
@@ -4759,6 +4926,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName,
     );
     if (!mounted || hasForegroundClient) {
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'reattach_not_needed',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasForegroundClient': hasForegroundClient,
+        },
+      );
       return;
     }
 
@@ -4773,6 +4948,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'while a command is still running.',
           ),
         ),
+      );
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'reattach_skipped_command_running',
+        fields: {'connectionId': session.connectionId},
       );
       return;
     }
@@ -4789,6 +4969,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       extraFlags: host?.tmuxExtraFlags,
     );
     shell.write(utf8.encode(formatAutoConnectCommandForShell(reattachCommand)));
+    DiagnosticsLogService.instance.info(
+      'tmux.ui',
+      'reattach_command_sent',
+      fields: {'connectionId': session.connectionId},
+    );
   }
 
   void _handleTrackedConnectionStateChange(

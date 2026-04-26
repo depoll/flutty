@@ -7,6 +7,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
+import 'diagnostics_log_service.dart';
 import 'ssh_service.dart';
 
 /// Error thrown when a tmux command channel ends before confirming completion.
@@ -59,6 +60,16 @@ class TmuxService {
 
   /// Clears the cached tmux path for a connection.
   void clearCache(int connectionId) {
+    DiagnosticsLogService.instance.info(
+      'tmux.cache',
+      'clear',
+      fields: {
+        'connectionId': connectionId,
+        'observerCount': _windowObservers.keys
+            .where((key) => key.connectionId == connectionId)
+            .length,
+      },
+    );
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _installedAgentToolsCache.remove(connectionId);
@@ -79,26 +90,69 @@ class TmuxService {
   /// variable, because SSH exec channels do not share the interactive
   /// shell's environment.
   Future<bool> isTmuxActive(SshSession session) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.detect',
+      'active_check_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       // Cache the tmux binary path on first successful detection.
       await _cacheTmuxPath(session);
       final output = await _exec(session, 'tmux list-sessions 2>/dev/null');
-      return output.trim().isNotEmpty;
-    } on Exception {
+      final active = output.trim().isNotEmpty;
+      DiagnosticsLogService.instance.info(
+        'tmux.detect',
+        'active_check_complete',
+        fields: {'connectionId': session.connectionId, 'active': active},
+      );
+      return active;
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.detect',
+        'active_check_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return false;
     }
   }
 
   /// Returns `true` if tmux is installed on the remote host.
   Future<bool> isTmuxInstalled(SshSession session) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.detect',
+      'installed_check_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       final cachedTmuxPath = _tmuxPathCache[session.connectionId];
       if (cachedTmuxPath != null && cachedTmuxPath.isNotEmpty) {
+        DiagnosticsLogService.instance.info(
+          'tmux.detect',
+          'installed_check_cached',
+          fields: {'connectionId': session.connectionId},
+        );
         return true;
       }
       final output = await _exec(session, 'which tmux');
-      return output.trim().isNotEmpty;
-    } on Exception {
+      final installed = output.trim().isNotEmpty;
+      DiagnosticsLogService.instance.info(
+        'tmux.detect',
+        'installed_check_complete',
+        fields: {'connectionId': session.connectionId, 'installed': installed},
+      );
+      return installed;
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.detect',
+        'installed_check_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return false;
     }
   }
@@ -123,17 +177,45 @@ class TmuxService {
     SshSession session,
   ) async {
     final cached = _installedAgentToolsCache[session.connectionId];
-    if (cached != null) return cached;
+    if (cached != null) {
+      DiagnosticsLogService.instance.info(
+        'tmux.agent',
+        'tool_detection_cached',
+        fields: {
+          'connectionId': session.connectionId,
+          'toolCount': cached.length,
+        },
+      );
+      return cached;
+    }
+    DiagnosticsLogService.instance.info(
+      'tmux.agent',
+      'tool_detection_start',
+      fields: {'connectionId': session.connectionId},
+    );
     final output = await _exec(session, buildAgentToolDetectionCommand());
     final installed = parseInstalledAgentTools(output);
     if (installed.isNotEmpty) {
       _installedAgentToolsCache[session.connectionId] = installed;
     }
+    DiagnosticsLogService.instance.info(
+      'tmux.agent',
+      'tool_detection_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'toolCount': installed.length,
+      },
+    );
     return installed;
   }
 
   /// Lists all tmux sessions on the remote host.
   Future<List<TmuxSession>> listSessions(SshSession session) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'list_sessions_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       final output = await _exec(
         session,
@@ -141,8 +223,25 @@ class TmuxService {
         "'#{session_name}|#{session_windows}|"
         "#{session_attached}|#{session_activity}'",
       );
-      return _parseLines(output, TmuxSession.fromTmuxFormat);
-    } on Exception {
+      final sessions = _parseLines(output, TmuxSession.fromTmuxFormat);
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'list_sessions_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'sessionCount': sessions.length,
+        },
+      );
+      return sessions;
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'list_sessions_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return const [];
     }
   }
@@ -156,6 +255,11 @@ class TmuxService {
   /// the common case where the interactive shell is inside tmux but the
   /// exec channel is not.
   Future<String?> currentSessionName(SshSession session) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'current_session_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       // Direct approach — works if the exec channel is inside tmux.
       final output = await _exec(
@@ -163,8 +267,23 @@ class TmuxService {
         "tmux display-message -p '#{session_name}'",
       );
       final name = output.trim();
-      if (name.isNotEmpty) return name;
-    } on Exception {
+      if (name.isNotEmpty) {
+        DiagnosticsLogService.instance.info(
+          'tmux.query',
+          'current_session_direct',
+          fields: {'connectionId': session.connectionId},
+        );
+        return name;
+      }
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'current_session_direct_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       // Fall through to fallback.
     }
 
@@ -172,26 +291,68 @@ class TmuxService {
     try {
       final sessions = await listSessions(session);
       final attached = sessions.where((s) => s.isAttached).toList();
-      if (attached.length == 1) return attached.first.name;
+      if (attached.length == 1) {
+        DiagnosticsLogService.instance.info(
+          'tmux.query',
+          'current_session_attached_fallback',
+          fields: {'connectionId': session.connectionId},
+        );
+        return attached.first.name;
+      }
       // Multiple attached sessions are ambiguous — we can't determine
       // which one belongs to this terminal connection. Return null to
       // avoid targeting the wrong session with destructive operations.
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'current_session_ambiguous',
+        fields: {
+          'connectionId': session.connectionId,
+          'attachedCount': attached.length,
+        },
+      );
       return null;
-    } on Exception {
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'current_session_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return null;
     }
   }
 
   /// Returns `true` if [sessionName] exists on the remote tmux server.
   Future<bool> hasSession(SshSession session, String sessionName) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'has_session_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       await _cacheTmuxPath(session);
       final output = await _exec(
         session,
         'tmux has-session -t ${_shellQuote(sessionName)} 2>/dev/null && printf 1',
       );
-      return output.trim() == '1';
-    } on Exception {
+      final exists = output.trim() == '1';
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'has_session_complete',
+        fields: {'connectionId': session.connectionId, 'exists': exists},
+      );
+      return exists;
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'has_session_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return false;
     }
   }
@@ -203,6 +364,11 @@ class TmuxService {
     SshSession session,
     String sessionName,
   ) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'list_windows_start',
+      fields: {'connectionId': session.connectionId},
+    );
     final quotedName = _shellQuote(sessionName);
     final output = await _exec(
       session,
@@ -211,7 +377,18 @@ class TmuxService {
       '#{pane_current_command}|#{pane_current_path}|'
       "#{window_flags}|#{pane_title}|#{window_activity}'",
     );
-    return _parseLines(output, TmuxWindow.fromTmuxFormat);
+    final windows = _parseLines(output, TmuxWindow.fromTmuxFormat);
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'list_windows_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowCount': windows.length,
+        'activeWindowCount': windows.where((window) => window.isActive).length,
+        'alertWindowCount': windows.where((window) => window.hasAlert).length,
+      },
+    );
+    return windows;
   }
 
   /// Returns the active pane working directory for [sessionName], if tmux
@@ -220,14 +397,33 @@ class TmuxService {
     SshSession session,
     String sessionName,
   ) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'current_pane_path_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       final output = await _exec(
         session,
         'tmux display-message -p -t ${_shellQuote('$sessionName:')} '
         "'#{pane_current_path}'",
       );
-      return parseTmuxCurrentPanePath(output);
-    } on Exception {
+      final path = parseTmuxCurrentPanePath(output);
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'current_pane_path_complete',
+        fields: {'connectionId': session.connectionId, 'hasPath': path != null},
+      );
+      return path;
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'current_pane_path_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return null;
     }
   }
@@ -241,14 +437,36 @@ class TmuxService {
     SshSession session,
     String sessionName,
   ) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'foreground_client_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       final output = await _exec(
         session,
         'tmux list-clients -t ${_shellQuote(sessionName)} '
         "-F '#{client_control_mode}' 2>/dev/null",
       );
-      return hasForegroundTmuxClient(output);
-    } on Exception {
+      final hasClient = hasForegroundTmuxClient(output);
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'foreground_client_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasForegroundClient': hasClient,
+        },
+      );
+      return hasClient;
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'foreground_client_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       return false;
     }
   }
@@ -272,6 +490,14 @@ class TmuxService {
         onDispose: () => _windowObservers.remove(key),
       ),
     );
+    DiagnosticsLogService.instance.info(
+      'tmux.watch',
+      'watch_requested',
+      fields: {
+        'connectionId': session.connectionId,
+        'observerCount': _windowObservers.length,
+      },
+    );
     return observer.stream;
   }
 
@@ -286,6 +512,16 @@ class TmuxService {
     String? name,
     String? workingDirectory,
   }) async {
+    DiagnosticsLogService.instance.info(
+      'tmux.action',
+      'create_window_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'hasCommand': command?.trim().isNotEmpty ?? false,
+        'hasName': name?.trim().isNotEmpty ?? false,
+        'hasWorkingDirectory': workingDirectory?.trim().isNotEmpty ?? false,
+      },
+    );
     // Don't pass -c unless an explicit workingDirectory was provided
     // (e.g. resuming an AI session in a specific project). Without -c,
     // tmux uses the session's default-directory — matching Ctrl+b,c.
@@ -297,6 +533,11 @@ class TmuxService {
         '-n ${_shellQuote(name.trim())}',
     ];
     await _exec(session, parts.join(' '));
+    DiagnosticsLogService.instance.info(
+      'tmux.action',
+      'create_window_complete',
+      fields: {'connectionId': session.connectionId},
+    );
 
     // If a command was requested, type it into the new window's shell.
     // This ensures the command runs inside the login shell environment
@@ -306,6 +547,11 @@ class TmuxService {
         session,
         'tmux send-keys -t ${_shellQuote(sessionName)} '
         '${_shellQuote(command.trim())} Enter',
+      );
+      DiagnosticsLogService.instance.info(
+        'tmux.action',
+        'create_window_command_sent',
+        fields: {'connectionId': session.connectionId},
       );
     }
   }
@@ -324,9 +570,25 @@ class TmuxService {
     String sessionName,
     int windowIndex,
   ) async {
+    DiagnosticsLogService.instance.info(
+      'tmux.action',
+      'select_window_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowIndex': windowIndex,
+      },
+    );
     await _exec(
       session,
       'tmux select-window -t ${_shellQuote(sessionName)}:$windowIndex',
+    );
+    DiagnosticsLogService.instance.info(
+      'tmux.action',
+      'select_window_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowIndex': windowIndex,
+      },
     );
   }
 
@@ -336,9 +598,25 @@ class TmuxService {
     String sessionName,
     int windowIndex,
   ) async {
+    DiagnosticsLogService.instance.info(
+      'tmux.action',
+      'kill_window_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowIndex': windowIndex,
+      },
+    );
     await _exec(
       session,
       'tmux kill-window -t ${_shellQuote(sessionName)}:$windowIndex',
+    );
+    DiagnosticsLogService.instance.info(
+      'tmux.action',
+      'kill_window_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'windowIndex': windowIndex,
+      },
     );
   }
 
@@ -386,10 +664,29 @@ class TmuxService {
     String command, {
     SSHPtyConfig? pty,
   }) {
+    DiagnosticsLogService.instance.debug(
+      'tmux.exec',
+      'open_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'commandKind': _diagnosticTmuxCommandKind(command),
+        'pty': pty != null,
+      },
+    );
     final openFuture = session.execute(command, pty: pty);
     return openFuture.timeout(
       _execOpenTimeout,
       onTimeout: () {
+        DiagnosticsLogService.instance.warning(
+          'tmux.exec',
+          'open_timeout',
+          fields: {
+            'connectionId': session.connectionId,
+            'commandKind': _diagnosticTmuxCommandKind(command),
+            'timeoutMs': _execOpenTimeout.inMilliseconds,
+            'pty': pty != null,
+          },
+        );
         openFuture.then((exec) => exec.close()).ignore();
         throw TimeoutException(
           'Timed out opening SSH exec channel',
@@ -409,6 +706,7 @@ class TmuxService {
   /// command exits, so waiting for stream completion can turn successful tmux
   /// actions into apparent hangs.
   Future<String> _exec(SshSession session, String command) async {
+    final startedAt = DateTime.now();
     final wrappedCommand = _wrapCommand(session, command);
     final execSession = await _openExec(
       session,
@@ -416,7 +714,34 @@ class TmuxService {
     );
     try {
       execSession.stderr.drain<void>().ignore();
-      return await _readStdoutUntilDoneMarker(execSession);
+      final output = await _readStdoutUntilDoneMarker(
+        execSession,
+        connectionId: session.connectionId,
+        commandKind: _diagnosticTmuxCommandKind(command),
+      );
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': _diagnosticTmuxCommandKind(command),
+          'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
+          'outputChars': output.length,
+        },
+      );
+      return output;
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.exec',
+        'failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': _diagnosticTmuxCommandKind(command),
+          'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
+          'errorType': error.runtimeType,
+        },
+      );
+      rethrow;
     } finally {
       execSession.close();
     }
@@ -427,13 +752,26 @@ class TmuxService {
       'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
       r'"$__flutty_tmux_exec_status__"; }';
 
-  Future<String> _readStdoutUntilDoneMarker(SSHSession execSession) async {
+  Future<String> _readStdoutUntilDoneMarker(
+    SSHSession execSession, {
+    required int connectionId,
+    required String commandKind,
+  }) async {
     final output = StringBuffer();
     await for (final chunk
         in execSession.stdout
             .cast<List<int>>()
             .transform(utf8.decoder)
             .timeout(_execOutputTimeout)) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'stdout_chunk',
+        fields: {
+          'connectionId': connectionId,
+          'commandKind': commandKind,
+          'charCount': chunk.length,
+        },
+      );
       output.write(chunk);
       final currentOutput = output.toString();
       RegExpMatch? markerMatch;
@@ -446,6 +784,15 @@ class TmuxService {
         final statusText = markerMatch.group(1)!;
         final exitStatus = int.parse(statusText);
         if (exitStatus != 0) {
+          DiagnosticsLogService.instance.warning(
+            'tmux.exec',
+            'nonzero_status',
+            fields: {
+              'connectionId': connectionId,
+              'commandKind': commandKind,
+              'exitStatus': exitStatus,
+            },
+          );
           throw TmuxCommandException(
             'tmux command failed with exit status $statusText',
           );
@@ -453,6 +800,11 @@ class TmuxService {
         return currentOutput.substring(0, markerMatch.start).trimRight();
       }
     }
+    DiagnosticsLogService.instance.warning(
+      'tmux.exec',
+      'closed_before_marker',
+      fields: {'connectionId': connectionId, 'commandKind': commandKind},
+    );
     throw const TmuxCommandException(
       'SSH exec channel closed before tmux command completed',
     );
@@ -465,12 +817,33 @@ class TmuxService {
   /// latency of draining stdout/stderr.
   void _execFireAndForget(SshSession session, String command) {
     final wrappedCommand = _wrapCommand(session, command);
+    DiagnosticsLogService.instance.debug(
+      'tmux.exec',
+      'fire_and_forget_start',
+      fields: {
+        'connectionId': session.connectionId,
+        'commandKind': _diagnosticTmuxCommandKind(command),
+      },
+    );
     // Launch and ignore — the exec channel self-closes on completion.
-    _openExec(session, wrappedCommand).then((exec) {
-      // Drain streams to prevent backpressure, but don't wait.
-      exec.stdout.drain<void>().ignore();
-      exec.stderr.drain<void>().ignore();
-    }).ignore();
+    _openExec(session, wrappedCommand)
+        .then((exec) {
+          // Drain streams to prevent backpressure, but don't wait.
+          exec.stdout.drain<void>().ignore();
+          exec.stderr.drain<void>().ignore();
+        })
+        .catchError((Object error) {
+          DiagnosticsLogService.instance.warning(
+            'tmux.exec',
+            'fire_and_forget_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'commandKind': _diagnosticTmuxCommandKind(command),
+              'errorType': error.runtimeType,
+            },
+          );
+        })
+        .ignore();
   }
 
   /// Detects the user's login shell and resolves the tmux binary path.
@@ -479,6 +852,11 @@ class TmuxService {
   /// full tmux path for subsequent calls.
   Future<void> _cacheTmuxPath(SshSession session) async {
     if (_tmuxPathCache.containsKey(session.connectionId)) return;
+    DiagnosticsLogService.instance.debug(
+      'tmux.cache',
+      'tmux_path_start',
+      fields: {'connectionId': session.connectionId},
+    );
     try {
       // Detect login shell and resolve tmux path in a single exec.
       // Redirect stdout from profile scripts to /dev/null so greetings,
@@ -509,7 +887,24 @@ class TmuxService {
           _tmuxPathCache[session.connectionId] = path;
         }
       }
-    } on Object {
+      DiagnosticsLogService.instance.info(
+        'tmux.cache',
+        'tmux_path_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasPath': _tmuxPathCache.containsKey(session.connectionId),
+          'hasProfile': _profileSourceCache.containsKey(session.connectionId),
+        },
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.cache',
+        'tmux_path_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
       // Ignore — we'll fall back to sourcing all profiles.
     }
   }
@@ -532,6 +927,49 @@ class TmuxService {
   /// Single-quotes a value for safe use in shell commands.
   static String _shellQuote(String value) =>
       "'${value.replaceAll("'", "'\"'\"'")}'";
+}
+
+String _diagnosticTmuxCommandKind(String command) {
+  if (command.contains('attach-session')) {
+    return 'control_attach';
+  }
+  if (command.contains('refresh-client')) {
+    return 'control_subscription';
+  }
+  if (command.contains('list-windows')) {
+    return 'list_windows';
+  }
+  if (command.contains('list-sessions')) {
+    return 'list_sessions';
+  }
+  if (command.contains('display-message')) {
+    return 'display_message';
+  }
+  if (command.contains('has-session')) {
+    return 'has_session';
+  }
+  if (command.contains('list-clients')) {
+    return 'list_clients';
+  }
+  if (command.contains('select-window')) {
+    return 'select_window';
+  }
+  if (command.contains('new-window')) {
+    return 'new_window';
+  }
+  if (command.contains('kill-window')) {
+    return 'kill_window';
+  }
+  if (command.contains('send-keys')) {
+    return 'send_keys';
+  }
+  if (command.contains('command -v')) {
+    return 'tool_detection';
+  }
+  if (command.contains('which tmux')) {
+    return 'which_tmux';
+  }
+  return 'tmux_exec';
 }
 
 /// Parses the current pane path reported by `tmux display-message`.
@@ -581,6 +1019,20 @@ String _normalizeTmuxControlLine(String line) {
   normalized = normalized.replaceFirst(RegExp(r'^\u001bP\d+p'), '');
   normalized = normalized.replaceFirst(RegExp(r'\u001b\\$'), '');
   return normalized.trim();
+}
+
+/// Returns a safe category for a tmux control-mode line without exposing the
+/// raw line contents.
+@visibleForTesting
+String diagnosticTmuxControlLineKind(String line) {
+  final trimmed = _normalizeTmuxControlLine(line);
+  if (trimmed.isEmpty) return 'empty';
+  final separator = trimmed.indexOf(' ');
+  final marker = separator == -1 ? trimmed : trimmed.substring(0, separator);
+  if (marker.startsWith('%')) {
+    return marker.substring(1).replaceAll('-', '_');
+  }
+  return 'other';
 }
 
 /// Returns whether [line] should trigger a debounced reload fallback when a
@@ -782,6 +1234,14 @@ class _TmuxWindowChangeObserver {
   Future<void> _ensureStarted() async {
     if (_disposed || _starting || _controlSession != null) return;
     _starting = true;
+    DiagnosticsLogService.instance.info(
+      'tmux.watch',
+      'start',
+      fields: {
+        'connectionId': session.connectionId,
+        'restartAttempts': _restartAttempts,
+      },
+    );
     try {
       await service._cacheTmuxPath(session);
       final execSession = await service._openExec(
@@ -819,6 +1279,11 @@ class _TmuxWindowChangeObserver {
       _restartAttempts = 0;
       _lastControlActivity = _now();
       _startHeartbeat();
+      DiagnosticsLogService.instance.info(
+        'tmux.watch',
+        'started',
+        fields: {'connectionId': session.connectionId},
+      );
     } on Object catch (error, stackTrace) {
       _handleControlFailure(error, stackTrace);
     } finally {
@@ -829,6 +1294,11 @@ class _TmuxWindowChangeObserver {
   void _configureControlSession() {
     final controlSession = _controlSession;
     if (controlSession == null) return;
+    DiagnosticsLogService.instance.debug(
+      'tmux.watch',
+      'subscribe',
+      fields: {'connectionId': session.connectionId},
+    );
     controlSession.write(
       utf8.encode('${buildTmuxWindowSubscriptionCommand(_subscriptionName)}\n'),
     );
@@ -839,6 +1309,11 @@ class _TmuxWindowChangeObserver {
     _lastControlActivity = _now();
     final trimmed = _normalizeTmuxControlLine(line);
     if (trimmed.startsWith('%exit')) {
+      DiagnosticsLogService.instance.info(
+        'tmux.watch',
+        'control_exit',
+        fields: {'connectionId': session.connectionId},
+      );
       _handleControlClosed();
       return;
     }
@@ -851,6 +1326,14 @@ class _TmuxWindowChangeObserver {
         trimmed,
         subscriptionName: _subscriptionName,
       )) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.watch',
+          'fallback_reload_signal',
+          fields: {
+            'connectionId': session.connectionId,
+            'lineKind': diagnosticTmuxControlLineKind(trimmed),
+          },
+        );
         _scheduleReloadEvent(
           preserveThroughSnapshots:
               shouldPreserveTmuxWindowReloadThroughSnapshots(trimmed),
@@ -862,9 +1345,22 @@ class _TmuxWindowChangeObserver {
       if (!_preserveScheduledReloadThroughSnapshots) {
         _cancelScheduledReload();
       }
+      DiagnosticsLogService.instance.debug(
+        'tmux.watch',
+        'snapshot_event',
+        fields: {'connectionId': session.connectionId},
+      );
       _emitEvent(event);
       return;
     }
+    DiagnosticsLogService.instance.debug(
+      'tmux.watch',
+      'reload_event',
+      fields: {
+        'connectionId': session.connectionId,
+        'lineKind': diagnosticTmuxControlLineKind(trimmed),
+      },
+    );
     _scheduleReloadEvent(
       preserveThroughSnapshots: shouldPreserveTmuxWindowReloadThroughSnapshots(
         trimmed,
@@ -875,6 +1371,11 @@ class _TmuxWindowChangeObserver {
   void _handleStderrLine(String line) {
     if (_disposed || line.trim().isEmpty) return;
     _lastControlActivity = _now();
+    DiagnosticsLogService.instance.warning(
+      'tmux.watch',
+      'stderr_line',
+      fields: {'connectionId': session.connectionId, 'charCount': line.length},
+    );
     _scheduleRestart();
   }
 
@@ -898,16 +1399,34 @@ class _TmuxWindowChangeObserver {
       _debounceTimer = null;
       _preserveScheduledReloadThroughSnapshots = false;
       if (!_disposed && !_controller.isClosed) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.watch',
+          'emit_scheduled_reload',
+          fields: {'connectionId': session.connectionId},
+        );
         _controller.add(const TmuxWindowReloadEvent());
       }
     });
   }
 
   void _handleControlFailure(Object error, StackTrace stackTrace) {
+    DiagnosticsLogService.instance.warning(
+      'tmux.watch',
+      'control_failure',
+      fields: {
+        'connectionId': session.connectionId,
+        'errorType': error.runtimeType,
+      },
+    );
     _scheduleRestart();
   }
 
   void _handleControlClosed() {
+    DiagnosticsLogService.instance.info(
+      'tmux.watch',
+      'control_closed',
+      fields: {'connectionId': session.connectionId},
+    );
     _cleanupControlSession();
     _scheduleRestart();
   }
@@ -919,6 +1438,15 @@ class _TmuxWindowChangeObserver {
     final cappedAttempt = _restartAttempts.clamp(0, 4);
     final delay = Duration(seconds: 1 << cappedAttempt);
     _restartAttempts += 1;
+    DiagnosticsLogService.instance.warning(
+      'tmux.watch',
+      'restart_scheduled',
+      fields: {
+        'connectionId': session.connectionId,
+        'attempt': _restartAttempts,
+        'delayMs': delay.inMilliseconds,
+      },
+    );
     _restartTimer = Timer(delay, () => unawaited(_ensureStarted()));
   }
 
@@ -955,9 +1483,25 @@ class _TmuxWindowChangeObserver {
       case TmuxControlHeartbeatAction.noop:
         return;
       case TmuxControlHeartbeatAction.refresh:
+        DiagnosticsLogService.instance.debug(
+          'tmux.watch',
+          'heartbeat_refresh',
+          fields: {
+            'connectionId': session.connectionId,
+            'silenceMs': _now().difference(lastActivity).inMilliseconds,
+          },
+        );
         _scheduleReloadEvent();
         return;
       case TmuxControlHeartbeatAction.restart:
+        DiagnosticsLogService.instance.warning(
+          'tmux.watch',
+          'heartbeat_restart',
+          fields: {
+            'connectionId': session.connectionId,
+            'silenceMs': _now().difference(lastActivity).inMilliseconds,
+          },
+        );
         _handleControlClosed();
         return;
     }
@@ -979,6 +1523,11 @@ class _TmuxWindowChangeObserver {
 
   Future<void> dispose() async {
     if (_disposed) return;
+    DiagnosticsLogService.instance.info(
+      'tmux.watch',
+      'dispose',
+      fields: {'connectionId': session.connectionId},
+    );
     _disposed = true;
     _stopHeartbeat();
     _restartTimer?.cancel();

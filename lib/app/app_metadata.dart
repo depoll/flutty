@@ -12,6 +12,9 @@ const _pullRequestNumber = String.fromEnvironment('FLUTTY_PR_NUMBER');
 const _pullRequestTitle = String.fromEnvironment('FLUTTY_PR_TITLE');
 Future<Map<int, String>>? _versionCodenameLookup;
 
+/// Whether this binary was produced from a pull-request preview build.
+const isPreviewBuild = _pullRequestNumber != '';
+
 /// Provides the current platform app name with a safe fallback.
 final appDisplayNameProvider = Provider<String>((ref) {
   final appMetadata = ref.watch(appMetadataProvider);
@@ -98,6 +101,9 @@ class AppMetadata {
 
     return 'PR #$pullRequestNumber: $pullRequestTitle';
   }
+
+  /// Whether the runtime metadata identifies a pull-request preview build.
+  bool get isPreviewBuild => pullRequestNumber != null;
 }
 
 String? _normalizeBuildMetadata(String value) {

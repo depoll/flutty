@@ -8,6 +8,7 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
 import '../../domain/services/agent_session_discovery_service.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/tmux_service.dart';
 import 'agent_tool_icon.dart';
@@ -116,6 +117,15 @@ class TmuxCloseWindowAction extends TmuxNavigatorAction {
   final int windowIndex;
 }
 
+/// Returns a safe diagnostics category for a tmux navigator action.
+String diagnosticTmuxNavigatorActionKind(TmuxNavigatorAction action) =>
+    switch (action) {
+      TmuxSwitchWindowAction() => 'switch_window',
+      TmuxNewWindowAction() => 'new_window',
+      TmuxResumeSessionAction() => 'resume_session',
+      TmuxCloseWindowAction() => 'close_window',
+    };
+
 class _TmuxNavigatorSheet extends StatefulWidget {
   const _TmuxNavigatorSheet({
     required this.session,
@@ -188,6 +198,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
 
   void _subscribeToWindowChanges() {
     final generation = ++_windowEventGeneration;
+    DiagnosticsLogService.instance.info(
+      'tmux.navigator',
+      'subscribe',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'generation': generation,
+      },
+    );
     _windowChangeSubscription = _tmux
         .watchWindowChanges(widget.session, widget.tmuxSessionName)
         .listen((event) => _handleWindowChangeEvent(event, generation));
@@ -232,10 +250,23 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   Future<void> _loadWindows() async {
     if (_loadingWindows) {
       _pendingWindowReload = true;
+      DiagnosticsLogService.instance.debug(
+        'tmux.navigator',
+        'reload_queued',
+        fields: {'connectionId': widget.session.connectionId},
+      );
       return;
     }
     _loadingWindows = true;
     final reloadGeneration = ++_windowReloadGeneration;
+    DiagnosticsLogService.instance.debug(
+      'tmux.navigator',
+      'reload_start',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'generation': reloadGeneration,
+      },
+    );
     try {
       final reloadedWindows = await _tmux.listWindows(
         widget.session,
@@ -249,6 +280,16 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       } else {
         _resetWindowReloadRecovery();
       }
+      DiagnosticsLogService.instance.info(
+        'tmux.navigator',
+        'reload_result',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': reloadGeneration,
+          'windowCount': reloadedWindows.length,
+          'consecutiveEmptyReloads': _consecutiveEmptyWindowReloads,
+        },
+      );
       final windows = resolveTmuxReloadedWindows(
         shouldPreserveTmuxWindowSnapshotOnEmptyReload(
               _windows,
@@ -259,6 +300,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         reloadedWindows,
       );
       if (windows == null) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.navigator',
+          'reload_preserved_previous',
+          fields: {
+            'connectionId': widget.session.connectionId,
+            'generation': reloadGeneration,
+          },
+        );
         final shouldShowRecoveryMessage =
             _shouldStopShowingInitialWindowSpinner;
         _scheduleWindowRetry();
@@ -283,6 +332,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       });
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
     } on Exception catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.navigator',
+        'reload_failed',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': reloadGeneration,
+          'errorType': e.runtimeType,
+        },
+      );
       if (!mounted) return;
       final shouldShowRecoveryMessage = _shouldStopShowingInitialWindowSpinner;
       _scheduleWindowRetry();
@@ -307,11 +365,24 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     if (!mounted) return;
     if (generation != _windowEventGeneration) return;
     if (event is TmuxWindowReloadEvent) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.navigator',
+        'reload_event',
+        fields: {
+          'connectionId': widget.session.connectionId,
+          'generation': generation,
+        },
+      );
       _loadWindows();
       return;
     }
     final currentWindows = _windows;
     if (currentWindows == null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.navigator',
+        'snapshot_without_state',
+        fields: {'connectionId': widget.session.connectionId},
+      );
       _loadWindows();
       return;
     }
@@ -322,6 +393,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       _error = null;
       _isLoadingWindows = false;
     });
+    DiagnosticsLogService.instance.debug(
+      'tmux.navigator',
+      'snapshot_applied',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'windowCount': _windows?.length ?? 0,
+      },
+    );
   }
 
   void _cancelWindowRetry() {
@@ -341,6 +420,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     }
     final delay = resolveTmuxWindowReloadRetryDelay(_windowRetryAttempts);
     _windowRetryAttempts += 1;
+    DiagnosticsLogService.instance.warning(
+      'tmux.navigator',
+      'retry_scheduled',
+      fields: {
+        'connectionId': widget.session.connectionId,
+        'attempt': _windowRetryAttempts,
+        'delayMs': delay.inMilliseconds,
+      },
+    );
     _windowRetryTimer = Timer(delay, () {
       _windowRetryTimer = null;
       if (mounted) {
