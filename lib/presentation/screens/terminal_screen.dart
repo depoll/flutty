@@ -545,10 +545,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
+    _clearSeenAlertNotifications(oldWidget.session, oldWidget.tmuxSessionName);
     setState(() {
       _windows = null;
       _isLoading = true;
       _expanded = false;
+      _showSessions = false;
+      _hasInitializedSessionProviders = false;
       _dragOffset = 0;
     });
     if (wasExpanded) {
@@ -569,9 +572,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
     unawaited(_windowChangeSubscription?.cancel());
-    for (final windowIndex in _seenAlertWindows) {
-      _clearAlertNotification(windowIndex);
-    }
+    _clearSeenAlertNotifications(widget.session, widget.tmuxSessionName);
     _bounceController.dispose();
     super.dispose();
   }
@@ -890,11 +891,15 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     _resumeSession(selected);
   }
 
-  int _tmuxAlertNotificationId(int windowIndex) =>
+  int _tmuxAlertNotificationId(
+    SshSession session,
+    String tmuxSessionName,
+    int windowIndex,
+  ) =>
       Object.hash(
-        widget.session.hostId,
-        widget.session.connectionId,
-        widget.tmuxSessionName,
+        session.hostId,
+        session.connectionId,
+        tmuxSessionName,
         windowIndex,
       ) &
       0x7fffffff;
@@ -908,7 +913,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       widget.ref
           .read(localNotificationServiceProvider)
           .showTmuxAlert(
-            notificationId: _tmuxAlertNotificationId(window.index),
+            notificationId: _tmuxAlertNotificationId(
+              widget.session,
+              widget.tmuxSessionName,
+              window.index,
+            ),
             title: title,
             body: body,
             payload: TmuxAlertNotificationPayload(
@@ -925,8 +934,38 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     unawaited(
       widget.ref
           .read(localNotificationServiceProvider)
-          .clearTmuxAlert(_tmuxAlertNotificationId(windowIndex)),
+          .clearTmuxAlert(
+            _tmuxAlertNotificationId(
+              widget.session,
+              widget.tmuxSessionName,
+              windowIndex,
+            ),
+          ),
     );
+  }
+
+  void _clearAlertNotificationFor(
+    SshSession session,
+    String tmuxSessionName,
+    int windowIndex,
+  ) {
+    unawaited(
+      widget.ref
+          .read(localNotificationServiceProvider)
+          .clearTmuxAlert(
+            _tmuxAlertNotificationId(session, tmuxSessionName, windowIndex),
+          ),
+    );
+  }
+
+  void _clearSeenAlertNotifications(
+    SshSession session,
+    String tmuxSessionName,
+  ) {
+    for (final windowIndex in _seenAlertWindows) {
+      _clearAlertNotificationFor(session, tmuxSessionName, windowIndex);
+    }
+    _seenAlertWindows.clear();
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
@@ -5920,7 +5959,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() => _showsTerminalMetadata = !_showsTerminalMetadata);
         break;
       case 'toggle_tmux_bar':
-        setState(() => _showTmuxBar = !_showTmuxBar);
+        final shouldShowTmuxBar = !_showTmuxBar;
+        if (!shouldShowTmuxBar) {
+          _collapseTmuxBarIfExpanded();
+        }
+        setState(() => _showTmuxBar = shouldShowTmuxBar);
         break;
       case 'toggle_tap_keyboard':
         final notifier = ref.read(tapToShowKeyboardNotifierProvider.notifier);

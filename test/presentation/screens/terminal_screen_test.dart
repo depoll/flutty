@@ -382,6 +382,34 @@ void main() {
     );
 
     testWidgets(
+      'hiding the expanded tmux bar restores normal back handling',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        await pumpTmuxScreen(tester, tmuxService);
+
+        await tester.tap(find.byKey(const ValueKey('tmux-handle-bar')));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 350));
+
+        final popScope = find.byWidgetPredicate((widget) => widget is PopScope);
+        final dismissRegion = find.byKey(
+          const ValueKey('tmux-terminal-dismiss-region'),
+        );
+        expect(dismissRegion, findsOneWidget);
+        expect(tester.widget<PopScope<Object?>>(popScope).canPop, isFalse);
+
+        await tester.tap(find.byType(PopupMenuButton<String>));
+        await tester.pumpAndSettle();
+        await tester.tap(find.text('Hide tmux Bar'));
+        await tester.pumpAndSettle();
+
+        expect(dismissRegion, findsNothing);
+        expect(tester.widget<PopScope<Object?>>(popScope).canPop, isTrue);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'auto-connect rebuilds agent launch commands from the saved preset and host yolo preference',
       (tester) async {
         final settingsService = SettingsService(db);
