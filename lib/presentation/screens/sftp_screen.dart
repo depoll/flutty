@@ -30,6 +30,7 @@ import 'remote_text_editor_screen.dart';
 
 const _maxEditableBytes = 1024 * 1024;
 const _maxPreviewBytes = 10 * 1024 * 1024;
+const _sftpOperationTimeout = Duration(seconds: 10);
 
 /// Maximum remote video size cached for inline preview playback.
 @visibleForTesting
@@ -40,6 +41,24 @@ const _sftpFileRowExtentEstimate = 64.0;
 const _sftpHighlightedFileScrollPadding = 16.0;
 const _sftpScrollAnimationDuration = Duration(milliseconds: 220);
 const _videoPreviewCacheDirectoryName = 'monkeyssh-sftp-video-preview';
+
+/// Bounds SFTP operations so stale SSH channels don't leave the browser loading
+/// forever.
+@visibleForTesting
+Future<T> withSftpOperationTimeout<T>(
+  Future<T> operation, {
+  Duration timeout = _sftpOperationTimeout,
+}) => operation.timeout(
+  timeout,
+  onTimeout: () {
+    throw TimeoutException('SFTP operation timed out', timeout);
+  },
+);
+
+/// User-facing timeout message for SFTP operations.
+@visibleForTesting
+String sftpTimeoutMessage(String action) =>
+    'Timed out $action. The SSH connection may be stale; reconnect and try again.';
 
 /// Returns the parent directory for a POSIX remote path.
 @visibleForTesting
@@ -454,6 +473,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _error = null;
     });
 
+    SftpClient? pendingSftp;
     try {
       final remoteFileService = ref.read(remoteFileServiceProvider);
       final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
@@ -507,20 +527,30 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       if (!mounted) {
         return;
       }
-      final sftp = await session.sftp();
+      final sftpOpenFuture = session.sftp();
+      late final SftpClient sftp;
+      try {
+        sftp = await withSftpOperationTimeout(sftpOpenFuture);
+      } on TimeoutException {
+        sftpOpenFuture.then((sftp) => sftp.close()).ignore();
+        rethrow;
+      }
+      if (!mounted) {
+        sftp.close();
+        return;
+      }
+      pendingSftp = sftp;
+      final initialPath = await withSftpOperationTimeout(
+        remoteFileService.resolveInitialDirectory(sftp),
+      );
       if (!mounted) {
         sftp.close();
         return;
       }
       _sftp?.close();
       _sftp = sftp;
+      pendingSftp = null;
       _hostLabel = session.config.hostname;
-      final initialPath = await remoteFileService.resolveInitialDirectory(sftp);
-      if (!mounted) {
-        sftp.close();
-        _sftp = null;
-        return;
-      }
       _fallbackDirectoryPath = normalizeSftpAbsolutePath(initialPath) ?? '/';
       final requestedPath = _pendingInitialPath;
       if (requestedPath != null) {
@@ -531,18 +561,22 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       if (await _loadDirectory(
         _fallbackDirectoryPath!,
         nextHistory: [_fallbackDirectoryPath!],
+        rethrowTimeout: true,
         showError: false,
       )) {
         return;
       }
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
     } on Exception catch (e) {
+      pendingSftp?.close();
       if (!mounted) {
         return;
       }
       setState(() {
         _isLoading = false;
-        _error = 'SFTP connection failed: $e';
+        _error = e is TimeoutException
+            ? sftpTimeoutMessage('opening the SFTP browser')
+            : 'SFTP connection failed: $e';
       });
     }
   }
@@ -589,12 +623,23 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     addCandidate('/');
 
     for (final candidatePath in candidatePaths) {
-      if (await _loadDirectory(
-        candidatePath,
-        nextHistory: [candidatePath],
-        showError: false,
-      )) {
-        _pendingInitialPath = null;
+      try {
+        if (await _loadDirectory(
+          candidatePath,
+          nextHistory: [candidatePath],
+          rethrowTimeout: true,
+          showError: false,
+        )) {
+          _pendingInitialPath = null;
+          return;
+        }
+      } on TimeoutException {
+        if (mounted) {
+          setState(() {
+            _isLoading = false;
+            _error = sftpTimeoutMessage('opening the SFTP browser');
+          });
+        }
         return;
       }
     }
@@ -611,6 +656,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   Future<bool> _loadDirectory(
     String path, {
     List<String>? nextHistory,
+    bool rethrowTimeout = false,
     bool showError = true,
   }) async {
     if (_sftp == null) {
@@ -620,7 +666,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
     setState(() => _isLoading = true);
 
     try {
-      final items = await _sftp!.listdir(path);
+      final items = await withSftpOperationTimeout(_sftp!.listdir(path));
       if (!mounted) {
         return false;
       }
@@ -650,13 +696,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       _queueScrollBreadcrumbTailIntoView();
       return true;
     } on Exception catch (e) {
+      if (e is TimeoutException && rethrowTimeout) {
+        rethrow;
+      }
       if (!mounted) {
         return false;
       }
       setState(() {
         _isLoading = false;
         if (showError) {
-          _error = 'Failed to list directory: $e';
+          _error = e is TimeoutException
+              ? sftpTimeoutMessage('listing "$path"')
+              : 'Failed to list directory: $e';
         }
       });
       return false;

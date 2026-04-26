@@ -61,12 +61,28 @@ final routerProvider = Provider<GoRouter>((ref) {
           final connectionId = int.tryParse(
             state.uri.queryParameters['connectionId'] ?? '',
           );
+          final initialTmuxSessionName =
+              state.uri.queryParameters['tmuxSession'];
+          final initialTmuxWindowIndex = int.tryParse(
+            state.uri.queryParameters['tmuxWindow'] ?? '',
+          );
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
           return TerminalScreen(
+            key: ValueKey<Object>(
+              Object.hash(
+                hostId,
+                connectionId,
+                initialTmuxSessionName,
+                initialTmuxWindowIndex,
+                state.uri.queryParameters['notificationTap'],
+              ),
+            ),
             hostId: hostId,
             connectionId: connectionId,
+            initialTmuxSessionName: initialTmuxSessionName,
+            initialTmuxWindowIndex: initialTmuxWindowIndex,
             initiallyExpandTmuxWindows:
                 state.uri.queryParameters['expandTmux'] == '1',
           );

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -298,6 +299,25 @@ void main() {
       expect(
         sftpCreatedDirectorySnackBarMessage('/var/www/releases'),
         'Created folder "/var/www/releases"',
+      );
+    });
+
+    test('bounds stale SFTP operations with a timeout', () async {
+      final completer = Completer<String>();
+
+      await expectLater(
+        withSftpOperationTimeout(
+          completer.future,
+          timeout: const Duration(milliseconds: 1),
+        ),
+        throwsA(isA<TimeoutException>()),
+      );
+    });
+
+    test('describes stale SFTP timeout recovery', () {
+      expect(
+        sftpTimeoutMessage('listing "/home/demo"'),
+        'Timed out listing "/home/demo". The SSH connection may be stale; reconnect and try again.',
       );
     });
 

@@ -67,6 +67,7 @@ class _NoOpLocalNotificationService extends LocalNotificationService {
     required int notificationId,
     required String title,
     required String body,
+    required TmuxAlertNotificationPayload payload,
   }) async {}
 
   @override
