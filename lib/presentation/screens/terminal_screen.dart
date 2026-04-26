@@ -421,10 +421,12 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.session,
     required this.tmuxSessionName,
     required this.availableHeight,
+    required this.recoveryGeneration,
     required this.isProUser,
     required this.startClisInYoloMode,
     required this.ref,
     required this.onAction,
+    required this.onExpandedChanged,
     this.scopeWorkingDirectory,
     this.onWindowLoadStalled,
     super.key,
@@ -439,6 +441,9 @@ class _TmuxExpandableBar extends StatefulWidget {
   /// The available terminal height the bar can expand into.
   final double availableHeight;
 
+  /// Forces state recovery when tmux window loading stalls.
+  final int recoveryGeneration;
+
   /// Whether the user has Pro access.
   final bool isProUser;
 
@@ -450,6 +455,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// Callback for navigator actions.
   final Future<void> Function(TmuxNavigatorAction) onAction;
+
+  /// Called when the expanded/collapsed state changes.
+  final ValueChanged<bool> onExpandedChanged;
 
   final Future<void> Function(SshSession session, String sessionName)?
   onWindowLoadStalled;
@@ -530,15 +538,26 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void didUpdateWidget(covariant _TmuxExpandableBar oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.connectionId == widget.session.connectionId &&
-        oldWidget.tmuxSessionName == widget.tmuxSessionName) {
+        oldWidget.tmuxSessionName == widget.tmuxSessionName &&
+        oldWidget.recoveryGeneration == widget.recoveryGeneration) {
       return;
     }
+    final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
     setState(() {
       _windows = null;
       _isLoading = true;
+      _expanded = false;
+      _dragOffset = 0;
     });
+    if (wasExpanded) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) {
+          widget.onExpandedChanged(false);
+        }
+      });
+    }
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
@@ -713,6 +732,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     }
   }
 
+  bool collapseIfExpanded() {
+    if (!_expanded) {
+      return false;
+    }
+    setState(() {
+      _expanded = false;
+      _dragOffset = 0;
+    });
+    widget.onExpandedChanged(false);
+    return true;
+  }
+
   String? _resolveRecentSessionScopeWorkingDirectory([
     List<TmuxWindow>? windows,
   ]) {
@@ -773,10 +804,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         final shouldRecover = _shouldRequestWindowReloadRecovery;
         _scheduleWindowRetry();
         if (shouldRecover) {
+          final wasExpanded = _expanded;
           setState(() {
             _expanded = false;
             _isLoading = false;
           });
+          if (wasExpanded) {
+            widget.onExpandedChanged(false);
+          }
           _requestWindowReloadRecovery();
         } else if (_windows != null || !_isLoading) {
           setState(() {
@@ -804,10 +839,14 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           setState(() => _isLoading = false);
         }
       } else if (shouldRecover) {
+        final wasExpanded = _expanded;
         setState(() {
           _expanded = false;
           _isLoading = false;
         });
+        if (wasExpanded) {
+          widget.onExpandedChanged(false);
+        }
         _requestWindowReloadRecovery();
       } else {
         setState(() => _isLoading = true);
@@ -824,7 +863,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void _resumeSession(ToolSessionInfo info) {
     final discovery = widget.ref.read(agentSessionDiscoveryServiceProvider);
     final command = discovery.buildResumeCommand(info);
+    final wasExpanded = _expanded;
     setState(() => _expanded = false);
+    if (wasExpanded) {
+      widget.onExpandedChanged(false);
+    }
     widget.onAction(
       TmuxResumeSessionAction(command, workingDirectory: info.workingDirectory),
     );
@@ -905,6 +948,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       }
       _dragOffset = 0;
     });
+    if (shouldExpand) {
+      widget.onExpandedChanged(true);
+    } else if (shouldCollapse) {
+      widget.onExpandedChanged(false);
+    }
     if (shouldExpand) _loadWindows();
   }
 
@@ -996,6 +1044,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           onTap: () {
             final wasExpanded = _expanded;
             setState(() => _expanded = !_expanded);
+            widget.onExpandedChanged(!wasExpanded);
             // Refresh window list when expanding to get current active state.
             if (!wasExpanded) {
               _loadWindows();
@@ -1096,7 +1145,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             ),
             title: const Text('New Window'),
             onTap: () {
+              final wasExpanded = _expanded;
               setState(() => _expanded = false);
+              if (wasExpanded) {
+                widget.onExpandedChanged(false);
+              }
               final installedToolsFuture = _tmux.detectInstalledAgentTools(
                 widget.session,
               );
@@ -1373,12 +1426,19 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         ],
       ),
       onTap: isActive
-          ? () => setState(() => _expanded = false)
+          ? () {
+              final wasExpanded = _expanded;
+              setState(() => _expanded = false);
+              if (wasExpanded) {
+                widget.onExpandedChanged(false);
+              }
+            }
           : () {
               setState(() {
                 _pendingSelectedWindowIndex = window.index;
                 _expanded = false;
               });
+              widget.onExpandedChanged(false);
               _startPendingSelectionTimer(window.index);
               unawaited(widget.onAction(TmuxSwitchWindowAction(window.index)));
             },
@@ -2720,6 +2780,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+  final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
   late Terminal _terminal;
   late final TerminalController _terminalController;
@@ -2765,6 +2826,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxSessionName;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
+  bool _isTmuxBarExpanded = false;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
   int _tmuxDetectionGeneration = 0;
@@ -3952,6 +4014,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
   }
@@ -4196,6 +4259,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ),
                   ),
                 ),
+                if (showTmux && _isTmuxBarExpanded)
+                  Positioned.fill(
+                    child: Listener(
+                      key: const ValueKey('tmux-terminal-dismiss-region'),
+                      behavior: HitTestBehavior.opaque,
+                      onPointerDown: (_) => _collapseTmuxBarIfExpanded(),
+                      child: const SizedBox.expand(),
+                    ),
+                  ),
                 if (showTmux || animatedBottomPadding > 0)
                   Positioned(
                     left: tmuxBarSafeInsets.left,
@@ -4237,16 +4309,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     return _TmuxExpandableBar(
-      key: ValueKey<Object>(
-        Object.hash(connectionId, _tmuxSessionName, _tmuxBarRecoveryGeneration),
-      ),
+      key: _tmuxBarKey,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
       availableHeight: availableHeight,
+      recoveryGeneration: _tmuxBarRecoveryGeneration,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,
       ref: ref,
       onAction: _handleTmuxAction,
+      onExpandedChanged: _handleTmuxBarExpandedChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
@@ -4254,6 +4326,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         sessionWorkingDirectory: session.workingDirectory,
       ),
     );
+  }
+
+  void _handleTmuxBarExpandedChanged(bool expanded) {
+    if (_isTmuxBarExpanded == expanded || !mounted) {
+      return;
+    }
+    setState(() => _isTmuxBarExpanded = expanded);
+  }
+
+  bool _collapseTmuxBarIfExpanded() {
+    if (!_isTmuxBarExpanded) {
+      return false;
+    }
+    final collapsed = _tmuxBarKey.currentState?.collapseIfExpanded() ?? false;
+    if (!collapsed && mounted) {
+      setState(() => _isTmuxBarExpanded = false);
+    }
+    return true;
   }
 
   /// Handles an action from the draggable tmux panel.
@@ -4794,297 +4884,306 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final titleSubtitle = titleSubtitleSegments.join(' • ');
     final statusChips = _buildTerminalStatusChips(theme);
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Flexible(
-                  child: Text(
-                    _host?.label ?? 'Terminal',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
+    return PopScope(
+      canPop: !_isTmuxBarExpanded,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) {
+          return;
+        }
+        _collapseTmuxBarIfExpanded();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Flexible(
+                    child: Text(
+                      _host?.label ?? 'Terminal',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  _TerminalConnectionStatusIcon(
+                    label: connectionLabel,
+                    state: connectionState,
+                    isConnecting: _isConnecting,
+                  ),
+                ],
+              ),
+              if (titleSubtitle.isNotEmpty)
+                Text(
+                  titleSubtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: theme.colorScheme.onSurfaceVariant,
                   ),
                 ),
-                const SizedBox(width: 6),
-                _TerminalConnectionStatusIcon(
-                  label: connectionLabel,
-                  state: connectionState,
-                  isConnecting: _isConnecting,
-                ),
-              ],
-            ),
-            if (titleSubtitle.isNotEmpty)
-              Text(
-                titleSubtitle,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: theme.textTheme.labelSmall?.copyWith(
-                  color: theme.colorScheme.onSurfaceVariant,
-                ),
-              ),
-          ],
-        ),
-        bottom: !_showsTerminalMetadata || statusChips.isEmpty
-            ? null
-            : PreferredSize(
-                preferredSize: const Size.fromHeight(40),
-                child: Container(
-                  alignment: Alignment.centerLeft,
-                  width: double.infinity,
-                  padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: statusChips
-                          .map(
-                            (chip) => Padding(
-                              padding: const EdgeInsets.only(right: 8),
-                              child: chip,
-                            ),
-                          )
-                          .toList(growable: false),
+            ],
+          ),
+          bottom: !_showsTerminalMetadata || statusChips.isEmpty
+              ? null
+              : PreferredSize(
+                  preferredSize: const Size.fromHeight(40),
+                  child: Container(
+                    alignment: Alignment.centerLeft,
+                    width: double.infinity,
+                    padding: const EdgeInsets.fromLTRB(12, 0, 12, 8),
+                    child: SingleChildScrollView(
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: statusChips
+                            .map(
+                              (chip) => Padding(
+                                padding: const EdgeInsets.only(right: 8),
+                                child: chip,
+                              ),
+                            )
+                            .toList(growable: false),
+                      ),
                     ),
                   ),
                 ),
+          actions: [
+            if (_isTmuxActive &&
+                !_showTmuxBar &&
+                connectionState == SshConnectionState.connected)
+              IconButton(
+                icon: const Icon(Icons.window_outlined),
+                onPressed: _connectionId == null ? null : _openTmuxNavigator,
+                tooltip: 'tmux windows',
               ),
-        actions: [
-          if (_isTmuxActive &&
-              !_showTmuxBar &&
-              connectionState == SshConnectionState.connected)
             IconButton(
-              icon: const Icon(Icons.window_outlined),
-              onPressed: _connectionId == null ? null : _openTmuxNavigator,
-              tooltip: 'tmux windows',
+              icon: const Icon(Icons.folder_outlined),
+              onPressed:
+                  _connectionId == null ||
+                      connectionState != SshConnectionState.connected
+                  ? null
+                  : _openConnectionFileBrowser,
+              tooltip: 'Browse files',
             ),
-          IconButton(
-            icon: const Icon(Icons.folder_outlined),
-            onPressed:
-                _connectionId == null ||
-                    connectionState != SshConnectionState.connected
-                ? null
-                : _openConnectionFileBrowser,
-            tooltip: 'Browse files',
-          ),
-          if (isMobile)
+            if (isMobile)
+              IconButton(
+                icon: Icon(
+                  systemKeyboardVisible
+                      ? Icons.keyboard_hide
+                      : Icons.keyboard_alt_outlined,
+                ),
+                onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
+                tooltip: systemKeyboardVisible
+                    ? 'Hide system keyboard'
+                    : 'Show system keyboard',
+              ),
             IconButton(
-              icon: Icon(
-                systemKeyboardVisible
-                    ? Icons.keyboard_hide
-                    : Icons.keyboard_alt_outlined,
+              icon: _ExtraKeysToggleKeycap(
+                key: ValueKey<String>(
+                  _showKeyboardToolbar
+                      ? 'extra-keys-toggle-active'
+                      : 'extra-keys-toggle-inactive',
+                ),
+                isActive: _showKeyboardToolbar,
               ),
-              onPressed: () => _toggleSystemKeyboard(systemKeyboardVisible),
-              tooltip: systemKeyboardVisible
-                  ? 'Hide system keyboard'
-                  : 'Show system keyboard',
+              onPressed: () =>
+                  setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
+              tooltip: _showKeyboardToolbar
+                  ? 'Hide extra keys'
+                  : 'Show extra keys',
             ),
-          IconButton(
-            icon: _ExtraKeysToggleKeycap(
-              key: ValueKey<String>(
-                _showKeyboardToolbar
-                    ? 'extra-keys-toggle-active'
-                    : 'extra-keys-toggle-inactive',
-              ),
-              isActive: _showKeyboardToolbar,
-            ),
-            onPressed: () =>
-                setState(() => _showKeyboardToolbar = !_showKeyboardToolbar),
-            tooltip: _showKeyboardToolbar
-                ? 'Hide extra keys'
-                : 'Show extra keys',
-          ),
-          PopupMenuButton<String>(
-            onSelected: _handleMenuAction,
-            itemBuilder: (context) => [
-              const PopupMenuItem(
-                value: 'snippets',
-                child: Row(
-                  children: [
-                    Icon(Icons.code_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Snippets'),
-                  ],
-                ),
-              ),
-              const PopupMenuItem(
-                value: 'change_theme',
-                child: Row(
-                  children: [
-                    Icon(Icons.palette_outlined, size: 20),
-                    SizedBox(width: 12),
-                    Text('Change Theme'),
-                  ],
-                ),
-              ),
-              if (statusChips.isNotEmpty)
-                PopupMenuItem(
-                  value: 'toggle_terminal_info',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _showsTerminalMetadata
-                            ? Icons.info_outlined
-                            : Icons.info_outline_rounded,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _showsTerminalMetadata
-                            ? 'Hide Terminal Info'
-                            : 'Show Terminal Info',
-                      ),
-                    ],
-                  ),
-                ),
-              if (_isTmuxActive)
-                PopupMenuItem(
-                  value: 'toggle_tmux_bar',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _showTmuxBar
-                            ? Icons.window_outlined
-                            : Icons.window_rounded,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(_showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar'),
-                    ],
-                  ),
-                ),
-              if (isMobile)
-                CheckedPopupMenuItem(
-                  value: 'toggle_tap_keyboard',
-                  checked: ref.read(tapToShowKeyboardNotifierProvider),
-                  child: const Text('Tap to Show Keyboard'),
-                ),
-              const PopupMenuDivider(),
-              if (!isMobile)
-                PopupMenuItem(
-                  value: 'native_select',
-                  child: Row(
-                    children: [
-                      Icon(
-                        _isNativeSelectionMode
-                            ? Icons.deselect_rounded
-                            : Icons.select_all_rounded,
-                        size: 20,
-                      ),
-                      const SizedBox(width: 12),
-                      Text(
-                        _isNativeSelectionMode
-                            ? 'Exit Native Selection'
-                            : 'Native Selection',
-                      ),
-                    ],
-                  ),
-                ),
-              if (_workingDirectoryPath != null)
+            PopupMenuButton<String>(
+              onSelected: _handleMenuAction,
+              itemBuilder: (context) => [
                 const PopupMenuItem(
-                  value: 'copy_working_directory',
+                  value: 'snippets',
                   child: Row(
                     children: [
-                      Icon(Icons.folder_copy_outlined, size: 20),
+                      Icon(Icons.code_rounded, size: 20),
                       SizedBox(width: 12),
-                      Text('Copy Current Directory'),
+                      Text('Snippets'),
                     ],
                   ),
                 ),
-              const PopupMenuItem(
-                value: 'copy',
-                child: Row(
-                  children: [
-                    Icon(Icons.copy_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Copy'),
-                  ],
+                const PopupMenuItem(
+                  value: 'change_theme',
+                  child: Row(
+                    children: [
+                      Icon(Icons.palette_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('Change Theme'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'paste',
-                child: Row(
-                  children: [
-                    Icon(Icons.paste_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Paste'),
-                  ],
+                if (statusChips.isNotEmpty)
+                  PopupMenuItem(
+                    value: 'toggle_terminal_info',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _showsTerminalMetadata
+                              ? Icons.info_outlined
+                              : Icons.info_outline_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _showsTerminalMetadata
+                              ? 'Hide Terminal Info'
+                              : 'Show Terminal Info',
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_isTmuxActive)
+                  PopupMenuItem(
+                    value: 'toggle_tmux_bar',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _showTmuxBar
+                              ? Icons.window_outlined
+                              : Icons.window_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(_showTmuxBar ? 'Hide tmux Bar' : 'Show tmux Bar'),
+                      ],
+                    ),
+                  ),
+                if (isMobile)
+                  CheckedPopupMenuItem(
+                    value: 'toggle_tap_keyboard',
+                    checked: ref.read(tapToShowKeyboardNotifierProvider),
+                    child: const Text('Tap to Show Keyboard'),
+                  ),
+                const PopupMenuDivider(),
+                if (!isMobile)
+                  PopupMenuItem(
+                    value: 'native_select',
+                    child: Row(
+                      children: [
+                        Icon(
+                          _isNativeSelectionMode
+                              ? Icons.deselect_rounded
+                              : Icons.select_all_rounded,
+                          size: 20,
+                        ),
+                        const SizedBox(width: 12),
+                        Text(
+                          _isNativeSelectionMode
+                              ? 'Exit Native Selection'
+                              : 'Native Selection',
+                        ),
+                      ],
+                    ),
+                  ),
+                if (_workingDirectoryPath != null)
+                  const PopupMenuItem(
+                    value: 'copy_working_directory',
+                    child: Row(
+                      children: [
+                        Icon(Icons.folder_copy_outlined, size: 20),
+                        SizedBox(width: 12),
+                        Text('Copy Current Directory'),
+                      ],
+                    ),
+                  ),
+                const PopupMenuItem(
+                  value: 'copy',
+                  child: Row(
+                    children: [
+                      Icon(Icons.copy_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Copy'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'paste_image',
-                child: Row(
-                  children: [
-                    Icon(Icons.image_outlined, size: 20),
-                    SizedBox(width: 12),
-                    Text('Paste Images'),
-                  ],
+                const PopupMenuItem(
+                  value: 'paste',
+                  child: Row(
+                    children: [
+                      Icon(Icons.paste_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Paste'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuItem(
-                value: 'paste_file',
-                child: Row(
-                  children: [
-                    Icon(Icons.attach_file_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Paste Files'),
-                  ],
+                const PopupMenuItem(
+                  value: 'paste_image',
+                  child: Row(
+                    children: [
+                      Icon(Icons.image_outlined, size: 20),
+                      SizedBox(width: 12),
+                      Text('Paste Images'),
+                    ],
+                  ),
                 ),
-              ),
-              const PopupMenuDivider(),
-              const PopupMenuItem(
-                value: 'disconnect',
-                child: Row(
-                  children: [
-                    Icon(Icons.link_off_rounded, size: 20),
-                    SizedBox(width: 12),
-                    Text('Disconnect'),
-                  ],
+                const PopupMenuItem(
+                  value: 'paste_file',
+                  child: Row(
+                    children: [
+                      Icon(Icons.attach_file_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Paste Files'),
+                    ],
+                  ),
                 ),
-              ),
-            ],
-          ),
-        ],
-      ),
-      body: Builder(
-        builder: (bodyContext) {
-          final showsKeyboardToolbar =
-              _showKeyboardToolbar &&
-              !showsDisconnectedOverlay &&
-              (!_isNativeSelectionMode || _isMobilePlatform);
-          final terminalArea = _buildTerminalWithTmuxBar(
-            terminalTheme,
-            isMobile,
-            theme,
-            connectionState,
-          );
-          return Column(
-            children: [
-              Expanded(
-                // The KeyboardToolbar below already absorbs the bottom
-                // safe-area inset via its own SafeArea, so strip it here to
-                // prevent the tmux bar from floating above the toolbar.
-                child: showsKeyboardToolbar
-                    ? MediaQuery.removePadding(
-                        context: bodyContext,
-                        removeBottom: true,
-                        child: terminalArea,
-                      )
-                    : terminalArea,
-              ),
-              if (showsKeyboardToolbar)
-                KeyboardToolbar(
-                  controller: _toolbarController,
-                  terminal: _terminal,
-                  onKeyPressed: _handleKeyboardToolbarKeyPressed,
-                  terminalFocusNode: _terminalFocusNode,
+                const PopupMenuDivider(),
+                const PopupMenuItem(
+                  value: 'disconnect',
+                  child: Row(
+                    children: [
+                      Icon(Icons.link_off_rounded, size: 20),
+                      SizedBox(width: 12),
+                      Text('Disconnect'),
+                    ],
+                  ),
                 ),
-            ],
-          );
-        },
+              ],
+            ),
+          ],
+        ),
+        body: Builder(
+          builder: (bodyContext) {
+            final showsKeyboardToolbar =
+                _showKeyboardToolbar &&
+                !showsDisconnectedOverlay &&
+                (!_isNativeSelectionMode || _isMobilePlatform);
+            final terminalArea = _buildTerminalWithTmuxBar(
+              terminalTheme,
+              isMobile,
+              theme,
+              connectionState,
+            );
+            return Column(
+              children: [
+                Expanded(
+                  // The KeyboardToolbar below already absorbs the bottom
+                  // safe-area inset via its own SafeArea, so strip it here to
+                  // prevent the tmux bar from floating above the toolbar.
+                  child: showsKeyboardToolbar
+                      ? MediaQuery.removePadding(
+                          context: bodyContext,
+                          removeBottom: true,
+                          child: terminalArea,
+                        )
+                      : terminalArea,
+                ),
+                if (showsKeyboardToolbar)
+                  KeyboardToolbar(
+                    controller: _toolbarController,
+                    terminal: _terminal,
+                    onKeyPressed: _handleKeyboardToolbarKeyPressed,
+                    terminalFocusNode: _terminalFocusNode,
+                  ),
+              ],
+            );
+          },
+        ),
       ),
     );
   }
