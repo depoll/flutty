@@ -10,6 +10,35 @@ platform :android do
     'xyz.depollsoft.monkeyssh' => File.expand_path('metadata-production/android', __dir__),
   }.freeze
 
+  private_lane :patch_supply_metadata_only_upload do
+    require 'supply/uploader'
+
+    next if Supply::Uploader.method_defined?(:monkeyssh_original_perform_upload_meta)
+
+    Supply::Uploader.class_eval do
+      alias_method :monkeyssh_original_perform_upload_meta, :perform_upload_meta
+
+      def perform_upload_meta(version_codes, track_name)
+        unless Supply.config[:skip_upload_changelogs]
+          return monkeyssh_original_perform_upload_meta(version_codes, track_name)
+        end
+
+        return unless (!Supply.config[:skip_upload_metadata] || !Supply.config[:skip_upload_images] || !Supply.config[:skip_upload_screenshots]) && metadata_path
+
+        UI.user_error!("Could not find folder #{metadata_path}") unless File.directory?(metadata_path)
+
+        release_notes_queue = Queue.new
+        upload_worker = create_meta_upload_worker
+        upload_worker.batch_enqueue(
+          all_languages.reject { |lang| lang.start_with?('.') }.map do |lang|
+            UploadJob.new(lang, nil, release_notes_queue)
+          end
+        )
+        upload_worker.start
+      end
+    end
+  end
+
   private_lane :play_store_client do |options|
     package = options[:package_name]
 
@@ -35,10 +64,10 @@ platform :android do
     tracks = client.tracks(track_name)
     unless tracks.empty?
       track = tracks.first
-      drafts = track.releases.select { |r| r.status == 'draft' }
+      drafts = Array(track.releases).select { |r| r.status == 'draft' }
       unless drafts.empty?
         UI.important("Clearing #{drafts.size} draft release(s) from '#{track_name}' track")
-        track.releases = track.releases.reject { |r| r.status == 'draft' }
+        track.releases = Array(track.releases).reject { |r| r.status == 'draft' }
         client.update_track(track_name, track)
         client.commit_current_edit!
         next
@@ -59,7 +88,7 @@ platform :android do
 
     tracks = client.tracks(track_name)
     version_codes = tracks.flat_map do |track|
-      track.releases.flat_map { |release| Array(release.version_codes) }
+      Array(track.releases).flat_map { |release| Array(release.version_codes) }
     end.map(&:to_s)
 
     client.abort_current_edit
@@ -171,6 +200,7 @@ platform :android do
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
     meta_path = METADATA_DIRS[package] || File.expand_path('metadata-production/android', __dir__)
 
+    patch_supply_metadata_only_upload
     upload_to_play_store(
       package_name: package,
       json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
