@@ -139,6 +139,7 @@ jobs:
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
+      enable-diagnostics: true
       flavor: private
       source-ref: ${{ github.event.pull_request.head.sha }}
       deploy-ios-to: none
@@ -162,6 +163,7 @@ jobs:
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
       pr-number: ${{ github.event.pull_request.number }}
       pr-title: ${{ github.event.pull_request.title }}
+      enable-diagnostics: true
       flavor: private
       source-ref: ${{ github.event.pull_request.head.sha }}
       deploy-ios-to: none

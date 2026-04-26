@@ -64,6 +64,7 @@ jobs:
       build-name: ${{ needs.compute-version.outputs.build-name }}
       build-number: ${{ needs.compute-version.outputs.build-number }}
       build-codename: ${{ needs.compute-version.outputs.build-codename }}
+      enable-diagnostics: true
       flavor: production
       deploy-ios-to: testflight
       deploy-android-to: internal

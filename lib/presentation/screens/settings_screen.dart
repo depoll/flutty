@@ -42,7 +42,7 @@ class SettingsScreen extends ConsumerWidget {
         const _ImportExportSection(),
         if (BackgroundSshService.supportsBatteryOptimizationControls)
           const _AndroidBackgroundSection(),
-        if (isPreviewBuild) const _DiagnosticsSection(),
+        if (isDiagnosticsLoggingEnabled) const _DiagnosticsSection(),
         const _AboutSection(),
       ],
     ),

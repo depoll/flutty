@@ -28,9 +28,9 @@ The script generates a temporary SSH key, authorizes it for localhost, and creat
 
 ## Diagnostics logging
 
-Preview builds expose an in-memory diagnostics log in Settings > Diagnostics. Users can tap **Copy diagnostics log** and paste the sanitized text into an issue or chat for troubleshooting.
+Preview and beta/internal builds expose an in-memory diagnostics log in Settings > Diagnostics. Users can tap **Copy diagnostics log** and paste the sanitized text into an issue or chat for troubleshooting.
 
-When adding diagnostics, use `DiagnosticsLogService.instance` (or `diagnosticsLogServiceProvider` in UI code) and keep entries structured with a short category, short event name, and primitive fields. The logger is gated to preview builds and maintains a bounded ring buffer.
+When adding diagnostics, use `DiagnosticsLogService.instance` (or `diagnosticsLogServiceProvider` in UI code) and keep entries structured with a short category, short event name, and primitive fields. The logger is gated to diagnostics-enabled preview/beta builds and maintains a bounded ring buffer.
 
 Never log secrets or user content. Do not log hostnames, usernames, passwords, passphrases, private keys, tokens, raw commands, terminal output, tmux window/session names, window titles, working directories, file paths, clipboard contents, or raw SSH/tmux stream lines. Prefer safe metadata such as connection ID, host ID, booleans, counts, durations, enum states, retry attempts, error types, exit statuses, and sanitized event categories.
 
