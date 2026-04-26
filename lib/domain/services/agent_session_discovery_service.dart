@@ -475,12 +475,14 @@ parseCopilotWorkspaceYamlMetadata(String raw) {
 /// Parses Codex rollout metadata from the head of a rollout JSONL file.
 @visibleForTesting
 ({
+  String? sessionId,
   String? summary,
   String? workingDirectory,
   DateTime? updatedAt,
   bool parsedAny,
 })
 parseCodexRolloutMetadata(String raw) {
+  String? sessionId;
   String? summary;
   String? workingDirectory;
   DateTime? updatedAt;
@@ -492,6 +494,8 @@ parseCodexRolloutMetadata(String raw) {
     parsedAny = true;
 
     final payload = _readMapField(decoded, 'payload');
+    sessionId ??=
+        _readStringField(payload, 'id') ?? _readStringField(decoded, 'id');
     workingDirectory ??=
         _readStringField(payload, 'cwd') ?? _readStringField(decoded, 'cwd');
     updatedAt ??= _parseDateTimeValue(decoded['timestamp']);
@@ -509,6 +513,7 @@ parseCodexRolloutMetadata(String raw) {
   }
 
   return (
+    sessionId: sessionId,
     summary: summary,
     workingDirectory: workingDirectory,
     updatedAt: updatedAt,
@@ -1585,6 +1590,7 @@ class AgentSessionDiscoveryService {
             : null;
 
         var summary = threadInfo?.threadName;
+        var sessionId = threadId;
         String? sessionWorkingDirectory;
         var lastActive = threadInfo?.updatedAt;
 
@@ -1597,6 +1603,7 @@ class AgentSessionDiscoveryService {
             if (snapshot.content.trim().isNotEmpty && !metadata.parsedAny) {
               hadError = true;
             }
+            sessionId ??= metadata.sessionId;
             summary ??= metadata.summary;
             sessionWorkingDirectory = metadata.workingDirectory;
             lastActive ??= metadata.updatedAt;
@@ -1609,7 +1616,7 @@ class AgentSessionDiscoveryService {
         sessions.add(
           ToolSessionInfo(
             toolName: 'Codex',
-            sessionId: fileName,
+            sessionId: sessionId ?? fileName,
             workingDirectory: sessionWorkingDirectory,
             lastActive: lastActive,
             summary: summary ?? _truncateId(fileName),
