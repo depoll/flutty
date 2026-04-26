@@ -108,6 +108,66 @@ void main() {
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
   });
 
+  group('terminal native selection helpers', () {
+    test('starts selection on separator characters', () {
+      final terminal = Terminal(maxLines: 100)..write('foo/bar');
+
+      final range = resolveNativeTouchSelectionRange(
+        buffer: terminal.buffer,
+        cellOffset: const CellOffset(3, 0),
+      );
+
+      expect(range, isNotNull);
+      expect(range!.begin, const CellOffset(3, 0));
+      expect(range.end, const CellOffset(4, 0));
+    });
+
+    test('starts selection when a touch lands near a word', () {
+      final terminal = Terminal(maxLines: 100)..write('alpha  beta');
+
+      final range = resolveNativeTouchSelectionRange(
+        buffer: terminal.buffer,
+        cellOffset: const CellOffset(6, 0),
+      );
+
+      expect(range, isNotNull);
+      expect(range!.begin, const CellOffset(7, 0));
+      expect(range.end, const CellOffset(11, 0));
+    });
+
+    test('ignores trailing blanks that are not near selectable text', () {
+      final terminal = Terminal(maxLines: 100)..write('alpha');
+
+      final range = resolveNativeTouchSelectionRange(
+        buffer: terminal.buffer,
+        cellOffset: const CellOffset(20, 0),
+      );
+
+      expect(range, isNull);
+    });
+
+    test('adds paste action to the native overlay context menu', () {
+      var didPaste = false;
+
+      final items = buildNativeSelectionContextMenuButtonItems(
+        defaultItems: const [
+          ContextMenuButtonItem(
+            type: ContextMenuButtonType.copy,
+            onPressed: null,
+          ),
+        ],
+        onPaste: () => didPaste = true,
+      );
+
+      final pasteItem = items.singleWhere(
+        (item) => item.type == ContextMenuButtonType.paste,
+      );
+      pasteItem.onPressed!();
+
+      expect(didPaste, isTrue);
+    });
+  });
+
   group('TerminalScreen mobile IME wiring', () {
     late AppDatabase db;
     late _MockHostRepository hostRepository;

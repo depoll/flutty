@@ -358,6 +358,7 @@ const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
 const _selectionActionsBottomPadding = 12.0;
+const _terminalSelectionNearbySearchColumns = 4;
 const _maxTerminalFilePathVerificationCandidates = 12;
 const _terminalFilePathVerificationExtensions = <String>[
   'properties',
@@ -2569,6 +2570,154 @@ bool shouldShowNativeSelectionOverlay({
 bool hasActiveNativeOverlaySelection(TextSelection selection) =>
     selection.isValid && !selection.isCollapsed;
 
+/// Resolves the terminal range to select for a touch long-press.
+///
+/// xterm's word selection returns null on separators and blank cells. Mobile
+/// touch selection should still start when the finger lands on punctuation in a
+/// path/URL or slightly misses a word, so this falls back to separator runs and
+/// nearby selectable cells on the same row.
+@visibleForTesting
+BufferRange? resolveNativeTouchSelectionRange({
+  required Buffer buffer,
+  required CellOffset cellOffset,
+  int nearbySearchColumns = _terminalSelectionNearbySearchColumns,
+}) {
+  if (buffer.height <= 0 || buffer.viewWidth <= 0) {
+    return null;
+  }
+
+  final row = cellOffset.y.clamp(0, buffer.height - 1);
+  final column = cellOffset.x.clamp(0, buffer.viewWidth - 1);
+  final exactOffset = CellOffset(column, row);
+  final exactSeparatorRange = _resolveTerminalSeparatorSelectionRange(
+    buffer: buffer,
+    row: row,
+    column: column,
+  );
+  if (exactSeparatorRange != null) {
+    return exactSeparatorRange;
+  }
+
+  if (!_isTerminalSelectionBlank(buffer, row, column)) {
+    final exactWordRange = buffer.getWordBoundary(exactOffset);
+    if (exactWordRange != null) {
+      return exactWordRange;
+    }
+  }
+
+  final searchLimit = nearbySearchColumns.clamp(0, buffer.viewWidth);
+  for (var distance = 1; distance <= searchLimit; distance++) {
+    final leftColumn = column - distance;
+    if (leftColumn >= 0) {
+      final leftRange = _resolveNativeTouchSelectionRangeAtColumn(
+        buffer: buffer,
+        row: row,
+        column: leftColumn,
+      );
+      if (leftRange != null) {
+        return leftRange;
+      }
+    }
+
+    final rightColumn = column + distance;
+    if (rightColumn < buffer.viewWidth) {
+      final rightRange = _resolveNativeTouchSelectionRangeAtColumn(
+        buffer: buffer,
+        row: row,
+        column: rightColumn,
+      );
+      if (rightRange != null) {
+        return rightRange;
+      }
+    }
+  }
+
+  return null;
+}
+
+BufferRange? _resolveNativeTouchSelectionRangeAtColumn({
+  required Buffer buffer,
+  required int row,
+  required int column,
+}) {
+  final separatorRange = _resolveTerminalSeparatorSelectionRange(
+    buffer: buffer,
+    row: row,
+    column: column,
+  );
+  if (separatorRange != null) {
+    return separatorRange;
+  }
+  if (_isTerminalSelectionBlank(buffer, row, column)) {
+    return null;
+  }
+  final offset = CellOffset(column, row);
+  return buffer.getWordBoundary(offset);
+}
+
+BufferRangeLine? _resolveTerminalSeparatorSelectionRange({
+  required Buffer buffer,
+  required int row,
+  required int column,
+}) {
+  if (!_isTerminalSelectableSeparator(buffer, row, column)) {
+    return null;
+  }
+
+  var start = column;
+  while (start > 0 && _isTerminalSelectableSeparator(buffer, row, start - 1)) {
+    start--;
+  }
+
+  var end = column + 1;
+  while (end < buffer.viewWidth &&
+      _isTerminalSelectableSeparator(buffer, row, end)) {
+    end++;
+  }
+
+  return BufferRangeLine(CellOffset(start, row), CellOffset(end, row));
+}
+
+bool _isTerminalSelectableSeparator(Buffer buffer, int row, int column) {
+  if (_isTerminalSelectionBlank(buffer, row, column)) {
+    return false;
+  }
+  final separators = buffer.wordSeparators ?? Buffer.defaultWordSeparators;
+  return separators.contains(buffer.lines[row].getCodePoint(column));
+}
+
+bool _isTerminalSelectionBlank(Buffer buffer, int row, int column) {
+  final codePoint = buffer.lines[row].getCodePoint(column);
+  return codePoint == 0 || codePoint == 0x20 || codePoint == 0x09;
+}
+
+/// Builds native selection context menu items with paste routed to the terminal.
+@visibleForTesting
+List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
+  required List<ContextMenuButtonItem> defaultItems,
+  required VoidCallback onPaste,
+}) {
+  var hasPaste = false;
+  final buttonItems = <ContextMenuButtonItem>[];
+  for (final item in defaultItems) {
+    if (item.type == ContextMenuButtonType.paste) {
+      hasPaste = true;
+      buttonItems.add(item.copyWith(onPressed: onPaste));
+    } else {
+      buttonItems.add(item);
+    }
+  }
+  if (!hasPaste) {
+    buttonItems.add(
+      ContextMenuButtonItem(
+        type: ContextMenuButtonType.paste,
+        onPressed: onPaste,
+      ),
+    );
+  }
+  return buttonItems;
+}
+
 /// Whether terminal tap links should be resolved for the current overlay state.
 @visibleForTesting
 bool shouldResolveTerminalTapLinks({
@@ -3098,14 +3247,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<String?> _readSystemClipboardText() async {
     try {
-      if (_isAndroidPlatform) {
-        return Pasteboard.text;
-      }
       final data = await Clipboard.getData(Clipboard.kTextPlain);
-      return data?.text;
+      if (data?.text != null) {
+        return data!.text;
+      }
     } on PlatformException {
-      return null;
+      if (!_isAndroidPlatform) {
+        return null;
+      }
     }
+
+    if (_isAndroidPlatform) {
+      try {
+        return await Pasteboard.text;
+      } on PlatformException {
+        return null;
+      }
+    }
+
+    return null;
   }
 
   Future<void> _syncLocalClipboardToRemote(SshSession session) async {
@@ -5704,6 +5864,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               showCursor: false,
               cursorColor: Colors.transparent,
               enableInteractiveSelection: true,
+              contextMenuBuilder: _buildNativeSelectionContextMenu,
               scrollController: _nativeSelectionScrollController,
               expands: true,
               maxLines: null,
@@ -5735,6 +5896,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           child: child,
         ),
       ),
+    ),
+  );
+
+  Widget _buildNativeSelectionContextMenu(
+    BuildContext context,
+    EditableTextState editableTextState,
+  ) => AdaptiveTextSelectionToolbar.buttonItems(
+    anchors: editableTextState.contextMenuAnchors,
+    buttonItems: buildNativeSelectionContextMenuButtonItems(
+      defaultItems: editableTextState.contextMenuButtonItems,
+      onPaste: () {
+        editableTextState.hideToolbar();
+        unawaited(_pasteClipboard());
+      },
     ),
   );
 
@@ -6111,14 +6286,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     CellOffset cellOffset, {
     required bool revealOverlayInTouchScrollMode,
   }) {
-    final wordRange = _terminal.buffer.getWordBoundary(cellOffset);
-    if (wordRange == null) {
+    final selectionRange = resolveNativeTouchSelectionRange(
+      buffer: _terminal.buffer,
+      cellOffset: cellOffset,
+    );
+    if (selectionRange == null) {
       return null;
     }
 
     final snapshot = _buildNativeSelectionSnapshotData();
     final selection = _bufferRangeToTextSelection(
-      wordRange,
+      selectionRange,
       viewWidth: snapshot.viewWidth,
       lineCount: snapshot.lineCount,
       lineStarts: snapshot.lineStarts,
@@ -7590,7 +7768,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
       }
 
-      final text = await Pasteboard.text;
+      final text = await _readSystemClipboardText();
       if (text == null || text.isEmpty) {
         _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
         _showClipboardMessage('Clipboard is empty');
