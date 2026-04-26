@@ -2421,7 +2421,6 @@ class _SnippetRow extends ConsumerWidget {
               ),
 
               // Actions
-              reorderHandle,
               _SmallIconButton(
                 icon: Icons.copy,
                 tooltip: 'Copy command',
@@ -2437,6 +2436,7 @@ class _SnippetRow extends ConsumerWidget {
                 tooltip: 'Delete',
                 onTap: () => _confirmDelete(context, ref),
               ),
+              reorderHandle,
             ],
           ),
         ),

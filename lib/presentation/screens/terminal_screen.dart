@@ -1241,7 +1241,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final isActive = window.isActive;
     final title = _redactStoreScreenshotIdentities
         ? switch (window.name.trim()) {
-            'claude' => 'Store demo Claude',
+            'claude' || 'claude-code' => 'Claude Code Workspace',
+            'copilot' => 'Mobile Copilot Workspace',
             final name when name.isNotEmpty => name,
             _ => window.displayTitle,
           }

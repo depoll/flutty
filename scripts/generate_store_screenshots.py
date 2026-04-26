@@ -206,8 +206,8 @@ class StoreDemoEnvironment:
         self._tmpdir = Path(tempfile.mkdtemp(prefix='monkeyssh-store-demo-'))
         self.username = getpass.getuser()
         self.port = _free_local_port()
-        self.tmux_session = 'agent-workspace'
-        self.demo_dir = Path('/Users/Shared/monkeyssh-store-demo')
+        self.tmux_session = f'monkeyssh-store-{os.getpid()}'
+        self.demo_dir = Path('/Users/Shared/monkeyssh-release-workspace')
         self._process: subprocess.Popen[str] | None = None
         self._tmux = shutil.which('tmux')
         if self._tmux is None:
@@ -215,6 +215,10 @@ class StoreDemoEnvironment:
         self._copilot = shutil.which('copilot')
         if self._copilot is None:
             raise RuntimeError('GitHub Copilot CLI is required for the first store screenshot.')
+        self._claude = shutil.which('claude')
+        if self._claude is None:
+            raise RuntimeError('Claude Code CLI is required for the Claude store screenshot.')
+        self._clean_claude_home = self._tmpdir / 'claude-home'
 
     @property
     def private_key_b64(self) -> str:
@@ -264,7 +268,7 @@ class StoreDemoEnvironment:
                 '-N',
                 '',
                 '-C',
-                'monkeyssh-store-demo',
+                'monkeyssh-release-workspace',
                 '-q',
             ],
             check=True,
@@ -350,7 +354,23 @@ class StoreDemoEnvironment:
               --no-remote \\
               --log-level none \\
               --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
-              --name 'Store demo Copilot'
+              --name 'Mobile Copilot Workspace'
+            """,
+        )
+        self._write_pane_script(
+            'claude-code',
+            f"""
+            exec env -i \\
+              PATH={self._shell_quote(os.environ.get('PATH', ''))} \\
+              TERM=xterm-256color \\
+              HOME={self._shell_quote(str(self._clean_claude_home))} \\
+              BASH_SILENCE_DEPRECATION_WARNING=1 \\
+              CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 \\
+              CLAUDE_CODE_HIDE_CWD=1 \\
+              ANTHROPIC_API_KEY=sk-ant-api03-0000000000000000000000000000000000000000000000000000000000000000-dummy \\
+              {self._shell_quote(self._claude)} \\
+              --bare \\
+              --name 'Claude Code Workspace'
             """,
         )
         self._write_pane_script(
@@ -385,16 +405,17 @@ class StoreDemoEnvironment:
             'shell',
             """
             clear
-            printf 'store-demo shell ready\\n'
+            printf 'release workspace shell ready\\n'
             """,
         )
         self._start_tmux_windows()
         self._configure_tmux_status()
         self._drive_copilot_start_screen()
+        self._drive_claude_full_screen()
         self.reset_tmux()
 
     def _prepare_demo_dir(self) -> None:
-        marker = self.demo_dir / '.monkeyssh-store-demo'
+        marker = self.demo_dir / '.monkeyssh-release-workspace'
         if self.demo_dir.exists():
             if not marker.exists():
                 raise RuntimeError(
@@ -443,7 +464,7 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Hosts, snippets, port forwards, keys, SFTP |',
+                    '| App Store | iPhone 6.9, iPad 13 | Copilot, hosts, snippets, tmux selector, SFTP, Claude Code |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
@@ -459,7 +480,7 @@ class StoreDemoEnvironment:
         )
 
     def _remove_demo_dir(self) -> None:
-        marker = self.demo_dir / '.monkeyssh-store-demo'
+        marker = self.demo_dir / '.monkeyssh-release-workspace'
         if marker.exists():
             shutil.rmtree(self.demo_dir, ignore_errors=True)
 
@@ -505,6 +526,16 @@ class StoreDemoEnvironment:
             str(self.demo_dir),
             str(self._tmpdir / 'files-pane.sh'),
         )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
+            'claude-code',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'claude-code-pane.sh'),
+        )
 
     def _write_pane_script(self, window: str, body: str) -> None:
         rcfile = self._tmpdir / f'{window}-bashrc'
@@ -512,7 +543,7 @@ class StoreDemoEnvironment:
             '\n'.join(
                 [
                     'export BASH_SILENCE_DEPRECATION_WARNING=1',
-                    f"PS1='store-demo {window} % '",
+                    f"PS1='release-workspace {window} % '",
                     '',
                 ]
             )
@@ -543,6 +574,22 @@ class StoreDemoEnvironment:
         self._wait_for_visible_text('copilot', ['GitHub Copilot'])
         self._assert_copilot_pane_streamer_safe()
 
+    def _drive_claude_full_screen(self) -> None:
+        self._wait_for_visible_text('claude-code', ['Choose the text style'])
+        self._tmux_send_keys('claude-code', 'Enter')
+        self._wait_for_visible_text(
+            'claude-code',
+            ['Detected a custom API key', 'ANTHROPIC_API_KEY', 'dummy'],
+        )
+        self._tmux_send_keys('claude-code', 'Up', 'Enter')
+        self._wait_for_visible_text('claude-code', ['Press Enter to continue'])
+        self._tmux_send_keys('claude-code', 'Enter')
+        self._wait_for_visible_text('claude-code', ['Yes, I trust this folder'])
+        self._tmux_send_keys('claude-code', 'Enter')
+        self._wait_for_visible_text('claude-code', ['Claude Code'])
+        time.sleep(3)
+        self._assert_claude_pane_streamer_safe()
+
     def _ensure_copilot_streamer_mode(self) -> None:
         self._wait_for_visible_text('copilot', ['GitHub Copilot'])
         self._tmux_send_literal('copilot', '/streamer')
@@ -572,19 +619,39 @@ class StoreDemoEnvironment:
         )
 
     def _assert_copilot_pane_streamer_safe(self) -> None:
-        text = self._capture_visible_pane('copilot')
+        self._assert_pane_privacy_safe('copilot')
+
+    def _assert_claude_pane_streamer_safe(self) -> None:
+        self._assert_pane_privacy_safe('claude-code', allow_billing_label=True)
+
+    def _assert_pane_privacy_safe(
+        self,
+        window: str,
+        *,
+        allow_billing_label: bool = False,
+    ) -> None:
+        text = self._capture_visible_pane(window)
         private_patterns = [
             (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
-            (r'(ghp_|github_pat_|sk-)[A-Za-z0-9_\-]+', 'token'),
+            (
+                r'(?:ghp_|github_pat_)[A-Za-z0-9_\-]+|'
+                r'sk-[A-Za-z0-9_\-]+',
+                'token',
+            ),
             (re.escape(str(Path.home())), 'home directory'),
             (rf'\b{re.escape(self.username)}\b', 'local username'),
             (r'\bDavid\b', 'account display name'),
             (r'Organization', 'account organization'),
+            (r'ANTHROPIC_API_KEY', 'API key environment label'),
         ]
+        if not allow_billing_label:
+            private_patterns.append(
+                (r'API\s+Usage\s+Billing|Account\s+|Billing', 'billing banner'),
+            )
         for pattern, label in private_patterns:
             if re.search(pattern, text, flags=re.IGNORECASE):
                 raise RuntimeError(
-                    f'Copilot pane still shows {label}; refusing to capture store screenshot.',
+                    f'{window} pane still shows {label}; refusing to capture store screenshot.',
                 )
 
     def _capture_visible_pane(self, window: str) -> str:
@@ -601,6 +668,9 @@ class StoreDemoEnvironment:
             text=True,
         )
         return result.stdout
+
+    def _tmux_run(self, *args: str) -> None:
+        subprocess.run([self._tmux or 'tmux', *args], check=True)
 
     def _tmux_send_keys(self, window: str, *keys: str) -> None:
         self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', *keys)
@@ -636,9 +706,6 @@ class StoreDemoEnvironment:
             'window-status-current-format',
             '#I:#W*',
         )
-
-    def _tmux_run(self, *args: str) -> None:
-        subprocess.run([self._tmux or 'tmux', *args], check=True)
 
     def _teardown_tmux(self) -> None:
         if self._tmux is None:

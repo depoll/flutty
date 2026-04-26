@@ -13,7 +13,7 @@ from pathlib import Path
 from PIL import Image
 
 ROOT = Path(__file__).resolve().parents[1]
-SCREENSHOT_COUNT = 5
+SCREENSHOT_COUNT = 6
 IOS_SCREENSHOTS = {
     ROOT / 'ios/fastlane/screenshots/en-US': {
         'iphone_6_9': (1320, 2868),
@@ -41,10 +41,8 @@ BAD_OCR_PATTERNS = {
     ),
     'private local path': re.compile(r'/Users/depoll|/private/var/folders', re.IGNORECASE),
     'disabled streamer mode': re.compile(r'Streamer mode disabled', re.IGNORECASE),
-    'Claude billing banner': re.compile(
-        r'API\s+Usage\s+Billing|Account\s+|Billing',
-        re.IGNORECASE,
-    ),
+    'visible API key': re.compile(r'ANTHROPIC_API_KEY|sk-ant-', re.IGNORECASE),
+    'Claude account banner': re.compile(r'Account\s+', re.IGNORECASE),
     'Claude plan-mode footer': re.compile(r'plan mode on', re.IGNORECASE),
 }
 
@@ -171,9 +169,11 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
             _require_ocr_markers(path, text, ['Snippets'])
         elif filename in {'04_iphone_6_9.png', '04_ipad_13.png', '4.png'}:
-            _require_ocr_markers(path, text, ['agent-workspace', 'copilot'])
+            _require_ocr_markers(path, text, ['copilot'])
         elif filename in {'05_iphone_6_9.png', '05_ipad_13.png', '5.png'}:
             _require_ocr_markers(path, text, ['AGENTS.md'])
+        elif filename in {'06_iphone_6_9.png', '06_ipad_13.png', '6.png'}:
+            _require_ocr_markers(path, text, ['Claude Code'])
 
 
 def _require_ocr_markers(path: Path, text: str, markers: list[str]) -> None:

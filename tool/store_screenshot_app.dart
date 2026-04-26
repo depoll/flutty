@@ -26,6 +26,7 @@ import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/tmux_service.dart';
 
 const _terminalHostId = 1;
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
@@ -85,6 +86,7 @@ const _sceneNames = <String>[
   'snippets',
   'tmux_windows',
   'sftp',
+  'terminal_claude',
 ];
 
 final _targets = <String, _ScreenshotTarget>{
@@ -258,11 +260,11 @@ Future<void> _seedDatabase(
 
   final keyId = await keyRepository.insert(
     SshKeysCompanion.insert(
-      name: 'Store demo key',
+      name: 'Release workspace key',
       keyType: 'ed25519',
       publicKey: publicKey,
       privateKey: privateKey,
-      fingerprint: const Value('SHA256:store-demo-key'),
+      fingerprint: const Value('SHA256:release-workspace-key'),
     ),
   );
   await keyRepository.insert(
@@ -313,12 +315,14 @@ Future<void> _seedDatabase(
       groupId: Value(groupId),
       isFavorite: const Value(true),
       color: const Value('#00C9FF'),
-      tags: const Value('agent,tmux,store-demo'),
+      tags: const Value('agent,tmux,release'),
       notes: const Value('Local release-demo workspace for store captures.'),
       terminalThemeDarkId: const Value('velvet'),
       terminalFontFamily: const Value('monospace'),
       tmuxSessionName: const Value(_tmuxSessionName),
-      tmuxWorkingDirectory: const Value('/Users/Shared/monkeyssh-store-demo'),
+      tmuxWorkingDirectory: const Value(
+        '/Users/Shared/monkeyssh-release-workspace',
+      ),
       sortOrder: const Value(0),
     ),
   );
@@ -409,8 +413,8 @@ Future<void> _seedDatabase(
     ),
     (
       name: 'Open Claude Code safely',
-      command: 'claude --bare --name Store demo',
-      description: 'Start Claude Code without loading private account state.',
+      command: 'claude --bare --name Claude Code Workspace',
+      description: 'Start Claude Code with a privacy-safe API key setup.',
       autoExecute: false,
       usageCount: 12,
     ),
@@ -470,9 +474,9 @@ String _derivePublicKeyCommentFree(String privateKey) {
       .split('\n')
       .firstWhere(
         (line) => line.trim().isNotEmpty,
-        orElse: () => 'store-demo-key',
+        orElse: () => 'release-workspace-key',
       );
-  return 'ssh-ed25519 ${base64Encode(utf8.encode(firstLine))} store-demo-key';
+  return 'ssh-ed25519 ${base64Encode(utf8.encode(firstLine))} release-workspace-key';
 }
 
 class _StoreScreenshotFlow extends ConsumerStatefulWidget {
@@ -536,10 +540,23 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
 
       _go(
         '/sftp/$_terminalHostId?connectionId=$_connectionId'
-        '&path=%2FUsers%2FShared%2Fmonkeyssh-store-demo',
+        '&path=%2FUsers%2FShared%2Fmonkeyssh-release-workspace',
       );
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(4);
+
+      final session = ref
+          .read(activeSessionsProvider.notifier)
+          .getSession(_connectionId!);
+      if (session == null) {
+        throw StateError('SSH session not available for Claude screenshot.');
+      }
+      await ref
+          .read(tmuxServiceProvider)
+          .selectWindow(session, _tmuxSessionName, 4);
+      _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
+      await Future<void>.delayed(const Duration(seconds: 4));
+      await _announceScene(5);
 
       debugPrint('STORE_SCREENSHOT_DONE');
       await ref.read(databaseProvider).close();
