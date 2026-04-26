@@ -3,6 +3,11 @@
 from __future__ import annotations
 
 import argparse
+import platform
+import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 
 from PIL import Image
@@ -19,6 +24,25 @@ ANDROID_SCREENSHOTS = {
     'phoneScreenshots': (1080, 1920),
     'sevenInchScreenshots': (1200, 1920),
     'tenInchScreenshots': (1600, 2560),
+}
+BAD_OCR_PATTERNS = {
+    'splash screen': re.compile(r'MonkeySSH\s*[βB]\s+SSH Terminal', re.IGNORECASE),
+    'old prompt transcript': re.compile(
+        r'Next two checks|release[- ]readiness|64 concise|sign[- ]off',
+        re.IGNORECASE,
+    ),
+    'old AGENTS text scene': re.compile(
+        r'Do not show emails|store-demo agents %|shared agent instructions',
+        re.IGNORECASE,
+    ),
+    'notification prompt': re.compile(
+        r'Would Like to Send You Notifications|Notifications may include',
+        re.IGNORECASE,
+    ),
+    'private local path': re.compile(r'/Users/depoll|/private/var/folders', re.IGNORECASE),
+    'disabled streamer mode': re.compile(r'Streamer mode disabled', re.IGNORECASE),
+    'Claude plan-mode footer': re.compile(r'plan mode on', re.IGNORECASE),
+    'Copilot working directory footer': re.compile(r'/Users/Shared', re.IGNORECASE),
 }
 
 
@@ -63,19 +87,122 @@ def _validate_file(path: Path, expected_size: tuple[int, int]) -> None:
     )
 
 
+def _ocr_texts(paths: list[Path]) -> dict[Path, str]:
+    if platform.system() != 'Darwin' or shutil.which('swift') is None:
+        return {}
+
+    swift_source = r'''
+import Foundation
+import Vision
+import AppKit
+
+let listPath = CommandLine.arguments[1]
+let contents = try String(contentsOfFile: listPath, encoding: .utf8)
+let urls = contents.split(separator: "\n").map { URL(fileURLWithPath: String($0)) }
+let request = VNRecognizeTextRequest()
+request.recognitionLevel = .accurate
+request.usesLanguageCorrection = false
+request.recognitionLanguages = ["en-US"]
+
+for url in urls {
+    guard let image = NSImage(contentsOf: url),
+          let tiff = image.tiffRepresentation,
+          let bitmap = NSBitmapImageRep(data: tiff),
+          let cgImage = bitmap.cgImage else {
+        print("FILE\t\(url.path)\tERROR\tCould not load image")
+        continue
+    }
+    let handler = VNImageRequestHandler(cgImage: cgImage, options: [:])
+    try handler.perform([request])
+    let text = (request.results ?? [])
+        .compactMap { $0.topCandidates(1).first?.string }
+        .joined(separator: " ")
+        .replacingOccurrences(of: "\n", with: " ")
+    print("FILE\t\(url.path)")
+    print(text)
+    print("END_FILE")
+}
+'''
+    with tempfile.NamedTemporaryFile('w', suffix='.swift') as script:
+        with tempfile.NamedTemporaryFile('w') as file_list:
+            script.write(swift_source)
+            script.flush()
+            file_list.write('\n'.join(str(path) for path in paths))
+            file_list.flush()
+            result = subprocess.run(
+                ['swift', script.name, file_list.name],
+                check=True,
+                stdout=subprocess.PIPE,
+                text=True,
+            )
+
+    texts: dict[Path, str] = {}
+    for block in result.stdout.split('END_FILE'):
+        lines = [line for line in block.strip().splitlines() if line]
+        if not lines or not lines[0].startswith('FILE\t'):
+            continue
+        path = Path(lines[0].split('\t', 1)[1])
+        texts[path] = ' '.join(lines[1:])
+    return texts
+
+
+def _validate_ocr_content(paths: list[Path]) -> None:
+    texts = _ocr_texts(paths)
+    if not texts:
+        return
+
+    for path, text in texts.items():
+        for label, pattern in BAD_OCR_PATTERNS.items():
+            if pattern.search(text):
+                raise ValueError(
+                    f'{path.relative_to(ROOT)} appears to contain {label}; '
+                    'regenerate store-quality screenshots before syncing metadata',
+                )
+
+    for path, text in texts.items():
+        filename = path.name
+        if filename in {'01_iphone_6_9.png', '01_ipad_13.png', '1.png'}:
+            _require_ocr_markers(path, text, ['Hosts', 'New Host'])
+        elif filename in {'02_iphone_6_9.png', '02_ipad_13.png', '2.png'}:
+            _require_ocr_markers(path, text, ['Snippets'])
+        elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
+            _require_ocr_markers(path, text, ['Port Forwards'])
+        elif filename in {'04_iphone_6_9.png', '04_ipad_13.png', '4.png'}:
+            _require_ocr_markers(path, text, ['SSH Keys', 'Store demo key'])
+        elif filename in {'05_iphone_6_9.png', '05_ipad_13.png', '5.png'}:
+            _require_ocr_markers(path, text, ['AGENTS.md'])
+
+
+def _require_ocr_markers(path: Path, text: str, markers: list[str]) -> None:
+    missing = [marker for marker in markers if marker not in text]
+    if missing:
+        raise ValueError(
+            f'{path.relative_to(ROOT)} is missing expected store screenshot '
+            f'content: {", ".join(missing)}',
+        )
+
+
 def _validate_ios() -> None:
+    paths = []
     for locale_dir, devices in IOS_SCREENSHOTS.items():
         for index in range(1, SCREENSHOT_COUNT + 1):
             for device_name, expected_size in devices.items():
-                _validate_file(locale_dir / f'{index:02d}_{device_name}.png', expected_size)
+                path = locale_dir / f'{index:02d}_{device_name}.png'
+                _validate_file(path, expected_size)
+                paths.append(path)
+    _validate_ocr_content(paths)
 
 
 def _validate_android() -> None:
+    paths = []
     for variant in ('production', 'private'):
         images_dir = ROOT / f'android/fastlane/metadata-{variant}/android/en-US/images'
         for screenshot_dir, expected_size in ANDROID_SCREENSHOTS.items():
             for index in range(1, SCREENSHOT_COUNT + 1):
-                _validate_file(images_dir / screenshot_dir / f'{index}.png', expected_size)
+                path = images_dir / screenshot_dir / f'{index}.png'
+                _validate_file(path, expected_size)
+                paths.append(path)
+    _validate_ocr_content(paths)
 
 
 def main() -> None:

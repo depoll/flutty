@@ -8,7 +8,6 @@ import getpass
 import hashlib
 import json
 import os
-import re
 import shutil
 import socket
 import subprocess
@@ -211,14 +210,7 @@ class StoreDemoEnvironment:
         self._process: subprocess.Popen[str] | None = None
         self._tmux = shutil.which('tmux')
         if self._tmux is None:
-            raise RuntimeError('tmux is required to capture real terminal screenshots.')
-        self._claude = shutil.which('claude')
-        if self._claude is None:
-            raise RuntimeError('Claude Code CLI is required for store screenshots.')
-        self._copilot = shutil.which('copilot')
-        if self._copilot is None:
-            raise RuntimeError('GitHub Copilot CLI is required for store screenshots.')
-        self._clean_claude_home = self._tmpdir / 'claude-home'
+            raise RuntimeError('tmux is required for the release-demo SSH workspace.')
 
     @property
     def private_key_b64(self) -> str:
@@ -247,7 +239,7 @@ class StoreDemoEnvironment:
 
     def reset_tmux(self) -> None:
         subprocess.run(
-            [self._tmux or 'tmux', 'select-window', '-t', f'{self.tmux_session}:claude'],
+            [self._tmux or 'tmux', 'select-window', '-t', f'{self.tmux_session}:logs'],
             check=False,
         )
 
@@ -347,33 +339,6 @@ class StoreDemoEnvironment:
         self._prepare_demo_dir()
         self._teardown_tmux()
         self._write_pane_script(
-            'claude',
-            f"""
-            exec env -i \\
-              PATH={self._shell_quote(os.environ.get('PATH', ''))} \\
-              TERM=xterm-256color \\
-              HOME={self._shell_quote(str(self._clean_claude_home))} \\
-              BASH_SILENCE_DEPRECATION_WARNING=1 \\
-              CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 \\
-              CLAUDE_CODE_HIDE_CWD=1 \\
-              {self._shell_quote(self._claude)} \\
-              --bare \\
-              --name 'Store demo Claude' \\
-              --permission-mode plan
-            """,
-        )
-        self._write_pane_script(
-            'copilot',
-            f"""
-            exec env COPILOT_ALLOW_ALL=0 \\
-              {self._shell_quote(self._copilot)} \\
-              --no-remote \\
-              --log-level none \\
-              --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN,ANTHROPIC_API_KEY \\
-              --name 'Store demo Copilot'
-            """,
-        )
-        self._write_pane_script(
             'agents',
             """
             clear
@@ -385,16 +350,31 @@ class StoreDemoEnvironment:
             'logs',
             """
             clear
-            printf 'ssh       connected to local demo server\\n'
-            printf 'tmux      window sync complete\\n'
-            printf 'claude    real Claude Code TUI captured\\n'
-            printf 'copilot   real GitHub Copilot CLI TUI captured\\n'
-            printf 'fastlane  screenshots ready for upload\\n'
+            printf 'MonkeySSH release demo\\n'
+            printf '----------------------\\n'
+            printf 'ssh       connected\\n'
+            printf 'tmux      4 windows synced\\n'
+            printf 'snippets  agent commands seeded\\n'
+            printf 'sftp      demo workspace mounted\\n'
+            printf 'fastlane  screenshots ready\\n'
+            """,
+        )
+        self._write_pane_script(
+            'files',
+            """
+            clear
+            ls -la
+            """,
+        )
+        self._write_pane_script(
+            'shell',
+            """
+            clear
+            printf 'store-demo shell ready\\n'
             """,
         )
         self._start_tmux_windows()
         self._configure_tmux_status()
-        self._drive_agent_clis()
         self.reset_tmux()
 
     def _prepare_demo_dir(self) -> None:
@@ -406,7 +386,6 @@ class StoreDemoEnvironment:
                 )
             shutil.rmtree(self.demo_dir)
         self.demo_dir.mkdir(parents=True)
-        self._clean_claude_home.mkdir(parents=True, exist_ok=True)
         marker.write_text('release screenshot demo workspace\n')
         (self.demo_dir / 'AGENTS.md').write_text(
             '\n'.join(
@@ -420,10 +399,10 @@ class StoreDemoEnvironment:
                     '- Keep terminal output focused on SSH, tmux, agent, and store asset workflows.',
                     '',
                     'Windows:',
-                    '1. claude  - Claude Code review and edits',
-                    '2. copilot - Copilot CLI follow-up and checks',
-                    '3. agents  - shared agent instructions',
-                    '4. logs    - SSH and app diagnostics',
+                    '1. agents - shared agent instructions',
+                    '2. logs   - SSH and app diagnostics',
+                    '3. files  - release workspace files',
+                    '4. shell  - ready prompt for manual testing',
                     '',
                 ]
             )
@@ -448,14 +427,13 @@ class StoreDemoEnvironment:
                     '',
                     '| Platform | Form factors | Scenes |',
                     '| --- | --- | --- |',
-                    '| App Store | iPhone 6.9, iPad 13 | Hosts, Claude, Copilot, tmux agents, connected hosts |',
+                    '| App Store | iPhone 6.9, iPad 13 | Hosts, snippets, port forwards, keys, SFTP |',
                     '| Google Play | Phone, 7-inch tablet, 10-inch tablet | Same scene order for production and private tracks |',
                     '',
                     'Validation checklist:',
                     '',
                     '- Capture from the normal MonkeySSH app, not a direct-mounted screen harness.',
                     '- Use a live SSH connection into this tmux workspace.',
-                    '- Show real Claude Code and GitHub Copilot CLI interfaces.',
                     '- Avoid subscription or checkout screens.',
                     '- Scan visible output for emails, usernames, tokens, and private identifiers.',
                     '',
@@ -476,26 +454,6 @@ class StoreDemoEnvironment:
             '-s',
             self.tmux_session,
             '-n',
-            'claude',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'claude-pane.sh'),
-        )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
-            'copilot',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'copilot-pane.sh'),
-        )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
             'agents',
             '-c',
             str(self.demo_dir),
@@ -510,6 +468,26 @@ class StoreDemoEnvironment:
             '-c',
             str(self.demo_dir),
             str(self._tmpdir / 'logs-pane.sh'),
+        )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
+            'files',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'files-pane.sh'),
+        )
+        self._tmux_run(
+            'new-window',
+            '-t',
+            self.tmux_session,
+            '-n',
+            'shell',
+            '-c',
+            str(self.demo_dir),
+            str(self._tmpdir / 'shell-pane.sh'),
         )
 
     def _write_pane_script(self, window: str, body: str) -> None:
@@ -538,99 +516,6 @@ class StoreDemoEnvironment:
             )
         )
         os.chmod(script, 0o700)
-
-    def _drive_agent_clis(self) -> None:
-        time.sleep(4)
-        for _ in range(3):
-            self._tmux_send_keys('claude', 'Enter')
-            time.sleep(4)
-        self._tmux_send_keys('copilot', 'Enter')
-        time.sleep(8)
-        self._ensure_copilot_streamer_mode()
-        self._tmux_send_keys('copilot', 'C-l')
-        time.sleep(2)
-        self._assert_cli_starting_screens_visible()
-        self._assert_visible_panes_streamer_safe()
-
-    def _ensure_copilot_streamer_mode(self) -> None:
-        self._wait_for_visible_text('copilot', ['GitHub Copilot'])
-        self._tmux_send_literal('copilot', '/streamer')
-        self._tmux_send_keys('copilot', 'Enter')
-        time.sleep(4)
-        text = self._capture_visible_pane('copilot')
-        if 'Streamer mode enabled.' in text:
-            return
-        if 'Streamer mode disabled.' in text:
-            self._tmux_send_literal('copilot', '/streamer')
-            self._tmux_send_keys('copilot', 'Enter')
-            time.sleep(4)
-            text = self._capture_visible_pane('copilot')
-            if 'Streamer mode enabled.' in text:
-                return
-        raise RuntimeError('Could not enable GitHub Copilot CLI streamer mode.')
-
-    def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
-        deadline = time.time() + 30
-        while time.time() < deadline:
-            text = self._capture_visible_pane(window)
-            if all(marker in text for marker in markers):
-                return
-            time.sleep(1)
-        raise RuntimeError(
-            f'{window} pane did not show expected text: {", ".join(markers)}.',
-        )
-
-    def _assert_cli_starting_screens_visible(self) -> None:
-        expectations = {
-            'claude': ['Claude Code'],
-            'copilot': ['GitHub Copilot'],
-        }
-        for window, markers in expectations.items():
-            text = self._capture_visible_pane(window)
-            missing = [marker for marker in markers if marker not in text]
-            if missing:
-                raise RuntimeError(
-                    f'{window} pane is not on the expected real CLI starting screen: '
-                    f'missing {", ".join(missing)}.',
-                )
-
-    def _assert_visible_panes_streamer_safe(self) -> None:
-        for window in ('claude', 'copilot'):
-            text = self._capture_visible_pane(window)
-            private_patterns = [
-                (r'[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}', 'email'),
-                (r'(ghp_|github_pat_|sk-)[A-Za-z0-9_\-]+', 'token'),
-                (re.escape(str(Path.home())), 'home directory'),
-                (rf'\b{re.escape(self.username)}\b', 'local username'),
-                (r'\bDavid\b', 'account display name'),
-                (r'Organization', 'account organization'),
-            ]
-            for pattern, label in private_patterns:
-                if re.search(pattern, text, flags=re.IGNORECASE):
-                    raise RuntimeError(
-                        f'{window} pane still shows {label}; refusing to capture store screenshot.',
-                    )
-
-    def _capture_visible_pane(self, window: str) -> str:
-        result = subprocess.run(
-            [
-                self._tmux or 'tmux',
-                'capture-pane',
-                '-p',
-                '-t',
-                f'{self.tmux_session}:{window}',
-            ],
-            check=True,
-            stdout=subprocess.PIPE,
-            text=True,
-        )
-        return result.stdout
-
-    def _tmux_send_keys(self, window: str, *keys: str) -> None:
-        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', *keys)
-
-    def _tmux_send_literal(self, window: str, text: str) -> None:
-        self._tmux_run('send-keys', '-t', f'{self.tmux_session}:{window}', '-l', text)
 
     @staticmethod
     def _shell_quote(value: str) -> str:

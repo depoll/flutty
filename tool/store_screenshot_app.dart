@@ -81,10 +81,10 @@ class _ScreenshotTarget {
 
 const _sceneNames = <String>[
   'hosts',
-  'terminal_claude',
-  'terminal_copilot',
-  'terminal_agents',
-  'hosts_connected',
+  'snippets',
+  'port_forwards',
+  'keys',
+  'sftp',
 ];
 
 final _targets = <String, _ScreenshotTarget>{
@@ -265,6 +265,33 @@ Future<void> _seedDatabase(
       fingerprint: const Value('SHA256:store-demo-key'),
     ),
   );
+  await keyRepository.insert(
+    SshKeysCompanion.insert(
+      name: 'Production deploy key',
+      keyType: 'ed25519',
+      publicKey: publicKey,
+      privateKey: privateKey,
+      fingerprint: const Value('SHA256:production-deploy'),
+    ),
+  );
+  await keyRepository.insert(
+    SshKeysCompanion.insert(
+      name: 'Build runner key',
+      keyType: 'rsa',
+      publicKey: publicKey,
+      privateKey: privateKey,
+      fingerprint: const Value('SHA256:build-runner'),
+    ),
+  );
+  await keyRepository.insert(
+    SshKeysCompanion.insert(
+      name: 'Emergency access key',
+      keyType: 'ecdsa',
+      publicKey: publicKey,
+      privateKey: privateKey,
+      fingerprint: const Value('SHA256:emergency-access'),
+    ),
+  );
 
   final groupId = await database
       .into(database.groups)
@@ -278,7 +305,7 @@ Future<void> _seedDatabase(
 
   await hostRepository.insert(
     HostsCompanion.insert(
-      label: 'Claude + Copilot tmux',
+      label: 'Agent tmux',
       hostname: hostname,
       port: const Value(_sshPort),
       username: _sshUsername,
@@ -331,7 +358,7 @@ Future<void> _seedDatabase(
           localPort: 5173,
           remoteHost: '127.0.0.1',
           remotePort: 5173,
-          autoStart: const Value(false),
+          autoStart: const Value(true),
         ),
       );
   await database
@@ -346,52 +373,94 @@ Future<void> _seedDatabase(
           remotePort: 8080,
         ),
       );
+  await database
+      .into(database.portForwards)
+      .insert(
+        PortForwardsCompanion.insert(
+          name: 'Database tunnel',
+          hostId: _terminalHostId,
+          forwardType: 'local',
+          localPort: 5432,
+          remoteHost: '127.0.0.1',
+          remotePort: 5432,
+          autoStart: const Value(true),
+        ),
+      );
+  await database
+      .into(database.portForwards)
+      .insert(
+        PortForwardsCompanion.insert(
+          name: 'Metrics dashboard',
+          hostId: _terminalHostId,
+          forwardType: 'local',
+          localPort: 9090,
+          remoteHost: '127.0.0.1',
+          remotePort: 9090,
+        ),
+      );
 
-  await database
-      .into(database.snippets)
-      .insert(
-        SnippetsCompanion.insert(
-          name: 'Resume Copilot safely',
-          command:
-              'copilot --no-remote --log-level none --secret-env-vars=USER,EMAIL,GITHUB_TOKEN,GH_TOKEN',
-          description: const Value(
-            'Resume a Copilot session with identity details redacted.',
+  final snippets = [
+    (
+      name: 'Resume Copilot safely',
+      command: 'copilot --no-remote --log-level none',
+      description: 'Resume a Copilot session with identity details redacted.',
+      autoExecute: false,
+      usageCount: 18,
+    ),
+    (
+      name: 'Open Claude Code safely',
+      command: 'claude --bare --name Store demo',
+      description: 'Start Claude Code without loading private account state.',
+      autoExecute: false,
+      usageCount: 12,
+    ),
+    (
+      name: 'Attach tmux workspace',
+      command: 'tmux new-session -A -s $_tmuxSessionName',
+      description: 'Attach to the persistent remote agent workspace.',
+      autoExecute: true,
+      usageCount: 9,
+    ),
+    (
+      name: 'List agent windows',
+      command: 'tmux list-windows -t $_tmuxSessionName',
+      description: 'Check active Claude, Copilot, and diagnostics panes.',
+      autoExecute: false,
+      usageCount: 7,
+    ),
+    (
+      name: 'Follow deploy logs',
+      command: 'tail -f logs/deploy.log',
+      description: 'Stream release logs after reconnecting.',
+      autoExecute: false,
+      usageCount: 5,
+    ),
+    (
+      name: 'Open preview tunnel',
+      command: 'ssh -L 5173:127.0.0.1:5173 preview',
+      description: 'Forward the preview server through SSH.',
+      autoExecute: false,
+      usageCount: 4,
+    ),
+  ];
+  for (final (index, snippet) in snippets.indexed) {
+    await database
+        .into(database.snippets)
+        .insert(
+          SnippetsCompanion.insert(
+            name: snippet.name,
+            command: snippet.command,
+            description: Value(snippet.description),
+            autoExecute: Value(snippet.autoExecute),
+            usageCount: Value(snippet.usageCount),
+            sortOrder: Value(index),
           ),
-          usageCount: const Value(18),
-          sortOrder: const Value(0),
-        ),
-      );
-  await database
-      .into(database.snippets)
-      .insert(
-        SnippetsCompanion.insert(
-          name: 'Open Claude Code safely',
-          command: 'claude --bare --permission-mode plan',
-          description: const Value(
-            'Resume Claude Code without loading user or project identity state.',
-          ),
-          usageCount: const Value(12),
-          sortOrder: const Value(1),
-        ),
-      );
-  await database
-      .into(database.snippets)
-      .insert(
-        SnippetsCompanion.insert(
-          name: 'Open tmux workspace',
-          command: 'tmux new-session -A -s $_tmuxSessionName',
-          description: const Value(
-            'Attach to the persistent remote agent workspace.',
-          ),
-          autoExecute: const Value(true),
-          usageCount: const Value(9),
-          sortOrder: const Value(2),
-        ),
-      );
+        );
+  }
 
   final settings = SettingsService(database);
   await settings.setString(SettingKeys.themeMode, 'dark');
-  await settings.setInt(SettingKeys.terminalFontSize, 14);
+  await settings.setInt(SettingKeys.terminalFontSize, 13);
   await settings.setString(SettingKeys.defaultTerminalThemeDark, 'velvet');
   await settings.setBool(SettingKeys.terminalPathLinks, value: false);
 }
@@ -448,19 +517,22 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       }
       _connectionId = result.connectionId;
 
-      _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
-      await Future<void>.delayed(const Duration(seconds: 6));
+      _go('/snippets');
+      await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(1);
 
-      await _sendTmuxWindowKey('1');
+      _go('/port-forwards');
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(2);
 
-      await _sendTmuxWindowKey('2');
+      _go('/keys');
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(3);
 
-      _go('/');
+      _go(
+        '/sftp/$_terminalHostId?connectionId=$_connectionId'
+        '&path=%2FUsers%2FShared%2Fmonkeyssh-store-demo',
+      );
       await Future<void>.delayed(const Duration(seconds: 2));
       await _announceScene(4);
 
@@ -499,20 +571,5 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       throw StateError('Navigator context is unavailable.');
     }
     GoRouter.of(context).go(location);
-  }
-
-  Future<void> _sendTmuxWindowKey(String key) async {
-    final connectionId = _connectionId;
-    if (connectionId == null) {
-      throw StateError('SSH connection is unavailable.');
-    }
-    final session = ref
-        .read(activeSessionsProvider.notifier)
-        .getSession(connectionId);
-    if (session == null) {
-      throw StateError('SSH session is unavailable.');
-    }
-    final shell = await session.getShell();
-    shell.write(utf8.encode('\x02$key'));
   }
 }
