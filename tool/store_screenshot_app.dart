@@ -428,7 +428,7 @@ Future<void> _seedDatabase(
     (
       name: 'List agent windows',
       command: 'tmux list-windows -t $_tmuxSessionName',
-      description: 'Check active Claude, Copilot, and diagnostics panes.',
+      description: 'Check active Copilot, Gemini, Claude, and Codex panes.',
       autoExecute: false,
       usageCount: 7,
     ),
@@ -553,7 +553,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       }
       await ref
           .read(tmuxServiceProvider)
-          .selectWindow(session, _tmuxSessionName, 4);
+          .selectWindow(session, _tmuxSessionName, 2);
       _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
       await Future<void>.delayed(const Duration(seconds: 4));
       await _announceScene(5);

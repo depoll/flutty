@@ -358,7 +358,7 @@ class StoreDemoEnvironment:
             """,
         )
         self._write_pane_script(
-            'claude-code',
+            'claude',
             f"""
             exec env -i \\
               PATH={self._shell_quote(os.environ.get('PATH', ''))} \\
@@ -374,38 +374,19 @@ class StoreDemoEnvironment:
             """,
         )
         self._write_pane_script(
-            'agents',
+            'gemini',
             """
             clear
-            printf '$ sed -n "1,14p" AGENTS.md\\n'
-            sed -n '1,14p' AGENTS.md
+            printf 'Gemini agent session ready\\n'
+            printf 'Open inside MonkeySSH when you need a second reviewer.\\n'
             """,
         )
         self._write_pane_script(
-            'logs',
+            'codex',
             """
             clear
-            printf 'MonkeySSH release demo\\n'
-            printf '----------------------\\n'
-            printf 'ssh       connected\\n'
-            printf 'tmux      4 windows synced\\n'
-            printf 'snippets  agent commands seeded\\n'
-            printf 'sftp      demo workspace mounted\\n'
-            printf 'fastlane  screenshots ready\\n'
-            """,
-        )
-        self._write_pane_script(
-            'files',
-            """
-            clear
-            ls -la
-            """,
-        )
-        self._write_pane_script(
-            'shell',
-            """
-            clear
-            printf 'release workspace shell ready\\n'
+            printf 'Codex agent session ready\\n'
+            printf 'Keep long-running coding sessions alive in tmux.\\n'
             """,
         )
         self._start_tmux_windows()
@@ -436,10 +417,10 @@ class StoreDemoEnvironment:
                     '- Keep terminal output focused on SSH, tmux, agent, and store asset workflows.',
                     '',
                     'Windows:',
-                    '1. agents - shared agent instructions',
-                    '2. logs   - SSH and app diagnostics',
-                    '3. files  - release workspace files',
-                    '4. shell  - ready prompt for manual testing',
+                    '1. copilot - GitHub Copilot CLI',
+                    '2. gemini  - Gemini CLI workspace',
+                    '3. claude  - Claude Code workspace',
+                    '4. codex   - Codex CLI workspace',
                     '',
                 ]
             )
@@ -501,40 +482,30 @@ class StoreDemoEnvironment:
             '-t',
             self.tmux_session,
             '-n',
-            'agents',
+            'gemini',
             '-c',
             str(self.demo_dir),
-            str(self._tmpdir / 'agents-pane.sh'),
+            str(self._tmpdir / 'gemini-pane.sh'),
         )
         self._tmux_run(
             'new-window',
             '-t',
             self.tmux_session,
             '-n',
-            'logs',
+            'claude',
             '-c',
             str(self.demo_dir),
-            str(self._tmpdir / 'logs-pane.sh'),
+            str(self._tmpdir / 'claude-pane.sh'),
         )
         self._tmux_run(
             'new-window',
             '-t',
             self.tmux_session,
             '-n',
-            'files',
+            'codex',
             '-c',
             str(self.demo_dir),
-            str(self._tmpdir / 'files-pane.sh'),
-        )
-        self._tmux_run(
-            'new-window',
-            '-t',
-            self.tmux_session,
-            '-n',
-            'claude-code',
-            '-c',
-            str(self.demo_dir),
-            str(self._tmpdir / 'claude-code-pane.sh'),
+            str(self._tmpdir / 'codex-pane.sh'),
         )
 
     def _write_pane_script(self, window: str, body: str) -> None:
@@ -575,18 +546,18 @@ class StoreDemoEnvironment:
         self._assert_copilot_pane_streamer_safe()
 
     def _drive_claude_full_screen(self) -> None:
-        self._wait_for_visible_text('claude-code', ['Choose the text style'])
-        self._tmux_send_keys('claude-code', 'Enter')
+        self._wait_for_visible_text('claude', ['Choose the text style'])
+        self._tmux_send_keys('claude', 'Enter')
         self._wait_for_visible_text(
-            'claude-code',
+            'claude',
             ['Detected a custom API key', 'ANTHROPIC_API_KEY', 'dummy'],
         )
-        self._tmux_send_keys('claude-code', 'Up', 'Enter')
-        self._wait_for_visible_text('claude-code', ['Press Enter to continue'])
-        self._tmux_send_keys('claude-code', 'Enter')
-        self._wait_for_visible_text('claude-code', ['Yes, I trust this folder'])
-        self._tmux_send_keys('claude-code', 'Enter')
-        self._wait_for_visible_text('claude-code', ['Claude Code'])
+        self._tmux_send_keys('claude', 'Up', 'Enter')
+        self._wait_for_visible_text('claude', ['Press Enter to continue'])
+        self._tmux_send_keys('claude', 'Enter')
+        self._wait_for_visible_text('claude', ['Yes, I trust this folder'])
+        self._tmux_send_keys('claude', 'Enter')
+        self._wait_for_visible_text('claude', ['Claude Code'])
         time.sleep(3)
         self._assert_claude_pane_streamer_safe()
 
@@ -622,7 +593,7 @@ class StoreDemoEnvironment:
         self._assert_pane_privacy_safe('copilot')
 
     def _assert_claude_pane_streamer_safe(self) -> None:
-        self._assert_pane_privacy_safe('claude-code', allow_billing_label=True)
+        self._assert_pane_privacy_safe('claude', allow_billing_label=True)
 
     def _assert_pane_privacy_safe(
         self,

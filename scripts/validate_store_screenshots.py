@@ -169,7 +169,7 @@ def _validate_ocr_content(paths: list[Path]) -> None:
         elif filename in {'03_iphone_6_9.png', '03_ipad_13.png', '3.png'}:
             _require_ocr_markers(path, text, ['Snippets'])
         elif filename in {'04_iphone_6_9.png', '04_ipad_13.png', '4.png'}:
-            _require_ocr_markers(path, text, ['copilot'])
+            _require_ocr_markers(path, text, ['copilot', 'gemini', 'claude', 'codex'])
         elif filename in {'05_iphone_6_9.png', '05_ipad_13.png', '5.png'}:
             _require_ocr_markers(path, text, ['AGENTS.md'])
         elif filename in {'06_iphone_6_9.png', '06_ipad_13.png', '6.png'}:
@@ -177,7 +177,10 @@ def _validate_ocr_content(paths: list[Path]) -> None:
 
 
 def _require_ocr_markers(path: Path, text: str, markers: list[str]) -> None:
-    missing = [marker for marker in markers if marker not in text]
+    normalized_text = text.casefold()
+    missing = [
+        marker for marker in markers if marker.casefold() not in normalized_text
+    ]
     if missing:
         raise ValueError(
             f'{path.relative_to(ROOT)} is missing expected store screenshot '
