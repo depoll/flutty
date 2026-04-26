@@ -259,11 +259,15 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         reloadedWindows,
       );
       if (windows == null) {
+        final shouldShowRecoveryMessage =
+            _shouldStopShowingInitialWindowSpinner;
         _scheduleWindowRetry();
         setState(() {
           _windows = null;
-          _error = null;
-          _isLoadingWindows = true;
+          _error = shouldShowRecoveryMessage
+              ? 'tmux did not return any windows yet. Retrying...'
+              : null;
+          _isLoadingWindows = !shouldShowRecoveryMessage;
         });
         return;
       }
@@ -280,9 +284,14 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
     } on Exception catch (e) {
       if (!mounted) return;
+      final shouldShowRecoveryMessage = _shouldStopShowingInitialWindowSpinner;
       _scheduleWindowRetry();
       setState(() {
-        _error = _windows?.isEmpty ?? true ? e.toString() : null;
+        _error = _windows?.isEmpty ?? true
+            ? shouldShowRecoveryMessage
+                  ? 'Could not refresh tmux windows yet. Retrying...'
+                  : e.toString()
+            : null;
         _isLoadingWindows = false;
       });
     } finally {
@@ -339,6 +348,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       }
     });
   }
+
+  bool get _shouldStopShowingInitialWindowSpinner =>
+      !(_windows?.isNotEmpty ?? false) && _windowRetryAttempts >= 1;
 
   void _switchToWindow(int windowIndex) {
     Navigator.pop(context, TmuxSwitchWindowAction(windowIndex));

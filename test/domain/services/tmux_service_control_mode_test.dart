@@ -254,22 +254,20 @@ void main() {
   });
 
   group('tmux exec recovery', () {
-    test(
-      'listWindows returns empty when opening the exec channel hangs',
-      () async {
-        final client = _MockSshClient();
-        final session = _buildSession(client);
-        const service = TmuxService(execOpenTimeout: Duration(milliseconds: 1));
+    test('listWindows propagates exec channel open timeouts', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService(execOpenTimeout: Duration(milliseconds: 1));
 
-        when(
-          () => client.execute(any(), pty: any(named: 'pty')),
-        ).thenAnswer((_) => Completer<SSHSession>().future);
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) => Completer<SSHSession>().future);
 
-        final windows = await service.listWindows(session, 'main');
-
-        expect(windows, isEmpty);
-      },
-    );
+      await expectLater(
+        service.listWindows(session, 'main'),
+        throwsA(isA<TimeoutException>()),
+      );
+    });
 
     test(
       'listWindows completes when stdout stays open after the done marker',
@@ -280,7 +278,7 @@ void main() {
         final execSession = _buildOpenExecSession(
           stdout:
               '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
-              '$_execDoneMarker\n',
+              '${_doneMarker()}',
         );
 
         when(
@@ -302,7 +300,7 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client);
         const service = TmuxService();
-        final execSession = _buildOpenExecSession(stdout: '$_execDoneMarker\n');
+        final execSession = _buildOpenExecSession(stdout: _doneMarker());
 
         when(
           () => client.execute(any(), pty: any(named: 'pty')),
@@ -331,7 +329,7 @@ void main() {
         final client = _MockSshClient();
         final session = _buildSession(client);
         const service = TmuxService();
-        final execSession = _buildOpenExecSession(stdout: '$_execDoneMarker\n');
+        final execSession = _buildOpenExecSession(stdout: _doneMarker());
 
         when(
           () => client.execute(any(), pty: any(named: 'pty')),
@@ -371,6 +369,29 @@ void main() {
             (error) => error.message,
             'message',
             contains('closed before tmux command completed'),
+          ),
+        ),
+      );
+      verify(execSession.close).called(1);
+    });
+
+    test('killWindow propagates non-zero tmux command exit status', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker(1));
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await expectLater(
+        service.killWindow(session, 'main', 2),
+        throwsA(
+          isA<TmuxCommandException>().having(
+            (error) => error.message,
+            'message',
+            contains('exit status 1'),
           ),
         ),
       );
@@ -421,7 +442,7 @@ void main() {
         final session = _buildSession(client);
         const service = TmuxService();
         final execSession = _buildOpenExecSession(
-          stdout: '/opt/homebrew/bin/claude\n$_execDoneMarker\n',
+          stdout: '/opt/homebrew/bin/claude\n${_doneMarker()}',
         );
 
         when(
@@ -517,6 +538,8 @@ class _MockSshClient extends Mock implements SSHClient {}
 class _MockExecSession extends Mock implements SSHSession {}
 
 const _execDoneMarker = '__flutty_tmux_exec_done__';
+
+String _doneMarker([int status = 0]) => '$_execDoneMarker:$status\n';
 
 Stream<Uint8List> _openUtf8Stream(String value) =>
     Stream<Uint8List>.multi((controller) {

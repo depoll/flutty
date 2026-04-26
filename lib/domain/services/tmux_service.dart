@@ -200,19 +200,15 @@ class TmuxService {
     SshSession session,
     String sessionName,
   ) async {
-    try {
-      final quotedName = _shellQuote(sessionName);
-      final output = await _exec(
-        session,
-        'tmux list-windows -t $quotedName -F '
-        "'#{window_index}|#{window_name}|#{window_active}|"
-        '#{pane_current_command}|#{pane_current_path}|'
-        "#{window_flags}|#{pane_title}|#{window_activity}'",
-      );
-      return _parseLines(output, TmuxWindow.fromTmuxFormat);
-    } on Exception {
-      return const [];
-    }
+    final quotedName = _shellQuote(sessionName);
+    final output = await _exec(
+      session,
+      'tmux list-windows -t $quotedName -F '
+      "'#{window_index}|#{window_name}|#{window_active}|"
+      '#{pane_current_command}|#{pane_current_path}|'
+      "#{window_flags}|#{pane_title}|#{window_activity}'",
+    );
+    return _parseLines(output, TmuxWindow.fromTmuxFormat);
   }
 
   /// Returns the active pane working directory for [sessionName], if tmux
@@ -424,7 +420,9 @@ class TmuxService {
   }
 
   String _markCommandDone(String command) =>
-      '$command; printf ${_shellQuote('\n$_execDoneMarker\n')}';
+      '{ $command; __flutty_tmux_exec_status__=\$?; '
+      'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
+      r'"$__flutty_tmux_exec_status__"; }';
 
   Future<String> _readStdoutUntilDoneMarker(SSHSession execSession) async {
     final output = StringBuffer();
@@ -437,6 +435,21 @@ class TmuxService {
       final currentOutput = output.toString();
       final markerIndex = currentOutput.indexOf(_execDoneMarker);
       if (markerIndex != -1) {
+        final markerLineEnd = currentOutput.indexOf('\n', markerIndex);
+        if (markerLineEnd == -1) {
+          continue;
+        }
+        final markerLine = currentOutput.substring(markerIndex, markerLineEnd);
+        final statusText = markerLine
+            .substring(_execDoneMarker.length)
+            .replaceFirst(':', '')
+            .trim();
+        final exitStatus = int.tryParse(statusText);
+        if (exitStatus != 0) {
+          throw TmuxCommandException(
+            'tmux command failed with exit status ${statusText.isEmpty ? 'unknown' : statusText}',
+          );
+        }
         return currentOutput.substring(0, markerIndex).trimRight();
       }
     }
