@@ -378,7 +378,10 @@ class TmuxService {
       DiagnosticsLogService.instance.debug(
         'tmux.query',
         'list_windows_join',
-        fields: {'connectionId': session.connectionId},
+        fields: {
+          'connectionId': session.connectionId,
+          'sessionHash': sessionName.hashCode.abs(),
+        },
       );
       return existingRequest;
     }
@@ -410,7 +413,9 @@ class TmuxService {
       '#{pane_current_command}|#{pane_current_path}|'
       "#{window_flags}|#{pane_title}|#{window_activity}'",
     );
-    final windows = _parseLines(output, TmuxWindow.fromTmuxFormat);
+    final windows = List<TmuxWindow>.unmodifiable(
+      _parseLines(output, TmuxWindow.fromTmuxFormat),
+    );
     DiagnosticsLogService.instance.info(
       'tmux.query',
       'list_windows_complete',

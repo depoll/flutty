@@ -333,8 +333,13 @@ void main() {
       final results = await Future.wait([first, second]);
 
       expect(results[0], hasLength(1));
-      expect(results[1], hasLength(1));
-      expect(identical(results[0], results[1]), isTrue);
+      expect(results[1], orderedEquals(results[0]));
+      expect(
+        () => results[0].add(
+          const TmuxWindow(index: 2, name: 'other', isActive: false),
+        ),
+        throwsUnsupportedError,
+      );
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
       verify(execSession.close).called(1);
     });
