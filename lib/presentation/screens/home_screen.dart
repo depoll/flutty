@@ -3075,9 +3075,11 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .getSession(widget.connectionId);
     if (session == null || _sessionName == null) return;
 
-    ref
-        .read(tmuxServiceProvider)
-        .killWindow(session, _sessionName!, windowIndex);
+    _runTmuxPreviewAction(
+      ref
+          .read(tmuxServiceProvider)
+          .killWindow(session, _sessionName!, windowIndex),
+    );
 
     // Optimistically remove from the list.
     setState(() {
@@ -3091,11 +3093,27 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         .read(activeSessionsProvider.notifier)
         .getSession(widget.connectionId);
     if (session != null && _sessionName != null) {
-      ref
-          .read(tmuxServiceProvider)
-          .selectWindow(session, _sessionName!, windowIndex);
+      _runTmuxPreviewAction(
+        ref
+            .read(tmuxServiceProvider)
+            .selectWindow(session, _sessionName!, windowIndex),
+      );
     }
     widget.onTap();
+  }
+
+  void _runTmuxPreviewAction(Future<void> action) {
+    unawaited(
+      action.then<void>(
+        (_) {},
+        onError: (Object error, StackTrace _) {
+          if (!mounted) return;
+          ScaffoldMessenger.of(
+            context,
+          ).showSnackBar(SnackBar(content: Text('tmux action failed: $error')));
+        },
+      ),
+    );
   }
 
   void _resumeSession(ToolSessionInfo info) {

@@ -255,6 +255,75 @@ void main() {
 
       expect(find.text('✨ Editing main.dart'), findsOneWidget);
     });
+
+    testWidgets('stops showing an indefinite spinner after repeated empties', (
+      tester,
+    ) async {
+      final tmuxService = _MockTmuxService();
+      final presetService = _MockAgentLaunchPresetService();
+      final discoveryService = _MockAgentSessionDiscoveryService();
+      final session = SshSession(
+        connectionId: 1,
+        hostId: 1,
+        client: _MockSshClient(),
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'demo',
+        ),
+      );
+      const tmuxSessionName = 'main';
+
+      when(
+        () => presetService.getPresetForHost(session.hostId),
+      ).thenAnswer((_) async => null);
+      when(
+        () => tmuxService.detectInstalledAgentTools(session),
+      ).thenAnswer((_) async => const <AgentLaunchTool>{});
+      when(
+        () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+      ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+      when(
+        () => tmuxService.listWindows(session, tmuxSessionName),
+      ).thenAnswer((_) async => const <TmuxWindow>[]);
+      when(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      ).thenAnswer(
+        (_) => Stream<DiscoveredSessionsResult>.value(
+          DiscoveredSessionsResult(sessions: const <ToolSessionInfo>[]),
+        ),
+      );
+
+      await _pumpNavigatorHost(
+        tester,
+        tmuxService: tmuxService,
+        presetService: presetService,
+        discoveryService: discoveryService,
+        session: session,
+        tmuxSessionName: tmuxSessionName,
+      );
+
+      await tester.tap(find.text('Open'));
+      await tester.pump();
+
+      expect(find.byType(CircularProgressIndicator), findsWidgets);
+
+      await tester.pump(const Duration(seconds: 2));
+      await tester.pump();
+
+      expect(
+        find.text(
+          'Could not load windows: '
+          'tmux did not return any windows yet. Retrying...',
+        ),
+        findsOneWidget,
+      );
+    });
   });
 }
 

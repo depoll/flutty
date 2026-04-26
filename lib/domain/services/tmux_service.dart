@@ -53,6 +53,9 @@ class TmuxService {
   _windowObservers = {};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
+  static final RegExp _execDoneMarkerLinePattern = RegExp(
+    '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
+  );
 
   /// Clears the cached tmux path for a connection.
   void clearCache(int connectionId) {
@@ -200,19 +203,15 @@ class TmuxService {
     SshSession session,
     String sessionName,
   ) async {
-    try {
-      final quotedName = _shellQuote(sessionName);
-      final output = await _exec(
-        session,
-        'tmux list-windows -t $quotedName -F '
-        "'#{window_index}|#{window_name}|#{window_active}|"
-        '#{pane_current_command}|#{pane_current_path}|'
-        "#{window_flags}|#{pane_title}|#{window_activity}'",
-      );
-      return _parseLines(output, TmuxWindow.fromTmuxFormat);
-    } on Exception {
-      return const [];
-    }
+    final quotedName = _shellQuote(sessionName);
+    final output = await _exec(
+      session,
+      'tmux list-windows -t $quotedName -F '
+      "'#{window_index}|#{window_name}|#{window_active}|"
+      '#{pane_current_command}|#{pane_current_path}|'
+      "#{window_flags}|#{pane_title}|#{window_activity}'",
+    );
+    return _parseLines(output, TmuxWindow.fromTmuxFormat);
   }
 
   /// Returns the active pane working directory for [sessionName], if tmux
@@ -424,7 +423,9 @@ class TmuxService {
   }
 
   String _markCommandDone(String command) =>
-      '$command; printf ${_shellQuote('\n$_execDoneMarker\n')}';
+      '{ $command; __flutty_tmux_exec_status__=\$?; '
+      'printf ${_shellQuote('\n$_execDoneMarker:%s\n')} '
+      r'"$__flutty_tmux_exec_status__"; }';
 
   Future<String> _readStdoutUntilDoneMarker(SSHSession execSession) async {
     final output = StringBuffer();
@@ -435,9 +436,21 @@ class TmuxService {
             .timeout(_execOutputTimeout)) {
       output.write(chunk);
       final currentOutput = output.toString();
-      final markerIndex = currentOutput.indexOf(_execDoneMarker);
-      if (markerIndex != -1) {
-        return currentOutput.substring(0, markerIndex).trimRight();
+      RegExpMatch? markerMatch;
+      for (final match in _execDoneMarkerLinePattern.allMatches(
+        currentOutput,
+      )) {
+        markerMatch = match;
+      }
+      if (markerMatch != null) {
+        final statusText = markerMatch.group(1)!;
+        final exitStatus = int.parse(statusText);
+        if (exitStatus != 0) {
+          throw TmuxCommandException(
+            'tmux command failed with exit status $statusText',
+          );
+        }
+        return currentOutput.substring(0, markerMatch.start).trimRight();
       }
     }
     throw const TmuxCommandException(
