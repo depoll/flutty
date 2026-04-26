@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:collection';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
@@ -90,6 +93,7 @@ class DiagnosticsLogService extends ChangeNotifier {
 
   static const _redacted = '[redacted]';
   static const _maxStringLength = 160;
+  static const _notifyDebounce = Duration(milliseconds: 250);
 
   static const _sensitiveFieldNames = <String>{
     'command',
@@ -149,7 +153,8 @@ class DiagnosticsLogService extends ChangeNotifier {
 
   final DateTime Function() _now;
   final int _maxEntries;
-  final List<DiagnosticsLogEntry> _entries = [];
+  final Queue<DiagnosticsLogEntry> _entries = Queue<DiagnosticsLogEntry>();
+  Timer? _notifyTimer;
 
   /// Number of retained entries.
   int get entryCount => _entries.length;
@@ -161,7 +166,15 @@ class DiagnosticsLogService extends ChangeNotifier {
   void clear() {
     if (_entries.isEmpty) return;
     _entries.clear();
+    _notifyTimer?.cancel();
+    _notifyTimer = null;
     notifyListeners();
+  }
+
+  @override
+  void dispose() {
+    _notifyTimer?.cancel();
+    super.dispose();
   }
 
   /// Records a debug event.
@@ -231,7 +244,7 @@ class DiagnosticsLogService extends ChangeNotifier {
       final key = _sanitizeKey(entry.key);
       sanitizedFields[key] = _sanitizeValue(key, entry.value);
     }
-    _entries.add(
+    _entries.addLast(
       DiagnosticsLogEntry(
         timestamp: _now(),
         level: level,
@@ -240,10 +253,20 @@ class DiagnosticsLogService extends ChangeNotifier {
         fields: Map.unmodifiable(sanitizedFields),
       ),
     );
-    if (_entries.length > _maxEntries) {
-      _entries.removeRange(0, _entries.length - _maxEntries);
+    while (_entries.length > _maxEntries) {
+      _entries.removeFirst();
     }
-    notifyListeners();
+    _scheduleNotifyListeners();
+  }
+
+  void _scheduleNotifyListeners() {
+    if (_notifyTimer?.isActive ?? false) {
+      return;
+    }
+    _notifyTimer = Timer(_notifyDebounce, () {
+      _notifyTimer = null;
+      notifyListeners();
+    });
   }
 
   static String _sanitizeKey(String key) {

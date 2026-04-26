@@ -54,6 +54,24 @@ void main() {
       expect(lines, ['second', 'third']);
     });
 
+    test('coalesces listener notifications', () async {
+      final log = DiagnosticsLogService(enabled: true);
+      var notificationCount = 0;
+      log.addListener(() => notificationCount += 1);
+      addTearDown(log.dispose);
+
+      log
+        ..info('test', 'first')
+        ..info('test', 'second')
+        ..info('test', 'third');
+
+      expect(notificationCount, 0);
+
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+
+      expect(notificationCount, 1);
+    });
+
     test('exports a privacy notice with entries', () {
       final log = DiagnosticsLogService(
         enabled: true,

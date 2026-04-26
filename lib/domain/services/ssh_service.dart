@@ -1450,6 +1450,7 @@ class SshSession {
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
+  static const _shellIoDiagnosticsInterval = Duration(seconds: 1);
   static const _previewLineCount = 3;
   static const _previewMaxChars = 220;
   static final _previewSanitizerPattern = RegExp(r'[\x00-\x08\x0B-\x1F\x7F]');
@@ -1496,6 +1497,13 @@ class SshSession {
   StreamSubscription<String>? _shellStderrSubscription;
   StreamSubscription<void>? _shellDoneSubscription;
   Timer? _previewRefreshTimer;
+  Timer? _shellIoDiagnosticsTimer;
+  int _shellStdoutChunkCount = 0;
+  int _shellStdoutCharCount = 0;
+  int _shellStderrChunkCount = 0;
+  int _shellStderrCharCount = 0;
+  int _shellStdinWriteCount = 0;
+  int _shellStdinCharCount = 0;
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
@@ -1651,6 +1659,9 @@ class SshSession {
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell() async {
+    _flushShellIoDiagnostics();
+    _shellIoDiagnosticsTimer?.cancel();
+    _shellIoDiagnosticsTimer = null;
     DiagnosticsLogService.instance.info(
       'ssh.shell',
       'close_start',
@@ -1703,11 +1714,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen(
           (data) {
-            DiagnosticsLogService.instance.debug(
-              'ssh.shell',
-              'stdout_chunk',
-              fields: {'connectionId': connectionId, 'charCount': data.length},
-            );
+            _recordShellIo(stdoutChars: data.length);
             terminal.write(data);
             _scheduleTerminalPreviewRefresh();
             _shellStdoutController!.add(data);
@@ -1729,11 +1736,7 @@ class SshSession {
         .transform(utf8.decoder)
         .listen(
           (data) {
-            DiagnosticsLogService.instance.debug(
-              'ssh.shell',
-              'stderr_chunk',
-              fields: {'connectionId': connectionId, 'charCount': data.length},
-            );
+            _recordShellIo(stderrChars: data.length);
             terminal.write(data);
             _scheduleTerminalPreviewRefresh();
             _shellStderrController!.add(data);
@@ -1774,14 +1777,67 @@ class SshSession {
 
     // Wire terminal keyboard output → shell stdin (persistent).
     terminal.onOutput = (data) {
-      DiagnosticsLogService.instance.debug(
-        'ssh.shell',
-        'stdin_write',
-        fields: {'connectionId': connectionId, 'charCount': data.length},
-      );
+      _recordShellIo(stdinChars: data.length);
       shell.write(utf8.encode(data));
     };
     _refreshTerminalPreview();
+  }
+
+  void _recordShellIo({
+    int stdoutChars = 0,
+    int stderrChars = 0,
+    int stdinChars = 0,
+  }) {
+    if (!DiagnosticsLogService.instance.enabled) {
+      return;
+    }
+    if (stdoutChars > 0) {
+      _shellStdoutChunkCount += 1;
+      _shellStdoutCharCount += stdoutChars;
+    }
+    if (stderrChars > 0) {
+      _shellStderrChunkCount += 1;
+      _shellStderrCharCount += stderrChars;
+    }
+    if (stdinChars > 0) {
+      _shellStdinWriteCount += 1;
+      _shellStdinCharCount += stdinChars;
+    }
+    if (!(_shellIoDiagnosticsTimer?.isActive ?? false)) {
+      _shellIoDiagnosticsTimer = Timer(
+        _shellIoDiagnosticsInterval,
+        _flushShellIoDiagnostics,
+      );
+    }
+  }
+
+  void _flushShellIoDiagnostics() {
+    _shellIoDiagnosticsTimer?.cancel();
+    _shellIoDiagnosticsTimer = null;
+    if (_shellStdoutChunkCount == 0 &&
+        _shellStderrChunkCount == 0 &&
+        _shellStdinWriteCount == 0) {
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'ssh.shell',
+      'io_summary',
+      fields: {
+        'connectionId': connectionId,
+        'stdoutChunks': _shellStdoutChunkCount,
+        'stdoutChars': _shellStdoutCharCount,
+        'stderrChunks': _shellStderrChunkCount,
+        'stderrChars': _shellStderrCharCount,
+        'stdinWrites': _shellStdinWriteCount,
+        'stdinChars': _shellStdinCharCount,
+      },
+    );
+    _shellStdoutChunkCount = 0;
+    _shellStdoutCharCount = 0;
+    _shellStderrChunkCount = 0;
+    _shellStderrCharCount = 0;
+    _shellStdinWriteCount = 0;
+    _shellStdinCharCount = 0;
   }
 
   void _scheduleTerminalPreviewRefresh() {
