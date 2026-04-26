@@ -1205,6 +1205,34 @@ class _PreparedHostKeySocket {
   final HostKeySource hostKeySource;
 }
 
+Map<String, Object?> _diagnosticSshExecErrorFields(Object error) => {
+  'errorType': error.runtimeType,
+  if (error is SSHChannelOpenError) ...{
+    'channelOpenCode': error.code,
+    'reason': _diagnosticSshChannelOpenReason(error.description),
+  },
+};
+
+String _diagnosticSshChannelOpenReason(String description) {
+  final normalized = description.toLowerCase();
+  if (normalized.contains('administratively prohibited')) {
+    return 'administratively_prohibited';
+  }
+  if (normalized.contains('resource shortage')) {
+    return 'resource_shortage';
+  }
+  if (normalized.contains('connect failed')) {
+    return 'connect_failed';
+  }
+  if (normalized.contains('unknown channel type')) {
+    return 'unknown_channel_type';
+  }
+  if (normalized.contains('open failed')) {
+    return 'open_failed';
+  }
+  return 'channel_open_failed';
+}
+
 String _diagnosticSshResultErrorKind(String? error) {
   if (error == null || error.isEmpty) {
     return 'unknown';
@@ -2074,7 +2102,7 @@ class SshSession {
           'connectionId': connectionId,
           'commandKind': _diagnosticSshCommandKind(command),
           'pty': pty != null,
-          'errorType': error.runtimeType,
+          ..._diagnosticSshExecErrorFields(error),
         },
       );
       rethrow;
