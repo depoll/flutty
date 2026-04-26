@@ -50,7 +50,7 @@ void main() {
       );
 
       expect(find.text('✨ Editing main.dart'), findsOneWidget);
-      expect(find.text('claude'), findsOneWidget);
+      expect(find.text('Claude Code'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
       expect(find.text('htop'), findsOneWidget);
       expect(find.text('running'), findsNWidgets(3));
@@ -70,7 +70,7 @@ void main() {
 
       expect(find.text('tmux:'), findsOneWidget);
       expect(find.text('✨ Editing main.dart'), findsOneWidget);
-      expect(find.text('claude'), findsOneWidget);
+      expect(find.text('Claude Code'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
     });
 
@@ -182,7 +182,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(find.text('Recent AI Sessions'), findsOneWidget);
-      expect(find.text('Claude Code'), findsOneWidget);
+      expect(find.text('Claude Code'), findsNWidgets(2));
       expect(find.byIcon(Icons.expand_more), findsNothing);
       expect(find.byIcon(Icons.expand_less), findsNothing);
     });

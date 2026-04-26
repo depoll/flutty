@@ -406,12 +406,15 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     final quotedName = _shellQuote(sessionName);
+    const sep = r'${SEP}';
     final output = await _exec(
       session,
-      'tmux list-windows -t $quotedName -F '
-      "'#{window_index}|#{window_name}|#{window_active}|"
-      '#{pane_current_command}|#{pane_current_path}|'
-      "#{window_flags}|#{pane_title}|#{window_activity}'",
+      r'SEP=$(printf "\037"); '
+      'tmux -u list-windows -t $quotedName -F '
+      '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
+      '#{pane_current_command}$sep#{pane_current_path}$sep'
+      '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
+      '#{pane_start_command}"',
     );
     final windows = List<TmuxWindow>.unmodifiable(
       _parseLines(output, TmuxWindow.fromTmuxFormat),
@@ -1035,9 +1038,15 @@ bool hasForegroundTmuxClient(String output) {
 }
 
 const _tmuxWindowSubscriptionFormat =
-    '#{window_index}|#{window_name}|#{window_active}|'
-    '#{pane_current_command}|#{pane_current_path}|'
-    '#{window_flags}|#{pane_title}|#{window_activity}';
+    '#{window_index}$tmuxWindowFieldSeparator'
+    '#{window_name}$tmuxWindowFieldSeparator'
+    '#{window_active}$tmuxWindowFieldSeparator'
+    '#{pane_current_command}$tmuxWindowFieldSeparator'
+    '#{pane_current_path}$tmuxWindowFieldSeparator'
+    '#{window_flags}$tmuxWindowFieldSeparator'
+    '#{pane_title}$tmuxWindowFieldSeparator'
+    '#{window_activity}$tmuxWindowFieldSeparator'
+    '#{pane_start_command}';
 
 const _tmuxControlModeClientFlags = 'read-only,ignore-size,no-output,wait-exit';
 

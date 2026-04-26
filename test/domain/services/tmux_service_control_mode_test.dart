@@ -27,13 +27,15 @@ void main() {
     test(
       'subscription command watches all windows in the attached session',
       () {
+        const sep = tmuxWindowFieldSeparator;
         expect(
           buildTmuxWindowSubscriptionCommand('flutty-1-42'),
           'refresh-client -B '
           "'flutty-1-42:@*:"
-          '#{window_index}|#{window_name}|#{window_active}|'
-          '#{pane_current_command}|#{pane_current_path}|'
-          "#{window_flags}|#{pane_title}|#{window_activity}'",
+          '#{window_index}$sep#{window_name}$sep#{window_active}$sep'
+          '#{pane_current_command}$sep#{pane_current_path}$sep'
+          '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
+          "#{pane_start_command}'",
         );
       },
     );
@@ -41,10 +43,22 @@ void main() {
 
   group('parseTmuxWindowChangeEventFromControlLine', () {
     const subscriptionName = 'flutty-1-42';
+    const sep = tmuxWindowFieldSeparator;
 
     test('returns a window snapshot event for matching subscriptions', () {
+      final snapshotValue = [
+        '1',
+        'renamed',
+        '1',
+        'sleep',
+        '/tmp',
+        '*',
+        'custom-title',
+        '1712930000',
+        'sleep 30',
+      ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
-        r'%subscription-changed flutty-1-42 $1 @1 1 %1 : 1|renamed|1|sleep|/tmp|*|custom-title|1712930000',
+        '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
         subscriptionName: subscriptionName,
       );
 
@@ -54,12 +68,25 @@ void main() {
       expect(snapshot.window.name, 'renamed');
       expect(snapshot.window.isActive, isTrue);
       expect(snapshot.window.paneTitle, 'custom-title');
+      expect(snapshot.window.paneStartCommand, 'sleep 30');
     });
 
     test('normalizes the wrapped first control-mode line', () {
+      final snapshotValue = [
+        '0',
+        'shell',
+        '1',
+        'sleep',
+        '/tmp',
+        '*',
+        'wrapped-title',
+        '1712930000',
+        'sleep 30',
+      ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
-        '\u001bP1000p%subscription-changed flutty-1-42 \$1 @1 1 %1 : '
-        '0|shell|1|sleep|/tmp|*|wrapped-title|1712930000',
+        '\u001bP1000p'
+        '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}'
+        '$snapshotValue',
         subscriptionName: subscriptionName,
       );
 
