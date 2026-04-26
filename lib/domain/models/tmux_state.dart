@@ -84,6 +84,7 @@ class TmuxWindow {
     this.flags,
     this.paneTitle,
     this.paneStartCommand,
+    this.agentTool,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
@@ -92,7 +93,7 @@ class TmuxWindow {
   ///
   /// Expected format (from `tmux list-windows -F`):
   /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
-  /// `pane_title<US>activity_epoch<US>pane_start_command`
+  /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool`
   ///
   /// Legacy pipe-delimited snapshots are still accepted for older tests and
   /// stale control-mode messages.
@@ -117,6 +118,7 @@ class TmuxWindow {
           ? activityEpoch
           : null,
       paneStartCommand: parsed.paneStartCommand,
+      agentTool: fields.length > 9 ? _agentToolFromMetadata(fields[9]) : null,
     );
   }
 
@@ -143,6 +145,9 @@ class TmuxWindow {
 
   /// The command tmux used when creating the pane, if available.
   final String? paneStartCommand;
+
+  /// App-provided agent tool metadata stored on the tmux window, if available.
+  final AgentLaunchTool? agentTool;
 
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
@@ -191,6 +196,7 @@ class TmuxWindow {
     String? flags,
     String? paneTitle,
     String? paneStartCommand,
+    AgentLaunchTool? agentTool,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
     index: index,
@@ -201,6 +207,7 @@ class TmuxWindow {
     flags: flags ?? this.flags,
     paneTitle: paneTitle ?? this.paneTitle,
     paneStartCommand: paneStartCommand ?? this.paneStartCommand,
+    agentTool: agentTool ?? this.agentTool,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
@@ -366,6 +373,7 @@ class TmuxWindow {
 
   /// The supported agent CLI running in the foreground, if one can be inferred.
   AgentLaunchTool? get foregroundAgentTool {
+    if (agentTool != null) return agentTool;
     for (final candidate in [currentCommand, name, paneTitle]) {
       final tool = agentLaunchToolForCommandName(candidate);
       if (tool != null) {
@@ -392,6 +400,7 @@ class TmuxWindow {
           flags == other.flags &&
           paneTitle == other.paneTitle &&
           paneStartCommand == other.paneStartCommand &&
+          agentTool == other.agentTool &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -405,6 +414,7 @@ class TmuxWindow {
     flags,
     paneTitle,
     paneStartCommand,
+    agentTool,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
@@ -751,22 +761,12 @@ bool _isAsciiLetterOrDigit(int rune) =>
     (rune >= 0x41 && rune <= 0x5A) ||
     (rune >= 0x61 && rune <= 0x7A);
 
-AgentLaunchTool? _agentToolFromCommandText(String? value) {
-  final command = value?.trim();
-  if (command == null || command.isEmpty) return null;
-  for (final tool in AgentLaunchTool.values) {
-    final pattern = RegExp(
-      '(^|[\\s"\\\'])'
-      '(?:[^\\s"\\\']*/)?'
-      '${RegExp.escape(tool.commandName)}'
-      r'(?:\.exe)?'
-      r'''(?=$|[\s"'])''',
-      caseSensitive: false,
-    );
-    if (pattern.hasMatch(command)) return tool;
-  }
-  return null;
-}
+AgentLaunchTool? _agentToolFromCommandText(String? value) =>
+    agentLaunchToolForCommandText(value);
+
+AgentLaunchTool? _agentToolFromMetadata(String? value) =>
+    agentLaunchToolForCommandName(value) ??
+    agentLaunchToolForCommandText(value);
 
 String? _agentSessionIdFromCommand(
   String? value, {

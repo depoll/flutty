@@ -252,6 +252,28 @@ void main() {
       expect(window.secondaryTitle, isNull);
     });
 
+    test('uses app agent metadata when tmux exposes only wrapper names', () {
+      const sep = tmuxWindowFieldSeparator;
+      final line = [
+        '1',
+        'node',
+        '0',
+        'node',
+        '/Users/depoll/Code/flutty',
+        '',
+        'mac-mini.home',
+        '1712930000',
+        'zsh',
+        'gemini',
+      ].join(sep);
+      final window = TmuxWindow.fromTmuxFormat(line);
+
+      expect(window.agentTool, AgentLaunchTool.geminiCli);
+      expect(window.foregroundAgentTool, AgentLaunchTool.geminiCli);
+      expect(window.displayTitle, 'Gemini CLI · flutty');
+      expect(window.handleTitle, 'Gemini CLI · flutty');
+    });
+
     test('shows resumed agent session metadata from pane start commands', () {
       const window = TmuxWindow(
         index: 1,

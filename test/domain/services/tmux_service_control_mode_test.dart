@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -35,7 +36,8 @@ void main() {
           '#{window_index}$sep#{window_name}$sep#{window_active}$sep'
           '#{pane_current_command}$sep#{pane_current_path}$sep'
           '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
-          "#{pane_start_command}'",
+          '#{pane_start_command}$sep'
+          "#{@flutty_agent_tool}'",
         );
       },
     );
@@ -56,6 +58,7 @@ void main() {
         'custom-title',
         '1712930000',
         'sleep 30',
+        'gemini',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
@@ -69,6 +72,7 @@ void main() {
       expect(snapshot.window.isActive, isTrue);
       expect(snapshot.window.paneTitle, 'custom-title');
       expect(snapshot.window.paneStartCommand, 'sleep 30');
+      expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
     });
 
     test('normalizes the wrapped first control-mode line', () {
@@ -82,6 +86,7 @@ void main() {
         'wrapped-title',
         '1712930000',
         'sleep 30',
+        '',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '\u001bP1000p'
@@ -392,6 +397,65 @@ void main() {
       expect(windows.single.paneTitle, 'title $_execDoneMarker:1');
       verify(execSession.close).called(1);
     });
+
+    test(
+      'createWindow tags agent windows and targets the created index',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: '4\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: _doneMarker()),
+          _buildOpenExecSession(),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        await service.createWindow(
+          session,
+          'main',
+          command: 'gemini --yolo',
+          name: 'gemini',
+          workingDirectory: '/tmp/project',
+        );
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u new-window -P -F '#{window_index}' -t "
+                "'main' -c '/tmp/project' -n 'gemini'",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u set-option -w -t 'main:4' "
+                "@flutty_agent_tool 'gemini'",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u send-keys -t 'main:4' 'gemini --yolo' Enter",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+      },
+    );
 
     test(
       'selectWindow completes when stdout stays open after the done marker',

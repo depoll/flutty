@@ -414,7 +414,7 @@ class TmuxService {
       '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
       '#{pane_current_command}$sep#{pane_current_path}$sep'
       '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
-      '#{pane_start_command}"',
+      '#{pane_start_command}$sep#{@flutty_agent_tool}"',
     );
     final windows = List<TmuxWindow>.unmodifiable(
       _parseLines(output, TmuxWindow.fromTmuxFormat),
@@ -567,17 +567,33 @@ class TmuxService {
     // (e.g. resuming an AI session in a specific project). Without -c,
     // tmux uses the session's default-directory — matching Ctrl+b,c.
     final parts = <String>[
-      'tmux new-window -t ${_shellQuote(sessionName)}',
+      "tmux new-window -P -F '#{window_index}' -t ${_shellQuote(sessionName)}",
       if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
         '-c ${_shellQuote(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
         '-n ${_shellQuote(name.trim())}',
     ];
-    await _exec(session, parts.join(' '));
+    final createdWindowIndex = _parseCreatedWindowIndex(
+      await _exec(session, parts.join(' ')),
+    );
+    final target = createdWindowIndex == null
+        ? sessionName
+        : '$sessionName:$createdWindowIndex';
+    final agentTool = _agentToolForCreatedWindow(command: command, name: name);
+    if (agentTool != null) {
+      await _exec(
+        session,
+        'tmux set-option -w -t ${_shellQuote(target)} '
+        '@flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
+      );
+    }
     DiagnosticsLogService.instance.info(
       'tmux.action',
       'create_window_complete',
-      fields: {'connectionId': session.connectionId},
+      fields: {
+        'connectionId': session.connectionId,
+        'hasAgentTool': agentTool != null,
+      },
     );
 
     // If a command was requested, type it into the new window's shell.
@@ -586,7 +602,7 @@ class TmuxService {
     if (command != null && command.trim().isNotEmpty) {
       _execFireAndForget(
         session,
-        'tmux send-keys -t ${_shellQuote(sessionName)} '
+        'tmux send-keys -t ${_shellQuote(target)} '
         '${_shellQuote(command.trim())} Enter',
       );
       DiagnosticsLogService.instance.info(
@@ -970,6 +986,21 @@ class TmuxService {
       "'${value.replaceAll("'", "'\"'\"'")}'";
 }
 
+int? _parseCreatedWindowIndex(String output) {
+  for (final rawLine in output.split('\n')) {
+    final index = int.tryParse(rawLine.trim());
+    if (index != null) return index;
+  }
+  return null;
+}
+
+AgentLaunchTool? _agentToolForCreatedWindow({
+  required String? command,
+  required String? name,
+}) =>
+    agentLaunchToolForCommandName(name) ??
+    agentLaunchToolForCommandText(command);
+
 String _diagnosticTmuxCommandKind(String command) {
   if (command.contains('attach-session')) {
     return 'control_attach';
@@ -1046,7 +1077,8 @@ const _tmuxWindowSubscriptionFormat =
     '#{window_flags}$tmuxWindowFieldSeparator'
     '#{pane_title}$tmuxWindowFieldSeparator'
     '#{window_activity}$tmuxWindowFieldSeparator'
-    '#{pane_start_command}';
+    '#{pane_start_command}$tmuxWindowFieldSeparator'
+    '#{@flutty_agent_tool}';
 
 const _tmuxControlModeClientFlags = 'read-only,ignore-size,no-output,wait-exit';
 
