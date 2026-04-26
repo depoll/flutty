@@ -5,8 +5,10 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database/database.dart';
 import '../data/repositories/host_repository.dart';
+import '../domain/services/auth_service.dart';
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/home_screen_shortcut_service.dart';
+import '../domain/services/local_notification_service.dart';
 import '../domain/services/monetization_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
@@ -56,10 +58,14 @@ class _BackgroundLifecycleBridgeState
   late final AppLifecycleCoordinator _lifecycleCoordinator;
   StreamSubscription<List<Host>>? _homeScreenShortcutHostsSubscription;
   StreamSubscription<Set<int>>? _pinnedHomeScreenShortcutHostsSubscription;
+  StreamSubscription<TmuxAlertNotificationPayload>? _tmuxAlertTapSubscription;
+  ProviderSubscription<AuthState>? _authStateSubscription;
   List<Host> _latestHomeScreenShortcutHosts = const <Host>[];
   Set<int> _latestPinnedHomeScreenShortcutHostIds = const <int>{};
   bool _hasLoadedHomeScreenShortcutHosts = false;
   bool _hasLoadedPinnedHomeScreenShortcutHostIds = false;
+  TmuxAlertNotificationPayload? _pendingTmuxAlertNavigation;
+  bool _isTmuxAlertNavigationQueued = false;
 
   @override
   void initState() {
@@ -71,6 +77,7 @@ class _BackgroundLifecycleBridgeState
       syncBackgroundState: () =>
           BackgroundSshService.setForegroundState(isForeground: false),
     );
+    _listenForTmuxAlertNotifications();
     if (supportsHomeScreenShortcutActions) {
       _listenForHomeScreenShortcutChanges();
       _runLifecycleSync(
@@ -97,7 +104,73 @@ class _BackgroundLifecycleBridgeState
     WidgetsBinding.instance.removeObserver(this);
     unawaited(_homeScreenShortcutHostsSubscription?.cancel());
     unawaited(_pinnedHomeScreenShortcutHostsSubscription?.cancel());
+    unawaited(_tmuxAlertTapSubscription?.cancel());
+    _authStateSubscription?.close();
     super.dispose();
+  }
+
+  void _listenForTmuxAlertNotifications() {
+    final notificationService = ref.read(localNotificationServiceProvider);
+    _tmuxAlertTapSubscription = notificationService.tmuxAlertTaps.listen(
+      _handleTmuxAlertNotification,
+    );
+    _authStateSubscription = ref.listenManual<AuthState>(authStateProvider, (
+      previous,
+      next,
+    ) {
+      if (_canOpenTmuxAlertNotification(next)) {
+        _queuePendingTmuxAlertNavigation();
+      }
+    });
+    _runLifecycleSync(
+      () async {
+        await notificationService.initialize();
+        final launchAlert = await notificationService.consumeLaunchTmuxAlert();
+        if (launchAlert != null) {
+          _handleTmuxAlertNotification(launchAlert);
+        }
+      },
+      errorContext:
+          'while initializing tmux alert notification routing during app startup',
+      defer: true,
+    );
+  }
+
+  bool _canOpenTmuxAlertNotification(AuthState authState) =>
+      authState != AuthState.unknown && authState != AuthState.locked;
+
+  void _handleTmuxAlertNotification(TmuxAlertNotificationPayload payload) {
+    _pendingTmuxAlertNavigation = payload;
+    _queuePendingTmuxAlertNavigation();
+  }
+
+  void _queuePendingTmuxAlertNavigation() {
+    if (_isTmuxAlertNavigationQueued ||
+        _pendingTmuxAlertNavigation == null ||
+        !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+      return;
+    }
+
+    _isTmuxAlertNavigationQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTmuxAlertNavigationQueued = false;
+      if (!mounted ||
+          !_canOpenTmuxAlertNotification(ref.read(authStateProvider))) {
+        return;
+      }
+      final payload = _pendingTmuxAlertNavigation;
+      if (payload == null) {
+        return;
+      }
+      _pendingTmuxAlertNavigation = null;
+      final targetUri = Uri.parse(buildTmuxAlertTerminalLocation(payload));
+      final queryParameters = Map<String, String>.from(
+        targetUri.queryParameters,
+      )..['notificationTap'] = '${DateTime.now().microsecondsSinceEpoch}';
+      ref
+          .read(routerProvider)
+          .go(targetUri.replace(queryParameters: queryParameters).toString());
+    });
   }
 
   void _listenForHomeScreenShortcutChanges() {

@@ -848,7 +848,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   }
 
   int _tmuxAlertNotificationId(int windowIndex) =>
-      Object.hash(widget.tmuxSessionName, windowIndex) & 0x7fffffff;
+      Object.hash(
+        widget.session.hostId,
+        widget.session.connectionId,
+        widget.tmuxSessionName,
+        windowIndex,
+      ) &
+      0x7fffffff;
 
   void _sendAlertNotification(TmuxWindow window) {
     unawaited(HapticFeedback.mediumImpact());
@@ -862,6 +868,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             notificationId: _tmuxAlertNotificationId(window.index),
             title: title,
             body: body,
+            payload: TmuxAlertNotificationPayload(
+              hostId: widget.session.hostId,
+              connectionId: widget.session.connectionId,
+              tmuxSessionName: widget.tmuxSessionName,
+              windowIndex: window.index,
+            ),
           ),
     );
   }
@@ -2668,7 +2680,13 @@ bool didTerminalScrollPolicyChange({
 /// Terminal screen for SSH sessions.
 class TerminalScreen extends ConsumerStatefulWidget {
   /// Creates a new [TerminalScreen].
-  const TerminalScreen({required this.hostId, this.connectionId, super.key});
+  const TerminalScreen({
+    required this.hostId,
+    this.connectionId,
+    this.initialTmuxSessionName,
+    this.initialTmuxWindowIndex,
+    super.key,
+  });
 
   /// The host ID to connect to.
   final int hostId;
@@ -2676,8 +2694,24 @@ class TerminalScreen extends ConsumerStatefulWidget {
   /// Optional existing connection ID to reuse.
   final int? connectionId;
 
+  /// Optional tmux session to focus after opening the terminal.
+  final String? initialTmuxSessionName;
+
+  /// Optional tmux window to focus after opening the terminal.
+  final int? initialTmuxWindowIndex;
+
   @override
   ConsumerState<TerminalScreen> createState() => _TerminalScreenState();
+}
+
+class _InitialTmuxWindowTarget {
+  const _InitialTmuxWindowTarget({
+    required this.sessionName,
+    required this.windowIndex,
+  });
+
+  final String sessionName;
+  final int windowIndex;
 }
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
@@ -2729,6 +2763,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
@@ -2905,6 +2940,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void initState() {
     super.initState();
+    _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
       sharedClipboardNotifierProvider,
@@ -2927,6 +2963,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalFocusNode = FocusNode();
     // Defer connection to avoid modifying provider state during widget build
     Future.microtask(_loadHostAndConnect);
+  }
+
+  _InitialTmuxWindowTarget? _buildInitialTmuxWindowTarget(
+    TerminalScreen widget,
+  ) {
+    final sessionName = widget.initialTmuxSessionName?.trim();
+    final windowIndex = widget.initialTmuxWindowIndex;
+    if (sessionName == null ||
+        sessionName.isEmpty ||
+        windowIndex == null ||
+        windowIndex < 0) {
+      return null;
+    }
+    return _InitialTmuxWindowTarget(
+      sessionName: sessionName,
+      windowIndex: windowIndex,
+    );
   }
 
   void _onTerminalStateChanged() {
@@ -3741,7 +3794,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Structured tmux attach is a first-class connection mode, not a generic
     // automation command. Run it even when Pro-only auto-connect automation is
     // unavailable so tmux-native navigation remains accessible.
-    final tmuxSession = host.tmuxSessionName;
+    final tmuxSession = _initialTmuxSessionName ?? host.tmuxSessionName;
     if (tmuxSession != null && tmuxSession.isNotEmpty) {
       final tmuxCommand = buildTmuxCommand(
         sessionName: tmuxSession,
@@ -3869,10 +3922,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _primeTmuxStateFromHost() {
     final host = _host;
-    final preferredSessionName = resolvePreferredTmuxSessionName(
-      structuredSessionName: host?.tmuxSessionName,
-      autoConnectCommand: _resolveStoredAutoConnectCommand(host),
-    );
+    final preferredSessionName = _preferredTmuxSessionName(host);
     if (!mounted || preferredSessionName == null) {
       return;
     }
@@ -3885,6 +3935,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _tmuxWorkingDirectory = preferredWorkingDirectory;
     });
   }
+
+  String? get _initialTmuxSessionName {
+    final sessionName = widget.initialTmuxSessionName?.trim();
+    return sessionName == null || sessionName.isEmpty ? null : sessionName;
+  }
+
+  String? _preferredTmuxSessionName(Host? host) =>
+      _initialTmuxSessionName ??
+      resolvePreferredTmuxSessionName(
+        structuredSessionName: host?.tmuxSessionName,
+        autoConnectCommand: _resolveStoredAutoConnectCommand(host),
+      );
 
   void _clearTmuxState() {
     _tmuxDetectionGeneration += 1;
@@ -3908,10 +3970,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final capturedConnectionId = _connectionId;
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
-    final preferredSessionName = resolvePreferredTmuxSessionName(
-      structuredSessionName: host?.tmuxSessionName,
-      autoConnectCommand: _resolveStoredAutoConnectCommand(host),
-    );
+    final preferredSessionName = _preferredTmuxSessionName(host);
     final existingSessionName = preserveExistingTmuxState
         ? _tmuxSessionName
         : null;
@@ -4015,6 +4074,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
         });
+        await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return;
       }
 
@@ -4036,6 +4096,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!preserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
+    }
+  }
+
+  Future<void> _activateInitialTmuxWindowIfNeeded(
+    SshSession session,
+    String sessionName,
+    List<TmuxWindow> windows,
+  ) async {
+    final target = _pendingInitialTmuxWindowTarget;
+    if (target == null ||
+        target.sessionName != sessionName ||
+        !windows.any((window) => window.index == target.windowIndex)) {
+      return;
+    }
+    _pendingInitialTmuxWindowTarget = null;
+    try {
+      await _switchTmuxWindow(session, target.windowIndex);
+    } on Exception catch (error) {
+      _showTmuxActionFailure(error);
     }
   }
 
