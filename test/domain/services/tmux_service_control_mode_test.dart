@@ -294,6 +294,28 @@ void main() {
       },
     );
 
+    test('listWindows ignores done-marker text inside tmux fields', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(
+        stdout:
+            '1|$_execDoneMarker|1|vim|/tmp|*|title $_execDoneMarker:1|1712930000\n'
+            '${_doneMarker()}',
+      );
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      final windows = await service.listWindows(session, 'main');
+
+      expect(windows, hasLength(1));
+      expect(windows.single.name, _execDoneMarker);
+      expect(windows.single.paneTitle, 'title $_execDoneMarker:1');
+      verify(execSession.close).called(1);
+    });
+
     test(
       'selectWindow completes when stdout stays open after the done marker',
       () async {

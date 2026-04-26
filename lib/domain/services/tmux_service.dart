@@ -53,6 +53,9 @@ class TmuxService {
   _windowObservers = {};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
+  static final RegExp _execDoneMarkerLinePattern = RegExp(
+    '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
+  );
 
   /// Clears the cached tmux path for a connection.
   void clearCache(int connectionId) {
@@ -433,24 +436,21 @@ class TmuxService {
             .timeout(_execOutputTimeout)) {
       output.write(chunk);
       final currentOutput = output.toString();
-      final markerIndex = currentOutput.indexOf(_execDoneMarker);
-      if (markerIndex != -1) {
-        final markerLineEnd = currentOutput.indexOf('\n', markerIndex);
-        if (markerLineEnd == -1) {
-          continue;
-        }
-        final markerLine = currentOutput.substring(markerIndex, markerLineEnd);
-        final statusText = markerLine
-            .substring(_execDoneMarker.length)
-            .replaceFirst(':', '')
-            .trim();
-        final exitStatus = int.tryParse(statusText);
+      RegExpMatch? markerMatch;
+      for (final match in _execDoneMarkerLinePattern.allMatches(
+        currentOutput,
+      )) {
+        markerMatch = match;
+      }
+      if (markerMatch != null) {
+        final statusText = markerMatch.group(1)!;
+        final exitStatus = int.parse(statusText);
         if (exitStatus != 0) {
           throw TmuxCommandException(
-            'tmux command failed with exit status ${statusText.isEmpty ? 'unknown' : statusText}',
+            'tmux command failed with exit status $statusText',
           );
         }
-        return currentOutput.substring(0, markerIndex).trimRight();
+        return currentOutput.substring(0, markerMatch.start).trimRight();
       }
     }
     throw const TmuxCommandException(

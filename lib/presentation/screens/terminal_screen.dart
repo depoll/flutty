@@ -3898,7 +3898,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ///
   /// Starts with any structured tmux configuration immediately, then retries
   /// discovery until the shell-side attach command has settled.
-  Future<void> _detectTmux(SshSession session, {bool skipDelay = false}) async {
+  Future<void> _detectTmux(
+    SshSession session, {
+    bool skipDelay = false,
+    bool preserveExistingTmuxState = false,
+  }) async {
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
     final capturedConnectionId = _connectionId;
@@ -3908,14 +3912,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       structuredSessionName: host?.tmuxSessionName,
       autoConnectCommand: _resolveStoredAutoConnectCommand(host),
     );
+    final existingSessionName = preserveExistingTmuxState
+        ? _tmuxSessionName
+        : null;
+    final candidateSessionName = preferredSessionName ?? existingSessionName;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
 
     if (mounted) {
       setState(() {
-        _isTmuxActive = preferredSessionName != null;
-        _tmuxSessionName = preferredSessionName;
-        _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
-        _tmuxWorkingDirectory = preferredWorkingDirectory;
+        if (candidateSessionName != null) {
+          _isTmuxActive = true;
+          _tmuxSessionName = candidateSessionName;
+          _tmuxLaunchWorkingDirectory =
+              preferredWorkingDirectory ??
+              (preserveExistingTmuxState ? _tmuxLaunchWorkingDirectory : null);
+          _tmuxWorkingDirectory =
+              preferredWorkingDirectory ??
+              (preserveExistingTmuxState ? _tmuxWorkingDirectory : null);
+        } else if (!preserveExistingTmuxState) {
+          _isTmuxActive = false;
+          _tmuxSessionName = null;
+          _tmuxLaunchWorkingDirectory = null;
+          _tmuxWorkingDirectory = null;
+        }
       });
     }
 
@@ -3935,8 +3954,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
         }
 
-        final active = preferredSessionName != null
-            ? await tmux.hasSession(session, preferredSessionName)
+        final active = candidateSessionName != null
+            ? await tmux.hasSession(session, candidateSessionName)
             : await tmux.isTmuxActive(session);
         if (!mounted ||
             _connectionId != capturedConnectionId ||
@@ -3947,7 +3966,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           continue;
         }
 
-        var sessionName = preferredSessionName;
+        var sessionName = candidateSessionName;
         sessionName ??= await tmux.currentSessionName(session);
         if (!mounted ||
             _connectionId != capturedConnectionId ||
@@ -4005,19 +4024,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
-      setState(() {
-        _isTmuxActive = false;
-        _tmuxSessionName = null;
-        _tmuxLaunchWorkingDirectory = null;
-        _tmuxWorkingDirectory = null;
-      });
+      if (!preserveExistingTmuxState) {
+        setState(_clearTmuxState);
+      }
     } on Object {
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
         return;
       }
-      setState(_clearTmuxState);
+      if (!preserveExistingTmuxState) {
+        setState(_clearTmuxState);
+      }
     }
   }
 
@@ -4179,7 +4197,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    await _detectTmux(session);
+    await _detectTmux(session, preserveExistingTmuxState: true);
     if (!mounted ||
         _connectionId != session.connectionId ||
         !_isTmuxActive ||
