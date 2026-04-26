@@ -17,14 +17,15 @@ import 'package:monkeyssh/app/app_metadata.dart';
 import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 import 'package:monkeyssh/presentation/screens/port_forwards_screen.dart';
+import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 import 'package:monkeyssh/presentation/screens/snippets_screen.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
-import 'package:monkeyssh/presentation/screens/upgrade_screen.dart';
 
 const _terminalHostId = 1;
 const _terminalConnectionId = 101;
@@ -199,6 +200,38 @@ class _StoreScreenshotAppState extends State<_StoreScreenshotApp> {
   }
 }
 
+class _AgentPromptScene extends StatefulWidget {
+  const _AgentPromptScene();
+
+  @override
+  State<_AgentPromptScene> createState() => _AgentPromptSceneState();
+}
+
+class _AgentPromptSceneState extends State<_AgentPromptScene> {
+  late final TextEditingController _controller;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: _agentPromptFile);
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => RemoteTextEditorScreen(
+    fileName: 'AGENTS.md',
+    controller: _controller,
+    fontFamily: 'monospace',
+    initialFontSize: 14,
+    terminalTheme: TerminalThemes.velvet,
+  );
+}
+
 const _monthlyOffer = MonetizationOffer(
   id: 'monthly',
   productId: MonetizationProductIds.iosMonthlyProd,
@@ -245,9 +278,8 @@ final _scenes = <_ScreenshotScene>[
   _ScreenshotScene(name: 'snippets', builder: (_) => const SnippetsScreen()),
   _ScreenshotScene(name: 'ports', builder: (_) => const PortForwardsScreen()),
   _ScreenshotScene(
-    name: 'pro',
-    builder: (_) =>
-        const UpgradeScreen(feature: MonetizationFeature.agentLaunchPresets),
+    name: 'agent_prompt',
+    builder: (_) => const _AgentPromptScene(),
   ),
 ];
 
@@ -352,7 +384,9 @@ Future<_ScreenshotHarness> _createHarness() async {
       username: 'monkey',
     ),
   );
-  terminalSession.getOrCreateTerminal().write(_terminalTranscript);
+  terminalSession.getOrCreateTerminal().write(
+    _terminalTranscript.trim().replaceAll('\n', '\r\n'),
+  );
 
   final monetizationService = _MockMonetizationService();
   when(() => monetizationService.currentState).thenReturn(_monetizationState);
@@ -410,7 +444,7 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .into(database.hosts)
       .insert(
         HostsCompanion.insert(
-          label: 'Agent devbox',
+          label: 'Claude + Copilot devbox',
           hostname: 'devbox.example.com',
           username: 'monkey',
           keyId: Value(keyId),
@@ -420,6 +454,8 @@ Future<void> _seedDatabase(AppDatabase database) async {
           tags: const Value('agent,tmux,prod'),
           notes: const Value('Primary remote coding workspace.'),
           lastConnectedAt: Value(DateTime(2026, 4, 24, 21, 30)),
+          terminalThemeDarkId: const Value('velvet'),
+          terminalFontFamily: const Value('monospace'),
           tmuxSessionName: const Value('agent-api'),
           tmuxWorkingDirectory: const Value('~/src/api'),
           autoConnectCommand: const Value('tmux new-session -A -s agent-api'),
@@ -485,10 +521,10 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .into(database.snippets)
       .insert(
         SnippetsCompanion.insert(
-          name: 'Resume agent',
+          name: 'Resume Copilot',
           command: 'copilot resume --recent',
           description: const Value(
-            'Jump back into the latest coding-agent session.',
+            'Jump back into the latest Copilot coding-agent session.',
           ),
           autoExecute: const Value(false),
           usageCount: const Value(18),
@@ -499,10 +535,10 @@ Future<void> _seedDatabase(AppDatabase database) async {
       .into(database.snippets)
       .insert(
         SnippetsCompanion.insert(
-          name: 'Tail API logs',
-          command: 'docker compose logs -f api',
+          name: 'Open Claude Code',
+          command: 'claude --continue',
           description: const Value(
-            'Watch the API container while testing changes.',
+            'Resume the Claude Code conversation in this workspace.',
           ),
           usageCount: const Value(12),
           sortOrder: const Value(1),
@@ -526,33 +562,57 @@ Future<void> _seedDatabase(AppDatabase database) async {
   final settings = SettingsService(database);
   await settings.setString(SettingKeys.themeMode, 'dark');
   await settings.setInt(SettingKeys.terminalFontSize, 14);
+  await settings.setString(SettingKeys.defaultTerminalThemeDark, 'velvet');
   await settings.setBool(SettingKeys.terminalPathLinks, value: false);
 }
 
 const _terminalPreview = r'''
 monkey@devbox ~/src/api
-$ copilot resume --recent
-Found recent coding sessions for ~/src/api
-Resuming "polish initial release metadata"...''';
+$ tmux attach -t agent-api
+0:claude 1:copilot 2:tests 3:logs
+Claude Code and Copilot are both live.''';
 
 const _terminalTranscript = r'''
-Last login: Fri Apr 24 21:30:18 on pts/4
 monkey@devbox:~/src/api$ tmux attach -t agent-api
+[agent-api] 0:claude* 1:copilot 2:tests 3:logs
 
-[agent-api] 0:server* 1:tests 2:logs 3:copilot
-monkey@devbox ~/src/api
-$ copilot resume --recent
-Found recent coding sessions for ~/src/api
+pane 0 - Claude Code
+monkey@devbox:api$ claude --continue
+Claude> Reviewing tmux reconnect flow
+Claude> Patch ready in lib/domain/services
 
-  1. fix ssh reconnect flow
-  2. review paste safety guard
-  3. polish initial release metadata
+pane 1 - Copilot CLI
+monkey@devbox:api$ copilot resume --recent
+Copilot> Found session "store assets"
+Copilot> Updating screenshots from real UI
 
-Resuming "polish initial release metadata"...
-Copilot> Store assets are staged. Running validation now.
-$ flutter test test/domain/services/tmux_service_test.dart
+pane 2 - tests
+monkey@devbox:api$ flutter test
 00:03 +42: All tests passed!
-$ git status --short
- M ios/fastlane/metadata-production/en-US/description.txt
- M android/fastlane/metadata-production/android/en-US/full_description.txt
+
+pane 3 - logs
+api    GET /health        200 OK
+agent  tmux window sync   complete
+''';
+
+const _agentPromptFile = '''
+# Agent workspace
+
+Open the persistent tmux session before starting work:
+
+    tmux attach -t agent-api
+
+Windows:
+
+1. claude  - Claude Code for deeper edits
+2. copilot - Copilot CLI for review and follow-up
+3. tests   - Flutter and domain test runs
+4. logs    - API and SSH diagnostic logs
+
+Current release task:
+
+- Polish screenshots from the real MonkeySSH app
+- Keep terminal and editor themes visually matched
+- Show tmux, Claude Code, and Copilot working together
+- Avoid subscription or checkout screens in store assets
 ''';
