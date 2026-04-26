@@ -206,6 +206,52 @@ void main() {
       expect(window.secondaryTitle, 'copilot');
     });
 
+    test('uses agent context when Codex only reports the project title', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'codex',
+        isActive: false,
+        currentCommand: 'codex-aarch64-apple-darwin',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: 'flutty',
+      );
+
+      expect(window.displayTitle, 'Codex · flutty');
+      expect(window.handleTitle, 'Codex · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('uses agent context when Claude only reports its brand title', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'claude',
+        isActive: false,
+        currentCommand: '2.1.119',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: '✳ Claude Code',
+      );
+
+      expect(window.displayTitle, 'Claude Code · flutty');
+      expect(window.handleTitle, 'Claude Code · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('uses agent context when Gemini only reports ready status', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'gemini',
+        isActive: false,
+        currentCommand: 'node',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle:
+            '◇  Ready (flutty)                                                               ',
+      );
+
+      expect(window.displayTitle, 'Gemini CLI · flutty');
+      expect(window.handleTitle, 'Gemini CLI · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
     test('shows resumed agent session metadata from pane start commands', () {
       const window = TmuxWindow(
         index: 1,

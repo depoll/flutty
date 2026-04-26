@@ -250,6 +250,16 @@ class TmuxWindow {
       stripPlaceholderPrefix: true,
     );
     final agentTitle = agentContextTitle;
+    final foregroundTool = foregroundAgentTool;
+    if (agentTitle != null &&
+        foregroundTool != null &&
+        _isUnhelpfulAgentTitle(
+          normalizedPaneTitle,
+          tool: foregroundTool,
+          contextLabel: _windowContextLabelFromPath(currentPath),
+        )) {
+      return agentTitle;
+    }
     if (_isUnhelpfulTmuxTitle(
       normalizedPaneTitle,
       normalizedName: normalizedName,
@@ -291,6 +301,16 @@ class TmuxWindow {
       stripPlaceholderPrefix: true,
     );
     final agentTitle = agentContextTitle;
+    final foregroundTool = foregroundAgentTool;
+    if (agentTitle != null &&
+        foregroundTool != null &&
+        _isUnhelpfulAgentTitle(
+          normalizedPaneTitle,
+          tool: foregroundTool,
+          contextLabel: _windowContextLabelFromPath(currentPath),
+        )) {
+      return agentTitle;
+    }
     if (_isUnhelpfulTmuxTitle(
       normalizedPaneTitle,
       normalizedName: normalizedName,
@@ -662,6 +682,50 @@ bool _isLikelyDefaultHostTitle(String value) {
     caseSensitive: false,
   ).hasMatch(trimmed);
 }
+
+bool _isUnhelpfulAgentTitle(
+  String? value, {
+  required AgentLaunchTool tool,
+  required String? contextLabel,
+}) {
+  if (value == null || value.isEmpty) return true;
+  final lowered = _normalizeAgentTitleForComparison(value);
+  if (lowered.isEmpty) return true;
+  if (_agentTitleAliases(tool).contains(lowered)) return true;
+
+  final loweredContext = contextLabel?.trim().toLowerCase();
+  if (loweredContext != null &&
+      loweredContext.isNotEmpty &&
+      lowered == loweredContext) {
+    return true;
+  }
+
+  final statusMatch = RegExp(
+    r'^(?:idle|ready|running|thinking|waiting|working)(?:\s+\(([^)]+)\))?$',
+  ).firstMatch(lowered);
+  if (statusMatch == null) return false;
+  final statusContext = statusMatch.group(1)?.trim();
+  return statusContext == null ||
+      statusContext.isEmpty ||
+      statusContext == loweredContext;
+}
+
+String _normalizeAgentTitleForComparison(String value) =>
+    _stripLeadingDecorativePrefix(
+      value,
+    ).replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+
+Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
+  AgentLaunchTool.claudeCode => const {'claude', 'claude code'},
+  AgentLaunchTool.copilotCli => const {
+    'copilot',
+    'copilot cli',
+    'github copilot',
+  },
+  AgentLaunchTool.codex => const {'codex'},
+  AgentLaunchTool.openCode => const {'opencode', 'open code'},
+  AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
+};
 
 bool _isDecoratedVariantOfTitle(String rawTitle, String? plainTitle) {
   if (plainTitle == null || plainTitle.isEmpty) return false;
