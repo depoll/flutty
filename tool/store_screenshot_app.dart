@@ -28,7 +28,6 @@ import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 
-const _terminalHostId = 1;
 const _targetName = String.fromEnvironment('STORE_SCREENSHOT_TARGET');
 const _sshPort = int.fromEnvironment('STORE_SCREENSHOT_SSH_PORT');
 const _sshUsername = String.fromEnvironment('STORE_SCREENSHOT_SSH_USERNAME');
@@ -175,7 +174,7 @@ Future<void> main() async {
 
   final database = AppDatabase.forTesting(NativeDatabase.memory());
   final secrets = SecretEncryptionService.forTesting();
-  await _seedDatabase(database, secrets, target);
+  final terminalHostId = await _seedDatabase(database, secrets, target);
   final monetizationService = _createMonetizationService();
 
   runApp(
@@ -197,7 +196,10 @@ Future<void> main() async {
         ),
         sharedClipboardProvider.overrideWith((ref) async => false),
       ],
-      child: _StoreScreenshotFlow(target: target),
+      child: _StoreScreenshotFlow(
+        target: target,
+        terminalHostId: terminalHostId,
+      ),
     ),
   );
 }
@@ -234,7 +236,7 @@ MonetizationService _createMonetizationService() {
   return service;
 }
 
-Future<void> _seedDatabase(
+Future<int> _seedDatabase(
   AppDatabase database,
   SecretEncryptionService secrets,
   _ScreenshotTarget target,
@@ -306,7 +308,7 @@ Future<void> _seedDatabase(
         ),
       );
 
-  await hostRepository.insert(
+  final terminalHostId = await hostRepository.insert(
     HostsCompanion.insert(
       label: 'Agent tmux',
       hostname: hostname,
@@ -358,7 +360,7 @@ Future<void> _seedDatabase(
       .insert(
         PortForwardsCompanion.insert(
           name: 'Preview server',
-          hostId: _terminalHostId,
+          hostId: terminalHostId,
           forwardType: 'local',
           localPort: 5173,
           remoteHost: '127.0.0.1',
@@ -371,7 +373,7 @@ Future<void> _seedDatabase(
       .insert(
         PortForwardsCompanion.insert(
           name: 'API dashboard',
-          hostId: _terminalHostId,
+          hostId: terminalHostId,
           forwardType: 'local',
           localPort: 8080,
           remoteHost: '127.0.0.1',
@@ -383,7 +385,7 @@ Future<void> _seedDatabase(
       .insert(
         PortForwardsCompanion.insert(
           name: 'Database tunnel',
-          hostId: _terminalHostId,
+          hostId: terminalHostId,
           forwardType: 'local',
           localPort: 5432,
           remoteHost: '127.0.0.1',
@@ -396,7 +398,7 @@ Future<void> _seedDatabase(
       .insert(
         PortForwardsCompanion.insert(
           name: 'Metrics dashboard',
-          hostId: _terminalHostId,
+          hostId: terminalHostId,
           forwardType: 'local',
           localPort: 9090,
           remoteHost: '127.0.0.1',
@@ -468,6 +470,7 @@ Future<void> _seedDatabase(
   await settings.setInt(SettingKeys.terminalFontSize, 13);
   await settings.setString(SettingKeys.defaultTerminalThemeDark, 'velvet');
   await settings.setBool(SettingKeys.terminalPathLinks, value: false);
+  return terminalHostId;
 }
 
 String _derivePublicKeyCommentFree(String privateKey) {
@@ -481,9 +484,13 @@ String _derivePublicKeyCommentFree(String privateKey) {
 }
 
 class _StoreScreenshotFlow extends ConsumerStatefulWidget {
-  const _StoreScreenshotFlow({required this.target});
+  const _StoreScreenshotFlow({
+    required this.target,
+    required this.terminalHostId,
+  });
 
   final _ScreenshotTarget target;
+  final int terminalHostId;
 
   @override
   ConsumerState<_StoreScreenshotFlow> createState() =>
@@ -512,15 +519,16 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
   Future<void> _runFlow() async {
     try {
       await _waitForApp();
+      final terminalHostId = widget.terminalHostId;
       final result = await ref
           .read(activeSessionsProvider.notifier)
-          .connect(_terminalHostId);
+          .connect(terminalHostId);
       if (!result.success || result.connectionId == null) {
         throw StateError(result.error ?? 'SSH connection did not open.');
       }
       _connectionId = result.connectionId;
 
-      _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
+      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
       await Future<void>.delayed(const Duration(seconds: 6));
       await _announceScene(0);
 
@@ -533,14 +541,14 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await _announceScene(2);
 
       _go(
-        '/terminal/$_terminalHostId?connectionId=$_connectionId'
+        '/terminal/$terminalHostId?connectionId=$_connectionId'
         '&expandTmux=1',
       );
       await Future<void>.delayed(const Duration(seconds: 4));
       await _announceScene(3);
 
       _go(
-        '/sftp/$_terminalHostId?connectionId=$_connectionId'
+        '/sftp/$terminalHostId?connectionId=$_connectionId'
         '&path=%2FUsers%2FShared%2Fmonkeyssh-release-workspace',
       );
       await Future<void>.delayed(const Duration(seconds: 2));
@@ -555,7 +563,7 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
       await ref
           .read(tmuxServiceProvider)
           .selectWindow(session, _tmuxSessionName, 2);
-      _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
+      _go('/terminal/$terminalHostId?connectionId=$_connectionId');
       await Future<void>.delayed(const Duration(seconds: 4));
       await _announceScene(5);
 

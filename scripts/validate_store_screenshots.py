@@ -42,7 +42,10 @@ BAD_OCR_PATTERNS = {
     'private local path': re.compile(r'/Users/depoll|/private/var/folders', re.IGNORECASE),
     'disabled streamer mode': re.compile(r'Streamer mode disabled', re.IGNORECASE),
     'visible API key': re.compile(r'ANTHROPIC_API_KEY|sk-ant-', re.IGNORECASE),
-    'Claude account banner': re.compile(r'Account\s+', re.IGNORECASE),
+    'Claude account banner': re.compile(
+        r'Account\s+(?:settings|details|email|plan|billing)',
+        re.IGNORECASE,
+    ),
     'Claude plan-mode footer': re.compile(r'plan mode on', re.IGNORECASE),
 }
 
@@ -90,7 +93,10 @@ def _validate_file(path: Path, expected_size: tuple[int, int]) -> None:
 
 def _ocr_texts(paths: list[Path]) -> dict[Path, str]:
     if platform.system() != 'Darwin' or shutil.which('swift') is None:
-        return {}
+        raise RuntimeError(
+            'OCR screenshot validation requires macOS with Swift/Vision. '
+            'Run this validator on a macOS runner before syncing metadata.',
+        )
 
     swift_source = r'''
 import Foundation
@@ -149,8 +155,12 @@ for url in urls {
 
 def _validate_ocr_content(paths: list[Path]) -> None:
     texts = _ocr_texts(paths)
-    if not texts:
-        return
+    missing_paths = [path for path in paths if path not in texts]
+    if missing_paths:
+        formatted_paths = ', '.join(
+            str(path.relative_to(ROOT)) for path in missing_paths
+        )
+        raise ValueError(f'OCR did not return text for {formatted_paths}.')
 
     for path, text in texts.items():
         for label, pattern in BAD_OCR_PATTERNS.items():

@@ -97,7 +97,7 @@ Configure these secrets in your repository settings (Settings → Secrets and va
 
 ### PR Preview (`preview.yml`)
 
-Triggered automatically on PRs to `main`. Builds the **private** flavor and:
+Triggered automatically on PRs to `main` and `develop`. Builds the **private** flavor and:
 - **iOS**: Run the **Deploy PR Preview** workflow manually from the Actions tab
 - **Android**: Builds a **debug** APK for direct download (linked in PR comment). Signed release artifacts remain limited to release/deploy workflows with configured secrets.
 

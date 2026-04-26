@@ -31,9 +31,25 @@ permissions:
   contents: read
 
 jobs:
+  validate-screenshots:
+    name: Validate Store Screenshots
+    if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'ios' || inputs.platform == 'android'
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - name: Install screenshot validation dependencies
+        run: python3 -m pip install --quiet Pillow
+
+      - name: Validate screenshots with OCR
+        run: python3 scripts/validate_store_screenshots.py ${{ github.event_name == 'push' && 'both' || inputs.platform }}
+
   sync-ios:
     name: Sync iOS Metadata
     if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'ios'
+    needs: validate-screenshots
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -45,13 +61,8 @@ jobs:
           ruby-version: '3.3'
           bundler-cache: true
 
-      - name: Install screenshot validation dependencies
-        run: python3 -m pip install --quiet Pillow
-
       - name: Validate App Store metadata
-        run: |
-          python3 scripts/validate_app_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
-          python3 scripts/validate_store_screenshots.py ios
+        run: python3 scripts/validate_app_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
 
       - name: Sync private app metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
@@ -78,6 +89,7 @@ jobs:
   sync-android:
     name: Sync Android Metadata
     if: github.event_name == 'push' || inputs.platform == 'both' || inputs.platform == 'android'
+    needs: validate-screenshots
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -91,13 +103,11 @@ jobs:
 
       - name: Refresh Play Store icon metadata
         run: |
-          python -m pip install --quiet Pillow
-          python scripts/sync_play_store_icons.py
+          python3 -m pip install --quiet Pillow
+          python3 scripts/sync_play_store_icons.py
 
       - name: Validate Play Store metadata
-        run: |
-          python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
-          python3 scripts/validate_store_screenshots.py android
+        run: python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
 
       - name: Sync private app metadata
         if: github.event_name == 'push' || inputs.app == 'both' || inputs.app == 'private'
