@@ -93,7 +93,10 @@ jobs:
           persist-credentials: false
 
       - name: Install screenshot validation dependencies
-        run: python3 -m pip install --quiet Pillow
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet Pillow
 
       - name: Validate screenshots with OCR
         shell: bash
@@ -105,7 +108,7 @@ jobs:
           else
             platform=android
           fi
-          python3 scripts/validate_store_screenshots.py "$platform"
+          .venv/bin/python scripts/validate_store_screenshots.py "$platform"
 
   sync-ios:
     name: Sync iOS Metadata
@@ -164,8 +167,10 @@ jobs:
 
       - name: Refresh Play Store icon metadata
         run: |
-          python3 -m pip install --quiet Pillow
-          python3 scripts/sync_play_store_icons.py
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --quiet --upgrade pip
+          .venv/bin/python -m pip install --quiet Pillow
+          .venv/bin/python scripts/sync_play_store_icons.py
 
       - name: Validate Play Store metadata
         run: python3 scripts/validate_play_store_metadata.py ${{ github.event_name == 'push' && 'both' || inputs.app }}
