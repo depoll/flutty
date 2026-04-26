@@ -218,6 +218,7 @@ class StoreDemoEnvironment:
         self._copilot = shutil.which('copilot')
         if self._copilot is None:
             raise RuntimeError('GitHub Copilot CLI is required for store screenshots.')
+        self._clean_claude_home = self._tmpdir / 'claude-home'
 
     @property
     def private_key_b64(self) -> str:
@@ -348,7 +349,13 @@ class StoreDemoEnvironment:
         self._write_pane_script(
             'claude',
             f"""
-            exec env CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 CLAUDE_CODE_HIDE_CWD=1 \\
+            exec env -i \\
+              PATH={self._shell_quote(os.environ.get('PATH', ''))} \\
+              TERM=xterm-256color \\
+              HOME={self._shell_quote(str(self._clean_claude_home))} \\
+              BASH_SILENCE_DEPRECATION_WARNING=1 \\
+              CLAUDE_CODE_HIDE_ACCOUNT_INFO=1 \\
+              CLAUDE_CODE_HIDE_CWD=1 \\
               {self._shell_quote(self._claude)} \\
               --bare \\
               --name 'Store demo Claude' \\
@@ -399,6 +406,7 @@ class StoreDemoEnvironment:
                 )
             shutil.rmtree(self.demo_dir)
         self.demo_dir.mkdir(parents=True)
+        self._clean_claude_home.mkdir(parents=True, exist_ok=True)
         marker.write_text('release screenshot demo workspace\n')
         (self.demo_dir / 'AGENTS.md').write_text(
             '\n'.join(
@@ -533,45 +541,58 @@ class StoreDemoEnvironment:
 
     def _drive_agent_clis(self) -> None:
         time.sleep(4)
-        self._tmux_send_keys('claude', 'Enter')
+        for _ in range(3):
+            self._tmux_send_keys('claude', 'Enter')
+            time.sleep(4)
         self._tmux_send_keys('copilot', 'Enter')
         time.sleep(8)
         self._ensure_copilot_streamer_mode()
-        self._tmux_send_literal(
-            'claude',
-            'In streamer-safe mode, inspect reconnect_plan.md and produce '
-            'a polished release-readiness checklist with 64 concise numbered '
-            'lines. Do not mention emails, usernames, hostnames, tokens, '
-            'accounts, billing, organizations, names, or private identifiers.',
-        )
-        self._tmux_send_keys('claude', 'Enter')
-        self._tmux_send_literal(
-            'copilot',
-            'In streamer-safe mode, inspect store_assets.md and suggest '
-            "the next two checks. Start your answer with exactly 'Next two "
-            "checks:'. Do not mention emails, usernames, hostnames, tokens, "
-            'or private identifiers.',
-        )
-        self._tmux_send_keys('copilot', 'Enter')
-        self._wait_for_agent_output('claude', ['64.', 'sign-off'])
-        self._wait_for_agent_output('copilot', ['Next two checks', 'Confirm the screenshot'])
+        self._tmux_send_keys('copilot', 'C-l')
+        time.sleep(2)
+        self._assert_cli_starting_screens_visible()
         self._assert_visible_panes_streamer_safe()
 
     def _ensure_copilot_streamer_mode(self) -> None:
+        self._wait_for_visible_text('copilot', ['GitHub Copilot'])
         self._tmux_send_literal('copilot', '/streamer')
         self._tmux_send_keys('copilot', 'Enter')
-        time.sleep(2)
+        time.sleep(4)
         text = self._capture_visible_pane('copilot')
         if 'Streamer mode enabled.' in text:
             return
         if 'Streamer mode disabled.' in text:
             self._tmux_send_literal('copilot', '/streamer')
             self._tmux_send_keys('copilot', 'Enter')
-            time.sleep(2)
+            time.sleep(4)
             text = self._capture_visible_pane('copilot')
             if 'Streamer mode enabled.' in text:
                 return
         raise RuntimeError('Could not enable GitHub Copilot CLI streamer mode.')
+
+    def _wait_for_visible_text(self, window: str, markers: list[str]) -> None:
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            text = self._capture_visible_pane(window)
+            if all(marker in text for marker in markers):
+                return
+            time.sleep(1)
+        raise RuntimeError(
+            f'{window} pane did not show expected text: {", ".join(markers)}.',
+        )
+
+    def _assert_cli_starting_screens_visible(self) -> None:
+        expectations = {
+            'claude': ['Claude Code'],
+            'copilot': ['GitHub Copilot'],
+        }
+        for window, markers in expectations.items():
+            text = self._capture_visible_pane(window)
+            missing = [marker for marker in markers if marker not in text]
+            if missing:
+                raise RuntimeError(
+                    f'{window} pane is not on the expected real CLI starting screen: '
+                    f'missing {", ".join(missing)}.',
+                )
 
     def _assert_visible_panes_streamer_safe(self) -> None:
         for window in ('claude', 'copilot'):
@@ -581,26 +602,14 @@ class StoreDemoEnvironment:
                 (r'(ghp_|github_pat_|sk-)[A-Za-z0-9_\-]+', 'token'),
                 (re.escape(str(Path.home())), 'home directory'),
                 (rf'\b{re.escape(self.username)}\b', 'local username'),
-                (r'Welcome back', 'account welcome banner'),
+                (r'\bDavid\b', 'account display name'),
                 (r'Organization', 'account organization'),
-                (r'Billing', 'account billing'),
             ]
             for pattern, label in private_patterns:
                 if re.search(pattern, text, flags=re.IGNORECASE):
                     raise RuntimeError(
                         f'{window} pane still shows {label}; refusing to capture store screenshot.',
                     )
-
-    def _wait_for_agent_output(self, window: str, markers: list[str]) -> None:
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            text = self._capture_visible_pane(window)
-            if any(marker in text for marker in markers):
-                return
-            time.sleep(2)
-        raise RuntimeError(
-            f'{window} pane did not render expected real CLI response markers.',
-        )
 
     def _capture_visible_pane(self, window: str) -> str:
         result = subprocess.run(

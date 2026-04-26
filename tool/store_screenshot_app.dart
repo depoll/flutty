@@ -450,8 +450,6 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
 
       _go('/terminal/$_terminalHostId?connectionId=$_connectionId');
       await Future<void>.delayed(const Duration(seconds: 6));
-      await _sendTerminalBytes('\x0c');
-      await Future<void>.delayed(const Duration(seconds: 1));
       await _announceScene(1);
 
       await _sendTmuxWindowKey('1');
@@ -516,20 +514,5 @@ class _StoreScreenshotFlowState extends ConsumerState<_StoreScreenshotFlow> {
     }
     final shell = await session.getShell();
     shell.write(utf8.encode('\x02$key'));
-  }
-
-  Future<void> _sendTerminalBytes(String value) async {
-    final connectionId = _connectionId;
-    if (connectionId == null) {
-      throw StateError('SSH connection is unavailable.');
-    }
-    final session = ref
-        .read(activeSessionsProvider.notifier)
-        .getSession(connectionId);
-    if (session == null) {
-      throw StateError('SSH session is unavailable.');
-    }
-    final shell = await session.getShell();
-    shell.write(utf8.encode(value));
   }
 }
