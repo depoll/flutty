@@ -51,6 +51,11 @@ def _validate_file(path: Path, expected_size: tuple[int, int]) -> None:
             f'{path.relative_to(ROOT)} is {actual_size[0]}x{actual_size[1]}; '
             f'expected {expected_size[0]}x{expected_size[1]}',
         )
+    if path.stat().st_size < 10_000:
+        raise ValueError(
+            f'{path.relative_to(ROOT)} is unexpectedly small; '
+            'regenerate real app screenshots before syncing metadata',
+        )
 
     print(
         f'Validated {path.relative_to(ROOT)} '

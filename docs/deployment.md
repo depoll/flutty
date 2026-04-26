@@ -205,7 +205,7 @@ Edit these files and metadata will sync on the next release deploy, or trigger t
 Android `icon.png` files are auto-regenerated from `assets/icons/monkeyssh_icon*.png` during deploy/metadata-sync workflows, so marketplace icons stay aligned with the app icon assets.
 Google Play text limits still apply to the repository files: `title.txt` must stay within 30 characters, `short_description.txt` within 80 characters, and `full_description.txt` within 4000 characters. You can validate them locally with `python3 scripts/validate_play_store_metadata.py`.
 App Store text limits can be validated locally with `python3 scripts/validate_app_store_metadata.py`.
-Store screenshots and feature graphics can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`).
+Store screenshots can be regenerated locally with `python3 scripts/generate_store_screenshots.py` after installing Pillow (`python3 -m pip install Pillow`). The generator launches a screenshot-only MonkeySSH app on iOS simulators and an Android emulator with seeded demo release data, then captures native device screenshots into the Fastlane folders.
 Generated screenshot counts and dimensions can be validated locally with `python3 scripts/validate_store_screenshots.py`.
 The future refresh prompt lives in `docs/store-assets-prompt.md`.
 
