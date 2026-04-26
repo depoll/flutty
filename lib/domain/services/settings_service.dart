@@ -88,9 +88,12 @@ abstract final class SettingKeys {
 
   /// Enable shared clipboard between device and remote session.
   ///
-  /// The terminal can sync through OSC 52 and remote clipboard utilities when
-  /// the remote host provides them.
+  /// The remote host can update the local clipboard through OSC 52 and remote
+  /// clipboard utilities when available.
   static const sharedClipboard = 'shared_clipboard';
+
+  /// Allow the remote host to read the local clipboard.
+  static const sharedClipboardLocalRead = 'shared_clipboard_local_read';
 
   /// Whether tapping the terminal automatically shows the keyboard.
   ///
@@ -624,7 +627,13 @@ final sharedClipboardProvider = FutureProvider<bool>((ref) async {
   return settings.getBool(SettingKeys.sharedClipboard);
 });
 
-/// Notifier for shared clipboard (OSC 52) with write capability.
+/// Provider for local clipboard read sharing setting.
+final sharedClipboardLocalReadProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(SettingKeys.sharedClipboardLocalRead);
+});
+
+/// Notifier for shared clipboard remote-to-local writes.
 class SharedClipboardNotifier extends Notifier<bool> {
   late SettingsService _settings;
   bool _disposed = false;
@@ -655,6 +664,42 @@ class SharedClipboardNotifier extends Notifier<bool> {
 final sharedClipboardNotifierProvider =
     NotifierProvider<SharedClipboardNotifier, bool>(
       SharedClipboardNotifier.new,
+    );
+
+/// Notifier for local clipboard reads from the remote side.
+class SharedClipboardLocalReadNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return false;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(SettingKeys.sharedClipboardLocalRead);
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set whether the remote side can read the local clipboard.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(
+      SettingKeys.sharedClipboardLocalRead,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for local clipboard read sharing with write capability.
+final sharedClipboardLocalReadNotifierProvider =
+    NotifierProvider<SharedClipboardLocalReadNotifier, bool>(
+      SharedClipboardLocalReadNotifier.new,
     );
 
 /// Notifier for tap-to-show-keyboard with write capability.

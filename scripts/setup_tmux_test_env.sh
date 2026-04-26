@@ -24,7 +24,8 @@
 
 set -euo pipefail
 
-KEY_PATH="/tmp/monkeyssh_tmux_test_key"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/monkeyssh/tmux-test"
+KEY_PATH="$STATE_DIR/id_ed25519"
 TMUX_SESSION="monkeyssh-test"
 AUTH_KEYS="$HOME/.ssh/authorized_keys"
 MARKER="# monkeyssh-tmux-test"
@@ -71,6 +72,9 @@ fi
 echo "🔧 Setting up tmux test environment..."
 echo ""
 
+mkdir -p "$STATE_DIR"
+chmod 700 "$STATE_DIR"
+
 # ── Step 1: Check prerequisites ──────────────────────────────────────
 
 if ! command -v tmux &>/dev/null; then
@@ -86,12 +90,11 @@ fi
 
 # ── Step 2: Generate SSH key ─────────────────────────────────────────
 
-if [ -f "$KEY_PATH" ]; then
-    echo "   Using existing test key at $KEY_PATH"
-else
-    ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "monkeyssh-tmux-test" -q
-    echo "   Generated test key: $KEY_PATH"
-fi
+rm -f "$KEY_PATH" "${KEY_PATH}.pub"
+ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "monkeyssh-tmux-test" -q
+chmod 600 "$KEY_PATH"
+chmod 644 "${KEY_PATH}.pub"
+echo "   Generated test key: $KEY_PATH"
 
 # ── Step 3: Authorize the key ────────────────────────────────────────
 

@@ -5,8 +5,37 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path;
 
-/// Default remote directory for files pasted directly into a terminal session.
-const remoteClipboardUploadDirectory = '/tmp/monkeyssh';
+/// Display path for files pasted directly into a terminal session.
+const remoteClipboardUploadDirectoryDisplay = '~/.cache/monkeyssh/uploads';
+
+/// Private directory permissions for terminal upload staging directories.
+final remoteUploadDirectoryMode = SftpFileMode(
+  groupRead: false,
+  groupWrite: false,
+  groupExecute: false,
+  otherRead: false,
+  otherWrite: false,
+  otherExecute: false,
+);
+
+/// Private file permissions for terminal upload staging files.
+final remoteUploadFileMode = SftpFileMode(
+  userExecute: false,
+  groupRead: false,
+  groupWrite: false,
+  groupExecute: false,
+  otherRead: false,
+  otherWrite: false,
+  otherExecute: false,
+);
+
+/// Builds the remote directory for files pasted directly into a terminal.
+String buildRemoteClipboardUploadDirectory(String homeDirectory) =>
+    joinRemotePath(homeDirectory, '.cache/monkeyssh/uploads');
+
+/// Builds the app-owned parent directory for terminal uploads.
+String buildRemoteClipboardUploadParentDirectory(String homeDirectory) =>
+    joinRemotePath(homeDirectory, '.cache/monkeyssh');
 
 /// Joins a remote directory and child name into a normalized absolute path.
 String joinRemotePath(String directory, String name) {
@@ -150,7 +179,11 @@ class RemoteFileService {
   Future<String> resolveInitialDirectory(SftpClient sftp) => sftp.absolute('.');
 
   /// Ensures the target remote directory exists.
-  Future<void> ensureDirectoryExists(SftpClient sftp, String remotePath) async {
+  Future<void> ensureDirectoryExists(
+    SftpClient sftp,
+    String remotePath, {
+    SftpFileMode? mode,
+  }) async {
     try {
       final stat = await sftp.stat(remotePath);
       if (!stat.isDirectory) {
@@ -158,6 +191,9 @@ class RemoteFileService {
           'Remote path exists but is not a directory',
           remotePath,
         );
+      }
+      if (mode != null) {
+        await sftp.setStat(remotePath, SftpFileAttrs(mode: mode));
       }
       return;
     } on SftpStatusError catch (error) {
@@ -171,11 +207,20 @@ class RemoteFileService {
       await ensureDirectoryExists(sftp, parentPath);
     }
     try {
-      await sftp.mkdir(remotePath);
+      await sftp.mkdir(
+        remotePath,
+        mode == null ? null : SftpFileAttrs(mode: mode),
+      );
+      if (mode != null) {
+        await sftp.setStat(remotePath, SftpFileAttrs(mode: mode));
+      }
     } on SftpStatusError catch (error, stackTrace) {
       try {
         final stat = await sftp.stat(remotePath);
         if (stat.isDirectory) {
+          if (mode != null) {
+            await sftp.setStat(remotePath, SftpFileAttrs(mode: mode));
+          }
           return;
         }
       } on SftpStatusError {
@@ -221,6 +266,7 @@ class RemoteFileService {
     } finally {
       await remoteFile.close();
     }
+    await sftp.setStat(remotePath, SftpFileAttrs(mode: remoteUploadFileMode));
   }
 
   /// Uploads raw bytes into a remote file path.

@@ -539,6 +539,16 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
           'This transfer payload does not contain an SSH key',
         );
       }
+      if (!mounted) {
+        return;
+      }
+      final confirmed = await showTransferPayloadImportConfirmationDialog(
+        context: context,
+        payload: payload,
+      );
+      if (!mounted || !confirmed) {
+        return;
+      }
       final importedKey = await transferService.importKeyPayload(payload);
       if (!mounted) {
         return;

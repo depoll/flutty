@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:crypto/crypto.dart' as crypto;
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/drift.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -48,7 +49,7 @@ class KeyService {
       // Convert public key to OpenSSH format: type + space + base64-encoded key
       final publicKeyBytes = keyPair.toPublicKey().encode();
       final publicKey = '$keyType ${base64.encode(publicKeyBytes)}';
-      final fingerprint = _computeFingerprint(publicKey);
+      final fingerprint = computeOpenSshPublicKeyFingerprint(publicKey);
 
       final id = await _keyRepository.insert(
         SshKeysCompanion.insert(
@@ -80,6 +81,9 @@ class KeyService {
     }
 
     final tempDir = await Directory.systemTemp.createTemp('monkeyssh-keygen-');
+    if (!Platform.isWindows) {
+      await Process.run('chmod', ['700', tempDir.path]);
+    }
     final keyPath = p.join(tempDir.path, 'id_key');
     final normalizedPassphrase = passphrase?.isEmpty ?? true ? '' : passphrase!;
 
@@ -113,7 +117,8 @@ class KeyService {
         );
       }
 
-      final privateKeyPem = await File(keyPath).readAsString();
+      final privateKeyFile = File(keyPath);
+      final privateKeyPem = await privateKeyFile.readAsString();
       return importKey(
         name: name,
         privateKeyPem: privateKeyPem,
@@ -122,6 +127,7 @@ class KeyService {
     } on ProcessException catch (e) {
       throw Exception('ssh-keygen is not available: ${e.message}');
     } finally {
+      await _wipeGeneratedKeyFiles(keyPath);
       await tempDir.delete(recursive: true);
     }
   }
@@ -131,20 +137,24 @@ class KeyService {
     required String name,
     required String publicKey,
   }) async {
-    final fingerprint = _computeFingerprint(publicKey);
-    final keyType = _detectKeyType(publicKey);
+    try {
+      final fingerprint = computeOpenSshPublicKeyFingerprint(publicKey);
+      final keyType = _detectKeyType(publicKey);
 
-    final id = await _keyRepository.insert(
-      SshKeysCompanion.insert(
-        name: name,
-        keyType: keyType,
-        publicKey: publicKey,
-        privateKey: '', // No private key
-        fingerprint: Value(fingerprint),
-      ),
-    );
+      final id = await _keyRepository.insert(
+        SshKeysCompanion.insert(
+          name: name,
+          keyType: keyType,
+          publicKey: publicKey,
+          privateKey: '', // No private key
+          fingerprint: Value(fingerprint),
+        ),
+      );
 
-    return _keyRepository.getById(id);
+      return _keyRepository.getById(id);
+    } on FormatException {
+      return null;
+    }
   }
 
   /// Export a key's public key in OpenSSH format.
@@ -214,20 +224,31 @@ class KeyService {
     return 'unknown';
   }
 
-  String _computeFingerprint(String publicKey) {
-    // Simple hash-based fingerprint for display
-    final bytes = utf8.encode(publicKey);
-    var hash = 0;
-    for (final byte in bytes) {
-      hash = ((hash << 5) - hash) + byte;
-      hash = hash & 0xFFFFFFFF;
+  Future<void> _wipeGeneratedKeyFiles(String keyPath) async {
+    for (final path in [keyPath, '$keyPath.pub']) {
+      final file = File(path);
+      if (!file.existsSync()) {
+        continue;
+      }
+      final length = file.lengthSync();
+      if (length > 0) {
+        file.writeAsBytesSync(List<int>.filled(length, 0), flush: true);
+      }
+      file.deleteSync();
     }
-
-    // Format as fingerprint-like string
-    final hex = hash.toRadixString(16).padLeft(8, '0').toUpperCase();
-    return 'SHA256:${hex.substring(0, 2)}:${hex.substring(2, 4)}:'
-        '${hex.substring(4, 6)}:${hex.substring(6, 8)}';
   }
+}
+
+/// Computes the OpenSSH SHA256 fingerprint for a public key string.
+String computeOpenSshPublicKeyFingerprint(String publicKey) {
+  final parts = publicKey.trim().split(RegExp(r'\s+'));
+  if (parts.length < 2 || parts[1].isEmpty) {
+    throw const FormatException('Invalid OpenSSH public key');
+  }
+
+  final publicKeyBlob = base64Decode(parts[1]);
+  final digest = crypto.sha256.convert(publicKeyBlob).bytes;
+  return 'SHA256:${base64Encode(digest).replaceAll('=', '')}';
 }
 
 /// Provider for [KeyService].

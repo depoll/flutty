@@ -80,7 +80,7 @@ class BiometricAvailability {
 class AuthService {
   /// Creates a new [AuthService].
   AuthService({FlutterSecureStorage? storage, LocalAuthentication? localAuth})
-    : _storage = storage ?? const FlutterSecureStorage(),
+    : _storage = storage ?? _secureStorage,
       _localAuth = localAuth ?? LocalAuthentication();
 
   final FlutterSecureStorage _storage;
@@ -96,6 +96,11 @@ class AuthService {
   static const _pinKdfBits = 256;
   static const _pinHashLength = _pinKdfBits ~/ 8;
   static const _pinSaltLength = 16;
+  static const _secureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
   Future<void> _pinWriteQueue = Future<void>.value();
 
   /// Check if authentication is enabled.

@@ -1447,6 +1447,7 @@ class SshSession {
     this.terminalThemeDarkId,
     this.terminalFontSize,
     this.clipboardSharingEnabled = false,
+    this.localClipboardReadEnabled = false,
   }) : createdAt = DateTime.now();
 
   static const _previewRefreshInterval = Duration(milliseconds: 150);
@@ -1482,6 +1483,9 @@ class SshSession {
 
   /// Whether OSC 52 clipboard sharing is enabled for this session.
   bool clipboardSharingEnabled;
+
+  /// Whether the remote side may read the local clipboard.
+  bool localClipboardReadEnabled;
 
   /// When the session was created.
   final DateTime createdAt;
@@ -1960,7 +1964,7 @@ class SshSession {
 
     unawaited(
       _clipboardSharingService
-          .handleOsc52(args)
+          .handleOsc52(args, allowLocalClipboardRead: localClipboardReadEnabled)
           .then((response) {
             if (response != null && _shell != null) {
               _shell!.write(utf8.encode(response));
@@ -2770,9 +2774,14 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   /// Update clipboard sharing on all active sessions.
-  void updateClipboardSharing({required bool enabled}) {
+  void updateClipboardSharing({
+    required bool enabled,
+    required bool allowLocalClipboardRead,
+  }) {
     for (final session in _sshService.allSessions) {
-      session.clipboardSharingEnabled = enabled;
+      session
+        ..clipboardSharingEnabled = enabled
+        ..localClipboardReadEnabled = allowLocalClipboardRead;
     }
   }
 

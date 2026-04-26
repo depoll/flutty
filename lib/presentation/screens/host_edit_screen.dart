@@ -1759,6 +1759,16 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         );
       }
 
+      if (!mounted) {
+        return;
+      }
+      final confirmed = await showTransferPayloadImportConfirmationDialog(
+        context: context,
+        payload: payload,
+      );
+      if (!mounted || !confirmed) {
+        return;
+      }
       final importedHost = await transferService.importHostPayload(payload);
       ref.invalidate(allHostsProvider);
       if (!mounted) {

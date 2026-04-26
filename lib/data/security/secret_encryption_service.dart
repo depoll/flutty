@@ -12,7 +12,7 @@ class SecretEncryptionService {
     FlutterSecureStorage? storage,
     AesGcm? algorithm,
     Random? random,
-  }) : _storage = storage ?? const FlutterSecureStorage(),
+  }) : _storage = storage ?? _secureStorage,
        _algorithm = algorithm ?? AesGcm.with256bits(),
        _random = random ?? Random.secure(),
        _testingMasterKey = null;
@@ -40,6 +40,11 @@ class SecretEncryptionService {
   static const _encryptedPrefix = 'ENCv1:';
   static const _masterKeyBytes = 32;
   static const _nonceBytes = 12;
+  static const _secureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
 
   SecretKey? _cachedMasterKey;
   Future<void> _masterKeyQueue = Future<void>.value();

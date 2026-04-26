@@ -19,6 +19,15 @@ import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 
+const _publicKeyA =
+    'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwEkW+K+T0BVhCHT/6o4p9FdlaUJD/yPJfHziYQuwnK a';
+const _publicKeyAFingerprint =
+    'SHA256:KN1Ih6apKdkbSOKekPapKbXepsF6rVo5M5srTRe71fI';
+const _publicKeyB =
+    'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHOD6YHh4xjr8IcP0uT8DODGjPEDGqX2i4eyNvtXq2D+ b';
+const _publicKeyBFingerprint =
+    'SHA256:v6rpW34v6+w8LPSvW6v1+Dm8Z6sRf/VNAFNbr8FG3sg';
+
 void main() {
   late AppDatabase db;
   late HostRepository hostRepository;
@@ -88,7 +97,7 @@ void main() {
           SshKeysCompanion.insert(
             name: 'Deploy Key',
             keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA',
+            publicKey: _publicKeyA,
             privateKey: 'test-open-ssh-key-materialxyz',
           ),
         );
@@ -137,7 +146,7 @@ void main() {
             'key': {
               'name': 'Imported Key',
               'keyType': 'ed25519',
-              'publicKey': 'ssh-ed25519 AAAA',
+              'publicKey': _publicKeyA,
               'privateKey': 'test-open-ssh-key-materialabc',
               'passphrase': 'pass',
             },
@@ -569,7 +578,7 @@ void main() {
           SshKeysCompanion.insert(
             name: 'Main Key',
             keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAA',
+            publicKey: _publicKeyA,
             privateKey: 'test-open-ssh-key-materialabc',
           ),
         );
@@ -1150,7 +1159,7 @@ void main() {
             SshKeysCompanion.insert(
               name: 'Deploy Key',
               keyType: 'ed25519',
-              publicKey: 'ssh-ed25519 AAAA',
+              publicKey: _publicKeyA,
               privateKey: 'test-open-ssh-key-materialxyz',
               passphrase: const Value('key-passphrase'),
             ),
@@ -1178,20 +1187,19 @@ void main() {
     });
 
     test(
-      'importKeyPayload deduplicates by fingerprint and returns the existing key',
+      'importKeyPayload does not deduplicate by fingerprint alone',
       () async {
-        const fingerprint = 'SHA256:DE:AD:BE:EF:00:11:22:33';
         final existingId = await keyRepository.insert(
           SshKeysCompanion.insert(
             name: 'Existing Key',
             keyType: 'ed25519',
-            publicKey: 'ssh-ed25519 AAAAexisting',
+            publicKey: _publicKeyA,
             privateKey: 'test-open-ssh-key-existing',
-            fingerprint: const Value(fingerprint),
+            fingerprint: const Value(_publicKeyAFingerprint),
           ),
         );
 
-        // Import a payload that shares the same fingerprint.
+        // Import a payload that lies about sharing the same fingerprint.
         final payload = TransferPayload(
           type: TransferPayloadType.key,
           schemaVersion: 1,
@@ -1200,27 +1208,27 @@ void main() {
             'key': {
               'name': 'Re-imported Key',
               'keyType': 'ed25519',
-              'publicKey': 'ssh-ed25519 AAAAdifferent',
+              'publicKey': _publicKeyB,
               'privateKey': 'test-open-ssh-key-different',
-              'fingerprint': fingerprint,
+              'fingerprint': _publicKeyAFingerprint,
             },
           },
         );
 
         final imported = await transferService.importKeyPayload(payload);
 
-        // Should return the existing key, not create a new one.
-        expect(imported.id, existingId);
-        expect(imported.name, 'Existing Key');
+        expect(imported.id, isNot(existingId));
+        expect(imported.name, 'Re-imported Key');
+        expect(imported.fingerprint, _publicKeyBFingerprint);
 
         final allKeys = await db.select(db.sshKeys).get();
-        expect(allKeys, hasLength(1));
+        expect(allKeys, hasLength(2));
       },
     );
 
     test('importKeyPayload deduplicates by public+private key pair when no '
         'fingerprint is present', () async {
-      const publicKey = 'ssh-ed25519 AAAAsharedpubkey';
+      const publicKey = _publicKeyA;
       const privateKey = 'test-open-ssh-key-sharedprivkey';
 
       final existingId = await keyRepository.insert(
@@ -1260,9 +1268,9 @@ void main() {
         SshKeysCompanion.insert(
           name: 'Unrelated Key',
           keyType: 'ed25519',
-          publicKey: 'ssh-ed25519 AAAAunrelated',
+          publicKey: _publicKeyA,
           privateKey: 'test-open-ssh-key-unrelated',
-          fingerprint: const Value('SHA256:un:re:la:te:d0'),
+          fingerprint: const Value(_publicKeyAFingerprint),
         ),
       );
 
@@ -1274,9 +1282,9 @@ void main() {
           'key': {
             'name': 'Brand New Key',
             'keyType': 'ed25519',
-            'publicKey': 'ssh-ed25519 AAAAnewkey',
+            'publicKey': _publicKeyB,
             'privateKey': 'test-open-ssh-key-newkey',
-            'fingerprint': 'SHA256:ne:wk:ey:00:01',
+            'fingerprint': 'SHA256:forged',
           },
         },
       );

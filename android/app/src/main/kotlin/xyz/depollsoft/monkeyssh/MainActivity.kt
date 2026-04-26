@@ -189,19 +189,13 @@ class MainActivity : FlutterFragmentActivity() {
             return false
         }
         val sourceUri = transferIntent.data ?: return false
-        val hasSupportedScheme = when (sourceUri.scheme) {
-            "content", "file" -> true
-            else -> false
-        }
-        if (!hasSupportedScheme) {
+        if (sourceUri.scheme != "content") {
             return false
         }
         val mimeType = transferIntent.type?.lowercase(Locale.ROOT)
-        if (mimeType == MONKEYSSH_TRANSFER_MIME_TYPE) {
-            return true
-        }
         val lastPathSegment = sourceUri.lastPathSegment?.lowercase(Locale.ROOT)
-        return lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true
+        return mimeType == MONKEYSSH_TRANSFER_MIME_TYPE &&
+            lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true
     }
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {

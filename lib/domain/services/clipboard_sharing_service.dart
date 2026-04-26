@@ -42,7 +42,10 @@ class ClipboardSharingService {
   ///
   /// Returns an OSC 52 response string to send back through the shell when
   /// the remote queries the clipboard, or `null` when no response is needed.
-  Future<String?> handleOsc52(List<String> args) async {
+  Future<String?> handleOsc52(
+    List<String> args, {
+    required bool allowLocalClipboardRead,
+  }) async {
     try {
       final parsed = parseOsc52Args(args);
       if (parsed == null) return null;
@@ -50,6 +53,7 @@ class ClipboardSharingService {
       final (target, payload) = parsed;
 
       if (payload == '?') {
+        if (!allowLocalClipboardRead) return null;
         return _handleQuery(target);
       }
 

@@ -474,3 +474,91 @@ Future<MigrationImportMode?> showMigrationImportModeDialog({
     ],
   ),
 );
+
+/// Shows a confirmation dialog before importing a decrypted host or key.
+Future<bool> showTransferPayloadImportConfirmationDialog({
+  required BuildContext context,
+  required TransferPayload payload,
+}) async {
+  final details = switch (payload.type) {
+    TransferPayloadType.host => _hostTransferDetails(payload),
+    TransferPayloadType.key => _keyTransferDetails(payload),
+    TransferPayloadType.fullMigration => const <String>[],
+  };
+  if (details.isEmpty) {
+    return true;
+  }
+
+  final confirmed = await showDialog<bool>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text(
+        payload.type == TransferPayloadType.host
+            ? 'Import host?'
+            : 'Import SSH key?',
+      ),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'Review this decrypted transfer before adding it to MonkeySSH.',
+            ),
+            const SizedBox(height: 12),
+            for (final detail in details)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(detail),
+              ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context, false),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () => Navigator.pop(context, true),
+          child: const Text('Import'),
+        ),
+      ],
+    ),
+  );
+
+  return confirmed ?? false;
+}
+
+List<String> _hostTransferDetails(TransferPayload payload) {
+  final host = payload.data['host'];
+  if (host is! Map) {
+    return const [];
+  }
+  final label = _displayTransferValue(host['label']);
+  final hostname = _displayTransferValue(host['hostname']);
+  final username = _displayTransferValue(host['username']);
+  final port = _displayTransferValue(host['port'] ?? 22);
+  return [
+    'Label: $label',
+    'Host: $hostname',
+    'Port: $port',
+    'Username: $username',
+  ];
+}
+
+List<String> _keyTransferDetails(TransferPayload payload) {
+  final key = payload.data['key'];
+  if (key is! Map) {
+    return const [];
+  }
+  final name = _displayTransferValue(key['name']);
+  final type = _displayTransferValue(key['keyType']);
+  final fingerprint = _displayTransferValue(key['fingerprint']);
+  return ['Name: $name', 'Type: $type', 'Fingerprint: $fingerprint'];
+}
+
+String _displayTransferValue(Object? value) {
+  final text = value?.toString().trim();
+  return text == null || text.isEmpty ? 'Not provided' : text;
+}

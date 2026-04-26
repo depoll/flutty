@@ -568,6 +568,7 @@ String buildTmuxCommand({
     "-s '${sessionName.replaceAll("'", "'\"'\"'")}'",
     if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
       "-c '${workingDirectory.trim().replaceAll("'", "'\"'\"'")}'",
+    // Extra flags are intentionally raw user input; never populate from imports.
     if (extraFlags != null && extraFlags.trim().isNotEmpty) extraFlags.trim(),
   ];
   return parts.join(' ');
