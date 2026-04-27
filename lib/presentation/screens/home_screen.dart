@@ -718,30 +718,27 @@ class HostsPanel extends ConsumerWidget {
     BuildContext context,
     WidgetRef ref,
     AsyncValue<List<Host>> hostsAsync,
-  ) => RefreshIndicator(
-    onRefresh: () => _refreshHosts(context, ref),
-    child: hostsAsync.when(
-      loading: () => _buildCenteredHostsState(
-        child: const CircularProgressIndicator(strokeWidth: 2),
-      ),
-      error: (error, _) => _buildCenteredHostsState(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              Icons.error_outline,
-              size: 40,
-              color: Theme.of(context).colorScheme.error,
-            ),
-            const SizedBox(height: 12),
-            Text('Error: $error'),
-          ],
-        ),
-      ),
-      data: (hosts) => hosts.isEmpty
-          ? _buildEmptyState(context)
-          : _buildHostsList(context, ref, hosts),
+  ) => hostsAsync.when(
+    loading: () => _buildCenteredHostsState(
+      child: const CircularProgressIndicator(strokeWidth: 2),
     ),
+    error: (error, _) => _buildCenteredHostsState(
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(
+            Icons.error_outline,
+            size: 40,
+            color: Theme.of(context).colorScheme.error,
+          ),
+          const SizedBox(height: 12),
+          Text('Error: $error'),
+        ],
+      ),
+    ),
+    data: (hosts) => hosts.isEmpty
+        ? _buildEmptyState(context)
+        : _buildHostsList(context, ref, hosts),
   );
 
   Widget _buildEmptyState(BuildContext context) => _buildCenteredHostsState(
@@ -814,7 +811,6 @@ class HostsPanel extends ConsumerWidget {
   }
 
   Widget _buildCenteredHostsState({required Widget child}) => CustomScrollView(
-    physics: const AlwaysScrollableScrollPhysics(),
     slivers: [
       SliverFillRemaining(
         hasScrollBody: false,
@@ -833,7 +829,6 @@ class HostsPanel extends ConsumerWidget {
     WidgetRef ref,
     List<Host> hosts,
   ) => ReorderableListView.builder(
-    physics: const AlwaysScrollableScrollPhysics(),
     padding: const EdgeInsets.symmetric(vertical: 4),
     buildDefaultDragHandles: false,
     itemCount: hosts.length,
@@ -868,11 +863,6 @@ class HostsPanel extends ConsumerWidget {
       newIndex: newIndex,
     );
     await ref.read(hostRepositoryProvider).reorderByIds(reorderedIds);
-  }
-
-  Future<void> _refreshHosts(BuildContext context, WidgetRef ref) async {
-    ref.invalidate(allHostsProvider);
-    await ref.read(allHostsProvider.future);
   }
 }
 
