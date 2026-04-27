@@ -496,6 +496,12 @@ void main() {
           () => tmuxService.hasForegroundClient(session, tmuxSessionName),
         ).called(1);
         expect(find.textContaining('tmux action failed'), findsNothing);
+        expect(
+          find.text(
+            'Opening tmux alert interrupted the running shell command.',
+          ),
+          findsOneWidget,
+        );
         expect(shellWrites.map(utf8.decode).join(), contains(tmuxSessionName));
         expect(shellOpenCount, greaterThanOrEqualTo(2));
       },

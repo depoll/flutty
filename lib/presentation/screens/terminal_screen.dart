@@ -5014,7 +5014,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final shell = forceVisibleTmux
+    if (forceVisibleTmux && !canReattachInCurrentShell) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Opening tmux alert interrupted the running shell command.',
+          ),
+        ),
+      );
+    }
+
+    final shell = forceVisibleTmux && !canReattachInCurrentShell
         ? await _reopenShellForVisibleTmux(session)
         : _shell;
     if (shell == null) {
@@ -5036,45 +5046,102 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<SSHSession?> _reopenShellForVisibleTmux(SshSession session) async {
+    bool stillOwnsSession() => mounted && _connectionId == session.connectionId;
+
+    final previousTerminal = _terminal;
+    final previousTerminalHyperlinkTracker = _terminalHyperlinkTracker;
+    final previousIsUsingAltBuffer = _isUsingAltBuffer;
+    final previousTerminalReportsMouseWheel = _terminalReportsMouseWheel;
+    final previousShell = _shell;
+    var removedTerminalListener = false;
+    var closedExistingShell = false;
+
+    void restorePreviousTerminalState({required bool restoreShell}) {
+      _terminal = previousTerminal;
+      _terminalHyperlinkTracker = previousTerminalHyperlinkTracker;
+      _isUsingAltBuffer = previousIsUsingAltBuffer;
+      _terminalReportsMouseWheel = previousTerminalReportsMouseWheel;
+      if (removedTerminalListener) {
+        _terminal.addListener(_onTerminalStateChanged);
+        removedTerminalListener = false;
+      }
+      if (restoreShell) {
+        _shell = previousShell;
+      }
+    }
+
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
     unawaited(_shellStdoutSubscription?.cancel());
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
     _promptOutputImeResetTimer = null;
-    _shell = null;
 
     final pty = SSHPtyConfig(
       width: _terminal.viewWidth,
       height: _terminal.viewHeight,
     );
-    _terminal.removeListener(_onTerminalStateChanged);
-    await session.closeShell(waitForStreams: false);
-    final shell = await session.getShell(pty: pty);
-    final terminal = session.terminal;
-    if (terminal == null) {
-      return null;
+
+    final SSHSession shell;
+    try {
+      _terminal.removeListener(_onTerminalStateChanged);
+      removedTerminalListener = true;
+      _shell = null;
+
+      await session.closeShell(waitForStreams: false);
+      closedExistingShell = true;
+      if (!stillOwnsSession()) {
+        restorePreviousTerminalState(restoreShell: false);
+        return null;
+      }
+
+      shell = await session.getShell(pty: pty);
+      if (!stillOwnsSession()) {
+        restorePreviousTerminalState(restoreShell: false);
+        return null;
+      }
+      final terminal = session.terminal;
+      if (terminal == null) {
+        return null;
+      }
+
+      _terminal = terminal;
+      _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+      _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+      _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+      _terminal.addListener(_onTerminalStateChanged);
+      removedTerminalListener = false;
+      _shell = shell;
+      _wireTerminalCallbacks(session);
+    } on Object {
+      restorePreviousTerminalState(restoreShell: !closedExistingShell);
+      rethrow;
     }
 
-    _terminal = terminal;
-    _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
-    _isUsingAltBuffer = _terminal.isUsingAltBuffer;
-    _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
-    _terminal.addListener(_onTerminalStateChanged);
-    _shell = shell;
-    _wireTerminalCallbacks(session);
+    if (!stillOwnsSession()) {
+      return null;
+    }
     final sharedClipboardEnabled = await ref.read(
       sharedClipboardProvider.future,
     );
+    if (!stillOwnsSession()) {
+      return null;
+    }
     final sharedClipboardLocalReadEnabled = await ref.read(
       sharedClipboardLocalReadProvider.future,
     );
+    if (!stillOwnsSession()) {
+      return null;
+    }
     await _applySharedClipboardSetting(
       enabled: sharedClipboardEnabled,
       allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
       session: session,
       waitForInitialSync: false,
     );
+    if (!stillOwnsSession()) {
+      return null;
+    }
     if (mounted) {
       setState(() {
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;

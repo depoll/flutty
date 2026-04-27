@@ -1763,7 +1763,12 @@ class SshSession {
             _recordShellIo(stdoutChars: data.length);
             terminal.write(data);
             _scheduleTerminalPreviewRefresh();
-            _shellStdoutController!.add(data);
+            final stdoutController = _shellStdoutController;
+            if (identical(_shell, shell) &&
+                stdoutController != null &&
+                !stdoutController.isClosed) {
+              stdoutController.add(data);
+            }
           },
           onError: (Object error, StackTrace stackTrace) {
             DiagnosticsLogService.instance.error(
@@ -1774,7 +1779,12 @@ class SshSession {
                 'errorType': error.runtimeType,
               },
             );
-            _shellStdoutController!.addError(error, stackTrace);
+            final stdoutController = _shellStdoutController;
+            if (identical(_shell, shell) &&
+                stdoutController != null &&
+                !stdoutController.isClosed) {
+              stdoutController.addError(error, stackTrace);
+            }
           },
         );
     _shellStderrSubscription = shell.stderr
@@ -1785,7 +1795,12 @@ class SshSession {
             _recordShellIo(stderrChars: data.length);
             terminal.write(data);
             _scheduleTerminalPreviewRefresh();
-            _shellStderrController!.add(data);
+            final stderrController = _shellStderrController;
+            if (identical(_shell, shell) &&
+                stderrController != null &&
+                !stderrController.isClosed) {
+              stderrController.add(data);
+            }
           },
           onError: (Object error, StackTrace stackTrace) {
             DiagnosticsLogService.instance.error(
@@ -1796,7 +1811,12 @@ class SshSession {
                 'errorType': error.runtimeType,
               },
             );
-            _shellStderrController!.addError(error, stackTrace);
+            final stderrController = _shellStderrController;
+            if (identical(_shell, shell) &&
+                stderrController != null &&
+                !stderrController.isClosed) {
+              stderrController.addError(error, stackTrace);
+            }
           },
         );
     _shellDoneSubscription = shell.done.asStream().listen(
@@ -1806,7 +1826,12 @@ class SshSession {
           'done',
           fields: {'connectionId': connectionId},
         );
-        _shellDoneController!.add(null);
+        final doneController = _shellDoneController;
+        if (identical(_shell, shell) &&
+            doneController != null &&
+            !doneController.isClosed) {
+          doneController.add(null);
+        }
       },
       onError: (Object error, StackTrace stackTrace) {
         DiagnosticsLogService.instance.error(
@@ -1817,7 +1842,12 @@ class SshSession {
             'errorType': error.runtimeType,
           },
         );
-        _shellDoneController!.addError(error, stackTrace);
+        final doneController = _shellDoneController;
+        if (identical(_shell, shell) &&
+            doneController != null &&
+            !doneController.isClosed) {
+          doneController.addError(error, stackTrace);
+        }
       },
     );
 
