@@ -5715,9 +5715,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           forceShowSystemKeyboard ||
           (showSystemKeyboard && ref.read(tapToShowKeyboardNotifierProvider));
       if (shouldShowKeyboard && _isMobilePlatform) {
-        unawaited(
-          SystemChannels.textInput.invokeMethod<void>('TextInput.show'),
-        );
+        _terminalTextInputController.requestKeyboard();
       }
     });
   }
@@ -6231,11 +6229,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
-      readOnly:
-          _hasSystemTerminalSelection ||
-          _showsNativeSelectionOverlay ||
-          overlayMessage != null,
-      tapToShowKeyboard: ref.watch(tapToShowKeyboardNotifierProvider),
+      readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
+      tapToShowKeyboard:
+          ref.watch(tapToShowKeyboardNotifierProvider) &&
+          !_hasSystemTerminalSelection &&
+          !_showsNativeSelectionOverlay &&
+          overlayMessage == null,
       showKeyboardOnFocus: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),

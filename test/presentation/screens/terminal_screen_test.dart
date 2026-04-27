@@ -678,6 +678,38 @@ void main() {
     );
 
     testWidgets(
+      'system selection does not hide an already visible mobile keyboard',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('alpha');
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        final target = renderTerminal.localToGlobal(
+          renderTerminal.getOffset(const CellOffset(2, 0)) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+
+        await tester.longPressAt(target);
+        await tester.pumpAndSettle();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        final selection = terminalViewState.renderTerminal.getSelectedContent();
+        expect(selection?.plainText, 'alpha');
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'toolbar navigation keys clear the screen IME buffer',
       (tester) async {
         await pumpScreen(tester);
