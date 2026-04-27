@@ -67,8 +67,8 @@ class _AuthSetupScreenState extends ConsumerState<AuthSetupScreen> {
   }
 
   Future<void> _setupPin() async {
-    if (_pinController.text.length < 4) {
-      setState(() => _error = 'PIN must be at least 4 digits');
+    if (_pinController.text.length < 6) {
+      setState(() => _error = 'PIN must be at least 6 digits');
       return;
     }
 

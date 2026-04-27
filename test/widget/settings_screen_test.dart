@@ -640,11 +640,11 @@ void main() {
         );
         await tester.enterText(
           find.widgetWithText(TextFormField, 'New PIN'),
-          '1234',
+          '123456',
         );
         await tester.enterText(
           find.widgetWithText(TextFormField, 'Confirm new PIN'),
-          '1234',
+          '123456',
         );
 
         await tester.tap(find.widgetWithText(FilledButton, 'Change'));
@@ -691,11 +691,11 @@ void main() {
       );
       await tester.enterText(
         find.widgetWithText(TextFormField, 'New PIN'),
-        '5678',
+        '567890',
       );
       await tester.enterText(
         find.widgetWithText(TextFormField, 'Confirm new PIN'),
-        '5678',
+        '567890',
       );
 
       await tester.tap(find.widgetWithText(FilledButton, 'Change'));

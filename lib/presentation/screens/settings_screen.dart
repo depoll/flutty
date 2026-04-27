@@ -374,9 +374,14 @@ class _SecuritySection extends ConsumerWidget {
     var currentPinErrorText = '';
     var isChanging = false;
 
-    String? validatePin(String? value) {
+    String? validateCurrentPin(String? value) {
       if (value?.isEmpty ?? true) return 'Required';
-      if (value!.length < 4) return 'PIN must be 4-8 digits';
+      return null;
+    }
+
+    String? validateNewPin(String? value) {
+      if (value?.isEmpty ?? true) return 'Required';
+      if (value!.length < 6) return 'PIN must be 6-8 digits';
       return null;
     }
 
@@ -403,7 +408,7 @@ class _SecuritySection extends ConsumerWidget {
                   keyboardType: TextInputType.number,
                   maxLength: 8,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  validator: validatePin,
+                  validator: validateCurrentPin,
                   onChanged: (_) {
                     if (currentPinErrorText.isEmpty) return;
                     setState(() => currentPinErrorText = '');
@@ -420,7 +425,7 @@ class _SecuritySection extends ConsumerWidget {
                   keyboardType: TextInputType.number,
                   maxLength: 8,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  validator: validatePin,
+                  validator: validateNewPin,
                 ),
                 const SizedBox(height: 16),
                 TextFormField(
@@ -434,7 +439,7 @@ class _SecuritySection extends ConsumerWidget {
                   maxLength: 8,
                   inputFormatters: [FilteringTextInputFormatter.digitsOnly],
                   validator: (v) {
-                    final pinValidationError = validatePin(v);
+                    final pinValidationError = validateNewPin(v);
                     if (pinValidationError != null) return pinValidationError;
                     if (v != newPinController.text) return 'PINs do not match';
                     return null;
@@ -578,6 +583,9 @@ class _TerminalSection extends ConsumerWidget {
       terminalPathLinkUnderlinesNotifierProvider,
     );
     final sharedClipboard = ref.watch(sharedClipboardNotifierProvider);
+    final sharedClipboardLocalRead = ref.watch(
+      sharedClipboardLocalReadNotifierProvider,
+    );
     final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
 
@@ -658,9 +666,9 @@ class _TerminalSection extends ConsumerWidget {
         ),
         SwitchListTile(
           secondary: const Icon(Icons.content_paste_go_outlined),
-          title: const Text('Shared clipboard'),
+          title: const Text('Remote can update clipboard'),
           subtitle: const Text(
-            'Sync clipboard between local and remote using OSC 52 and remote clipboard tools when available',
+            'Allow OSC 52 and remote clipboard tools to copy remote text into the local clipboard',
           ),
           value: sharedClipboard,
           onChanged: (value) {
@@ -671,8 +679,34 @@ class _TerminalSection extends ConsumerWidget {
             );
             ref
                 .read(activeSessionsProvider.notifier)
-                .updateClipboardSharing(enabled: value);
+                .updateClipboardSharing(
+                  enabled: value,
+                  allowLocalClipboardRead: value && sharedClipboardLocalRead,
+                );
           },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.content_paste_search_outlined),
+          title: const Text('Remote can read clipboard'),
+          subtitle: const Text(
+            'Allow remote OSC 52 queries and clipboard sync to send local clipboard text to the connected host',
+          ),
+          value: sharedClipboard && sharedClipboardLocalRead,
+          onChanged: sharedClipboard
+              ? (value) {
+                  unawaited(
+                    ref
+                        .read(sharedClipboardLocalReadNotifierProvider.notifier)
+                        .setEnabled(enabled: value),
+                  );
+                  ref
+                      .read(activeSessionsProvider.notifier)
+                      .updateClipboardSharing(
+                        enabled: sharedClipboard,
+                        allowLocalClipboardRead: value,
+                      );
+                }
+              : null,
         ),
         SwitchListTile(
           secondary: const Icon(Icons.keyboard_outlined),

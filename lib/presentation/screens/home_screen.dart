@@ -187,6 +187,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
 
       switch (payload.type) {
         case TransferPayloadType.host:
+          if (!mounted) {
+            return;
+          }
+          final confirmed = await showTransferPayloadImportConfirmationDialog(
+            context: context,
+            payload: payload,
+          );
+          if (!mounted || !confirmed) {
+            return;
+          }
           final host = await transferService.importHostPayload(payload);
           ref.invalidate(allHostsProvider);
           if (!mounted) {
@@ -197,6 +207,16 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           );
           break;
         case TransferPayloadType.key:
+          if (!mounted) {
+            return;
+          }
+          final confirmed = await showTransferPayloadImportConfirmationDialog(
+            context: context,
+            payload: payload,
+          );
+          if (!mounted || !confirmed) {
+            return;
+          }
           final key = await transferService.importKeyPayload(payload);
           ref.invalidate(allKeysProvider);
           if (!mounted) {

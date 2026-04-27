@@ -2,6 +2,7 @@ import 'dart:convert';
 import 'dart:math';
 
 import 'package:cryptography/cryptography.dart';
+import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 
@@ -12,7 +13,7 @@ class SecretEncryptionService {
     FlutterSecureStorage? storage,
     AesGcm? algorithm,
     Random? random,
-  }) : _storage = storage ?? const FlutterSecureStorage(),
+  }) : _storage = storage ?? _secureStorage,
        _algorithm = algorithm ?? AesGcm.with256bits(),
        _random = random ?? Random.secure(),
        _testingMasterKey = null;
@@ -40,6 +41,15 @@ class SecretEncryptionService {
   static const _encryptedPrefix = 'ENCv1:';
   static const _masterKeyBytes = 32;
   static const _nonceBytes = 12;
+  static const _secureStorage = FlutterSecureStorage(
+    iOptions: IOSOptions(
+      accessibility: KeychainAccessibility.first_unlock_this_device,
+    ),
+  );
+  static const _hardenedIosOptions = IOSOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+  );
+  static const _legacyIosOptions = IOSOptions.defaultOptions;
 
   SecretKey? _cachedMasterKey;
   Future<void> _masterKeyQueue = Future<void>.value();
@@ -160,7 +170,7 @@ class SecretEncryptionService {
         return;
       }
 
-      final existing = await storage.read(key: _masterKeyStorageEntry);
+      final existing = await _readStorageValue(storage, _masterKeyStorageEntry);
       if (existing != null) {
         final decoded = base64Decode(existing);
         if (decoded.length != _masterKeyBytes) {
@@ -170,21 +180,27 @@ class SecretEncryptionService {
         return;
       }
 
-      final legacyExisting = await storage.read(
-        key: _legacyMasterKeyStorageEntry,
+      final legacyExisting = await _readStorageValue(
+        storage,
+        _legacyMasterKeyStorageEntry,
       );
       if (legacyExisting != null) {
         final decoded = base64Decode(legacyExisting);
         if (decoded.length != _masterKeyBytes) {
           throw const FormatException('Invalid secret encryption key');
         }
-        await storage.write(key: _masterKeyStorageEntry, value: legacyExisting);
+        await _writeStorageValue(
+          storage,
+          key: _masterKeyStorageEntry,
+          value: legacyExisting,
+        );
         _cachedMasterKey = SecretKey(decoded);
         return;
       }
 
       final generated = SecretKeyData.random(length: _masterKeyBytes).bytes;
-      await storage.write(
+      await _writeStorageValue(
+        storage,
         key: _masterKeyStorageEntry,
         value: base64Encode(generated),
       );
@@ -202,6 +218,35 @@ class SecretEncryptionService {
 
   List<int> _randomBytes(int length) =>
       List<int>.generate(length, (_) => _random.nextInt(256), growable: false);
+
+  Future<String?> _readStorageValue(
+    FlutterSecureStorage storage,
+    String key,
+  ) async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return storage.read(key: key);
+    }
+
+    final current = await storage.read(key: key, iOptions: _hardenedIosOptions);
+    if (current != null) return current;
+
+    final legacy = await storage.read(key: key, iOptions: _legacyIosOptions);
+    if (legacy != null) {
+      await _writeStorageValue(storage, key: key, value: legacy);
+    }
+    return legacy;
+  }
+
+  Future<void> _writeStorageValue(
+    FlutterSecureStorage storage, {
+    required String key,
+    required String value,
+  }) {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return storage.write(key: key, value: value);
+    }
+    return storage.write(key: key, value: value, iOptions: _hardenedIosOptions);
+  }
 
   List<int> _decodeEnvelopeField(Map<String, dynamic> envelope, String key) {
     final value = envelope[key];

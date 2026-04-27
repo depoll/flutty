@@ -204,37 +204,48 @@ void main() {
       test(
         'generates the correct deterministic fingerprint for a known public key',
         () async {
-          // importPublicKey calls _computeFingerprint(publicKey) internally.
-          // The expected value is pre-computed using the same DJB2-like hash.
           final key = await keyService.importPublicKey(
             name: 'Key A',
-            publicKey: 'ssh-ed25519 AAAA1',
+            publicKey:
+                'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDzZbs5T/6U4zUn/rneL4PWTBKuoI/OfqAznKpQOjd82 test',
           );
 
           expect(key, isNotNull);
-          expect(key!.fingerprint, 'SHA256:1E:BF:D7:47');
+          expect(
+            key!.fingerprint,
+            'SHA256:YxKKmwNF0MYVdTdaXzsOKKwNc60ZCoz5qS3otV23HyI',
+          );
         },
       );
 
       test('different public keys produce different fingerprints', () async {
         final keyA = await keyService.importPublicKey(
           name: 'Key A',
-          publicKey: 'ssh-ed25519 AAAA1',
+          publicKey:
+              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOwEkW+K+T0BVhCHT/6o4p9FdlaUJD/yPJfHziYQuwnK a',
         );
         final keyB = await keyService.importPublicKey(
           name: 'Key B',
-          publicKey: 'ssh-ed25519 AAAA2',
+          publicKey:
+              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHOD6YHh4xjr8IcP0uT8DODGjPEDGqX2i4eyNvtXq2D+ b',
         );
 
-        expect(keyA!.fingerprint, 'SHA256:1E:BF:D7:47');
-        expect(keyB!.fingerprint, 'SHA256:1E:BF:D7:48');
+        expect(
+          keyA!.fingerprint,
+          'SHA256:KN1Ih6apKdkbSOKekPapKbXepsF6rVo5M5srTRe71fI',
+        );
+        expect(
+          keyB!.fingerprint,
+          'SHA256:v6rpW34v6+w8LPSvW6v1+Dm8Z6sRf/VNAFNbr8FG3sg',
+        );
         expect(keyA.fingerprint, isNot(keyB.fingerprint));
       });
 
       test('fingerprint always begins with SHA256: prefix', () async {
         final key = await keyService.importPublicKey(
           name: 'Key',
-          publicKey: 'ssh-ed25519 AAAA',
+          publicKey:
+              'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIDzZbs5T/6U4zUn/rneL4PWTBKuoI/OfqAznKpQOjd82 test',
         );
 
         expect(key!.fingerprint, startsWith('SHA256:'));

@@ -189,19 +189,20 @@ class MainActivity : FlutterFragmentActivity() {
             return false
         }
         val sourceUri = transferIntent.data ?: return false
-        val hasSupportedScheme = when (sourceUri.scheme) {
-            "content", "file" -> true
-            else -> false
-        }
-        if (!hasSupportedScheme) {
+        if (sourceUri.scheme != "content") {
             return false
         }
         val mimeType = transferIntent.type?.lowercase(Locale.ROOT)
-        if (mimeType == MONKEYSSH_TRANSFER_MIME_TYPE) {
-            return true
+        if (mimeType != MONKEYSSH_TRANSFER_MIME_TYPE) {
+            return false
         }
         val lastPathSegment = sourceUri.lastPathSegment?.lowercase(Locale.ROOT)
-        return lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true
+        if (lastPathSegment?.endsWith(MONKEYSSH_TRANSFER_EXTENSION) == true) {
+            return true
+        }
+        val displayName = runCatching { resolveContentDisplayName(sourceUri) }.getOrNull()
+            ?.lowercase(Locale.ROOT)
+        return displayName == null || displayName.endsWith(MONKEYSSH_TRANSFER_EXTENSION)
     }
 
     private fun readClipboardContentUri(uri: Uri): Map<String, Any> {
@@ -253,6 +254,14 @@ class MainActivity : FlutterFragmentActivity() {
     }
 
     private fun resolveDisplayName(uri: Uri): String? {
+        val displayName = resolveContentDisplayName(uri)
+        if (displayName != null) {
+            return displayName
+        }
+        return uri.lastPathSegment?.substringAfterLast('/')
+    }
+
+    private fun resolveContentDisplayName(uri: Uri): String? {
         if (uri.scheme == "content") {
             contentResolver.query(
                 uri,
@@ -267,6 +276,6 @@ class MainActivity : FlutterFragmentActivity() {
                 }
             }
         }
-        return uri.lastPathSegment?.substringAfterLast('/')
+        return null
     }
 }

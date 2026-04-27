@@ -3149,6 +3149,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   SftpClient? _terminalPathVerificationSftp;
   String? _terminalPathVerificationHomeDirectory;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
+  late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
   Timer? _terminalInputIndicatorTimer;
@@ -3304,8 +3305,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
       sharedClipboardNotifierProvider,
-      (previous, next) =>
-          unawaited(_applySharedClipboardSetting(enabled: next)),
+      (previous, next) => unawaited(
+        _applySharedClipboardSetting(
+          enabled: next,
+          allowLocalClipboardRead:
+              next && ref.read(sharedClipboardLocalReadNotifierProvider),
+        ),
+      ),
+    );
+    _sharedClipboardLocalReadSubscription = ref.listenManual<bool>(
+      sharedClipboardLocalReadNotifierProvider,
+      (previous, next) => unawaited(
+        _applySharedClipboardSetting(
+          enabled: ref.read(sharedClipboardNotifierProvider),
+          allowLocalClipboardRead: next,
+        ),
+      ),
     );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
@@ -3396,6 +3411,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _applySharedClipboardSetting({
     required bool enabled,
+    required bool allowLocalClipboardRead,
     SshSession? session,
     bool waitForInitialSync = true,
   }) async {
@@ -3409,7 +3425,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    targetSession.clipboardSharingEnabled = enabled;
+    targetSession
+      ..clipboardSharingEnabled = enabled
+      ..localClipboardReadEnabled = enabled && allowLocalClipboardRead;
     if (!enabled) {
       _stopSharedClipboardSync();
       return;
@@ -3426,7 +3444,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
     _remoteClipboardUnsupported = false;
-    _lastObservedLocalClipboardText = await _readSystemClipboardText();
+    _lastObservedLocalClipboardText = session.localClipboardReadEnabled
+        ? await _readSystemClipboardText()
+        : null;
     _lastObservedRemoteClipboardText = await _readRemoteClipboardText(session);
 
     if (!mounted ||
@@ -3435,10 +3455,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    _localClipboardSyncTimer = Timer.periodic(
-      _localClipboardSyncInterval,
-      (_) => unawaited(_syncLocalClipboardToRemote(session)),
-    );
+    if (session.localClipboardReadEnabled) {
+      _localClipboardSyncTimer = Timer.periodic(
+        _localClipboardSyncInterval,
+        (_) => unawaited(_syncLocalClipboardToRemote(session)),
+      );
+    }
     if (!_remoteClipboardUnsupported) {
       _remoteClipboardSyncTimer = Timer.periodic(
         _remoteClipboardSyncInterval,
@@ -3482,6 +3504,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _syncLocalClipboardToRemote(SshSession session) async {
     if (!mounted ||
         !session.clipboardSharingEnabled ||
+        !session.localClipboardReadEnabled ||
         !identical(_observedSession, session) ||
         _remoteClipboardUnsupported ||
         _isPushingLocalClipboard) {
@@ -3914,7 +3937,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final sharedClipboardEnabled = await ref.read(
           sharedClipboardProvider.future,
         );
-        session.clipboardSharingEnabled = sharedClipboardEnabled;
+        final sharedClipboardLocalReadEnabled = await ref.read(
+          sharedClipboardLocalReadProvider.future,
+        );
+        session
+          ..clipboardSharingEnabled = sharedClipboardEnabled
+          ..localClipboardReadEnabled =
+              sharedClipboardEnabled && sharedClipboardLocalReadEnabled;
         _terminal.removeListener(_onTerminalStateChanged);
         _terminal = existingTerminal;
         _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -3926,6 +3955,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _wireTerminalCallbacks(session);
         await _applySharedClipboardSetting(
           enabled: sharedClipboardEnabled,
+          allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
           session: session,
           waitForInitialSync: false,
         );
@@ -3949,7 +3979,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final sharedClipboardEnabled = await ref.read(
         sharedClipboardProvider.future,
       );
-      session.clipboardSharingEnabled = sharedClipboardEnabled;
+      final sharedClipboardLocalReadEnabled = await ref.read(
+        sharedClipboardLocalReadProvider.future,
+      );
+      session
+        ..clipboardSharingEnabled = sharedClipboardEnabled
+        ..localClipboardReadEnabled =
+            sharedClipboardEnabled && sharedClipboardLocalReadEnabled;
       _terminal.removeListener(_onTerminalStateChanged);
       _terminal = sessionTerminal;
       _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
@@ -3973,6 +4009,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _wireTerminalCallbacks(session);
       await _applySharedClipboardSetting(
         enabled: sharedClipboardEnabled,
+        allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
         session: session,
         waitForInitialSync: false,
       );
@@ -5111,6 +5148,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _sharedClipboardSubscription.close();
+    _sharedClipboardLocalReadSubscription.close();
     _stopSharedClipboardSync();
     _terminalInputIndicatorTimer?.cancel();
     _promptOutputImeResetTimer?.cancel();
@@ -8250,7 +8288,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<T> _withClipboardSftp<T>(
-    Future<T> Function(SftpClient sftp, RemoteFileService remoteFileService)
+    Future<T> Function(
+      SftpClient sftp,
+      RemoteFileService remoteFileService,
+      String uploadDirectory,
+    )
     action,
   ) async {
     final session = _activeSession();
@@ -8261,11 +8303,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remoteFileService = ref.read(remoteFileServiceProvider);
     final sftp = await session.sftp();
     try {
+      final homeDirectory = await remoteFileService.resolveInitialDirectory(
+        sftp,
+      );
+      final appUploadParentDirectory =
+          buildRemoteClipboardUploadParentDirectory(homeDirectory);
+      final uploadDirectory = buildRemoteClipboardUploadDirectory(
+        homeDirectory,
+      );
       await remoteFileService.ensureDirectoryExists(
         sftp,
-        remoteClipboardUploadDirectory,
+        appUploadParentDirectory,
+        mode: remoteUploadDirectoryMode,
       );
-      return await action(sftp, remoteFileService);
+      await remoteFileService.ensureDirectoryExists(
+        sftp,
+        uploadDirectory,
+        mode: remoteUploadDirectoryMode,
+      );
+      return await action(sftp, remoteFileService, uploadDirectory);
     } finally {
       sftp.close();
     }
@@ -8346,7 +8402,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard files?',
       message:
-          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory on the connected host and paste their remote paths into the terminal.',
+          'This will upload ${clipboardFiles.length} clipboard file${clipboardFiles.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectoryDisplay on the connected host and paste their remote paths into the terminal.',
       confirmLabel: 'Upload and paste',
       details: [
         for (var index = 0; index < clipboardFiles.length; index++)
@@ -8364,6 +8420,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePaths = await _withClipboardSftp((
       sftp,
       remoteFileService,
+      uploadDirectory,
     ) async {
       final remotePaths = <String>[];
       for (var index = 0; index < clipboardFiles.length; index++) {
@@ -8383,7 +8440,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           );
           sourceName = clipboardFile.name;
           remotePath = joinRemotePath(
-            remoteClipboardUploadDirectory,
+            uploadDirectory,
             buildClipboardUploadFileName(
               sourceName,
               timestamp,
@@ -8398,7 +8455,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         } else {
           sourceName = path.basename(localPath);
           remotePath = joinRemotePath(
-            remoteClipboardUploadDirectory,
+            uploadDirectory,
             buildClipboardUploadFileName(
               sourceName,
               timestamp,
@@ -8421,7 +8478,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectory',
+      'Uploaded ${remotePaths.length} file${remotePaths.length == 1 ? '' : 's'} to $remoteClipboardUploadDirectoryDisplay',
     );
   }
 
@@ -8429,7 +8486,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload clipboard image?',
       message:
-          'This will upload the clipboard image to $remoteClipboardUploadDirectory on the connected host and paste its remote path into the terminal.',
+          'This will upload the clipboard image to $remoteClipboardUploadDirectoryDisplay on the connected host and paste its remote path into the terminal.',
       confirmLabel: 'Upload and paste',
       details: const ['image.png'],
     );
@@ -8441,9 +8498,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePath = await _withClipboardSftp((
       sftp,
       remoteFileService,
+      uploadDirectory,
     ) async {
       final remotePath = joinRemotePath(
-        remoteClipboardUploadDirectory,
+        uploadDirectory,
         buildClipboardImageFileName(DateTime.now()),
       );
       await remoteFileService.uploadBytes(
@@ -8474,7 +8532,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final shouldUpload = await _confirmClipboardUpload(
       title: 'Upload selected $itemLabel?',
       message:
-          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $remoteClipboardUploadDirectory on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
+          'This will upload ${selectedFiles.length == 1 ? 'the selected $itemLabelSingular' : '${selectedFiles.length} selected $itemLabelPlural'} to $remoteClipboardUploadDirectoryDisplay on the connected host and paste ${selectedFiles.length == 1 ? 'its remote path' : 'their remote paths'} into the terminal.',
       confirmLabel: 'Upload and paste',
       details: [
         for (var index = 0; index < selectedFiles.length; index++)
@@ -8493,6 +8551,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final remotePaths = await _withClipboardSftp((
       sftp,
       remoteFileService,
+      uploadDirectory,
     ) async {
       final remotePaths = <String>[];
       for (var index = 0; index < selectedFiles.length; index++) {
@@ -8502,7 +8561,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           index: index,
         );
         final remotePath = joinRemotePath(
-          remoteClipboardUploadDirectory,
+          uploadDirectory,
           buildClipboardUploadFileName(sourceName, timestamp, sequence: index),
         );
         final readStream = resolvePickedTerminalUploadReadStream(file);
@@ -8533,7 +8592,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalController.clearSelection();
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     _showClipboardMessage(
-      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.length} $itemLabelPlural'} to $remoteClipboardUploadDirectory',
+      'Uploaded ${selectedFiles.length == 1 ? 'selected $itemLabelSingular' : '${remotePaths.length} $itemLabelPlural'} to $remoteClipboardUploadDirectoryDisplay',
     );
   }
 

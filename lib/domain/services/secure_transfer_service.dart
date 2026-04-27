@@ -1,9 +1,13 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:drift/drift.dart';
+import 'package:drift/drift.dart' hide Uint8List;
+import 'package:flutter/foundation.dart' hide Uint8List;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:pointycastle/export.dart'
+    show Argon2BytesGenerator, Argon2Parameters;
 
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
@@ -12,6 +16,7 @@ import '../models/auto_connect_command.dart';
 import '../models/host_cli_launch_preferences.dart';
 import 'host_cli_launch_preferences_service.dart';
 import 'host_key_verification.dart';
+import 'key_service.dart';
 import 'settings_service.dart';
 
 /// Supported transfer payload types.
@@ -153,11 +158,15 @@ class SecureTransferService {
   static const _maxEpochMilliseconds = 8640000000000000;
   static const _payloadPrefix = 'MSSH1:';
   static const _schemaVersion = 1;
-  static const _envelopeVersion = 1;
+  static const _legacyEnvelopeVersion = 1;
+  static const _envelopeVersion = 2;
   static const _saltBytes = 16;
   static const _nonceBytes = 12;
   static const _pbkdf2Iterations = 120000;
   static const _maxPbkdf2Iterations = 1000000;
+  static const _argon2idIterations = 3;
+  static const _argon2idMemoryKiB = 32768;
+  static const _argon2idLanes = 1;
   static const _hostScopedSettingsKeys = {
     SettingKeys.agentLaunchPresets,
     SettingKeys.hostCliLaunchPreferences,
@@ -300,13 +309,13 @@ class SecureTransferService {
 
     final envelopeMap = Map<String, dynamic>.from(envelope);
     final versionValue = envelopeMap['v'];
-    if (versionValue is! num || versionValue.toInt() != _envelopeVersion) {
+    if (versionValue is! num) {
       throw const FormatException('Unsupported transfer envelope version');
     }
-    final envelopeIterations =
-        _optionalInt(envelopeMap['iter']) ?? _pbkdf2Iterations;
-    if (envelopeIterations <= 0 || envelopeIterations > _maxPbkdf2Iterations) {
-      throw const FormatException('Invalid transfer envelope');
+    final envelopeVersion = versionValue.toInt();
+    if (envelopeVersion != _legacyEnvelopeVersion &&
+        envelopeVersion != _envelopeVersion) {
+      throw const FormatException('Unsupported transfer envelope version');
     }
 
     final salt = _decodeEnvelopeField(envelopeMap, 'salt');
@@ -319,10 +328,11 @@ class SecureTransferService {
       throw const FormatException('Invalid transfer envelope');
     }
 
-    final secretKey = await _deriveKey(
-      transferPassphrase,
-      salt,
-      iterations: envelopeIterations,
+    final secretKey = await _deriveEnvelopeKey(
+      transferPassphrase: transferPassphrase,
+      salt: salt,
+      envelope: envelopeMap,
+      version: envelopeVersion,
     );
     final secretBox = SecretBox(cipherText, nonce: nonce, mac: Mac(macBytes));
 
@@ -566,10 +576,12 @@ class SecureTransferService {
     final payloadBytes = utf8.encode(jsonEncode(payload.toJson()));
     final salt = _randomBytes(_saltBytes);
     final nonce = _randomBytes(_nonceBytes);
-    final secretKey = await _deriveKey(
+    final secretKey = await _deriveArgon2idKey(
       transferPassphrase,
       salt,
-      iterations: _pbkdf2Iterations,
+      iterations: _argon2idIterations,
+      memoryKiB: _argon2idMemoryKiB,
+      lanes: _argon2idLanes,
     );
     final encryptedBox = await _aesGcm.encrypt(
       payloadBytes,
@@ -581,8 +593,10 @@ class SecureTransferService {
     final envelope = {
       'v': _envelopeVersion,
       'alg': 'AES-GCM-256',
-      'kdf': 'PBKDF2-HMAC-SHA256',
-      'iter': _pbkdf2Iterations,
+      'kdf': 'Argon2id',
+      'iter': _argon2idIterations,
+      'mem': _argon2idMemoryKiB,
+      'lanes': _argon2idLanes,
       'salt': base64Url.encode(salt),
       'nonce': base64Url.encode(nonce),
       'ciphertext': base64Url.encode(encryptedBox.cipherText),
@@ -594,7 +608,42 @@ class SecureTransferService {
     return '$_payloadPrefix$encodedEnvelope';
   }
 
-  Future<SecretKey> _deriveKey(
+  Future<SecretKey> _deriveEnvelopeKey({
+    required String transferPassphrase,
+    required List<int> salt,
+    required Map<String, dynamic> envelope,
+    required int version,
+  }) {
+    if (version == _legacyEnvelopeVersion) {
+      final iterations = _optionalInt(envelope['iter']) ?? _pbkdf2Iterations;
+      if (iterations <= 0 || iterations > _maxPbkdf2Iterations) {
+        throw const FormatException('Invalid transfer envelope');
+      }
+      return _derivePbkdf2Key(transferPassphrase, salt, iterations: iterations);
+    }
+
+    final iterations = _optionalInt(envelope['iter']) ?? _argon2idIterations;
+    final memoryKiB = _optionalInt(envelope['mem']) ?? _argon2idMemoryKiB;
+    final lanes = _optionalInt(envelope['lanes']) ?? _argon2idLanes;
+    if (iterations <= 0 ||
+        iterations > 10 ||
+        memoryKiB < 8192 ||
+        memoryKiB > 262144 ||
+        lanes <= 0 ||
+        lanes > 4) {
+      throw const FormatException('Invalid transfer envelope');
+    }
+
+    return _deriveArgon2idKey(
+      transferPassphrase,
+      salt,
+      iterations: iterations,
+      memoryKiB: memoryKiB,
+      lanes: lanes,
+    );
+  }
+
+  Future<SecretKey> _derivePbkdf2Key(
     String passphrase,
     List<int> salt, {
     required int iterations,
@@ -610,6 +659,22 @@ class SecureTransferService {
     );
   }
 
+  Future<SecretKey> _deriveArgon2idKey(
+    String passphrase,
+    List<int> salt, {
+    required int iterations,
+    required int memoryKiB,
+    required int lanes,
+  }) async => SecretKey(
+    await compute(_deriveArgon2idKeyBytes, {
+      'passphrase': passphrase,
+      'salt': salt,
+      'iterations': iterations,
+      'memoryKiB': memoryKiB,
+      'lanes': lanes,
+    }),
+  );
+
   List<int> _randomBytes(int length) =>
       List<int>.generate(length, (_) => _random.nextInt(256), growable: false);
 
@@ -617,18 +682,18 @@ class SecureTransferService {
     Map<String, dynamic> keyData, {
     List<SshKey>? existingKeysCache,
   }) async {
-    final fingerprint = _optionalString(keyData['fingerprint']);
+    final publicKey = _requiredString(keyData, 'publicKey');
+    final privateKey = _requiredString(keyData, 'privateKey');
+    final fingerprint = computeOpenSshPublicKeyFingerprint(publicKey);
     final existingKeys = existingKeysCache ?? await _keyRepository.getAll();
-    if (fingerprint != null && fingerprint.isNotEmpty) {
+    if (fingerprint.isNotEmpty) {
       for (final key in existingKeys) {
-        if (key.fingerprint == fingerprint) {
+        if (key.fingerprint == fingerprint && key.publicKey == publicKey) {
           return key;
         }
       }
     }
 
-    final publicKey = _requiredString(keyData, 'publicKey');
-    final privateKey = _requiredString(keyData, 'privateKey');
     for (final key in existingKeys) {
       if (key.publicKey == publicKey && key.privateKey == privateKey) {
         return key;
@@ -1493,3 +1558,23 @@ final secureTransferServiceProvider = Provider<SecureTransferService>(
     ref.watch(hostRepositoryProvider),
   ),
 );
+
+List<int> _deriveArgon2idKeyBytes(Map<String, Object> request) {
+  final passphrase = request['passphrase']! as String;
+  final salt = request['salt']! as List<int>;
+  final iterations = request['iterations']! as int;
+  final memoryKiB = request['memoryKiB']! as int;
+  final lanes = request['lanes']! as int;
+  final generator = Argon2BytesGenerator()
+    ..init(
+      Argon2Parameters(
+        Argon2Parameters.ARGON2_id,
+        Uint8List.fromList(salt),
+        desiredKeyLength: 32,
+        iterations: iterations,
+        memory: memoryKiB,
+        lanes: lanes,
+      ),
+    );
+  return generator.process(Uint8List.fromList(utf8.encode(passphrase)));
+}

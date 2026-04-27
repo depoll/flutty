@@ -94,6 +94,38 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
     return null;
   }
 
+  bool _isLoopbackBindAddress(String value) {
+    final normalized = value.trim().toLowerCase();
+    return normalized == 'localhost' ||
+        normalized == '127.0.0.1' ||
+        normalized == '::1' ||
+        normalized.startsWith('127.');
+  }
+
+  Future<bool> _confirmNonLoopbackLocalBind() async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Expose port forward?'),
+        content: Text(
+          'Binding to ${_localHostController.text.trim()} may make this '
+          'forward reachable from other devices on your local network.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('Allow'),
+          ),
+        ],
+      ),
+    );
+    return confirmed ?? false;
+  }
+
   @override
   Widget build(BuildContext context) {
     final isEditing = widget.portForwardId != null;
@@ -301,6 +333,11 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
 
   Future<void> _savePortForward() async {
     if (!_formKey.currentState!.validate()) return;
+    if (_forwardType == 'local' &&
+        !_isLoopbackBindAddress(_localHostController.text)) {
+      final confirmed = await _confirmNonLoopbackLocalBind();
+      if (!confirmed || !mounted) return;
+    }
 
     setState(() => _isLoading = true);
 

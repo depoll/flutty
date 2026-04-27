@@ -88,8 +88,8 @@ class _LockScreenState extends ConsumerState<LockScreen> {
   }
 
   Future<void> _authenticateWithPin() async {
-    if (_pinController.text.length < 4) {
-      setState(() => _error = 'PIN must be at least 4 digits');
+    if (_pinController.text.isEmpty) {
+      setState(() => _error = 'Enter your PIN');
       return;
     }
 
