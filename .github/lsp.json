@@ -1,0 +1,58 @@
+{
+  "lspServers": {
+    "dart": {
+      "command": "dart",
+      "args": ["language-server", "--protocol=lsp"],
+      "fileExtensions": {
+        ".dart": "dart"
+      }
+    },
+    "kotlin": {
+      "command": "kotlin-language-server",
+      "args": [],
+      "fileExtensions": {
+        ".kt": "kotlin",
+        ".kts": "kotlin"
+      }
+    },
+    "swift": {
+      "command": "sourcekit-lsp",
+      "args": [],
+      "fileExtensions": {
+        ".swift": "swift"
+      }
+    },
+    "ruby": {
+      "command": "ruby-lsp",
+      "args": [],
+      "fileExtensions": {
+        ".rb": "ruby",
+        ".rbw": "ruby",
+        ".rake": "ruby",
+        ".gemspec": "ruby"
+      }
+    },
+    "yaml": {
+      "command": "yaml-language-server",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        ".yml": "yaml",
+        ".yaml": "yaml"
+      }
+    },
+    "bash": {
+      "command": "bash-language-server",
+      "args": ["start"],
+      "fileExtensions": {
+        ".sh": "shellscript"
+      }
+    },
+    "json": {
+      "command": "vscode-json-language-server",
+      "args": ["--stdio"],
+      "fileExtensions": {
+        ".json": "json"
+      }
+    }
+  }
+}
