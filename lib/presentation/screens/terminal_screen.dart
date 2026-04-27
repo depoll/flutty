@@ -173,6 +173,23 @@ const _tmuxDetectionRetrySchedule = <Duration>[
 List<Duration> resolveTmuxDetectionRetrySchedule({bool skipDelay = false}) =>
     skipDelay ? const <Duration>[Duration.zero] : _tmuxDetectionRetrySchedule;
 
+/// Returns whether tmux detection should keep the terminal's current tmux UI.
+///
+/// A clean inactive result can clear the bar, but transient detection failures
+/// should not hide a bar that was already visible or primed from host settings.
+@visibleForTesting
+bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
+  required bool preserveExistingTmuxState,
+  required bool hadVisibleOrPrimedTmuxState,
+  required bool confirmedTmuxActive,
+  required bool hadDetectionFailure,
+}) {
+  if (preserveExistingTmuxState || confirmedTmuxActive) {
+    return true;
+  }
+  return hadVisibleOrPrimedTmuxState && hadDetectionFailure;
+}
+
 /// Resolves the working directory to use when creating a new tmux window.
 @visibleForTesting
 String? resolveTmuxWindowWorkingDirectory({
@@ -4416,7 +4433,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ? _tmuxSessionName
         : null;
     final candidateSessionName = preferredSessionName ?? existingSessionName;
+    final hadVisibleOrPrimedTmuxState =
+        (_isTmuxActive && _tmuxSessionName != null) ||
+        candidateSessionName != null;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
+    var confirmedTmuxActive = false;
+    var hadDetectionFailure = false;
 
     if (mounted) {
       setState(() {
@@ -4454,9 +4476,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           }
         }
 
-        final active = candidateSessionName != null
-            ? await tmux.hasSession(session, candidateSessionName)
-            : await tmux.isTmuxActive(session);
+        final bool active;
+        try {
+          active = candidateSessionName != null
+              ? await tmux.hasSessionOrThrow(session, candidateSessionName)
+              : await tmux.isTmuxActiveOrThrow(session);
+        } on Object catch (error) {
+          hadDetectionFailure = true;
+          DiagnosticsLogService.instance.warning(
+            'tmux.ui',
+            'detection_attempt_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'hasCandidate': candidateSessionName != null,
+              'errorType': error.runtimeType,
+            },
+          );
+          if (!shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+            preserveExistingTmuxState: preserveExistingTmuxState,
+            hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
+            confirmedTmuxActive: confirmedTmuxActive,
+            hadDetectionFailure: true,
+          )) {
+            rethrow;
+          }
+          continue;
+        }
         DiagnosticsLogService.instance.debug(
           'tmux.ui',
           'detection_attempt',
@@ -4472,11 +4517,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
         if (!active) {
+          confirmedTmuxActive = false;
+          hadDetectionFailure = false;
           continue;
         }
+        confirmedTmuxActive = true;
 
         var sessionName = candidateSessionName;
-        sessionName ??= await tmux.currentSessionName(session);
+        try {
+          sessionName ??= await tmux.currentSessionName(session);
+        } on Object catch (error) {
+          hadDetectionFailure = true;
+          DiagnosticsLogService.instance.warning(
+            'tmux.ui',
+            'detection_session_name_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'errorType': error.runtimeType,
+            },
+          );
+          continue;
+        }
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
@@ -4494,7 +4555,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final List<TmuxWindow> windows;
         try {
           windows = await tmux.listWindows(session, sessionName);
-        } on Object {
+        } on Object catch (error) {
+          hadDetectionFailure = true;
+          DiagnosticsLogService.instance.warning(
+            'tmux.ui',
+            'detection_windows_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'errorType': error.runtimeType,
+            },
+          );
           continue;
         }
         if (!mounted ||
@@ -4552,6 +4622,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return;
       }
 
+      if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+        preserveExistingTmuxState: preserveExistingTmuxState,
+        hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
+        confirmedTmuxActive: confirmedTmuxActive,
+        hadDetectionFailure: hadDetectionFailure,
+      )) {
+        final logFields = {
+          'connectionId': session.connectionId,
+          'confirmedTmuxActive': confirmedTmuxActive,
+          'hadDetectionFailure': hadDetectionFailure,
+        };
+        if (hadDetectionFailure) {
+          DiagnosticsLogService.instance.warning(
+            'tmux.ui',
+            'detection_preserved_existing',
+            fields: logFields,
+          );
+        } else {
+          DiagnosticsLogService.instance.info(
+            'tmux.ui',
+            'detection_preserved_existing',
+            fields: logFields,
+          );
+        }
+        return;
+      }
+
       if (!preserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
@@ -4572,6 +4669,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
+        return;
+      }
+      if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+        preserveExistingTmuxState: preserveExistingTmuxState,
+        hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
+        confirmedTmuxActive: confirmedTmuxActive,
+        hadDetectionFailure: true,
+      )) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.ui',
+          'detection_preserved_existing',
+          fields: {
+            'connectionId': session.connectionId,
+            'confirmedTmuxActive': confirmedTmuxActive,
+            'hadDetectionFailure': true,
+          },
+        );
         return;
       }
       if (!preserveExistingTmuxState) {
