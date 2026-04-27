@@ -1531,6 +1531,10 @@ class MonkeyRenderTerminal extends RenderBox
     return getOffset(cellOffset);
   }
 
+  Offset _selectionPointForTextOffset(int textOffset) =>
+      _localPositionForTextOffset(textOffset) +
+      Offset(0, _painter.cellSize.height);
+
   List<Rect> _selectionRectsForOffsets(int start, int end) {
     if (start == end || _terminal.buffer.lines.length == 0) {
       return const <Rect>[];
@@ -1583,12 +1587,12 @@ class MonkeyRenderTerminal extends RenderBox
 
     return SelectionGeometry(
       startSelectionPoint: SelectionPoint(
-        localPosition: _localPositionForTextOffset(start),
+        localPosition: _selectionPointForTextOffset(start),
         lineHeight: _painter.cellSize.height,
         handleType: startHandleType,
       ),
       endSelectionPoint: SelectionPoint(
-        localPosition: _localPositionForTextOffset(end),
+        localPosition: _selectionPointForTextOffset(end),
         lineHeight: _painter.cellSize.height,
         handleType: endHandleType,
       ),
@@ -1695,12 +1699,12 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   SelectionResult _handleSelectableEdgeUpdate(SelectionEdgeUpdateEvent event) {
+    if (_terminalSelectionContentLength <= 0) {
+      _clearSelectableTextSelection();
+      return SelectionResult.none;
+    }
     final localPosition = globalToLocal(event.globalPosition);
-    final hitRect = Offset.zero & size;
-    final adjustedPosition = SelectionUtils.adjustDragOffset(
-      hitRect,
-      localPosition,
-    );
+    final adjustedPosition = _adjustSelectableDragPosition(localPosition);
     final hitOffset = event.granularity == TextGranularity.word
         ? _wordEdgeOffsetForPosition(
             adjustedPosition,
@@ -1718,7 +1722,48 @@ class MonkeyRenderTerminal extends RenderBox
         hitOffset,
       );
     }
-    return SelectionUtils.getResultBasedOnRect(hitRect, localPosition);
+    return _selectionResultForDragPosition(localPosition, hitOffset);
+  }
+
+  Rect get _selectableContentRect {
+    final origin = _contentOrigin;
+    return Rect.fromLTWH(
+      origin.dx,
+      origin.dy - _scrollOffset,
+      _terminal.viewWidth * _painter.cellSize.width,
+      _terminalHeight,
+    );
+  }
+
+  Offset _adjustSelectableDragPosition(Offset localPosition) {
+    final contentRect = _selectableContentRect;
+    if (contentRect.isEmpty) {
+      return localPosition;
+    }
+    return Offset(
+      localPosition.dx.clamp(contentRect.left, contentRect.right),
+      localPosition.dy.clamp(contentRect.top, contentRect.bottom),
+    );
+  }
+
+  SelectionResult _selectionResultForDragPosition(
+    Offset localPosition,
+    int hitOffset,
+  ) {
+    final contentRect = _selectableContentRect;
+    if (contentRect.isEmpty) {
+      return SelectionResult.none;
+    }
+    if (localPosition.dy < contentRect.top ||
+        (hitOffset == 0 && localPosition.dx < contentRect.left)) {
+      return SelectionResult.previous;
+    }
+    if (localPosition.dy > contentRect.bottom ||
+        (hitOffset == _terminalSelectionContentLength &&
+            localPosition.dx > contentRect.right)) {
+      return SelectionResult.next;
+    }
+    return SelectionResult.end;
   }
 
   int _wordEdgeOffsetForPosition(

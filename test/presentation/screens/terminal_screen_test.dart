@@ -169,6 +169,141 @@ void main() {
     });
   });
 
+  group('MonkeyTerminalView system selection geometry', () {
+    Future<MonkeyRenderTerminal> pumpSelectableTerminal(
+      WidgetTester tester, {
+      required Terminal terminal,
+      required TerminalController controller,
+      required double height,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 390,
+                height: height,
+                child: MonkeyTerminalView(
+                  terminal,
+                  controller: controller,
+                  hardwareKeyboardOnly: true,
+                  useSystemSelection: true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .renderTerminal;
+    }
+
+    Offset cellCenter(MonkeyRenderTerminal renderTerminal, CellOffset offset) =>
+        renderTerminal.localToGlobal(
+          renderTerminal.getOffset(offset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+
+    String rowLabel(int row) => 'row ${row.toString().padLeft(2, '0')}';
+
+    testWidgets('anchors selection handles at terminal line bottoms', (
+      tester,
+    ) async {
+      final terminal = Terminal(maxLines: 100)..write('alpha');
+      final controller = TerminalController();
+      final renderTerminal = await pumpSelectableTerminal(
+        tester,
+        terminal: terminal,
+        controller: controller,
+        height: 240,
+      );
+
+      renderTerminal.dispatchSelectionEvent(
+        SelectWordSelectionEvent(
+          globalPosition: cellCenter(renderTerminal, const CellOffset(2, 0)),
+        ),
+      );
+      await tester.pump();
+
+      final lineBottom =
+          renderTerminal.getOffset(const CellOffset(0, 0)).dy +
+          renderTerminal.cellSize.height;
+      expect(
+        renderTerminal.value.startSelectionPoint!.localPosition.dy,
+        closeTo(lineBottom, 0.001),
+      );
+      expect(
+        renderTerminal.value.endSelectionPoint!.localPosition.dy,
+        closeTo(lineBottom, 0.001),
+      );
+    });
+
+    testWidgets(
+      'keeps updating selection when a handle is dragged above the viewport',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        var renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+
+        final topVisibleRow = renderTerminal.getCellOffset(Offset.zero).y;
+        expect(topVisibleRow, greaterThan(3));
+        final targetRow = topVisibleRow - 3;
+        final endRow = topVisibleRow + 2;
+
+        renderTerminal
+          ..dispatchSelectionEvent(
+            SelectionEdgeUpdateEvent.forStart(
+              globalPosition: cellCenter(renderTerminal, CellOffset(0, endRow)),
+            ),
+          )
+          ..dispatchSelectionEvent(
+            SelectionEdgeUpdateEvent.forEnd(
+              globalPosition: cellCenter(renderTerminal, CellOffset(6, endRow)),
+            ),
+          );
+        await tester.pump();
+
+        renderTerminal.dispatchSelectionEvent(
+          SelectionEdgeUpdateEvent.forStart(
+            globalPosition: cellCenter(
+              renderTerminal,
+              CellOffset(0, targetRow),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final selectedText = renderTerminal.getSelectedContent()!.plainText;
+        expect(selectedText, contains(rowLabel(targetRow)));
+        expect(selectedText, contains(rowLabel(endRow)));
+      },
+    );
+  });
+
   group('TerminalScreen mobile IME wiring', () {
     late AppDatabase db;
     late _MockHostRepository hostRepository;
