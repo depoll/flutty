@@ -922,6 +922,31 @@ void main() {
     );
 
     testWidgets(
+      'terminal double tap sends Tab while system selection is enabled',
+      (tester) async {
+        await pumpScreen(tester);
+
+        expect(find.byType(SelectionArea), findsOneWidget);
+        shellWrites.clear();
+
+        final terminalCenter = tester.getCenter(
+          find.byType(MonkeyTerminalView),
+        );
+        await tester.tapAt(terminalCenter);
+        await tester.pump(const Duration(milliseconds: 80));
+        await tester.tapAt(terminalCenter);
+        await tester.pump();
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, '\t');
+        expect(find.text('Tab'), findsAtLeastNWidgets(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'system selection does not hide an already visible mobile keyboard',
       (tester) async {
         await pumpScreen(tester);

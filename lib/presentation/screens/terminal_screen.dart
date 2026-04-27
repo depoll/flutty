@@ -3116,6 +3116,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Offset? _pendingTerminalPathTapDownPosition;
   Duration? _pendingTerminalPathTapDownTimestamp;
   String? _recentlyOpenedTerminalPathTap;
+  int? _pendingTerminalDoubleTapPointer;
+  Offset? _pendingTerminalDoubleTapDownPosition;
+  Duration? _pendingTerminalDoubleTapDownTimestamp;
+  int? _terminalDoubleTapConsumedPointer;
+  Offset? _lastTerminalTapPosition;
+  Duration? _lastTerminalTapTimestamp;
+  bool _recentlyHandledTerminalDoubleTap = false;
   Rect? _hoveredTerminalPathUnderline;
   List<({String path, Rect underlineRect, Rect touchRect})>
   _visibleTerminalPathUnderlines =
@@ -3608,6 +3615,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
+    if (_recentlyHandledTerminalDoubleTap) {
+      return;
+    }
+    _recentlyHandledTerminalDoubleTap = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _recentlyHandledTerminalDoubleTap = false;
+    });
+
     final shiftActive = _toolbarController.isShiftActive;
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
     _terminal.textInput(resolveTerminalTabInput(shiftActive: shiftActive));
@@ -6091,13 +6106,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
       });
     }
-    if (terminalPathLinksEnabled) {
+    if (isMobile || terminalPathLinksEnabled) {
       terminalView = Listener(
         behavior: HitTestBehavior.translucent,
-        onPointerDown: _handleTerminalPathPointerDown,
-        onPointerMove: _handleTerminalPathPointerMove,
-        onPointerUp: _handleTerminalPathPointerUp,
-        onPointerCancel: _handleTerminalPathPointerCancel,
+        onPointerDown: _handleTerminalPointerDown,
+        onPointerMove: _handleTerminalPointerMove,
+        onPointerUp: _handleTerminalPointerUp,
+        onPointerCancel: _handleTerminalPointerCancel,
         child: terminalView,
       );
     }
@@ -7040,6 +7055,142 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return true;
   }
 
+  void _clearPendingTerminalDoubleTap() {
+    _pendingTerminalDoubleTapPointer = null;
+    _pendingTerminalDoubleTapDownPosition = null;
+    _pendingTerminalDoubleTapDownTimestamp = null;
+  }
+
+  void _clearLastTerminalTap() {
+    _lastTerminalTapPosition = null;
+    _lastTerminalTapTimestamp = null;
+  }
+
+  void _handleTerminalPointerDown(PointerDownEvent event) {
+    _handleTerminalPathPointerDown(event);
+    _handleTerminalDoubleTapPointerDown(
+      event,
+      allowDoubleTap: _pendingTerminalPathTap == null,
+    );
+  }
+
+  void _handleTerminalPointerMove(PointerMoveEvent event) {
+    _handleTerminalPathPointerMove(event);
+    _handleTerminalDoubleTapPointerMove(event);
+  }
+
+  void _handleTerminalPointerUp(PointerUpEvent event) {
+    final pathTapConsumed = _handleTerminalPathPointerUp(event);
+    if (!pathTapConsumed) {
+      _handleTerminalDoubleTapPointerUp(event);
+    }
+  }
+
+  void _handleTerminalPointerCancel(PointerCancelEvent event) {
+    _handleTerminalPathPointerCancel(event);
+    _handleTerminalDoubleTapPointerCancel(event);
+  }
+
+  void _handleTerminalDoubleTapPointerDown(
+    PointerDownEvent event, {
+    required bool allowDoubleTap,
+  }) {
+    if (event.kind != PointerDeviceKind.touch || !allowDoubleTap) {
+      _clearPendingTerminalDoubleTap();
+      return;
+    }
+
+    final lastTapPosition = _lastTerminalTapPosition;
+    final lastTapTimestamp = _lastTerminalTapTimestamp;
+    final isDoubleTap =
+        lastTapPosition != null &&
+        lastTapTimestamp != null &&
+        event.timeStamp - lastTapTimestamp <= kDoubleTapTimeout &&
+        (event.position - lastTapPosition).distance <= kDoubleTapSlop;
+
+    if (isDoubleTap) {
+      _terminalDoubleTapConsumedPointer = event.pointer;
+      _clearPendingTerminalDoubleTap();
+      _clearLastTerminalTap();
+      _triggerTerminalDoubleTap(event.position, event.kind);
+      return;
+    }
+
+    _pendingTerminalDoubleTapPointer = event.pointer;
+    _pendingTerminalDoubleTapDownPosition = event.position;
+    _pendingTerminalDoubleTapDownTimestamp = event.timeStamp;
+  }
+
+  void _handleTerminalDoubleTapPointerMove(PointerMoveEvent event) {
+    if (_pendingTerminalDoubleTapPointer != event.pointer) {
+      return;
+    }
+    final downPosition = _pendingTerminalDoubleTapDownPosition;
+    if (downPosition != null &&
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalDoubleTap();
+      _clearLastTerminalTap();
+    }
+  }
+
+  void _handleTerminalDoubleTapPointerUp(PointerUpEvent event) {
+    if (event.kind != PointerDeviceKind.touch) {
+      return;
+    }
+    if (_terminalDoubleTapConsumedPointer == event.pointer) {
+      _terminalDoubleTapConsumedPointer = null;
+      _clearPendingTerminalDoubleTap();
+      return;
+    }
+
+    final downPosition = _pendingTerminalDoubleTapDownPosition;
+    final downTimestamp = _pendingTerminalDoubleTapDownTimestamp;
+    if (_pendingTerminalDoubleTapPointer != event.pointer ||
+        downPosition == null ||
+        downTimestamp == null ||
+        event.timeStamp - downTimestamp > kLongPressTimeout ||
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalDoubleTap();
+      _clearLastTerminalTap();
+      return;
+    }
+
+    _lastTerminalTapPosition = event.position;
+    _lastTerminalTapTimestamp = event.timeStamp;
+    _clearPendingTerminalDoubleTap();
+  }
+
+  void _handleTerminalDoubleTapPointerCancel(PointerCancelEvent event) {
+    if (_pendingTerminalDoubleTapPointer == event.pointer) {
+      _clearPendingTerminalDoubleTap();
+    }
+    if (_terminalDoubleTapConsumedPointer == event.pointer) {
+      _terminalDoubleTapConsumedPointer = null;
+    }
+  }
+
+  void _triggerTerminalDoubleTap(
+    Offset globalPosition,
+    PointerDeviceKind kind,
+  ) {
+    final terminalViewState = _terminalViewKey.currentState;
+    if (terminalViewState == null) {
+      return;
+    }
+
+    final localPosition = terminalViewState.renderTerminal.globalToLocal(
+      globalPosition,
+    );
+    _handleTerminalDoubleTapDown(
+      TapDownDetails(
+        kind: kind,
+        globalPosition: globalPosition,
+        localPosition: localPosition,
+      ),
+      terminalViewState.renderTerminal.getCellOffset(localPosition),
+    );
+  }
+
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
     final terminalViewState = _terminalViewKey.currentState;
     final pathLinksEnabled = ref.read(terminalPathLinksNotifierProvider);
@@ -7097,9 +7248,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _handleTerminalPathPointerUp(PointerUpEvent event) {
+  bool _handleTerminalPathPointerUp(PointerUpEvent event) {
     if (event.kind != PointerDeviceKind.touch) {
-      return;
+      return false;
     }
 
     final pendingPath = _pendingTerminalPathTap;
@@ -7112,7 +7263,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         event.timeStamp - downTimestamp > kLongPressTimeout ||
         (event.position - downPosition).distance > kTouchSlop) {
       _clearPendingTerminalPathTap();
-      return;
+      return pendingPath != null;
     }
 
     _clearPendingTerminalPathTap();
@@ -7123,6 +7274,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     });
     _handleTerminalLinkTap('$_terminalSftpPathPrefix$pendingPath');
+    return true;
   }
 
   void _handleTerminalPathPointerCancel(PointerCancelEvent event) {

@@ -2009,16 +2009,21 @@ class MonkeyRenderTerminal extends RenderBox
       effectLastLine,
     );
 
-    if (_controller.selection != null) {
-      _paintSelection(
-        canvas,
-        _controller.selection!,
-        effectFirstLine,
-        effectLastLine,
-      );
+    final selection = _selectionRangeForPaint;
+    if (selection != null) {
+      _paintSelection(canvas, selection, effectFirstLine, effectLastLine);
     }
 
     _paintSelectionHandleLayers(context, offset);
+  }
+
+  BufferRange? get _selectionRangeForPaint {
+    final start = _selectionStartOffset;
+    final end = _selectionEndOffset;
+    if (registrar != null && start != null && end != null && start != end) {
+      return _bufferRangeForTextOffsets(start, end);
+    }
+    return _controller.selection;
   }
 
   void _paintSelectionHandleLayers(PaintingContext context, Offset offset) {

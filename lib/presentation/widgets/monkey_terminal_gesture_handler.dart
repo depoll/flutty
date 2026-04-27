@@ -136,7 +136,9 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onDragUpdate: widget.enableTerminalSelectionGestures
           ? onDragUpdate
           : null,
-      onDoubleTapDown: widget.enableTerminalSelectionGestures
+      onDoubleTapDown:
+          widget.enableTerminalSelectionGestures ||
+              widget.onDoubleTapDown != null
           ? onDoubleTapDown
           : null,
     );
