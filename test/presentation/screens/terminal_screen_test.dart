@@ -10,8 +10,10 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
+import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
@@ -1398,6 +1400,85 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(underlineFinder, findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'mobile path underline taps open SFTP while system selection is enabled',
+      (tester) async {
+        const remotePath = '/var/log/app.log';
+        final sftp = _MockSftpClient();
+        final openedPaths = <String>[];
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(
+          () => sftp.stat(remotePath),
+        ).thenAnswer((_) async => SftpFileAttrs());
+
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+            GoRoute(
+              path: '/sftp/:hostId',
+              name: Routes.sftp,
+              builder: (context, state) {
+                openedPaths.add(state.uri.queryParameters['path'] ?? '');
+                return const Scaffold(body: Text('SFTP opened'));
+              },
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        session.terminal!.write('open $remotePath');
+        await tester.pumpAndSettle();
+
+        final underlineFinder = find.byWidgetPredicate((widget) {
+          final key = widget.key;
+          return key is ValueKey<String> &&
+              key.value.contains('terminal-path-underline:') &&
+              key.value.contains(remotePath);
+        });
+        expect(underlineFinder, findsOneWidget);
+        expect(find.byType(SelectionArea), findsOneWidget);
+
+        await tester.tapAt(tester.getCenter(underlineFinder));
+        await tester.pumpAndSettle();
+
+        expect(openedPaths, [remotePath]);
+        verify(() => sftp.stat(remotePath)).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

@@ -3112,6 +3112,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   String? _terminalPathCacheScope;
   String? _pendingTerminalPathTap;
+  int? _pendingTerminalPathTapPointer;
+  Offset? _pendingTerminalPathTapDownPosition;
+  Duration? _pendingTerminalPathTapDownTimestamp;
+  String? _recentlyOpenedTerminalPathTap;
   Rect? _hoveredTerminalPathUnderline;
   List<({String path, Rect underlineRect, Rect touchRect})>
   _visibleTerminalPathUnderlines =
@@ -6091,6 +6095,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       terminalView = Listener(
         behavior: HitTestBehavior.translucent,
         onPointerDown: _handleTerminalPathPointerDown,
+        onPointerMove: _handleTerminalPathPointerMove,
+        onPointerUp: _handleTerminalPathPointerUp,
+        onPointerCancel: _handleTerminalPathPointerCancel,
         child: terminalView,
       );
     }
@@ -6751,14 +6758,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     if (detectedPath == null) {
       final pendingPath = _pendingTerminalPathTap;
-      _pendingTerminalPathTap = null;
+      _clearPendingTerminalPathTap();
       if (pendingPath == null || !_isInteractiveTerminalFilePath(pendingPath)) {
+        return null;
+      }
+      if (_consumeRecentlyOpenedTerminalPathTap(pendingPath)) {
         return null;
       }
       return '$_terminalSftpPathPrefix$pendingPath';
     }
 
-    _pendingTerminalPathTap = null;
+    _clearPendingTerminalPathTap();
+    if (_consumeRecentlyOpenedTerminalPathTap(detectedPath)) {
+      return null;
+    }
     return '$_terminalSftpPathPrefix$detectedPath';
   }
 
@@ -7012,10 +7025,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() => _hoveredTerminalPathUnderline = underline);
   }
 
+  void _clearPendingTerminalPathTap() {
+    _pendingTerminalPathTap = null;
+    _pendingTerminalPathTapPointer = null;
+    _pendingTerminalPathTapDownPosition = null;
+    _pendingTerminalPathTapDownTimestamp = null;
+  }
+
+  bool _consumeRecentlyOpenedTerminalPathTap(String path) {
+    if (_recentlyOpenedTerminalPathTap != path) {
+      return false;
+    }
+    _recentlyOpenedTerminalPathTap = null;
+    return true;
+  }
+
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
     final terminalViewState = _terminalViewKey.currentState;
     final pathLinksEnabled = ref.read(terminalPathLinksNotifierProvider);
-    _pendingTerminalPathTap = null;
+    _clearPendingTerminalPathTap();
     if (terminalViewState == null || !pathLinksEnabled) {
       if (_hoveredTerminalPathUnderline != null) {
         _clearHoveredTerminalPathUnderline();
@@ -7052,6 +7080,54 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (tappedPath != null && _isInteractiveTerminalFilePath(tappedPath)) {
       _pendingTerminalPathTap = tappedPath;
+      _pendingTerminalPathTapPointer = event.pointer;
+      _pendingTerminalPathTapDownPosition = event.position;
+      _pendingTerminalPathTapDownTimestamp = event.timeStamp;
+    }
+  }
+
+  void _handleTerminalPathPointerMove(PointerMoveEvent event) {
+    if (_pendingTerminalPathTapPointer != event.pointer) {
+      return;
+    }
+    final downPosition = _pendingTerminalPathTapDownPosition;
+    if (downPosition != null &&
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalPathTap();
+    }
+  }
+
+  void _handleTerminalPathPointerUp(PointerUpEvent event) {
+    if (event.kind != PointerDeviceKind.touch) {
+      return;
+    }
+
+    final pendingPath = _pendingTerminalPathTap;
+    final downPosition = _pendingTerminalPathTapDownPosition;
+    final downTimestamp = _pendingTerminalPathTapDownTimestamp;
+    if (pendingPath == null ||
+        _pendingTerminalPathTapPointer != event.pointer ||
+        downPosition == null ||
+        downTimestamp == null ||
+        event.timeStamp - downTimestamp > kLongPressTimeout ||
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalPathTap();
+      return;
+    }
+
+    _clearPendingTerminalPathTap();
+    _recentlyOpenedTerminalPathTap = pendingPath;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_recentlyOpenedTerminalPathTap == pendingPath) {
+        _recentlyOpenedTerminalPathTap = null;
+      }
+    });
+    _handleTerminalLinkTap('$_terminalSftpPathPrefix$pendingPath');
+  }
+
+  void _handleTerminalPathPointerCancel(PointerCancelEvent event) {
+    if (_pendingTerminalPathTapPointer == event.pointer) {
+      _clearPendingTerminalPathTap();
     }
   }
 
