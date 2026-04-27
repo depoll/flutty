@@ -294,6 +294,36 @@ void main() {
       },
     );
 
+    test('preserves visible tmux UI only after non-definitive detection', () {
+      expect(
+        shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+          preserveExistingTmuxState: false,
+          hadVisibleOrPrimedTmuxState: true,
+          verifiedTmuxSession: false,
+          hadDetectionFailure: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+          preserveExistingTmuxState: false,
+          hadVisibleOrPrimedTmuxState: true,
+          verifiedTmuxSession: false,
+          hadDetectionFailure: false,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveTerminalTmuxStateAfterDetectionFailure(
+          preserveExistingTmuxState: false,
+          hadVisibleOrPrimedTmuxState: false,
+          verifiedTmuxSession: true,
+          hadDetectionFailure: false,
+        ),
+        isTrue,
+      );
+    });
+
     test('resolves preferred tmux session name before remote verification', () {
       expect(
         resolvePreferredTmuxSessionName(
