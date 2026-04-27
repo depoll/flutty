@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
+import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 
 /// Error thrown when a tmux command channel ends before confirming completion.
@@ -246,7 +247,7 @@ class TmuxService {
       return;
     }
     try {
-      await _refreshInstalledAgentTools(session);
+      await _refreshInstalledAgentTools(session, priority: SshExecPriority.low);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
@@ -259,7 +260,10 @@ class TmuxService {
     }
   }
 
-  Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(SshSession session) {
+  Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) {
     final existingRequest = _installedAgentToolRequests[session.connectionId];
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
@@ -276,7 +280,11 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     final request = () async {
-      final output = await _exec(session, buildAgentToolDetectionCommand());
+      final output = await _exec(
+        session,
+        buildAgentToolDetectionCommand(),
+        priority: priority,
+      );
       final installed = parseInstalledAgentTools(output);
       _installedAgentToolsCache[session.connectionId] =
           _CachedInstalledAgentTools(
@@ -987,7 +995,17 @@ class TmuxService {
   /// marker arrives. Some SSH servers leave exec streams open after the
   /// command exits, so waiting for stream completion can turn successful tmux
   /// actions into apparent hangs.
-  Future<String> _exec(SshSession session, String command) async {
+  Future<String> _exec(
+    SshSession session,
+    String command, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) => runQueuedSshExec(
+    session.connectionId,
+    () => _execUnqueued(session, command),
+    priority: priority,
+  );
+
+  Future<String> _execUnqueued(SshSession session, String command) async {
     final startedAt = DateTime.now();
     final wrappedCommand = _wrapCommand(session, command);
     final execSession = await _openExec(
