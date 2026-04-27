@@ -20,6 +20,7 @@ import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/presentation/screens/host_edit_screen.dart';
+import 'package:monkeyssh/presentation/widgets/agent_tool_icon.dart';
 
 Host _testHost({
   required int id,
@@ -375,6 +376,25 @@ void main() {
         expect(harness.hostRepository.insertedHost, isNull);
       },
     );
+
+    testWidgets('shows one selected coding agent icon in closed dropdown', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester, hasPro: true);
+      await _selectStartupMode(tester, 'Launch coding agent');
+
+      final agentField = find.byKey(const Key('host-agent-tool-field'));
+      await tester.ensureVisible(agentField);
+      await tester.tap(agentField);
+      await tester.pump();
+      await tester.tap(find.text('Copilot CLI').last);
+      await tester.pump();
+
+      expect(
+        find.descendant(of: agentField, matching: find.byType(AgentToolIcon)),
+        findsOneWidget,
+      );
+    });
 
     testWidgets('scrolls to missing snippet when saving snippet startup', (
       tester,

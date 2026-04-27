@@ -969,6 +969,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                 ),
               )
               .toList(growable: false),
+          selectedItemBuilder: (context) => AgentLaunchTool.values
+              .map((tool) => Text(tool.label))
+              .toList(growable: false),
           onChanged: hasAgentPresetAccess
               ? (value) {
                   if (value == null) {
