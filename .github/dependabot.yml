@@ -1,53 +1,48 @@
 version: 2
+
+multi-ecosystem-groups:
+  all-dependencies:
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    labels:
+      - "dependencies"
+    commit-message:
+      prefix: "deps"
+
 updates:
   # Flutter/Dart dependencies
   - package-ecosystem: "pub"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
+    patterns:
+      - "*"
     labels:
-      - "dependencies"
       - "dart"
-    commit-message:
-      prefix: "deps(dart)"
+    multi-ecosystem-group: "all-dependencies"
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+    patterns:
+      - "*"
     labels:
-      - "dependencies"
       - "ci"
-    commit-message:
-      prefix: "deps(actions)"
+    multi-ecosystem-group: "all-dependencies"
 
   # Ruby tooling (fastlane, CocoaPods)
   - package-ecosystem: "bundler"
     directory: "/"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+    patterns:
+      - "*"
     labels:
-      - "dependencies"
       - "ruby"
-    commit-message:
-      prefix: "deps(ruby)"
+    multi-ecosystem-group: "all-dependencies"
 
   # Android Gradle dependencies
   - package-ecosystem: "gradle"
     directory: "/android"
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 5
+    patterns:
+      - "*"
     labels:
-      - "dependencies"
       - "android"
-    commit-message:
-      prefix: "deps(android)"
+    multi-ecosystem-group: "all-dependencies"
