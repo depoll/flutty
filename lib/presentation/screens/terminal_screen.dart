@@ -637,8 +637,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     } else if (!(_windows?.isNotEmpty ?? false)) {
       setState(() => _isLoading = true);
     }
-    unawaited(_windowChangeSubscription?.cancel());
-    _subscribeToWindowChanges();
+    if (sessionChanged) {
+      unawaited(_windowChangeSubscription?.cancel());
+      _subscribeToWindowChanges();
+    }
     unawaited(_loadPreferredLaunchTool());
     _loadWindows();
   }
