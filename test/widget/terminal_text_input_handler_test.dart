@@ -740,6 +740,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
   String Function()? resolveTextBeforeCursor,
   TerminalKeyModifierResolver? resolveTerminalKeyModifiers,
   VoidCallback? consumeTerminalKeyModifiers,
+  TerminalTextInputModifierApplier? applyTerminalTextInputModifiers,
   ValueGetter<bool>? hasActiveToolbarModifier,
   TerminalTextInputHandlerController? controller,
 }) async {
@@ -762,6 +763,7 @@ Future<_TerminalHarness> _pumpTerminalHarness(
           resolveTextBeforeCursor: resolveTextBeforeCursor,
           resolveTerminalKeyModifiers: resolveTerminalKeyModifiers,
           consumeTerminalKeyModifiers: consumeTerminalKeyModifiers,
+          applyTerminalTextInputModifiers: applyTerminalTextInputModifiers,
           hasActiveToolbarModifier: hasActiveToolbarModifier,
           child: const SizedBox.expand(),
         ),
@@ -7206,6 +7208,38 @@ void main() {
       );
 
       focusNode.dispose();
+    });
+
+    testWidgets('applies modifiers before soft-keyboard text is emitted', (
+      tester,
+    ) async {
+      var modifierActive = true;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        hasActiveToolbarModifier: () => modifierActive,
+        applyTerminalTextInputModifiers: (text) {
+          expect(text, 'q');
+          modifierActive = false;
+          return '\x11';
+        },
+      );
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('q', selectionOffset: 1),
+      );
+      await tester.pump();
+
+      expect(harness.terminalOutput, <String>['\x11']);
+      expect(modifierActive, isFalse);
+      expect(
+        _terminalTextInputClient(tester).currentTextEditingValue,
+        const TextEditingValue(
+          text: _deleteDetectionMarker,
+          selection: TextSelection.collapsed(offset: 2),
+        ),
+      );
+
+      await _disposeTerminalHarness(tester, harness);
     });
 
     testWidgets(
