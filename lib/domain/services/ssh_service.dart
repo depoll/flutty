@@ -1690,7 +1690,7 @@ class SshSession {
       _shellDoneController?.stream ?? const Stream.empty();
 
   /// Close only the interactive shell channel while keeping the SSH client.
-  Future<void> closeShell() async {
+  Future<void> closeShell({bool waitForStreams = true}) async {
     _flushShellIoDiagnostics();
     _shellIoDiagnosticsTimer?.cancel();
     _shellIoDiagnosticsTimer = null;
@@ -1701,18 +1701,32 @@ class SshSession {
     );
     _previewRefreshTimer?.cancel();
     _previewRefreshTimer = null;
-    await _shellStdoutSubscription?.cancel();
-    await _shellStderrSubscription?.cancel();
-    await _shellDoneSubscription?.cancel();
+    if (waitForStreams) {
+      await _shellStdoutSubscription?.cancel();
+      await _shellStderrSubscription?.cancel();
+      await _shellDoneSubscription?.cancel();
+    } else {
+      unawaited(_shellStdoutSubscription?.cancel());
+      unawaited(_shellStderrSubscription?.cancel());
+      unawaited(_shellDoneSubscription?.cancel());
+    }
     _shellStdoutSubscription = null;
     _shellStderrSubscription = null;
     _shellDoneSubscription = null;
-    await _shellStdoutController?.close();
-    await _shellStderrController?.close();
-    await _shellDoneController?.close();
+
+    if (waitForStreams) {
+      await _shellStdoutController?.close();
+      await _shellStderrController?.close();
+      await _shellDoneController?.close();
+    } else {
+      unawaited(_shellStdoutController?.close());
+      unawaited(_shellStderrController?.close());
+      unawaited(_shellDoneController?.close());
+    }
     _shellStdoutController = null;
     _shellStderrController = null;
     _shellDoneController = null;
+
     _shell?.close();
     _shell = null;
     terminalHyperlinkTracker.reset(keepTerminalReference: false);

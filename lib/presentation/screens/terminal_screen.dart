@@ -3038,6 +3038,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.connectionId,
     this.initialTmuxSessionName,
     this.initialTmuxWindowIndex,
+    this.initialTmuxWindowRequiresVisibleSession = false,
     this.initiallyExpandTmuxWindows = false,
     super.key,
   });
@@ -3054,6 +3055,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
   /// Optional tmux window to focus after opening the terminal.
   final int? initialTmuxWindowIndex;
 
+  /// Whether focusing the initial tmux window must also make tmux visible.
+  final bool initialTmuxWindowRequiresVisibleSession;
+
   /// Whether the tmux window selector should start expanded.
   final bool initiallyExpandTmuxWindows;
 
@@ -3065,10 +3069,12 @@ class _InitialTmuxWindowTarget {
   const _InitialTmuxWindowTarget({
     required this.sessionName,
     required this.windowIndex,
+    required this.requiresVisibleSession,
   });
 
   final String sessionName;
   final int windowIndex;
+  final bool requiresVisibleSession;
 }
 
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
@@ -3353,6 +3359,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return _InitialTmuxWindowTarget(
       sessionName: sessionName,
       windowIndex: windowIndex,
+      requiresVisibleSession: widget.initialTmuxWindowRequiresVisibleSession,
     );
   }
 
@@ -4586,7 +4593,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _pendingInitialTmuxWindowTarget = null;
     try {
-      await _switchTmuxWindow(session, target.windowIndex);
+      await _switchTmuxWindow(
+        session,
+        target.windowIndex,
+        forceVisibleTmux: target.requiresVisibleSession,
+      );
     } on Exception catch (error) {
       _showTmuxActionFailure(error);
     }
@@ -4886,7 +4897,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// `tmux select-window` is a server operation — the tmux server
   /// notifies all attached clients of the change. Writing to the PTY
   /// would inject the command as input to whatever program is running.
-  Future<void> _switchTmuxWindow(SshSession session, int windowIndex) async {
+  Future<void> _switchTmuxWindow(
+    SshSession session,
+    int windowIndex, {
+    bool forceVisibleTmux = false,
+  }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
@@ -4897,7 +4912,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
     _tmuxWorkingDirectory = null;
-    await _reattachTmuxIfNeeded(session, sessionName);
+    await _reattachTmuxIfNeeded(
+      session,
+      sessionName,
+      forceVisibleTmux: forceVisibleTmux,
+    );
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -4954,8 +4973,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _reattachTmuxIfNeeded(
     SshSession session,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    bool forceVisibleTmux = false,
+  }) async {
     final tmux = ref.read(tmuxServiceProvider);
     final hasForegroundClient = await tmux.hasForegroundClient(
       session,
@@ -4973,10 +4993,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    if (!shouldReattachTmuxAfterWindowAction(
+    final canReattachInCurrentShell = shouldReattachTmuxAfterWindowAction(
       hasForegroundClient: hasForegroundClient,
       shellStatus: _shellStatus,
-    )) {
+    );
+    if (!canReattachInCurrentShell && !forceVisibleTmux) {
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
@@ -4993,7 +5014,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final shell = _shell;
+    final shell = forceVisibleTmux
+        ? await _reopenShellForVisibleTmux(session)
+        : _shell;
     if (shell == null) {
       return;
     }
@@ -5010,6 +5033,55 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       'reattach_command_sent',
       fields: {'connectionId': session.connectionId},
     );
+  }
+
+  Future<SSHSession?> _reopenShellForVisibleTmux(SshSession session) async {
+    unawaited(_doneSubscription?.cancel());
+    _doneSubscription = null;
+    unawaited(_shellStdoutSubscription?.cancel());
+    _shellStdoutSubscription = null;
+    _promptOutputImeResetTimer?.cancel();
+    _promptOutputImeResetTimer = null;
+    _shell = null;
+
+    final pty = SSHPtyConfig(
+      width: _terminal.viewWidth,
+      height: _terminal.viewHeight,
+    );
+    _terminal.removeListener(_onTerminalStateChanged);
+    await session.closeShell(waitForStreams: false);
+    final shell = await session.getShell(pty: pty);
+    final terminal = session.terminal;
+    if (terminal == null) {
+      return null;
+    }
+
+    _terminal = terminal;
+    _terminalHyperlinkTracker = session.terminalHyperlinkTracker;
+    _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+    _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+    _terminal.addListener(_onTerminalStateChanged);
+    _shell = shell;
+    _wireTerminalCallbacks(session);
+    final sharedClipboardEnabled = await ref.read(
+      sharedClipboardProvider.future,
+    );
+    final sharedClipboardLocalReadEnabled = await ref.read(
+      sharedClipboardLocalReadProvider.future,
+    );
+    await _applySharedClipboardSetting(
+      enabled: sharedClipboardEnabled,
+      allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
+      session: session,
+      waitForInitialSync: false,
+    );
+    if (mounted) {
+      setState(() {
+        _isUsingAltBuffer = _terminal.isUsingAltBuffer;
+        _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
+      });
+    }
+    return shell;
   }
 
   void _handleTrackedConnectionStateChange(

@@ -403,6 +403,106 @@ void main() {
     );
 
     testWidgets(
+      'notification tmux target reopens a busy shell so the selected window is visible',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'alerts';
+        const targetWindowIndex = 3;
+        final windows = <TmuxWindow>[
+          const TmuxWindow(index: 1, name: 'shell', isActive: true),
+          const TmuxWindow(index: 3, name: 'agent', isActive: false),
+        ];
+        final secondShellOpen = Completer<void>();
+        var shellOpenCount = 0;
+        when(() => sshClient.shell(pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          shellOpenCount += 1;
+          if (shellOpenCount == 2 && !secondShellOpen.isCompleted) {
+            secondShellOpen.complete();
+          }
+          return shellChannel;
+        });
+        when(
+          () => tmuxService.hasSession(session, tmuxSessionName),
+        ).thenAnswer((_) async => true);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.selectWindow(
+            session,
+            tmuxSessionName,
+            targetWindowIndex,
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+        ).thenAnswer((_) async => false);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        session.terminal!.write('\u001b]133;C\u0007');
+        expect(session.shellStatus, TerminalShellStatus.runningCommand);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+                initialTmuxWindowIndex: targetWindowIndex,
+                initialTmuxWindowRequiresVisibleSession: true,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(seconds: 1));
+        await tester.runAsync(() async {
+          await secondShellOpen.future.timeout(const Duration(seconds: 2));
+        });
+        await tester.pump();
+
+        verify(
+          () => tmuxService.selectWindow(
+            session,
+            tmuxSessionName,
+            targetWindowIndex,
+          ),
+        ).called(1);
+        verify(
+          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+        ).called(1);
+        expect(find.textContaining('tmux action failed'), findsNothing);
+        expect(shellWrites.map(utf8.decode).join(), contains(tmuxSessionName));
+        expect(shellOpenCount, greaterThanOrEqualTo(2));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'touching the terminal dismisses the expanded tmux bar',
       (tester) async {
         final tmuxService = _MockTmuxService();

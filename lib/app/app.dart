@@ -171,6 +171,7 @@ class _BackgroundLifecycleBridgeState
           .read(routerProvider)
           .go(targetUri.replace(queryParameters: queryParameters).toString());
     });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _listenForHomeScreenShortcutChanges() {
