@@ -1,10 +1,67 @@
 import 'dart:convert';
 
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/services/clipboard_sharing_service.dart';
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
+  tearDown(() {
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(SystemChannels.platform, null);
+  });
+
   group('ClipboardSharingService', () {
+    group('handleOsc52', () {
+      test(
+        'does not answer clipboard queries when local read is disabled',
+        () async {
+          var clipboardRead = false;
+          TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+              .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+                if (call.method == 'Clipboard.getData') {
+                  clipboardRead = true;
+                  return <String, Object?>{'text': 'local-secret'};
+                }
+                return null;
+              });
+
+          final result = await const ClipboardSharingService().handleOsc52([
+            'c',
+            '?',
+          ], allowLocalClipboardRead: false);
+
+          expect(result, isNull);
+          expect(clipboardRead, isFalse);
+        },
+      );
+
+      test('answers clipboard queries when local read is enabled', () async {
+        TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+            .setMockMethodCallHandler(SystemChannels.platform, (call) async {
+              if (call.method == 'Clipboard.getData') {
+                expect(call.arguments, Clipboard.kTextPlain);
+                return <String, Object?>{'text': 'local-secret'};
+              }
+              return null;
+            });
+
+        final result = await const ClipboardSharingService().handleOsc52([
+          'c',
+          '?',
+        ], allowLocalClipboardRead: true);
+
+        expect(
+          result,
+          ClipboardSharingService.buildOsc52Response(
+            'c',
+            base64Encode(utf8.encode('local-secret')),
+          ),
+        );
+      });
+    });
+
     group('parseOsc52Args', () {
       test('parses split args [target, payload]', () {
         final result = ClipboardSharingService.parseOsc52Args([

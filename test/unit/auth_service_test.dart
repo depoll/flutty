@@ -2,6 +2,7 @@
 
 import 'dart:convert';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:local_auth/local_auth.dart';
@@ -18,6 +19,10 @@ class MockFlutterSecureStorage extends Mock implements FlutterSecureStorage {}
 class MockLocalAuthentication extends Mock implements LocalAuthentication {}
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(IOSOptions.defaultOptions);
+  });
+
   late AuthService authService;
   late MockFlutterSecureStorage mockStorage;
   late MockLocalAuthentication mockLocalAuth;
@@ -61,6 +66,50 @@ void main() {
 
         expect(result, true);
       });
+
+      test(
+        'reads and migrates iOS keychain items with legacy accessibility',
+        () async {
+          debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+          addTearDown(() {
+            debugDefaultTargetPlatformOverride = null;
+          });
+          const hardenedOptions = IOSOptions(
+            accessibility: KeychainAccessibility.first_unlock_this_device,
+          );
+          const legacyOptions = IOSOptions.defaultOptions;
+          when(
+            () => mockStorage.read(
+              key: 'flutty_auth_enabled',
+              iOptions: hardenedOptions,
+            ),
+          ).thenAnswer((_) async => null);
+          when(
+            () => mockStorage.read(
+              key: 'flutty_auth_enabled',
+              iOptions: legacyOptions,
+            ),
+          ).thenAnswer((_) async => 'true');
+          when(
+            () => mockStorage.write(
+              key: 'flutty_auth_enabled',
+              value: 'true',
+              iOptions: hardenedOptions,
+            ),
+          ).thenAnswer((_) async {});
+
+          final result = await authService.isAuthEnabled();
+
+          expect(result, true);
+          verify(
+            () => mockStorage.write(
+              key: 'flutty_auth_enabled',
+              value: 'true',
+              iOptions: hardenedOptions,
+            ),
+          ).called(1);
+        },
+      );
     });
 
     group('setupPin', () {

@@ -3,6 +3,7 @@
 import 'dart:convert';
 import 'dart:math';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
@@ -17,6 +18,10 @@ const _legacyMasterKeyStorageEntry =
     '_key_v1';
 
 void main() {
+  setUpAll(() {
+    registerFallbackValue(IOSOptions.defaultOptions);
+  });
+
   group('SecretEncryptionService', () {
     late SecretEncryptionService service;
 
@@ -98,6 +103,60 @@ void main() {
           value: legacyValue,
         ),
       ).called(1);
+    });
+
+    test('migrates iOS master key stored with legacy accessibility', () async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      addTearDown(() {
+        debugDefaultTargetPlatformOverride = null;
+      });
+      final storage = _MockFlutterSecureStorage();
+      final legacyValue = base64Encode(
+        List<int>.generate(32, (index) => index),
+      );
+      const hardenedOptions = IOSOptions(
+        accessibility: KeychainAccessibility.first_unlock_this_device,
+      );
+      const legacyOptions = IOSOptions.defaultOptions;
+
+      when(
+        () => storage.read(
+          key: 'flutty_db_encryption_key_v1',
+          iOptions: hardenedOptions,
+        ),
+      ).thenAnswer((_) async => null);
+      when(
+        () => storage.read(
+          key: 'flutty_db_encryption_key_v1',
+          iOptions: legacyOptions,
+        ),
+      ).thenAnswer((_) async => legacyValue);
+      when(
+        () => storage.write(
+          key: 'flutty_db_encryption_key_v1',
+          value: legacyValue,
+          iOptions: hardenedOptions,
+        ),
+      ).thenAnswer((_) async {});
+
+      service = SecretEncryptionService(storage: storage, random: Random(1));
+
+      final encrypted = await service.encryptNullable('migrate-me');
+
+      expect(encrypted, startsWith('ENCv1:'));
+      verify(
+        () => storage.write(
+          key: 'flutty_db_encryption_key_v1',
+          value: legacyValue,
+          iOptions: hardenedOptions,
+        ),
+      ).called(1);
+      verifyNever(
+        () => storage.read(
+          key: _legacyMasterKeyStorageEntry,
+          iOptions: any(named: 'iOptions'),
+        ),
+      );
     });
 
     group('tamper and corruption resistance', () {

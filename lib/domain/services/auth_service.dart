@@ -101,17 +101,21 @@ class AuthService {
       accessibility: KeychainAccessibility.first_unlock_this_device,
     ),
   );
+  static const _hardenedIosOptions = IOSOptions(
+    accessibility: KeychainAccessibility.first_unlock_this_device,
+  );
+  static const _legacyIosOptions = IOSOptions.defaultOptions;
   Future<void> _pinWriteQueue = Future<void>.value();
 
   /// Check if authentication is enabled.
   Future<bool> isAuthEnabled() async {
-    final value = await _storage.read(key: _authEnabledKey);
+    final value = await _readStorageValue(_authEnabledKey);
     return value == 'true';
   }
 
   /// Check if biometric is enabled.
   Future<bool> isBiometricEnabled() async {
-    final value = await _storage.read(key: _biometricEnabledKey);
+    final value = await _readStorageValue(_biometricEnabledKey);
     return value == 'true';
   }
 
@@ -211,7 +215,7 @@ class AuthService {
   /// Enable or disable biometric authentication.
   Future<void> setBiometricEnabled({required bool enabled}) async {
     final canEnable = !enabled || await isBiometricAvailable();
-    await _storage.write(
+    await _writeStorageValue(
       key: _biometricEnabledKey,
       value: (enabled && canEnable).toString(),
     );
@@ -219,7 +223,7 @@ class AuthService {
 
   /// Verify PIN.
   Future<bool> verifyPin(String pin) async {
-    final storedPinData = await _storage.read(key: _pinKey);
+    final storedPinData = await _readStorageValue(_pinKey);
     if (storedPinData == null) return false;
 
     final pinRecord = _parsePinRecord(storedPinData);
@@ -295,11 +299,11 @@ class AuthService {
 
   /// Disable authentication.
   Future<void> disableAuth() async {
-    await _storage.delete(key: _pinKey);
-    await _storage.delete(key: _pinSaltKey);
-    await _storage.delete(key: _pinMetadataKey);
-    await _storage.delete(key: _authEnabledKey);
-    await _storage.delete(key: _biometricEnabledKey);
+    await _deleteStorageValue(_pinKey);
+    await _deleteStorageValue(_pinSaltKey);
+    await _deleteStorageValue(_pinMetadataKey);
+    await _deleteStorageValue(_authEnabledKey);
+    await _deleteStorageValue(_biometricEnabledKey);
   }
 
   /// Change PIN.
@@ -319,7 +323,7 @@ class AuthService {
         salt: salt,
         iterations: _pinKdfIterations,
       );
-      await _storage.write(
+      await _writeStorageValue(
         key: _pinKey,
         value: jsonEncode({
           'version': _pinKdfVersion,
@@ -327,7 +331,7 @@ class AuthService {
           'hash': hash,
         }),
       );
-      await _storage.write(
+      await _writeStorageValue(
         key: _pinMetadataKey,
         value: jsonEncode({
           'version': _pinKdfVersion,
@@ -335,7 +339,7 @@ class AuthService {
         }),
       );
       if (enableAuth) {
-        await _storage.write(key: _authEnabledKey, value: 'true');
+        await _writeStorageValue(key: _authEnabledKey, value: 'true');
       }
     });
   }
@@ -345,12 +349,12 @@ class AuthService {
     if (existingSalt != null) return existingSalt;
 
     final salt = SecretKeyData.random(length: _pinSaltLength).bytes;
-    await _storage.write(key: _pinSaltKey, value: base64Encode(salt));
+    await _writeStorageValue(key: _pinSaltKey, value: base64Encode(salt));
     return salt;
   }
 
   Future<List<int>?> _readSalt() async {
-    final saltData = await _storage.read(key: _pinSaltKey);
+    final saltData = await _readStorageValue(_pinSaltKey);
     if (saltData == null) return null;
 
     try {
@@ -415,7 +419,7 @@ class AuthService {
   }
 
   Future<bool> _hasUsablePin() async {
-    final storedPinData = await _storage.read(key: _pinKey);
+    final storedPinData = await _readStorageValue(_pinKey);
     if (storedPinData == null) return false;
 
     final pinRecord = _parsePinRecord(storedPinData);
@@ -431,6 +435,51 @@ class AuthService {
 
     final salt = await _readSalt();
     return salt != null;
+  }
+
+  Future<String?> _readStorageValue(String key) async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return _storage.read(key: key);
+    }
+
+    final current = await _storage.read(
+      key: key,
+      iOptions: _hardenedIosOptions,
+    );
+    if (current != null) return current;
+
+    final legacy = await _storage.read(key: key, iOptions: _legacyIosOptions);
+    if (legacy != null) {
+      await _storage.write(
+        key: key,
+        value: legacy,
+        iOptions: _hardenedIosOptions,
+      );
+    }
+    return legacy;
+  }
+
+  Future<void> _writeStorageValue({
+    required String key,
+    required String value,
+  }) {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      return _storage.write(key: key, value: value);
+    }
+    return _storage.write(
+      key: key,
+      value: value,
+      iOptions: _hardenedIosOptions,
+    );
+  }
+
+  Future<void> _deleteStorageValue(String key) async {
+    if (defaultTargetPlatform != TargetPlatform.iOS) {
+      await _storage.delete(key: key);
+      return;
+    }
+    await _storage.delete(key: key, iOptions: _hardenedIosOptions);
+    await _storage.delete(key: key, iOptions: _legacyIosOptions);
   }
 
   bool _constantTimeEquals(String a, String b) {

@@ -128,7 +128,11 @@ class KeyService {
       throw Exception('ssh-keygen is not available: ${e.message}');
     } finally {
       await _wipeGeneratedKeyFiles(keyPath);
-      await tempDir.delete(recursive: true);
+      try {
+        await tempDir.delete(recursive: true);
+      } on FileSystemException {
+        // Best-effort cleanup must not hide the key generation result.
+      }
     }
   }
 
@@ -227,14 +231,26 @@ class KeyService {
   Future<void> _wipeGeneratedKeyFiles(String keyPath) async {
     for (final path in [keyPath, '$keyPath.pub']) {
       final file = File(path);
-      if (!file.existsSync()) {
-        continue;
+      try {
+        // ignore: avoid_slow_async_io
+        if (!await file.exists()) {
+          continue;
+        }
+        final length = await file.length();
+        if (length > 0) {
+          await file.writeAsBytes(List<int>.filled(length, 0), flush: true);
+        }
+        await file.delete();
+      } on FileSystemException {
+        try {
+          // ignore: avoid_slow_async_io
+          if (await file.exists()) {
+            await file.delete();
+          }
+        } on FileSystemException {
+          // Best-effort cleanup must not hide the key generation result.
+        }
       }
-      final length = file.lengthSync();
-      if (length > 0) {
-        file.writeAsBytesSync(List<int>.filled(length, 0), flush: true);
-      }
-      file.deleteSync();
     }
   }
 }

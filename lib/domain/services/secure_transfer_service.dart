@@ -1,9 +1,10 @@
 import 'dart:convert';
 import 'dart:math';
+import 'dart:typed_data';
 
 import 'package:cryptography/cryptography.dart';
-import 'package:drift/drift.dart';
-import 'package:flutter/foundation.dart';
+import 'package:drift/drift.dart' hide Uint8List;
+import 'package:flutter/foundation.dart' hide Uint8List;
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:pointycastle/export.dart'
     show Argon2BytesGenerator, Argon2Parameters;
