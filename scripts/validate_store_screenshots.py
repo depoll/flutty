@@ -21,7 +21,7 @@ IOS_SCREENSHOTS = {
     },
 }
 ANDROID_SCREENSHOTS = {
-    'phoneScreenshots': (1080, 1920),
+    'phoneScreenshots': (1440, 2560),
     'sevenInchScreenshots': (1200, 1920),
     'tenInchScreenshots': (1600, 2560),
 }
