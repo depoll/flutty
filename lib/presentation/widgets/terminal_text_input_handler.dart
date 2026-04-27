@@ -892,10 +892,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
-      final terminalText =
-          widget.applyTerminalTextInputModifiers?.call(appendedText) ??
-          appendedText;
-      widget.terminal.textInput(terminalText);
+      widget.terminal.textInput(_applyTerminalTextInputModifiers(appendedText));
     }
 
     _lastSentText = currentText;
@@ -1447,6 +1444,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       delta.deleteCursorOffset -
       delta.deletedCount +
       delta.appendedText.characters.length;
+
+  String _applyTerminalTextInputModifiers(String text) {
+    final applyModifiers = widget.applyTerminalTextInputModifiers;
+    if (applyModifiers == null) {
+      return text;
+    }
+
+    final normalizedText = text == '\n' ? '\r' : text;
+    return applyModifiers(normalizedText);
+  }
 
   int _deltaCursorScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,

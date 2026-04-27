@@ -7242,6 +7242,31 @@ void main() {
       await _disposeTerminalHarness(tester, harness);
     });
 
+    testWidgets('normalizes soft-keyboard newline before applying modifiers', (
+      tester,
+    ) async {
+      var modifierActive = true;
+      final harness = await _pumpTerminalHarness(
+        tester,
+        hasActiveToolbarModifier: () => modifierActive,
+        applyTerminalTextInputModifiers: (text) {
+          expect(text, '\r');
+          modifierActive = false;
+          return '\x1b\r';
+        },
+      );
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue('\n', selectionOffset: 1),
+      );
+      await tester.pump();
+
+      expect(harness.terminalOutput, <String>['\x1b\r']);
+      expect(modifierActive, isFalse);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
     testWidgets(
       'controller clears the IME buffer after external terminal actions',
       (tester) async {
