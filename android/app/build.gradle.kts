@@ -1,5 +1,8 @@
+@file:Suppress("DEPRECATION")
+
 import java.util.Properties
 import org.gradle.api.GradleException
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
 
 plugins {
     id("com.android.application")
@@ -66,8 +69,8 @@ android {
         isCoreLibraryDesugaringEnabled = true
     }
 
-    kotlinOptions {
-        jvmTarget = JavaVersion.VERSION_17.toString()
+    buildFeatures {
+        resValues = true
     }
 
     packaging {
@@ -122,7 +125,13 @@ flutter {
     source = "../.."
 }
 
+kotlin {
+    compilerOptions {
+        jvmTarget = JvmTarget.fromTarget(JavaVersion.VERSION_17.toString())
+    }
+}
+
 dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.5")
-    implementation("eu.simonbinder:sqlite3-native-library:3.51.1")
+    implementation("eu.simonbinder:sqlite3-native-library:3.52.0")
 }
