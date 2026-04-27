@@ -463,18 +463,19 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           composingText: _composingText,
           selectionRegistrar: SelectionContainer.maybeOf(context),
         );
-        if (!widget.useSystemSelection) {
-          return buildTerminalLeaf(context);
-        }
-        return SelectionArea(
-          contextMenuBuilder:
-              widget.systemSelectionContextMenuBuilder ??
-              _defaultSystemSelectionContextMenu,
-          onSelectionChanged: widget.onSystemSelectionChanged,
-          child: Builder(builder: buildTerminalLeaf),
-        );
+        return Builder(builder: buildTerminalLeaf);
       },
     );
+
+    if (widget.useSystemSelection) {
+      child = SelectionArea(
+        contextMenuBuilder:
+            widget.systemSelectionContextMenuBuilder ??
+            _defaultSystemSelectionContextMenu,
+        onSelectionChanged: widget.onSystemSelectionChanged,
+        child: child,
+      );
+    }
 
     if (!widget.touchScrollToTerminal) {
       child = MonkeyTerminalScrollGestureHandler(
@@ -1512,6 +1513,7 @@ class MonkeyRenderTerminal extends RenderBox
       if (_selectionStartOffset != null || _selectionEndOffset != null) {
         _selectionStartOffset = null;
         _selectionEndOffset = null;
+        markNeedsPaint();
         _updateSelectionGeometry();
       }
       return;
@@ -1523,6 +1525,7 @@ class MonkeyRenderTerminal extends RenderBox
     }
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
+    markNeedsPaint();
     _updateSelectionGeometry();
   }
 

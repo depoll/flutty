@@ -304,6 +304,113 @@ void main() {
         expect(selectedText, contains(rowLabel(endRow)));
       },
     );
+
+    testWidgets(
+      'repaints controller-driven selection after keyboard-sized resize',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        var renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+
+        expect(renderTerminal.debugNeedsPaint, isFalse);
+
+        renderTerminal.dispatchSelectionEvent(
+          SelectWordSelectionEvent(
+            globalPosition: cellCenter(
+              renderTerminal,
+              CellOffset(4, renderTerminal.getCellOffset(Offset.zero).y + 1),
+            ),
+          ),
+        );
+
+        expect(renderTerminal.debugNeedsPaint, isTrue);
+        await tester.pump();
+        expect(renderTerminal.getSelectedContent()?.plainText, isNotNull);
+      },
+    );
+
+    testWidgets(
+      'handle drag keeps updating after keyboard-sized resize',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        var renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+
+        final topVisibleRow = renderTerminal.getCellOffset(Offset.zero).y;
+        final selectedRow = topVisibleRow + 10;
+        final targetRow = topVisibleRow + 1;
+
+        await tester.longPressAt(
+          cellCenter(renderTerminal, CellOffset(5, selectedRow)),
+        );
+        await tester.pumpAndSettle();
+        expect(controller.selection, isNotNull);
+
+        final handleFinder = find.byWidgetPredicate(
+          (widget) =>
+              widget.runtimeType.toString() == '_SelectionHandleOverlay',
+        );
+        expect(handleFinder, findsWidgets);
+
+        final startSelectionPoint = renderTerminal.value.startSelectionPoint!;
+        final startHandlePosition = renderTerminal.localToGlobal(
+          startSelectionPoint.localPosition,
+        );
+        await tester.dragFrom(
+          startHandlePosition,
+          cellCenter(renderTerminal, CellOffset(0, targetRow)) -
+              startHandlePosition,
+        );
+        await tester.pumpAndSettle();
+
+        final selectedText = renderTerminal.getSelectedContent()!.plainText;
+        expect(selectedText, contains(rowLabel(targetRow)));
+        expect(selectedText, contains(rowLabel(selectedRow)));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
   });
 
   group('TerminalScreen mobile IME wiring', () {
