@@ -321,6 +321,51 @@ void main() {
       );
     });
 
+    test('keeps verifying the existing tmux session without a preference', () {
+      expect(
+        resolveTmuxDetectionCandidateSessionName(existingSessionName: ' work '),
+        'work',
+      );
+      expect(
+        resolveTmuxDetectionCandidateSessionName(
+          preferredSessionName: ' configured ',
+          existingSessionName: 'work',
+        ),
+        'configured',
+      );
+      expect(
+        resolveTmuxDetectionCandidateSessionName(
+          preferredSessionName: ' ',
+          existingSessionName: '',
+        ),
+        isNull,
+      );
+    });
+
+    test('preserves tmux bar snapshots during same-session recovery', () {
+      expect(
+        shouldPreserveTmuxBarSnapshotOnUpdate(
+          sessionChanged: false,
+          recoveryChanged: true,
+        ),
+        isTrue,
+      );
+      expect(
+        shouldPreserveTmuxBarSnapshotOnUpdate(
+          sessionChanged: true,
+          recoveryChanged: true,
+        ),
+        isFalse,
+      );
+      expect(
+        shouldPreserveTmuxBarSnapshotOnUpdate(
+          sessionChanged: false,
+          recoveryChanged: false,
+        ),
+        isFalse,
+      );
+    });
+
     test('resolves preferred tmux session name before remote verification', () {
       expect(
         resolvePreferredTmuxSessionName(

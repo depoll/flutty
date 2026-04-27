@@ -959,11 +959,9 @@ class TmuxService {
 
   /// Fire-and-forget: sends a tmux command without waiting for output.
   ///
-  /// Used for operations like `select-window` where the result is
-  /// visible immediately in the interactive terminal. Avoids the
-  /// latency of draining stdout/stderr.
+  /// Used for follow-up operations where completion does not need to block the
+  /// caller, but still closes the exec channel once the command marker returns.
   void _execFireAndForget(SshSession session, String command) {
-    final wrappedCommand = _wrapCommand(session, command);
     DiagnosticsLogService.instance.debug(
       'tmux.exec',
       'fire_and_forget_start',
@@ -972,25 +970,18 @@ class TmuxService {
         'commandKind': _diagnosticTmuxCommandKind(command),
       },
     );
-    // Launch and ignore — the exec channel self-closes on completion.
-    _openExec(session, wrappedCommand)
-        .then((exec) {
-          // Drain streams to prevent backpressure, but don't wait.
-          exec.stdout.drain<void>().ignore();
-          exec.stderr.drain<void>().ignore();
-        })
-        .catchError((Object error) {
-          DiagnosticsLogService.instance.warning(
-            'tmux.exec',
-            'fire_and_forget_failed',
-            fields: {
-              'connectionId': session.connectionId,
-              'commandKind': _diagnosticTmuxCommandKind(command),
-              'errorType': error.runtimeType,
-            },
-          );
-        })
-        .ignore();
+    _exec(session, command).catchError((Object error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.exec',
+        'fire_and_forget_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': _diagnosticTmuxCommandKind(command),
+          'errorType': error.runtimeType,
+        },
+      );
+      return '';
+    }).ignore();
   }
 
   /// Detects the user's login shell and resolves the tmux binary path.
@@ -1582,6 +1573,7 @@ class _TmuxWindowChangeObserver {
         'errorType': error.runtimeType,
       },
     );
+    _cleanupControlSession();
     _scheduleRestart();
   }
 

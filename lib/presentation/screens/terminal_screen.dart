@@ -191,6 +191,36 @@ bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   return hadVisibleOrPrimedTmuxState && hadDetectionFailure;
 }
 
+/// Chooses the tmux session name to verify during detection.
+///
+/// Prefer explicit route/host configuration, but keep verifying the existing
+/// visible tmux session when no configured session name is available.
+@visibleForTesting
+String? resolveTmuxDetectionCandidateSessionName({
+  String? preferredSessionName,
+  String? existingSessionName,
+}) {
+  final preferred = preferredSessionName?.trim();
+  if (preferred != null && preferred.isNotEmpty) {
+    return preferred;
+  }
+  final existing = existingSessionName?.trim();
+  if (existing != null && existing.isNotEmpty) {
+    return existing;
+  }
+  return null;
+}
+
+/// Returns whether a tmux bar widget update should keep its last window list.
+///
+/// Recovery updates re-run subscriptions and queries after transient failures,
+/// but should not throw away the last good snapshot for the same tmux session.
+@visibleForTesting
+bool shouldPreserveTmuxBarSnapshotOnUpdate({
+  required bool sessionChanged,
+  required bool recoveryChanged,
+}) => recoveryChanged && !sessionChanged;
+
 /// Resolves the working directory to use when creating a new tmux window.
 @visibleForTesting
 String? resolveTmuxWindowWorkingDirectory({
@@ -569,34 +599,47 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void didUpdateWidget(covariant _TmuxExpandableBar oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.session.connectionId == widget.session.connectionId &&
-        oldWidget.tmuxSessionName == widget.tmuxSessionName &&
-        oldWidget.recoveryGeneration == widget.recoveryGeneration) {
+    final sessionChanged =
+        oldWidget.session.connectionId != widget.session.connectionId ||
+        oldWidget.tmuxSessionName != widget.tmuxSessionName;
+    final recoveryChanged =
+        oldWidget.recoveryGeneration != widget.recoveryGeneration;
+    if (!sessionChanged && !recoveryChanged) {
       return;
     }
     final wasExpanded = _expanded;
     _clearPendingSelectedWindow(notify: false);
     _resetWindowReloadRecovery();
-    _clearSeenAlertNotifications(oldWidget.session, oldWidget.tmuxSessionName);
-    setState(() {
-      _windows = null;
-      _isLoading = true;
-      _expanded = false;
-      _showSessions = false;
-      _hasInitializedSessionProviders = false;
-      _dragOffset = 0;
-    });
-    if (wasExpanded) {
-      WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) {
-          widget.onExpandedChanged(false);
-        }
+    if (!shouldPreserveTmuxBarSnapshotOnUpdate(
+      sessionChanged: sessionChanged,
+      recoveryChanged: recoveryChanged,
+    )) {
+      _clearSeenAlertNotifications(
+        oldWidget.session,
+        oldWidget.tmuxSessionName,
+      );
+      setState(() {
+        _windows = null;
+        _isLoading = true;
+        _expanded = false;
+        _showSessions = false;
+        _hasInitializedSessionProviders = false;
+        _dragOffset = 0;
       });
+      if (wasExpanded) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            widget.onExpandedChanged(false);
+          }
+        });
+      }
+      unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
+    } else if (!(_windows?.isNotEmpty ?? false)) {
+      setState(() => _isLoading = true);
     }
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
-    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
     _loadWindows();
   }
 
@@ -4342,7 +4385,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ///
   /// Starts with any structured tmux configuration immediately, then retries
   /// discovery until the shell-side attach command has settled.
-  Future<void> _detectTmux(
+  Future<bool> _detectTmux(
     SshSession session, {
     bool skipDelay = false,
     bool preserveExistingTmuxState = false,
@@ -4353,10 +4396,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final preferredSessionName = _preferredTmuxSessionName(host);
-    final existingSessionName = preserveExistingTmuxState
-        ? _tmuxSessionName
-        : null;
-    final candidateSessionName = preferredSessionName ?? existingSessionName;
+    final existingCandidateSessionName =
+        resolveTmuxDetectionCandidateSessionName(
+          existingSessionName: _tmuxSessionName,
+        );
+    final candidateSessionName = resolveTmuxDetectionCandidateSessionName(
+      preferredSessionName: preferredSessionName,
+      existingSessionName: existingCandidateSessionName,
+    );
+    final shouldPreserveKnownTmuxState =
+        preserveExistingTmuxState ||
+        (candidateSessionName != null &&
+            candidateSessionName == existingCandidateSessionName);
     final hadVisibleOrPrimedTmuxState =
         (_isTmuxActive && _tmuxSessionName != null) ||
         candidateSessionName != null;
@@ -4371,10 +4422,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxSessionName = candidateSessionName;
           _tmuxLaunchWorkingDirectory =
               preferredWorkingDirectory ??
-              (preserveExistingTmuxState ? _tmuxLaunchWorkingDirectory : null);
+              (shouldPreserveKnownTmuxState
+                  ? _tmuxLaunchWorkingDirectory
+                  : null);
           _tmuxWorkingDirectory =
               preferredWorkingDirectory ??
-              (preserveExistingTmuxState ? _tmuxWorkingDirectory : null);
+              (shouldPreserveKnownTmuxState ? _tmuxWorkingDirectory : null);
         } else if (!preserveExistingTmuxState) {
           _isTmuxActive = false;
           _tmuxSessionName = null;
@@ -4396,7 +4449,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (!mounted ||
               _connectionId != capturedConnectionId ||
               detectionGeneration != _tmuxDetectionGeneration) {
-            return;
+            return false;
           }
         }
 
@@ -4438,7 +4491,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
-          return;
+          return false;
         }
         if (!active) {
           confirmedTmuxActive = false;
@@ -4465,7 +4518,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
-          return;
+          return false;
         }
         if (sessionName == null) {
           DiagnosticsLogService.instance.debug(
@@ -4494,7 +4547,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
-          return;
+          return false;
         }
         if (windows.isEmpty) {
           DiagnosticsLogService.instance.debug(
@@ -4519,7 +4572,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
-          return;
+          return false;
         }
 
         setState(() {
@@ -4537,13 +4590,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           },
         );
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
-        return;
+        return true;
       }
 
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
-        return;
+        return false;
       }
 
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
@@ -4570,7 +4623,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             fields: logFields,
           );
         }
-        return;
+        return false;
       }
 
       if (!preserveExistingTmuxState) {
@@ -4581,6 +4634,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'detection_inactive',
         fields: {'connectionId': session.connectionId},
       );
+      return false;
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
@@ -4593,7 +4647,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted ||
           _connectionId != capturedConnectionId ||
           detectionGeneration != _tmuxDetectionGeneration) {
-        return;
+        return false;
       }
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
         preserveExistingTmuxState: preserveExistingTmuxState,
@@ -4610,11 +4664,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'hadDetectionFailure': true,
           },
         );
-        return;
+        return false;
       }
       if (!preserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
+      return false;
     }
   }
 
@@ -4835,11 +4890,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    await _detectTmux(session, preserveExistingTmuxState: true);
+    final recovered = await _detectTmux(
+      session,
+      preserveExistingTmuxState: true,
+    );
     if (!mounted ||
         _connectionId != session.connectionId ||
         !_isTmuxActive ||
         _tmuxSessionName != sessionName) {
+      return;
+    }
+    if (!recovered) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.ui',
+        'bar_recovery_deferred',
+        fields: {'connectionId': session.connectionId},
+      );
       return;
     }
 
