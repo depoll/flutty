@@ -100,22 +100,8 @@ class TmuxService {
   /// variable, because SSH exec channels do not share the interactive
   /// shell's environment.
   Future<bool> isTmuxActive(SshSession session) async {
-    DiagnosticsLogService.instance.debug(
-      'tmux.detect',
-      'active_check_start',
-      fields: {'connectionId': session.connectionId},
-    );
     try {
-      // Cache the tmux binary path on first successful detection.
-      await _cacheTmuxPath(session);
-      final output = await _exec(session, 'tmux list-sessions 2>/dev/null');
-      final active = output.trim().isNotEmpty;
-      DiagnosticsLogService.instance.info(
-        'tmux.detect',
-        'active_check_complete',
-        fields: {'connectionId': session.connectionId, 'active': active},
-      );
-      return active;
+      return await isTmuxActiveOrThrow(session);
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.detect',
@@ -127,6 +113,36 @@ class TmuxService {
       );
       return false;
     }
+  }
+
+  /// Returns `true` if tmux has at least one session, and throws when the
+  /// remote check could not complete.
+  ///
+  /// Unlike [isTmuxActive], this distinguishes "no sessions" from
+  /// infrastructure failures so callers can preserve existing UI on
+  /// indeterminate detection results.
+  Future<bool> isTmuxActiveOrThrow(SshSession session) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.detect',
+      'active_check_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    // Cache the tmux binary path on first successful detection.
+    await _cacheTmuxPath(session);
+    final output = await _exec(
+      session,
+      "tmux list-sessions -F '#{session_name}' 2>/dev/null; "
+      r'status=$?; '
+      r'if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then true; '
+      'else false; fi',
+    );
+    final active = output.trim().isNotEmpty;
+    DiagnosticsLogService.instance.info(
+      'tmux.detect',
+      'active_check_complete',
+      fields: {'connectionId': session.connectionId, 'active': active},
+    );
+    return active;
   }
 
   /// Returns `true` if tmux is installed on the remote host.
@@ -392,24 +408,8 @@ class TmuxService {
 
   /// Returns `true` if [sessionName] exists on the remote tmux server.
   Future<bool> hasSession(SshSession session, String sessionName) async {
-    DiagnosticsLogService.instance.debug(
-      'tmux.query',
-      'has_session_start',
-      fields: {'connectionId': session.connectionId},
-    );
     try {
-      await _cacheTmuxPath(session);
-      final output = await _exec(
-        session,
-        'tmux has-session -t ${_shellQuote(sessionName)} 2>/dev/null && printf 1',
-      );
-      final exists = output.trim() == '1';
-      DiagnosticsLogService.instance.info(
-        'tmux.query',
-        'has_session_complete',
-        fields: {'connectionId': session.connectionId, 'exists': exists},
-      );
-      return exists;
+      return await hasSessionOrThrow(session, sessionName);
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.query',
@@ -421,6 +421,35 @@ class TmuxService {
       );
       return false;
     }
+  }
+
+  /// Returns `true` if [sessionName] exists, and throws when the remote check
+  /// could not complete.
+  ///
+  /// Unlike [hasSession], this distinguishes a missing tmux session from
+  /// transient SSH exec/channel failures.
+  Future<bool> hasSessionOrThrow(SshSession session, String sessionName) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'has_session_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    await _cacheTmuxPath(session);
+    final output = await _exec(
+      session,
+      'tmux has-session -t ${_shellQuote(sessionName)} 2>/dev/null; '
+      r'status=$?; '
+      r'if [ "$status" -eq 0 ]; then printf 1; '
+      r'elif [ "$status" -eq 1 ]; then printf 0; '
+      'else false; fi',
+    );
+    final exists = output.trim() == '1';
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'has_session_complete',
+      fields: {'connectionId': session.connectionId, 'exists': exists},
+    );
+    return exists;
   }
 
   // ── Window queries ─────────────────────────────────────────────────────

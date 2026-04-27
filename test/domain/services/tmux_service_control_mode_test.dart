@@ -78,6 +78,59 @@ void main() {
       expect(tools, {AgentLaunchTool.geminiCli});
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
     });
+
+    test(
+      'hasSessionOrThrow returns false for a missing tmux session',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 30);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(
+            stdout: 'bash\n/usr/bin/tmux\n${_doneMarker()}',
+          ),
+          _buildOpenExecSession(stdout: '0\n${_doneMarker()}'),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final exists = await service.hasSessionOrThrow(session, 'missing');
+
+        expect(exists, isFalse);
+        verify(
+          () => client.execute(
+            any(that: contains('tmux -u has-session')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+      },
+    );
+
+    test(
+      'hasSessionOrThrow propagates indeterminate command failures',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 31);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(
+            stdout: 'bash\n/usr/bin/tmux\n${_doneMarker()}',
+          ),
+          _buildOpenExecSession(stdout: _doneMarker(2)),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        await expectLater(
+          service.hasSessionOrThrow(session, 'work'),
+          throwsA(isA<TmuxCommandException>()),
+        );
+      },
+    );
   });
 
   group('parseTmuxWindowChangeEventFromControlLine', () {

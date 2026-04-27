@@ -299,7 +299,7 @@ void main() {
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
           hadVisibleOrPrimedTmuxState: true,
-          verifiedTmuxSession: false,
+          confirmedTmuxActive: false,
           hadDetectionFailure: true,
         ),
         isTrue,
@@ -308,16 +308,19 @@ void main() {
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
           hadVisibleOrPrimedTmuxState: true,
-          verifiedTmuxSession: false,
+          confirmedTmuxActive: false,
           hadDetectionFailure: false,
         ),
         isFalse,
       );
+    });
+
+    test('preserves tmux state after tmux is confirmed active', () {
       expect(
         shouldPreserveTerminalTmuxStateAfterDetectionFailure(
           preserveExistingTmuxState: false,
           hadVisibleOrPrimedTmuxState: false,
-          verifiedTmuxSession: true,
+          confirmedTmuxActive: true,
           hadDetectionFailure: false,
         ),
         isTrue,

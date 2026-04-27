@@ -283,7 +283,7 @@ void main() {
       ];
 
       when(
-        () => tmuxService.hasSession(session, tmuxSessionName),
+        () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
       ).thenAnswer((_) async => true);
       when(
         () => tmuxService.listWindows(session, tmuxSessionName),
@@ -349,15 +349,15 @@ void main() {
         );
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
         var hasSessionCalls = 0;
-        when(() => tmuxService.hasSession(session, tmuxSessionName)).thenAnswer(
-          (_) async {
-            hasSessionCalls += 1;
-            if (hasSessionCalls == 1) {
-              throw StateError('exec channel temporarily unavailable');
-            }
-            return true;
-          },
-        );
+        when(
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+        ).thenAnswer((_) async {
+          hasSessionCalls += 1;
+          if (hasSessionCalls == 1) {
+            throw StateError('exec channel temporarily unavailable');
+          }
+          return true;
+        });
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
         ).thenAnswer((_) async => windows);
@@ -406,6 +406,84 @@ void main() {
     );
 
     testWidgets(
+      'clears a primed tmux bar after later clean inactive detection',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+          TmuxWindow(index: 1, name: 'agent', isActive: false),
+        ];
+        session = SshSession(
+          connectionId: 7,
+          hostId: host.id,
+          client: sshClient,
+          config: const SshConnectionConfig(
+            hostname: 'terminal.example.com',
+            port: 22,
+            username: 'root',
+          ),
+        );
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        var hasSessionCalls = 0;
+        when(
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+        ).thenAnswer((_) async {
+          hasSessionCalls += 1;
+          if (hasSessionCalls == 1) {
+            throw StateError('exec channel temporarily unavailable');
+          }
+          return false;
+        });
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+
+        await tester.pump(const Duration(seconds: 3));
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
+        expect(hasSessionCalls, greaterThanOrEqualTo(2));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'initial tmux target selects the alerted window and can start expanded',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -416,7 +494,7 @@ void main() {
           const TmuxWindow(index: 3, name: 'agent', isActive: false),
         ];
         when(
-          () => tmuxService.hasSession(session, tmuxSessionName),
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
@@ -506,7 +584,7 @@ void main() {
           return shellChannel;
         });
         when(
-          () => tmuxService.hasSession(session, tmuxSessionName),
+          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
