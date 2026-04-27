@@ -63,6 +63,9 @@ typedef TerminalTextBeforeCursorResolver = String? Function();
 typedef TerminalKeyModifierResolver =
     ({bool ctrl, bool alt, bool shift}) Function();
 
+/// Applies active toolbar modifiers to soft-keyboard terminal text.
+typedef TerminalTextInputModifierApplier = String Function(String text);
+
 /// Whether a pointer-up event should request the terminal soft keyboard.
 ///
 /// Touch input should only open the keyboard after a tap-like gesture. Scrolls
@@ -157,6 +160,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.resolveTextBeforeCursor,
     this.resolveTerminalKeyModifiers,
     this.consumeTerminalKeyModifiers,
+    this.applyTerminalTextInputModifiers,
     this.hasActiveToolbarModifier,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
@@ -201,6 +205,9 @@ class TerminalTextInputHandler extends StatefulWidget {
 
   /// Consumes one-shot toolbar modifiers after a terminal key action.
   final VoidCallback? consumeTerminalKeyModifiers;
+
+  /// Applies toolbar modifiers before text reaches the terminal output stream.
+  final TerminalTextInputModifierApplier? applyTerminalTextInputModifiers;
 
   /// Whether a toolbar modifier (Ctrl or Alt) is currently active.
   ///
@@ -885,7 +892,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     final appendedText = delta.appendedText;
     if (appendedText.isNotEmpty) {
-      widget.terminal.textInput(appendedText);
+      widget.terminal.textInput(_applyTerminalTextInputModifiers(appendedText));
     }
 
     _lastSentText = currentText;
@@ -1437,6 +1444,16 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       delta.deleteCursorOffset -
       delta.deletedCount +
       delta.appendedText.characters.length;
+
+  String _applyTerminalTextInputModifiers(String text) {
+    final applyModifiers = widget.applyTerminalTextInputModifiers;
+    if (applyModifiers == null) {
+      return text;
+    }
+
+    final normalizedText = text == '\n' ? '\r' : text;
+    return applyModifiers(normalizedText);
+  }
 
   int _deltaCursorScore(
     ({int deletedCount, String appendedText, int deleteCursorOffset}) delta,

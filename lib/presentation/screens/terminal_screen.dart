@@ -4107,12 +4107,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // keyInput(TerminalKey.enter) path already produces '\r', so we
       // only normalize single-'\n' to avoid rewriting legitimate LF
       // characters in pasted or multi-char input.
-      var output = data == '\n' ? '\r' : data;
-
-      // Apply toolbar modifier state to system keyboard input.
-      // When the user toggles Ctrl on the toolbar then types on the system
-      // keyboard, we convert the character to the corresponding control code.
-      output = _toolbarController.applySystemKeyboardModifiers(output);
+      final output = data == '\n' ? '\r' : data;
 
       _shell?.write(utf8.encode(output));
     };
@@ -6456,6 +6451,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         shift: _toolbarController.isShiftActive,
       ),
       consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
+      applyTerminalTextInputModifiers:
+          _toolbarController.applySystemKeyboardModifiers,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
