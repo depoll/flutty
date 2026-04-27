@@ -386,9 +386,11 @@ void main() {
       final agentField = find.byKey(const Key('host-agent-tool-field'));
       await tester.ensureVisible(agentField);
       await tester.tap(agentField);
-      await tester.pump();
-      await tester.tap(find.text('Copilot CLI').last);
-      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(
+        find.widgetWithText(DropdownMenuItem<AgentLaunchTool>, 'Copilot CLI'),
+      );
+      await tester.pump(const Duration(milliseconds: 300));
 
       expect(
         find.descendant(of: agentField, matching: find.byType(AgentToolIcon)),
