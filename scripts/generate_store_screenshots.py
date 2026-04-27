@@ -52,9 +52,9 @@ TARGETS = {
     'android_phone': ScreenshotTarget(
         name='android_phone',
         platform='android',
-        size=(1080, 1920),
-        android_size='1080x1920',
-        android_density='420',
+        size=(1440, 2560),
+        android_size='1440x2560',
+        android_density='560',
     ),
     'android_7_tablet': ScreenshotTarget(
         name='android_7_tablet',
