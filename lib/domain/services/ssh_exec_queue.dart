@@ -157,6 +157,9 @@ class _SshExecQueue {
           },
         );
         _drain();
+        if (_activeCount == 0 && pendingCount == 0) {
+          _execQueues.remove(connectionId);
+        }
       }),
     );
   }

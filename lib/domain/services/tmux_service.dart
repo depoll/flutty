@@ -999,8 +999,7 @@ class TmuxService {
     SshSession session,
     String command, {
     SshExecPriority priority = SshExecPriority.normal,
-  }) => runQueuedSshExec(
-    session.connectionId,
+  }) => session.runQueuedExec(
     () => _execUnqueued(session, command),
     priority: priority,
   );

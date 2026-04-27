@@ -38,6 +38,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
@@ -3644,21 +3645,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return parsed.text;
   }
 
-  Future<String> _runRemoteCommand(SshSession session, String command) async {
-    final exec = await session.execute(command);
-    final stdout = StringBuffer();
-    final stderr = StringBuffer();
-    final stdoutFuture = exec.stdout
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .forEach(stdout.write);
-    final stderrFuture = exec.stderr
-        .cast<List<int>>()
-        .transform(utf8.decoder)
-        .forEach(stderr.write);
-    await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
-    return stdout.toString().isNotEmpty ? stdout.toString() : stderr.toString();
-  }
+  Future<String> _runRemoteCommand(SshSession session, String command) =>
+      session.runQueuedExec(() async {
+        final exec = await session.execute(command);
+        try {
+          final stdout = StringBuffer();
+          final stderr = StringBuffer();
+          final stdoutFuture = exec.stdout
+              .cast<List<int>>()
+              .transform(utf8.decoder)
+              .forEach(stdout.write);
+          final stderrFuture = exec.stderr
+              .cast<List<int>>()
+              .transform(utf8.decoder)
+              .forEach(stderr.write);
+          await Future.wait<void>([stdoutFuture, stderrFuture, exec.done]);
+          return stdout.toString().isNotEmpty
+              ? stdout.toString()
+              : stderr.toString();
+        } finally {
+          exec.close();
+        }
+      }, priority: SshExecPriority.low);
 
   void _handleTerminalScroll() {
     _shouldFollowLiveOutput = shouldFollowTerminalOutput(

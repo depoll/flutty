@@ -2139,7 +2139,7 @@ class AgentSessionDiscoveryService {
   // ── Helpers ────────────────────────────────────────────────────────────
 
   Future<String> _exec(SshSession session, String command) =>
-      runQueuedSshExec(session.connectionId, () async {
+      session.runQueuedExec(() async {
         final execSession = await session.execute(
           '$_profileSourcingPrefix$command',
         );
