@@ -10,7 +10,6 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -3081,7 +3080,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
   bool _isNativeSelectionMode = false;
-  bool _hasSystemTerminalSelection = false;
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
@@ -3123,6 +3121,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Offset? _lastTerminalTapPosition;
   Duration? _lastTerminalTapTimestamp;
   bool _recentlyHandledTerminalDoubleTap = false;
+  int? _pendingTerminalMouseTapPointer;
+  Offset? _pendingTerminalMouseTapDownPosition;
+  Duration? _pendingTerminalMouseTapDownTimestamp;
   Rect? _hoveredTerminalPathUnderline;
   List<({String path, Rect underlineRect, Rect touchRect})>
   _visibleTerminalPathUnderlines =
@@ -6056,9 +6057,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       systemSelectionContextMenuBuilder: isMobile
           ? _buildTerminalSelectionContextMenu
           : null,
-      onSystemSelectionChanged: isMobile
-          ? _handleSystemTerminalSelectionChanged
-          : null,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
@@ -6254,7 +6252,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
       tapToShowKeyboard:
           ref.watch(tapToShowKeyboardNotifierProvider) &&
-          !_hasSystemTerminalSelection &&
           !_showsNativeSelectionOverlay &&
           overlayMessage == null,
       showKeyboardOnFocus: false,
@@ -6297,14 +6294,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       anchors: selectableRegionState.contextMenuAnchors,
       buttonItems: buttonItems,
     );
-  }
-
-  void _handleSystemTerminalSelectionChanged(SelectedContent? selectedContent) {
-    final hasSelection = selectedContent?.plainText.isNotEmpty ?? false;
-    if (_hasSystemTerminalSelection == hasSelection) {
-      return;
-    }
-    setState(() => _hasSystemTerminalSelection = hasSelection);
   }
 
   /// Resolves the terminal text style for the given font family and size.
@@ -7072,23 +7061,95 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       event,
       allowDoubleTap: _pendingTerminalPathTap == null,
     );
+    _handleTerminalMouseTapPointerDown(
+      event,
+      allowTap:
+          _pendingTerminalPathTap == null &&
+          _terminalDoubleTapConsumedPointer != event.pointer,
+    );
   }
 
   void _handleTerminalPointerMove(PointerMoveEvent event) {
     _handleTerminalPathPointerMove(event);
     _handleTerminalDoubleTapPointerMove(event);
+    _handleTerminalMouseTapPointerMove(event);
   }
 
   void _handleTerminalPointerUp(PointerUpEvent event) {
     final pathTapConsumed = _handleTerminalPathPointerUp(event);
     if (!pathTapConsumed) {
       _handleTerminalDoubleTapPointerUp(event);
+      _handleTerminalMouseTapPointerUp(event);
+    } else {
+      _clearPendingTerminalMouseTap(event.pointer);
+      _clearLastTerminalTap();
     }
   }
 
   void _handleTerminalPointerCancel(PointerCancelEvent event) {
     _handleTerminalPathPointerCancel(event);
     _handleTerminalDoubleTapPointerCancel(event);
+    _clearPendingTerminalMouseTap(event.pointer);
+  }
+
+  void _handleTerminalMouseTapPointerDown(
+    PointerDownEvent event, {
+    required bool allowTap,
+  }) {
+    _clearPendingTerminalMouseTap();
+    final terminalViewState = _terminalViewKey.currentState;
+    if (event.kind != PointerDeviceKind.touch ||
+        !allowTap ||
+        terminalViewState == null ||
+        !terminalViewState.shouldSendTerminalTapPointerInput) {
+      return;
+    }
+
+    _pendingTerminalMouseTapPointer = event.pointer;
+    _pendingTerminalMouseTapDownPosition = event.position;
+    _pendingTerminalMouseTapDownTimestamp = event.timeStamp;
+  }
+
+  void _handleTerminalMouseTapPointerMove(PointerMoveEvent event) {
+    if (_pendingTerminalMouseTapPointer != event.pointer) {
+      return;
+    }
+    final downPosition = _pendingTerminalMouseTapDownPosition;
+    if (downPosition != null &&
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalMouseTap(event.pointer);
+    }
+  }
+
+  void _handleTerminalMouseTapPointerUp(PointerUpEvent event) {
+    if (event.kind != PointerDeviceKind.touch ||
+        _terminalDoubleTapConsumedPointer == event.pointer) {
+      _clearPendingTerminalMouseTap(event.pointer);
+      return;
+    }
+
+    final downPosition = _pendingTerminalMouseTapDownPosition;
+    final downTimestamp = _pendingTerminalMouseTapDownTimestamp;
+    if (_pendingTerminalMouseTapPointer != event.pointer ||
+        downPosition == null ||
+        downTimestamp == null ||
+        event.timeStamp - downTimestamp > kLongPressTimeout ||
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalMouseTap(event.pointer);
+      return;
+    }
+
+    _clearPendingTerminalMouseTap(event.pointer);
+    _terminalViewKey.currentState?.sendTerminalPrimaryTap(event.position);
+  }
+
+  void _clearPendingTerminalMouseTap([int? pointer]) {
+    if (pointer != null && _pendingTerminalMouseTapPointer != pointer) {
+      return;
+    }
+    _pendingTerminalMouseTapPointer = null;
+    _pendingTerminalMouseTapDownPosition = null;
+    _pendingTerminalMouseTapDownTimestamp = null;
   }
 
   void _handleTerminalDoubleTapPointerDown(

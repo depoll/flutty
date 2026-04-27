@@ -6064,6 +6064,21 @@ void main() {
         isFalse,
       );
     });
+
+    test('suppresses the keyboard when touch duration reaches long press', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerUp(
+          pointerKind: PointerDeviceKind.touch,
+          activeTouchPointers: 1,
+          hadMultipleTouchPointers: false,
+          movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: false,
+          readOnly: false,
+          touchPressDuration: terminalKeyboardTapLongPressTimeout,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('TerminalTextInputHandler compared with TextField', () {

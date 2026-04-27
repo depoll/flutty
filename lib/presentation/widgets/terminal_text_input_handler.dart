@@ -80,6 +80,7 @@ bool shouldRequestKeyboardForTerminalPointerUp({
   required bool movedBeyondTapSlop,
   required bool pressedBeyondLongPressTimeout,
   required bool readOnly,
+  Duration? touchPressDuration,
 }) {
   if (readOnly) {
     return false;
@@ -92,7 +93,9 @@ bool shouldRequestKeyboardForTerminalPointerUp({
   return activeTouchPointers == 1 &&
       !hadMultipleTouchPointers &&
       !movedBeyondTapSlop &&
-      !pressedBeyondLongPressTimeout;
+      !pressedBeyondLongPressTimeout &&
+      (touchPressDuration == null ||
+          touchPressDuration < terminalKeyboardTapLongPressTimeout);
 }
 
 /// Controls a [TerminalTextInputHandler] from an ancestor widget.
@@ -243,6 +246,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   TextInputConnection? _connection;
   final Set<int> _activeTouchPointers = <int>{};
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
+  final Map<int, Duration> _touchPointerDownTimestamps = <int, Duration>{};
   final Map<int, Timer> _touchLongPressTimers = <int, Timer>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
   final Set<int> _touchPointersPressedBeyondLongPressTimeout = <int>{};
@@ -304,6 +308,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
     _activeTouchPointers.clear();
     _touchPointerDownPositions.clear();
+    _touchPointerDownTimestamps.clear();
     _touchLongPressTimers.clear();
     _touchPointersMovedBeyondTapSlop.clear();
     _touchPointersPressedBeyondLongPressTimeout.clear();
@@ -330,6 +335,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (event.kind == PointerDeviceKind.touch) {
       _activeTouchPointers.add(event.pointer);
       _touchPointerDownPositions[event.pointer] = event.position;
+      _touchPointerDownTimestamps[event.pointer] = event.timeStamp;
       _touchLongPressTimers[event.pointer]?.cancel();
       _touchLongPressTimers[event.pointer] = Timer(
         terminalKeyboardTapLongPressTimeout,
@@ -370,6 +376,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           event.kind == PointerDeviceKind.touch &&
           _touchPointersPressedBeyondLongPressTimeout.contains(event.pointer),
       readOnly: widget.readOnly,
+      touchPressDuration: event.kind == PointerDeviceKind.touch
+          ? _touchPressDuration(event)
+          : null,
     );
     if (event.kind == PointerDeviceKind.touch && shouldRequestKeyboard) {
       _clearImeAfterNextTouchCursorMove = true;
@@ -403,12 +412,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     _activeTouchPointers.remove(event.pointer);
     _touchPointerDownPositions.remove(event.pointer);
+    _touchPointerDownTimestamps.remove(event.pointer);
     _touchLongPressTimers.remove(event.pointer)?.cancel();
     _touchPointersMovedBeyondTapSlop.remove(event.pointer);
     _touchPointersPressedBeyondLongPressTimeout.remove(event.pointer);
     if (_activeTouchPointers.isEmpty) {
       _touchSequenceHadMultiplePointers = false;
     }
+  }
+
+  Duration? _touchPressDuration(PointerEvent event) {
+    final startTimestamp = _touchPointerDownTimestamps[event.pointer];
+    if (startTimestamp == null) {
+      return null;
+    }
+    return event.timeStamp - startTimestamp;
   }
 
   void _notifyUserInput() {

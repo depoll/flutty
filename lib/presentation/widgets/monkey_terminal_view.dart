@@ -1,7 +1,7 @@
 // Adapted from package:xterm 4.0.0 TerminalView internals to keep local
 // terminal layout and trackpad/mobile gesture fixes. Keep this aligned with the
 // pinned xterm dependency when upgrading.
-// ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks
+// ignore_for_file: implementation_imports, public_member_api_docs, directives_ordering, always_put_required_named_parameters_first, cast_nullable_to_non_nullable, prefer_expression_function_bodies, sort_child_properties_last, use_if_null_to_convert_nulls_to_bools, avoid_bool_literals_in_conditional_expressions, avoid_setters_without_getters, prefer_int_literals, cascade_invocations, unnecessary_null_checks, invalid_use_of_internal_member
 
 import 'dart:async';
 import 'dart:math' as math;
@@ -28,6 +28,7 @@ import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
 import 'package:xterm/src/ui/painter.dart';
+import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
 import 'package:xterm/src/ui/shortcut/shortcuts.dart';
@@ -607,7 +608,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           ? _onTouchScrollUpdate
           : null,
       onTouchScrollEnd: widget.touchScrollToTerminal ? _onTouchScrollEnd : null,
-      readOnly: widget.readOnly,
+      readOnly: widget.readOnly || widget.useSystemSelection,
       enableTerminalSelectionGestures: !widget.useSystemSelection,
       child: child,
     );
@@ -648,6 +649,28 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void closeKeyboard() {
     _customTextEditKey.currentState?.closeKeyboard();
+  }
+
+  bool get shouldSendTerminalTapPointerInput =>
+      !widget.readOnly && _controller.shouldSendPointerInput(PointerInput.tap);
+
+  bool sendTerminalPrimaryTap(Offset globalPosition) {
+    if (!shouldSendTerminalTapPointerInput) {
+      return false;
+    }
+
+    final localPosition = renderTerminal.globalToLocal(globalPosition);
+    final handledDown = renderTerminal.mouseEvent(
+      TerminalMouseButton.left,
+      TerminalMouseButtonState.down,
+      localPosition,
+    );
+    final handledUp = renderTerminal.mouseEvent(
+      TerminalMouseButton.left,
+      TerminalMouseButtonState.up,
+      localPosition,
+    );
+    return handledDown || handledUp;
   }
 
   Rect get cursorRect {

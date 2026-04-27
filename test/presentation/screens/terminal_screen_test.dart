@@ -979,6 +979,29 @@ void main() {
     );
 
     testWidgets(
+      'terminal tap sends mouse input while system selection is enabled',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!
+          ..setMouseMode(MouseMode.upDownScroll)
+          ..setMouseReportMode(MouseReportMode.sgr)
+          ..write('alpha beta');
+        await tester.pumpAndSettle();
+
+        shellWrites.clear();
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1B[<0;'));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'toolbar navigation keys clear the screen IME buffer',
       (tester) async {
         await pumpScreen(tester);
