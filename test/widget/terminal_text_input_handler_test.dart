@@ -4824,6 +4824,44 @@ void main() {
     });
 
     testWidgets(
+      'opens the keyboard after a touch tap when focus keyboard is disabled',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                showKeyboardOnFocus: false,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        await tester.tapAt(target);
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
       'does not reopen the keyboard when the platform closes it while focused',
       (tester) async {
         final terminal = Terminal();
@@ -4863,6 +4901,51 @@ void main() {
         );
       },
     );
+
+    testWidgets('does not open the keyboard after a touch long press', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      tester.testTextInput.hide();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      final gesture = await tester.createGesture();
+      await gesture.down(target);
+      await tester.pump(terminalKeyboardTapLongPressTimeout);
+      await gesture.up();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+    });
 
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
@@ -5891,6 +5974,7 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isTrue,
@@ -5904,6 +5988,7 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: true,
+          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isFalse,
@@ -5917,6 +6002,7 @@ void main() {
           activeTouchPointers: 2,
           hadMultipleTouchPointers: true,
           movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isFalse,
@@ -5930,6 +6016,7 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: true,
           movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: false,
           readOnly: false,
         ),
         isFalse,
@@ -5943,6 +6030,7 @@ void main() {
           activeTouchPointers: 0,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: true,
           readOnly: false,
         ),
         isTrue,
@@ -5956,7 +6044,22 @@ void main() {
           activeTouchPointers: 1,
           hadMultipleTouchPointers: false,
           movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: false,
           readOnly: true,
+        ),
+        isFalse,
+      );
+    });
+
+    test('suppresses the keyboard after a long touch press', () {
+      expect(
+        shouldRequestKeyboardForTerminalPointerUp(
+          pointerKind: PointerDeviceKind.touch,
+          activeTouchPointers: 1,
+          hadMultipleTouchPointers: false,
+          movedBeyondTapSlop: false,
+          pressedBeyondLongPressTimeout: true,
+          readOnly: false,
         ),
         isFalse,
       );

@@ -34,6 +34,11 @@ bool _isPromptWhitespaceCodeUnit(int codeUnit) =>
 @visibleForTesting
 const modifierChordFollowUpWindow = Duration(milliseconds: 500);
 
+/// Touch duration at which a terminal touch should be treated as selection
+/// intent rather than a tap-to-focus keyboard request.
+@visibleForTesting
+const terminalKeyboardTapLongPressTimeout = kLongPressTimeout;
+
 DateTime Function()? _modifierChordClockOverride;
 
 DateTime _readModifierChordClock() =>
@@ -73,6 +78,7 @@ bool shouldRequestKeyboardForTerminalPointerUp({
   required int activeTouchPointers,
   required bool hadMultipleTouchPointers,
   required bool movedBeyondTapSlop,
+  required bool pressedBeyondLongPressTimeout,
   required bool readOnly,
 }) {
   if (readOnly) {
@@ -85,7 +91,8 @@ bool shouldRequestKeyboardForTerminalPointerUp({
 
   return activeTouchPointers == 1 &&
       !hadMultipleTouchPointers &&
-      !movedBeyondTapSlop;
+      !movedBeyondTapSlop &&
+      !pressedBeyondLongPressTimeout;
 }
 
 /// Controls a [TerminalTextInputHandler] from an ancestor widget.
@@ -160,6 +167,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.hasActiveToolbarModifier,
     this.readOnly = false,
     this.tapToShowKeyboard = true,
+    this.showKeyboardOnFocus,
     super.key,
   });
 
@@ -218,6 +226,13 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// can still be opened via [requestKeyboard] (e.g. from a toolbar button).
   final bool tapToShowKeyboard;
 
+  /// Whether focusing the terminal should show the keyboard.
+  ///
+  /// When omitted, focus follows [tapToShowKeyboard]. Set this to `false` when
+  /// focus should attach an input connection without opening the keyboard until
+  /// the user explicitly taps the terminal.
+  final bool? showKeyboardOnFocus;
+
   @override
   State<TerminalTextInputHandler> createState() =>
       _TerminalTextInputHandlerState();
@@ -228,7 +243,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   TextInputConnection? _connection;
   final Set<int> _activeTouchPointers = <int>{};
   final Map<int, Offset> _touchPointerDownPositions = <int, Offset>{};
+  final Map<int, Timer> _touchLongPressTimers = <int, Timer>{};
   final Set<int> _touchPointersMovedBeyondTapSlop = <int>{};
+  final Set<int> _touchPointersPressedBeyondLongPressTimeout = <int>{};
   bool _touchSequenceHadMultiplePointers = false;
   bool _skipNextTouchKeyboardRequest = false;
   bool _sawImeComposition = false;
@@ -272,7 +289,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
     } else if (oldWidget.readOnly && widget.focusNode.hasFocus) {
-      _openInputConnection(show: widget.tapToShowKeyboard);
+      _openInputConnection(
+        show: widget.showKeyboardOnFocus ?? widget.tapToShowKeyboard,
+      );
     }
   }
 
@@ -280,9 +299,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   void dispose() {
     widget.controller?._detach(this);
     widget.focusNode.removeListener(_onFocusChange);
+    for (final timer in _touchLongPressTimers.values) {
+      timer.cancel();
+    }
     _activeTouchPointers.clear();
     _touchPointerDownPositions.clear();
+    _touchLongPressTimers.clear();
     _touchPointersMovedBeyondTapSlop.clear();
+    _touchPointersPressedBeyondLongPressTimeout.clear();
     _closeInputConnectionIfNeeded();
     super.dispose();
   }
@@ -306,6 +330,11 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (event.kind == PointerDeviceKind.touch) {
       _activeTouchPointers.add(event.pointer);
       _touchPointerDownPositions[event.pointer] = event.position;
+      _touchLongPressTimers[event.pointer]?.cancel();
+      _touchLongPressTimers[event.pointer] = Timer(
+        terminalKeyboardTapLongPressTimeout,
+        () => _touchPointersPressedBeyondLongPressTimeout.add(event.pointer),
+      );
       if (_activeTouchPointers.length > 1) {
         _touchSequenceHadMultiplePointers = true;
       }
@@ -337,6 +366,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       movedBeyondTapSlop: _touchPointersMovedBeyondTapSlop.contains(
         event.pointer,
       ),
+      pressedBeyondLongPressTimeout:
+          event.kind == PointerDeviceKind.touch &&
+          _touchPointersPressedBeyondLongPressTimeout.contains(event.pointer),
       readOnly: widget.readOnly,
     );
     if (event.kind == PointerDeviceKind.touch && shouldRequestKeyboard) {
@@ -371,7 +403,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
     _activeTouchPointers.remove(event.pointer);
     _touchPointerDownPositions.remove(event.pointer);
+    _touchLongPressTimers.remove(event.pointer)?.cancel();
     _touchPointersMovedBeyondTapSlop.remove(event.pointer);
+    _touchPointersPressedBeyondLongPressTimeout.remove(event.pointer);
     if (_activeTouchPointers.isEmpty) {
       _touchSequenceHadMultiplePointers = false;
     }
@@ -549,7 +583,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         // Attach the input connection but only show the soft keyboard when
         // tap-to-show is enabled.  Explicit keyboard requests go through
         // requestKeyboard() which always passes show: true.
-        _openInputConnection(show: widget.tapToShowKeyboard);
+        _openInputConnection(
+          show: widget.showKeyboardOnFocus ?? widget.tapToShowKeyboard,
+        );
       }
     } else if (!widget.focusNode.hasFocus) {
       _closeInputConnectionIfNeeded();

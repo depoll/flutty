@@ -656,6 +656,28 @@ void main() {
     );
 
     testWidgets(
+      'terminal tap opens the mobile keyboard when tap-to-show is enabled',
+      (tester) async {
+        await pumpScreen(tester);
+
+        tester.testTextInput.log.clear();
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isNotEmpty,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'toolbar navigation keys clear the screen IME buffer',
       (tester) async {
         await pumpScreen(tester);

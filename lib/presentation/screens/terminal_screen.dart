@@ -49,6 +49,7 @@ import '../widgets/keyboard_toolbar.dart';
 import '../widgets/monkey_terminal_view.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
+import '../widgets/terminal_selection_text.dart' as terminal_selection_text;
 import '../widgets/terminal_text_input_handler.dart';
 import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
@@ -1636,7 +1637,6 @@ class _ExtraKeysToggleKeycap extends StatelessWidget {
 
 final _terminalFilePathVerificationExtensionSet =
     _terminalFilePathVerificationExtensions.toSet();
-final _trailingTerminalPaddingPattern = RegExp(r' +$');
 const _clipboardContentChannel = MethodChannel(
   'xyz.depollsoft.monkeyssh/clipboard_content',
 );
@@ -1730,12 +1730,12 @@ double resolveTerminalFontSize({
 /// Trims terminal cell padding from the end of a rendered line.
 @visibleForTesting
 String trimTerminalLinePadding(String line) =>
-    line.replaceFirst(_trailingTerminalPaddingPattern, '');
+    terminal_selection_text.trimTerminalLinePadding(line);
 
 /// Trims per-line terminal padding from copied or overlaid terminal text.
 @visibleForTesting
 String trimTerminalSelectionText(String text) =>
-    text.split('\n').map(trimTerminalLinePadding).join('\n');
+    terminal_selection_text.trimTerminalSelectionText(text);
 
 /// Keeps the Pro upsell snackbar tucked just above the visible bottom chrome.
 ///
@@ -3613,21 +3613,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       resolveTerminalTabGestureIndicatorLabel(shiftActive: shiftActive),
     );
   }
-
-  void _handleTerminalTapUp(TapUpDetails tapDetails, CellOffset cellOffset) {
-    if (!ref.read(tapToShowKeyboardNotifierProvider) ||
-        _hasSystemTerminalSelection ||
-        _terminalController.selection != null ||
-        _showsNativeSelectionOverlay) {
-      return;
-    }
-    _terminalTextInputController.requestKeyboard();
-  }
-
-  void _handleTerminalTapDown(
-    TapDownDetails tapDetails,
-    CellOffset cellOffset,
-  ) {}
 
   void _handleTerminalLinkTapDown(
     TapDownDetails tapDetails,
@@ -6046,8 +6031,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       controller: _terminalController,
       scrollController: _terminalScrollController,
       resolveLinkTap: _resolveTerminalLinkTap,
-      onTapDown: isMobile ? _handleTerminalTapDown : null,
-      onTapUp: isMobile ? _handleTerminalTapUp : null,
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
@@ -6252,7 +6235,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _hasSystemTerminalSelection ||
           _showsNativeSelectionOverlay ||
           overlayMessage != null,
-      tapToShowKeyboard: false,
+      tapToShowKeyboard: ref.watch(tapToShowKeyboardNotifierProvider),
+      showKeyboardOnFocus: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -6275,7 +6259,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Widget _buildTerminalSelectionContextMenu(
-    BuildContext context,
+    BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
     final buttonItems = <ContextMenuButtonItem>[

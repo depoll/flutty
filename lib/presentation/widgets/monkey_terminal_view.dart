@@ -38,6 +38,7 @@ import 'package:xterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
+import 'terminal_selection_text.dart';
 
 /// Terminal render padding.
 ///
@@ -71,7 +72,7 @@ bool shouldAlignTerminalToTrailingEdges(MediaQueryData mediaQuery) {
 }
 
 Widget _defaultSystemSelectionContextMenu(
-  BuildContext context,
+  BuildContext _,
   SelectableRegionState selectableRegionState,
 ) => AdaptiveTextSelectionToolbar.selectableRegion(
   selectableRegionState: selectableRegionState,
@@ -336,7 +337,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
   int _lastTerminalViewWidth = 0;
-  bool _clearedSelectionOnTapDown = false;
 
   late TerminalController _controller;
 
@@ -463,17 +463,16 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           composingText: _composingText,
           selectionRegistrar: SelectionContainer.maybeOf(context),
         );
-        var terminalLeaf = buildTerminalLeaf(context);
-        if (widget.useSystemSelection) {
-          terminalLeaf = SelectionArea(
-            contextMenuBuilder:
-                widget.systemSelectionContextMenuBuilder ??
-                _defaultSystemSelectionContextMenu,
-            onSelectionChanged: widget.onSystemSelectionChanged,
-            child: Builder(builder: buildTerminalLeaf),
-          );
+        if (!widget.useSystemSelection) {
+          return buildTerminalLeaf(context);
         }
-        return terminalLeaf;
+        return SelectionArea(
+          contextMenuBuilder:
+              widget.systemSelectionContextMenuBuilder ??
+              _defaultSystemSelectionContextMenu,
+          onSelectionChanged: widget.onSystemSelectionChanged,
+          child: Builder(builder: buildTerminalLeaf),
+        );
       },
     );
 
@@ -580,7 +579,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     child = MonkeyTerminalGestureHandler(
       terminalView: this,
       terminalController: _controller,
-      onTapUp: _onTapUp,
+      onSingleTapUp: _onTapUp,
       onTapDown: _onTapDown,
       onDoubleTapDown: widget.onDoubleTapDown != null ? _onDoubleTapDown : null,
       onLongPressStart: widget.onLongPressStart != null
@@ -662,17 +661,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   void _onTapUp(TapUpDetails details) {
     final offset = renderTerminal.getCellOffset(details.localPosition);
     widget.onTapUp?.call(details, offset);
-    if (widget.useSystemSelection && !_clearedSelectionOnTapDown) {
-      _requestInputFocus();
-    }
-    _clearedSelectionOnTapDown = false;
   }
 
   void _onTapDown(TapDownDetails details) {
     _stopTouchScrollInertia();
-    _clearedSelectionOnTapDown = false;
     if (_controller.selection != null) {
-      _clearedSelectionOnTapDown = true;
       _controller.clearSelection();
     } else if (!widget.useSystemSelection) {
       _requestInputFocus();
@@ -1628,7 +1621,8 @@ class MonkeyRenderTerminal extends RenderBox
     final text = _terminal.buffer.getText(
       _bufferRangeForTextOffsets(start, end),
     );
-    return text.isEmpty ? null : SelectedContent(plainText: text);
+    final trimmedText = trimTerminalSelectionText(text);
+    return trimmedText.isEmpty ? null : SelectedContent(plainText: trimmedText);
   }
 
   @override

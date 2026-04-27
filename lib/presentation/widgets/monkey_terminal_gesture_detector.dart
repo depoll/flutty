@@ -13,7 +13,6 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     super.key,
     this.child,
     this.onSingleTapUp,
-    this.onTapUp,
     this.onTapDown,
     this.onTapCancel,
     this.onSecondaryTapDown,
@@ -33,8 +32,6 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   });
 
   final Widget? child;
-
-  final GestureTapUpCallback? onTapUp;
 
   final GestureTapUpCallback? onSingleTapUp;
 

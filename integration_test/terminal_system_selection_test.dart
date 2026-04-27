@@ -34,7 +34,7 @@ void main() {
     );
     await tester.pumpAndSettle();
 
-    terminal.write('selectable alpha beta gamma');
+    terminal.write('selectable alpha   beta gamma');
     await tester.pumpAndSettle();
 
     final renderTerminal = terminalViewKey.currentState!.renderTerminal;
@@ -48,8 +48,17 @@ void main() {
 
     expect(find.byType(TextField), findsNothing);
     expect(controller.selection, isNotNull);
-    expect(renderTerminal.getSelectedContent()?.plainText.trim(), 'alpha');
+    expect(renderTerminal.getSelectedContent()?.plainText, 'alpha');
     expect(selectionChanges, isNotEmpty);
-    expect(selectionChanges.last?.plainText.trim(), 'alpha');
+    expect(selectionChanges.last?.plainText, 'alpha');
+
+    controller.setSelection(
+      terminal.buffer.createAnchorFromOffset(const CellOffset(11, 0)),
+      terminal.buffer.createAnchorFromOffset(const CellOffset(19, 0)),
+      mode: SelectionMode.line,
+    );
+    await tester.pumpAndSettle();
+
+    expect(renderTerminal.getSelectedContent()?.plainText, 'alpha');
   });
 }

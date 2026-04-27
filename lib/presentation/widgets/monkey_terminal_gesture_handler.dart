@@ -19,7 +19,6 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     required this.terminalView,
     required this.terminalController,
     this.child,
-    this.onTapUp,
     this.onSingleTapUp,
     this.onTapDown,
     this.onDoubleTapDown,
@@ -45,8 +44,6 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final TerminalController terminalController;
 
   final Widget? child;
-
-  final GestureTapUpCallback? onTapUp;
 
   final GestureTapUpCallback? onSingleTapUp;
 
@@ -117,7 +114,6 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   Widget build(BuildContext context) {
     return MonkeyTerminalGestureDetector(
       child: widget.child,
-      onTapUp: widget.onTapUp,
       onSingleTapUp: onSingleTapUp,
       onTapDown: onTapDown,
       onTapCancel: _clearPendingLinkTap,
