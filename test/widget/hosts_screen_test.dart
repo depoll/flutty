@@ -157,9 +157,7 @@ void main() {
     expect(find.text('Imported host'), findsOneWidget);
   });
 
-  testWidgets('loading state stays scrollable for pull to refresh', (
-    tester,
-  ) async {
+  testWidgets('loading state remains centered', (tester) async {
     final db = AppDatabase.forTesting(NativeDatabase.memory());
     addTearDown(db.close);
 
