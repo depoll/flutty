@@ -12,12 +12,6 @@ void main() {
       expect(terminalViewportPadding.bottom, 0);
     });
 
-    test('positions selection actions above the bottom safe area', () {
-      const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
-
-      expect(selectionActionsBottomOffset(mediaQuery), 46);
-    });
-
     test('positions the upsell snackbar above visible bottom chrome only', () {
       const mediaQuery = MediaQueryData(padding: EdgeInsets.only(bottom: 34));
 

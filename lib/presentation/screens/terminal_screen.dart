@@ -10,6 +10,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
@@ -365,7 +366,6 @@ const _terminalFollowOutputTolerance = 1.0;
 const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
-const _selectionActionsBottomPadding = 12.0;
 const _terminalSelectionNearbySearchColumns = 4;
 const _maxTerminalFilePathVerificationCandidates = 12;
 const _terminalFilePathVerificationExtensions = <String>[
@@ -1737,11 +1737,6 @@ String trimTerminalLinePadding(String line) =>
 String trimTerminalSelectionText(String text) =>
     text.split('\n').map(trimTerminalLinePadding).join('\n');
 
-/// Keeps floating selection actions above the bottom safe area.
-@visibleForTesting
-double selectionActionsBottomOffset(MediaQueryData mediaQuery) =>
-    _selectionActionsBottomPadding + mediaQuery.padding.bottom;
-
 /// Keeps the Pro upsell snackbar tucked just above the visible bottom chrome.
 ///
 /// Flutter's floating [SnackBar] already anchors itself above the keyboard
@@ -2765,9 +2760,7 @@ bool shouldShowNativeSelectionOverlay({
   required bool isNativeSelectionMode,
   required bool routesTouchScrollToTerminal,
   required bool revealOverlayInTouchScrollMode,
-}) =>
-    isNativeSelectionMode &&
-    (!routesTouchScrollToTerminal || revealOverlayInTouchScrollMode);
+}) => isNativeSelectionMode;
 
 /// Whether the native overlay currently holds an expanded text selection.
 @visibleForTesting
@@ -2928,14 +2921,6 @@ bool shouldResolveTerminalTapLinks({
   required bool showsNativeSelectionOverlay,
 }) => !showsNativeSelectionOverlay;
 
-typedef _NativeSelectionSnapshotMetrics = ({
-  List<int> lineStarts,
-  List<List<int>> columnOffsets,
-  int lineCount,
-  int viewWidth,
-  int textLength,
-});
-
 typedef _NativeSelectionSnapshotData = ({
   String text,
   List<int> lineStarts,
@@ -2963,9 +2948,6 @@ enum NativeSelectionOverlayChange {
   /// Leaves the current overlay and selection mode state unchanged.
   none,
 
-  /// Hides only the temporary overlay used during tmux touch-selection flows.
-  hideTemporaryOverlay,
-
   /// Leaves native selection mode entirely so terminal input becomes editable.
   exitSelectionMode,
 }
@@ -2980,10 +2962,6 @@ NativeSelectionOverlayChange resolveNativeSelectionOverlayChange({
 }) {
   if (!isNativeSelectionMode || !selection.isCollapsed) {
     return NativeSelectionOverlayChange.none;
-  }
-
-  if (revealOverlayInTouchScrollMode) {
-    return NativeSelectionOverlayChange.hideTemporaryOverlay;
   }
 
   if (isMobilePlatform) {
@@ -3102,19 +3080,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showKeyboardToolbar = !_hideStoreScreenshotKeyboardToolbar;
   bool _isUsingAltBuffer = false;
   bool _terminalReportsMouseWheel = false;
-  bool _hasTerminalSelection = false;
   bool _isNativeSelectionMode = false;
+  bool _hasSystemTerminalSelection = false;
   bool _revealsNativeSelectionOverlayInTouchScrollMode = false;
   bool _isSyncingNativeScroll = false;
   bool _hadNativeOverlaySelection = false;
-  _PendingTouchSelectionSnapshot? _pendingTouchSelectionRange;
-  _PendingTouchSelectionSnapshot? _pendingNativeOverlayLongPressSelection;
-  _NativeSelectionSnapshotMetrics? _nativeSelectionSnapshotMetrics;
   _NativeSelectionSnapshotData? _nativeSelectionSnapshotCache;
   Timer? _nativeOverlayCollapseTimer;
-  Timer? _nativeOverlayLongPressTimer;
-  int? _nativeOverlayPointerId;
-  Offset? _nativeOverlayPointerDownPosition;
   int? _connectionId;
   double? _pinchFontSize;
   double? _lastPinchScale;
@@ -3632,7 +3604,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
-    _clearPendingTouchSelectionRange();
     final shiftActive = _toolbarController.isShiftActive;
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
     _terminal.textInput(resolveTerminalTabInput(shiftActive: shiftActive));
@@ -3644,65 +3615,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalTapUp(TapUpDetails tapDetails, CellOffset cellOffset) {
-    _clearPendingTouchSelectionRange();
+    if (!ref.read(tapToShowKeyboardNotifierProvider) ||
+        _hasSystemTerminalSelection ||
+        _terminalController.selection != null ||
+        _showsNativeSelectionOverlay) {
+      return;
+    }
+    _terminalTextInputController.requestKeyboard();
   }
 
   void _handleTerminalTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
-  ) {
-    _cachePendingTouchSelectionSnapshot(tapDetails, cellOffset);
-  }
+  ) {}
 
   void _handleTerminalLinkTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
-    _cachePendingTouchSelectionSnapshot(tapDetails, cellOffset);
-  }
-
-  void _cachePendingTouchSelectionSnapshot(
-    TapDownDetails tapDetails,
-    CellOffset cellOffset,
-  ) {
-    if (!_isMobilePlatform || _showsNativeSelectionOverlay) {
-      _clearPendingTouchSelectionRange();
-      return;
-    }
-
-    final kind = tapDetails.kind;
-    if (kind != null && !_isNativeOverlayTouchPointer(kind)) {
-      _clearPendingTouchSelectionRange();
-      return;
-    }
-
-    final snapshot = _buildPendingTouchSelectionSnapshot(
-      cellOffset,
-      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
-    );
-    _clearPendingTouchSelectionRange();
-    if (snapshot == null) {
-      return;
-    }
-    _pendingTouchSelectionRange = snapshot;
-  }
-
-  void _handleTerminalLongPressStart(
-    LongPressStartDetails details,
-    CellOffset cellOffset,
-  ) {
-    _terminalTextInputController.suppressNextTouchKeyboardRequest();
-    final pendingSnapshot = _pendingTouchSelectionRange;
-    _pendingTouchSelectionRange = null;
-    if (pendingSnapshot != null) {
-      _enterNativeSelectionModeWithSnapshot(pendingSnapshot);
-      return;
-    }
-    _selectNativeOverlayWordAtCellOffset(
-      cellOffset,
-      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
-    );
   }
 
   void _showTerminalInputIndicator(String label) {
@@ -3750,21 +3681,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final selection = _terminalController.selection;
     final hasSelection = selection != null;
-    if (_isMobilePlatform && hasSelection) {
-      _enterNativeSelectionMode(
-        initialRange: selection,
-        revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
-      );
-      return;
+    if (hasSelection) {
+      setState(() {});
     }
-
-    if (_hasTerminalSelection == hasSelection) {
-      return;
-    }
-
-    setState(() {
-      _hasTerminalSelection = hasSelection;
-    });
   }
 
   void _syncNativeScrollFromTerminal({bool force = false}) {
@@ -5306,7 +5225,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ..removeListener(_onNativeOverlayControllerChanged)
       ..dispose();
     _nativeOverlayCollapseTimer?.cancel();
-    _clearNativeOverlayLongPressState();
     _nativeSelectionFocusNode.dispose();
     _doneSubscription?.cancel();
     _shellStdoutSubscription?.cancel();
@@ -6115,9 +6033,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final globalFont = ref.watch(fontFamilyNotifierProvider);
     final fontFamily = hostFont ?? globalFont;
     final terminalTextStyle = _getTerminalTextStyle(fontFamily, fontSize);
-    final nativeSelectionTextStyle = _getNativeSelectionTextStyle(
-      terminalTextStyle,
-    );
     final routeTouchScrollToTerminal = _routesTouchScrollToTerminal;
     final terminalPathLinksEnabled = ref.watch(
       terminalPathLinksNotifierProvider,
@@ -6125,8 +6040,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
-    final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
-
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -6138,8 +6051,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
-      onLongPressStart: isMobile ? _handleTerminalLongPressStart : null,
       suppressLongPressDragSelection: isMobile,
+      useSystemSelection: isMobile,
+      systemSelectionContextMenuBuilder: isMobile
+          ? _buildTerminalSelectionContextMenu
+          : null,
+      onSystemSelectionChanged: isMobile
+          ? _handleSystemTerminalSelectionChanged
+          : null,
       focusNode: isMobile ? null : _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
@@ -6257,6 +6176,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
     }
 
+    if (isMobile) {
+      terminalView = TextSelectionTheme(
+        data: TextSelectionTheme.of(context).copyWith(
+          selectionColor: terminalTheme.selection,
+          selectionHandleColor: terminalTheme.cursor,
+        ),
+        child: terminalView,
+      );
+    }
+
     if (!isMobile) {
       return overlayMessage == null
           ? terminalView
@@ -6269,31 +6198,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     var mobileTerminalView = terminalView;
-
-    // On mobile, wrap with our own text input handler that enables
-    // IME suggestions so swipe typing correctly inserts spaces.
-    if (_showsNativeSelectionOverlay) {
-      mobileTerminalView = Stack(
-        fit: StackFit.expand,
-        children: [
-          mobileTerminalView,
-          _nativeSelectionOverlay(nativeSelectionTextStyle, terminalTheme),
-        ],
-      );
-    } else if (_hasTerminalSelection) {
-      mobileTerminalView = Stack(
-        fit: StackFit.expand,
-        children: [
-          mobileTerminalView,
-          Positioned(
-            left: 12,
-            right: 12,
-            bottom: selectionActionsBottomOffset(MediaQuery.of(context)),
-            child: _selectionActions,
-          ),
-        ],
-      );
-    }
 
     final terminalInputIndicatorLabel = _terminalInputIndicatorLabel;
     if (_isPinchZooming || terminalInputIndicatorLabel != null) {
@@ -6344,8 +6248,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       consumeTerminalKeyModifiers: _toolbarController.consumeOneShot,
       hasActiveToolbarModifier: () =>
           _toolbarController.isCtrlActive || _toolbarController.isAltActive,
-      readOnly: _showsNativeSelectionOverlay || overlayMessage != null,
-      tapToShowKeyboard: tapToShowKeyboard,
+      readOnly:
+          _hasSystemTerminalSelection ||
+          _showsNativeSelectionOverlay ||
+          overlayMessage != null,
+      tapToShowKeyboard: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -6367,79 +6274,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return terminalViewWithInput;
   }
 
-  Widget _nativeSelectionOverlay(
-    TextStyle textStyle,
-    TerminalThemeData terminalTheme,
-  ) => Positioned.fill(
-    child: Padding(
-      padding: terminalViewportPadding,
-      child: ValueListenableBuilder<TextEditingValue>(
-        valueListenable: _nativeSelectionController,
-        child: TextSelectionTheme(
-          data: TextSelectionTheme.of(context).copyWith(
-            selectionColor: terminalTheme.selection,
-            selectionHandleColor: terminalTheme.cursor,
-          ),
-          child: Listener(
-            onPointerDown: _handleNativeOverlayPointerDown,
-            onPointerMove: _handleNativeOverlayPointerMove,
-            onPointerUp: _handleNativeOverlayPointerUp,
-            onPointerCancel: _handleNativeOverlayPointerCancel,
-            child: TextField(
-              controller: _nativeSelectionController,
-              focusNode: _nativeSelectionFocusNode,
-              readOnly: true,
-              showCursor: false,
-              cursorColor: Colors.transparent,
-              enableInteractiveSelection: true,
-              contextMenuBuilder: _buildNativeSelectionContextMenu,
-              scrollController: _nativeSelectionScrollController,
-              expands: true,
-              maxLines: null,
-              textAlignVertical: TextAlignVertical.top,
-              style: textStyle,
-              strutStyle: StrutStyle.fromTextStyle(
-                textStyle,
-                forceStrutHeight: true,
-              ),
-              decoration: const InputDecoration(
-                isDense: true,
-                isCollapsed: true,
-                filled: false,
-                fillColor: Colors.transparent,
-                hoverColor: Colors.transparent,
-                border: InputBorder.none,
-                enabledBorder: InputBorder.none,
-                disabledBorder: InputBorder.none,
-                focusedBorder: InputBorder.none,
-                errorBorder: InputBorder.none,
-                focusedErrorBorder: InputBorder.none,
-                contentPadding: EdgeInsets.zero,
-              ),
-            ),
-          ),
-        ),
-        builder: (context, value, child) => IgnorePointer(
-          ignoring: !hasActiveNativeOverlaySelection(value.selection),
-          child: child,
-        ),
-      ),
-    ),
-  );
-
-  Widget _buildNativeSelectionContextMenu(
+  Widget _buildTerminalSelectionContextMenu(
     BuildContext context,
-    EditableTextState editableTextState,
-  ) => AdaptiveTextSelectionToolbar.buttonItems(
-    anchors: editableTextState.contextMenuAnchors,
-    buttonItems: buildNativeSelectionContextMenuButtonItems(
-      defaultItems: editableTextState.contextMenuButtonItems,
-      onPaste: () {
-        editableTextState.hideToolbar();
-        unawaited(_pasteClipboard());
-      },
-    ),
-  );
+    SelectableRegionState selectableRegionState,
+  ) {
+    final buttonItems = <ContextMenuButtonItem>[
+      ...selectableRegionState.contextMenuButtonItems,
+      ContextMenuButtonItem(
+        onPressed: () {
+          selectableRegionState.hideToolbar();
+          unawaited(_pasteClipboard());
+        },
+        type: ContextMenuButtonType.paste,
+      ),
+    ];
+    return AdaptiveTextSelectionToolbar.buttonItems(
+      anchors: selectableRegionState.contextMenuAnchors,
+      buttonItems: buttonItems,
+    );
+  }
+
+  void _handleSystemTerminalSelectionChanged(SelectedContent? selectedContent) {
+    final hasSelection = selectedContent?.plainText.isNotEmpty ?? false;
+    if (_hasSystemTerminalSelection == hasSelection) {
+      return;
+    }
+    setState(() => _hasSystemTerminalSelection = hasSelection);
+  }
 
   /// Resolves the terminal text style for the given font family and size.
   TerminalStyle _getTerminalTextStyle(String fontFamily, double fontSize) {
@@ -6450,17 +6311,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     return TerminalStyle.fromTextStyle(textStyle);
   }
-
-  TextStyle _getNativeSelectionTextStyle(TerminalStyle terminalTextStyle) =>
-      terminalTextStyle
-          .toTextStyle(color: Colors.transparent)
-          .copyWith(
-            letterSpacing: 0,
-            fontFeatures: const [
-              FontFeature.disable('liga'),
-              FontFeature.disable('calt'),
-            ],
-          );
 
   Size? _measureTerminalPathUnderlineTextSize(String text) {
     if (text.isEmpty) {
@@ -6613,21 +6463,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       text: snapshot.text,
       selection: snapshot.selection,
     );
-    _nativeSelectionSnapshotMetrics = (
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      lineCount: snapshot.lineCount,
-      viewWidth: snapshot.viewWidth,
-      textLength: snapshot.textLength,
-    );
     _hadNativeOverlaySelection = hasActiveNativeOverlaySelection(
       snapshot.selection,
     );
     _nativeOverlayCollapseTimer?.cancel();
-    _clearNativeOverlayLongPressState();
     setState(() {
       _isNativeSelectionMode = true;
-      _hasTerminalSelection = false;
       _revealsNativeSelectionOverlayInTouchScrollMode =
           _revealsNativeSelectionOverlayInTouchScrollMode ||
           snapshot.revealOverlayInTouchScrollMode;
@@ -6654,16 +6495,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionFocusNode.unfocus();
     setState(() {
       _isNativeSelectionMode = false;
-      _hasTerminalSelection = false;
       _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
-    _clearPendingTouchSelectionRange();
-    _nativeSelectionSnapshotMetrics = null;
     _nativeOverlayCollapseTimer?.cancel();
-    _clearNativeOverlayLongPressState();
     _terminalFocusNode.requestFocus();
   }
 
@@ -6683,13 +6520,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController.value = TextEditingValue(
       text: snapshot.text,
       selection: nextSelection,
-    );
-    _nativeSelectionSnapshotMetrics = (
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      lineCount: snapshot.lineCount,
-      viewWidth: snapshot.viewWidth,
-      textLength: snapshot.textLength,
     );
   }
 
@@ -6814,207 +6644,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return TextSelection(baseOffset: start, extentOffset: end);
   }
 
-  _PendingTouchSelectionSnapshot? _buildPendingTouchSelectionSnapshot(
-    CellOffset cellOffset, {
-    required bool revealOverlayInTouchScrollMode,
-  }) {
-    final selectionRange = resolveNativeTouchSelectionRange(
-      buffer: _terminal.buffer,
-      cellOffset: cellOffset,
-    );
-    if (selectionRange == null) {
-      return null;
-    }
-
-    final snapshot = _buildNativeSelectionSnapshotData();
-    final selection = _bufferRangeToTextSelection(
-      selectionRange,
-      viewWidth: snapshot.viewWidth,
-      lineCount: snapshot.lineCount,
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      textLength: snapshot.textLength,
-    );
-    return (
-      originCellOffset: cellOffset,
-      text: snapshot.text,
-      selection: selection,
-      lineStarts: snapshot.lineStarts,
-      columnOffsets: snapshot.columnOffsets,
-      lineCount: snapshot.lineCount,
-      viewWidth: snapshot.viewWidth,
-      textLength: snapshot.textLength,
-      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
-    );
-  }
-
-  bool _selectNativeOverlayWordAtCellOffset(
-    CellOffset cellOffset, {
-    bool revealOverlayInTouchScrollMode = false,
-  }) {
-    final snapshot = _buildPendingTouchSelectionSnapshot(
-      cellOffset,
-      revealOverlayInTouchScrollMode: revealOverlayInTouchScrollMode,
-    );
-    if (snapshot == null) {
-      return false;
-    }
-
-    _enterNativeSelectionModeWithSnapshot(snapshot);
-    return true;
-  }
-
-  void _clearPendingTouchSelectionRange() {
-    _pendingTouchSelectionRange = null;
-  }
-
-  CellOffset? _terminalCellOffsetForGlobalPosition(Offset globalPosition) {
-    final terminalViewState = _terminalViewKey.currentState;
-    if (terminalViewState == null) {
-      return null;
-    }
-
-    final renderTerminal = terminalViewState.renderTerminal;
-    final localPosition = renderTerminal.globalToLocal(globalPosition);
-    if (localPosition.dx < 0 ||
-        localPosition.dy < 0 ||
-        localPosition.dx > renderTerminal.size.width ||
-        localPosition.dy > renderTerminal.size.height) {
-      return null;
-    }
-
-    return renderTerminal.getCellOffset(localPosition);
-  }
-
-  bool _isNativeOverlayTouchPointer(PointerDeviceKind kind) =>
-      kind == PointerDeviceKind.touch ||
-      kind == PointerDeviceKind.stylus ||
-      kind == PointerDeviceKind.invertedStylus;
-
-  ({CellOffset? cellOffset, bool pointsOutsideSnapshot})
-  _nativeSelectionSnapshotHitForGlobalPosition(Offset globalPosition) {
-    final metrics = _nativeSelectionSnapshotMetrics;
-    final cellOffset = _terminalCellOffsetForGlobalPosition(globalPosition);
-    if (metrics == null || cellOffset == null) {
-      return (cellOffset: cellOffset, pointsOutsideSnapshot: false);
-    }
-
-    if (cellOffset.y >= metrics.lineCount ||
-        cellOffset.x >= metrics.viewWidth) {
-      return (cellOffset: cellOffset, pointsOutsideSnapshot: true);
-    }
-
-    return (cellOffset: cellOffset, pointsOutsideSnapshot: false);
-  }
-
-  bool _isNativeSelectionCellWithinActiveSelection(CellOffset cellOffset) {
-    final metrics = _nativeSelectionSnapshotMetrics;
-    final selection = _nativeSelectionController.selection;
-    if (metrics == null || !hasActiveNativeOverlaySelection(selection)) {
-      return false;
-    }
-
-    final lineStart = metrics.lineStarts[cellOffset.y];
-    final cellStart =
-        lineStart + metrics.columnOffsets[cellOffset.y][cellOffset.x];
-    final cellEnd =
-        lineStart + metrics.columnOffsets[cellOffset.y][cellOffset.x + 1];
-    if (cellEnd <= cellStart) {
-      return false;
-    }
-
-    final selectionStart = min(selection.baseOffset, selection.extentOffset);
-    final selectionEnd = max(selection.baseOffset, selection.extentOffset);
-    final protectedStart = max(0, selectionStart - 1);
-    final protectedEnd = min(metrics.textLength, selectionEnd + 1);
-    return cellStart < protectedEnd && cellEnd > protectedStart;
-  }
-
-  _PendingTouchSelectionSnapshot? _buildPendingNativeOverlayLongPressSelection(
-    Offset globalPosition,
-  ) {
-    final selection = _nativeSelectionController.selection;
-    if (!hasActiveNativeOverlaySelection(selection)) {
-      return null;
-    }
-
-    final hit = _nativeSelectionSnapshotHitForGlobalPosition(globalPosition);
-    final cellOffset = hit.cellOffset;
-    if (cellOffset == null) {
-      return null;
-    }
-    if (!hit.pointsOutsideSnapshot &&
-        _isNativeSelectionCellWithinActiveSelection(cellOffset)) {
-      return null;
-    }
-    return _buildPendingTouchSelectionSnapshot(
-      cellOffset,
-      revealOverlayInTouchScrollMode: _routesTouchScrollToTerminal,
-    );
-  }
-
-  void _clearNativeOverlayLongPressState() {
-    _nativeOverlayLongPressTimer?.cancel();
-    _nativeOverlayLongPressTimer = null;
-    _nativeOverlayPointerId = null;
-    _nativeOverlayPointerDownPosition = null;
-    _pendingNativeOverlayLongPressSelection = null;
-  }
-
-  void _handleNativeOverlayPointerDown(PointerDownEvent event) {
-    if (!_isMobilePlatform ||
-        !_showsNativeSelectionOverlay ||
-        !_isNativeOverlayTouchPointer(event.kind) ||
-        !hasActiveNativeOverlaySelection(
-          _nativeSelectionController.selection,
-        )) {
-      return;
-    }
-    _clearNativeOverlayLongPressState();
-    final pendingSnapshot = _buildPendingNativeOverlayLongPressSelection(
-      event.position,
-    );
-    if (pendingSnapshot == null) {
-      return;
-    }
-    _pendingNativeOverlayLongPressSelection = pendingSnapshot;
-    _nativeOverlayPointerId = event.pointer;
-    _nativeOverlayPointerDownPosition = event.position;
-    _nativeOverlayLongPressTimer = Timer(kLongPressTimeout, () {
-      final longPressSnapshot = _pendingNativeOverlayLongPressSelection;
-      _clearNativeOverlayLongPressState();
-      if (longPressSnapshot == null) {
-        return;
-      }
-      _enterNativeSelectionModeWithSnapshot(longPressSnapshot);
-    });
-  }
-
-  void _handleNativeOverlayPointerMove(PointerMoveEvent event) {
-    if (event.pointer != _nativeOverlayPointerId) {
-      return;
-    }
-    final downPosition = _nativeOverlayPointerDownPosition;
-    if (downPosition == null) {
-      return;
-    }
-    if ((event.position - downPosition).distance > kTouchSlop) {
-      _clearNativeOverlayLongPressState();
-    }
-  }
-
-  void _handleNativeOverlayPointerUp(PointerUpEvent event) {
-    if (event.pointer == _nativeOverlayPointerId) {
-      _clearNativeOverlayLongPressState();
-    }
-  }
-
-  void _handleNativeOverlayPointerCancel(PointerCancelEvent event) {
-    if (event.pointer == _nativeOverlayPointerId) {
-      _clearNativeOverlayLongPressState();
-    }
-  }
-
   void _onNativeOverlayControllerChanged() {
     if (!mounted || !_isNativeSelectionMode) {
       return;
@@ -7064,39 +6693,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     )) {
       case NativeSelectionOverlayChange.none:
         return;
-      case NativeSelectionOverlayChange.hideTemporaryOverlay:
-        setState(() {
-          _revealsNativeSelectionOverlayInTouchScrollMode = false;
-        });
-        return;
       case NativeSelectionOverlayChange.exitSelectionMode:
         _dismissNativeSelectionOverlayForEditing();
         return;
     }
-  }
-
-  void _dismissTemporaryNativeSelectionOverlay() {
-    if (!_revealsNativeSelectionOverlayInTouchScrollMode) {
-      return;
-    }
-
-    final textLength = _nativeSelectionController.text.length;
-    final collapsedOffset = _nativeSelectionController.selection.extentOffset
-        .clamp(0, textLength);
-    _nativeOverlayCollapseTimer?.cancel();
-    _nativeSelectionController.value = _nativeSelectionController.value
-        .copyWith(selection: TextSelection.collapsed(offset: collapsedOffset));
-    _terminalController.clearSelection();
-    _nativeSelectionFocusNode.unfocus();
-    _hadNativeOverlaySelection = false;
-    _clearPendingTouchSelectionRange();
-    _clearNativeOverlayLongPressState();
-    if (!mounted) {
-      return;
-    }
-    setState(() {
-      _revealsNativeSelectionOverlayInTouchScrollMode = false;
-    });
   }
 
   void _dismissNativeSelectionOverlayForEditing() {
@@ -7108,11 +6708,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    if (_revealsNativeSelectionOverlayInTouchScrollMode) {
-      _dismissTemporaryNativeSelectionOverlay();
-      return;
-    }
-
     if (!_isMobilePlatform) {
       return;
     }
@@ -7121,13 +6716,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _nativeSelectionController.clear();
     _terminalController.clearSelection();
     _hadNativeOverlaySelection = false;
-    _clearPendingTouchSelectionRange();
-    _nativeSelectionSnapshotMetrics = null;
     _nativeOverlayCollapseTimer?.cancel();
-    _clearNativeOverlayLongPressState();
     setState(() {
       _isNativeSelectionMode = false;
-      _hasTerminalSelection = false;
       _revealsNativeSelectionOverlayInTouchScrollMode = false;
     });
   }
@@ -7818,7 +7409,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalLinkTap(String link) {
-    _clearPendingTouchSelectionRange();
     _clearHoveredTerminalPathUnderline();
     if (link.startsWith(_terminalSftpPathPrefix)) {
       unawaited(
@@ -7892,43 +7482,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _showTerminalLinkMessage(result);
   }
-
-  Widget get _selectionActions => Material(
-    elevation: 2,
-    borderRadius: BorderRadius.circular(12),
-    color: Theme.of(context).colorScheme.surfaceContainerHigh,
-    child: Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      child: Row(
-        children: [
-          Expanded(
-            child: TextButton.icon(
-              onPressed: () => unawaited(_copySelection()),
-              icon: const Icon(Icons.copy_outlined),
-              label: const Text('Copy'),
-            ),
-          ),
-          Expanded(
-            child: TextButton.icon(
-              onPressed: () => unawaited(_pasteClipboard()),
-              icon: const Icon(Icons.paste_outlined),
-              label: const Text('Paste'),
-            ),
-          ),
-          Expanded(
-            child: TextButton.icon(
-              onPressed: () {
-                _terminalController.clearSelection();
-                _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-              },
-              icon: const Icon(Icons.close),
-              label: const Text('Clear'),
-            ),
-          ),
-        ],
-      ),
-    ),
-  );
 
   Future<void> _copySelection() async {
     if (_isNativeSelectionMode) {
