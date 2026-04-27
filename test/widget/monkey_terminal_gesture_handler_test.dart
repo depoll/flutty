@@ -182,6 +182,110 @@ void main() {
     expect(doubleTapDowns, 1);
   });
 
+  testWidgets(
+    'double taps invoke explicit callback when selection gestures are disabled',
+    (tester) async {
+      final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalView(
+              key: terminalViewKey,
+              Terminal(),
+              readOnly: true,
+            ),
+          ),
+        ),
+      );
+
+      final terminalViewState = terminalViewKey.currentState!;
+      var doubleTapDowns = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: SizedBox(
+            width: 300,
+            height: 200,
+            child: MonkeyTerminalGestureHandler(
+              terminalView: terminalViewState,
+              terminalController: TerminalController(),
+              readOnly: true,
+              enableTerminalSelectionGestures: false,
+              onDoubleTapDown: (_) => doubleTapDowns += 1,
+              child: const SizedBox.expand(),
+            ),
+          ),
+        ),
+      );
+
+      final detector = tester.widget<MonkeyTerminalGestureDetector>(
+        find.byType(MonkeyTerminalGestureDetector),
+      );
+      detector.onDoubleTapDown!(
+        TapDownDetails(localPosition: const Offset(10, 10)),
+      );
+
+      expect(doubleTapDowns, 1);
+    },
+  );
+
+  testWidgets('link taps work when selection gestures are disabled', (
+    tester,
+  ) async {
+    final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalView(
+            key: terminalViewKey,
+            Terminal(),
+            readOnly: true,
+          ),
+        ),
+      ),
+    );
+
+    final terminalViewState = terminalViewKey.currentState!;
+    final openedLinks = <String>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 300,
+          height: 200,
+          child: MonkeyTerminalGestureHandler(
+            terminalView: terminalViewState,
+            terminalController: TerminalController(),
+            readOnly: true,
+            enableTerminalSelectionGestures: false,
+            resolveLinkTap: (_) => 'https://github.com/features/copilot',
+            onLinkTap: openedLinks.add,
+            child: const SizedBox.expand(),
+          ),
+        ),
+      ),
+    );
+
+    final detector = tester.widget<MonkeyTerminalGestureDetector>(
+      find.byType(MonkeyTerminalGestureDetector),
+    );
+    detector.onTapDown!(TapDownDetails(localPosition: const Offset(10, 10)));
+    detector.onSingleTapUp!(
+      TapUpDetails(
+        kind: PointerDeviceKind.touch,
+        localPosition: const Offset(10, 10),
+      ),
+    );
+
+    expect(openedLinks, ['https://github.com/features/copilot']);
+  });
+
   testWidgets('touch scroll clears any pending link tap', (tester) async {
     final terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
 

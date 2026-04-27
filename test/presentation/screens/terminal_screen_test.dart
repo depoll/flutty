@@ -6,11 +6,14 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
 
+import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
@@ -171,6 +174,248 @@ void main() {
 
       expect(didPaste, isTrue);
     });
+  });
+
+  group('MonkeyTerminalView system selection geometry', () {
+    Future<MonkeyRenderTerminal> pumpSelectableTerminal(
+      WidgetTester tester, {
+      required Terminal terminal,
+      required TerminalController controller,
+      required double height,
+    }) async {
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(
+                width: 390,
+                height: height,
+                child: MonkeyTerminalView(
+                  terminal,
+                  controller: controller,
+                  hardwareKeyboardOnly: true,
+                  useSystemSelection: true,
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+      return tester
+          .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+          .renderTerminal;
+    }
+
+    Offset cellCenter(MonkeyRenderTerminal renderTerminal, CellOffset offset) =>
+        renderTerminal.localToGlobal(
+          renderTerminal.getOffset(offset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+
+    String rowLabel(int row) => 'row ${row.toString().padLeft(2, '0')}';
+
+    testWidgets('anchors selection handles at terminal line bottoms', (
+      tester,
+    ) async {
+      final terminal = Terminal(maxLines: 100)..write('alpha');
+      final controller = TerminalController();
+      final renderTerminal = await pumpSelectableTerminal(
+        tester,
+        terminal: terminal,
+        controller: controller,
+        height: 240,
+      );
+
+      renderTerminal.dispatchSelectionEvent(
+        SelectWordSelectionEvent(
+          globalPosition: cellCenter(renderTerminal, const CellOffset(2, 0)),
+        ),
+      );
+      await tester.pump();
+
+      final lineBottom =
+          renderTerminal.getOffset(const CellOffset(0, 0)).dy +
+          renderTerminal.cellSize.height;
+      expect(
+        renderTerminal.value.startSelectionPoint!.localPosition.dy,
+        closeTo(lineBottom, 0.001),
+      );
+      expect(
+        renderTerminal.value.endSelectionPoint!.localPosition.dy,
+        closeTo(lineBottom, 0.001),
+      );
+    });
+
+    testWidgets(
+      'keeps updating selection when a handle is dragged above the viewport',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        var renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+
+        final topVisibleRow = renderTerminal.getCellOffset(Offset.zero).y;
+        expect(topVisibleRow, greaterThan(3));
+        final targetRow = topVisibleRow - 3;
+        final endRow = topVisibleRow + 2;
+
+        renderTerminal
+          ..dispatchSelectionEvent(
+            SelectionEdgeUpdateEvent.forStart(
+              globalPosition: cellCenter(renderTerminal, CellOffset(0, endRow)),
+            ),
+          )
+          ..dispatchSelectionEvent(
+            SelectionEdgeUpdateEvent.forEnd(
+              globalPosition: cellCenter(renderTerminal, CellOffset(6, endRow)),
+            ),
+          );
+        await tester.pump();
+
+        renderTerminal.dispatchSelectionEvent(
+          SelectionEdgeUpdateEvent.forStart(
+            globalPosition: cellCenter(
+              renderTerminal,
+              CellOffset(0, targetRow),
+            ),
+          ),
+        );
+        await tester.pump();
+
+        final selectedText = renderTerminal.getSelectedContent()!.plainText;
+        expect(selectedText, contains(rowLabel(targetRow)));
+        expect(selectedText, contains(rowLabel(endRow)));
+      },
+    );
+
+    testWidgets(
+      'repaints controller-driven selection after keyboard-sized resize',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        var renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+
+        expect(renderTerminal.debugNeedsPaint, isFalse);
+
+        renderTerminal.dispatchSelectionEvent(
+          SelectWordSelectionEvent(
+            globalPosition: cellCenter(
+              renderTerminal,
+              CellOffset(4, renderTerminal.getCellOffset(Offset.zero).y + 1),
+            ),
+          ),
+        );
+
+        expect(renderTerminal.debugNeedsPaint, isTrue);
+        await tester.pump();
+        expect(renderTerminal.getSelectedContent()?.plainText, isNotNull);
+      },
+    );
+
+    testWidgets(
+      'handle drag keeps updating after keyboard-sized resize',
+      (tester) async {
+        final terminal = Terminal(maxLines: 120);
+        for (var row = 0; row < 60; row += 1) {
+          terminal.write('${rowLabel(row)}\r\n');
+        }
+        final controller = TerminalController();
+
+        var renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 160,
+        );
+        renderTerminal = await pumpSelectableTerminal(
+          tester,
+          terminal: terminal,
+          controller: controller,
+          height: 320,
+        );
+
+        final topVisibleRow = renderTerminal.getCellOffset(Offset.zero).y;
+        final selectedRow = topVisibleRow + 10;
+        final targetRow = topVisibleRow + 1;
+
+        await tester.longPressAt(
+          cellCenter(renderTerminal, CellOffset(5, selectedRow)),
+        );
+        await tester.pumpAndSettle();
+        expect(controller.selection, isNotNull);
+
+        final handleFinder = find.byWidgetPredicate(
+          (widget) =>
+              widget.runtimeType.toString() == '_SelectionHandleOverlay',
+        );
+        expect(handleFinder, findsWidgets);
+
+        final startSelectionPoint = renderTerminal.value.startSelectionPoint!;
+        final startHandlePosition = renderTerminal.localToGlobal(
+          startSelectionPoint.localPosition,
+        );
+        await tester.dragFrom(
+          startHandlePosition,
+          cellCenter(renderTerminal, CellOffset(0, targetRow)) -
+              startHandlePosition,
+        );
+        await tester.pumpAndSettle();
+
+        final selectedText = renderTerminal.getSelectedContent()!.plainText;
+        expect(selectedText, contains(rowLabel(targetRow)));
+        expect(selectedText, contains(rowLabel(selectedRow)));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
   });
 
   group('TerminalScreen mobile IME wiring', () {
@@ -815,6 +1060,108 @@ void main() {
     );
 
     testWidgets(
+      'terminal tap opens the mobile keyboard when tap-to-show is enabled',
+      (tester) async {
+        await pumpScreen(tester);
+
+        tester.testTextInput.log.clear();
+        expect(tester.testTextInput.isVisible, isFalse);
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.show',
+          ),
+          isNotEmpty,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'terminal double tap sends Tab while system selection is enabled',
+      (tester) async {
+        await pumpScreen(tester);
+
+        expect(find.byType(SelectionArea), findsOneWidget);
+        shellWrites.clear();
+
+        final terminalCenter = tester.getCenter(
+          find.byType(MonkeyTerminalView),
+        );
+        await tester.tapAt(terminalCenter);
+        await tester.pump(const Duration(milliseconds: 80));
+        await tester.tapAt(terminalCenter);
+        await tester.pump();
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, '\t');
+        expect(find.text('Tab'), findsAtLeastNWidgets(1));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'system selection does not hide an already visible mobile keyboard',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!.write('alpha');
+        await tester.pumpAndSettle();
+
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        final target = renderTerminal.localToGlobal(
+          renderTerminal.getOffset(const CellOffset(2, 0)) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+
+        await tester.longPressAt(target);
+        await tester.pumpAndSettle();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+        final selection = terminalViewState.renderTerminal.getSelectedContent();
+        expect(selection?.plainText, 'alpha');
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'terminal tap sends mouse input while system selection is enabled',
+      (tester) async {
+        await pumpScreen(tester);
+
+        session.terminal!
+          ..setMouseMode(MouseMode.upDownScroll)
+          ..setMouseReportMode(MouseReportMode.sgr)
+          ..write('alpha beta');
+        await tester.pumpAndSettle();
+
+        shellWrites.clear();
+        await tester.tap(find.byType(MonkeyTerminalView));
+        await tester.pump();
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1B[<0;'));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'toolbar navigation keys clear the screen IME buffer',
       (tester) async {
         await pumpScreen(tester);
@@ -1015,7 +1362,7 @@ void main() {
     );
 
     testWidgets(
-      'overlay long press reselects from the touch-down snapshot while output streams during the hold',
+      'system selectable selects terminal words and ignores later output',
       (tester) async {
         await pumpScreen(tester);
 
@@ -1036,23 +1383,37 @@ void main() {
         await tester.longPressAt(cellCenter(const CellOffset(2, 0)));
         await tester.pumpAndSettle();
 
-        final overlayField = find.byType(TextField);
-        expect(overlayField, findsOneWidget);
+        expect(find.byType(TextField), findsNothing);
         final terminalView = tester.widget<MonkeyTerminalView>(
           find.byType(MonkeyTerminalView),
         );
         expect(terminalView.controller, isNotNull);
-        expect(terminalView.controller!.selection, isNull);
-        var overlayController = tester
-            .widget<TextField>(overlayField)
-            .controller;
-        expect(overlayController, isNotNull);
-        expect(overlayController!.selection.isCollapsed, isFalse);
-        expect(overlayController.text, contains('alpha'));
+        var terminalSelection = terminalView.controller!.selection;
+        expect(terminalSelection, isNotNull);
+        expect(
+          trimTerminalSelectionText(
+            session.terminal!.buffer.getText(terminalSelection),
+          ),
+          'alpha',
+        );
+        final renderTerminal = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        expect(
+          trimTerminalSelectionText(
+            renderTerminal.getSelectedContent()!.plainText,
+          ),
+          'alpha',
+        );
 
         session.terminal!.write('\r\ncharlie');
         await tester.pumpAndSettle();
-        expect(overlayController.text, isNot(contains('charlie')));
+        terminalSelection = terminalView.controller!.selection;
+        expect(terminalSelection, isNotNull);
+        expect(
+          session.terminal!.buffer.getText(terminalSelection),
+          isNot(contains('charlie')),
+        );
 
         var streamIndex = 0;
         final streamTimer = Timer.periodic(const Duration(milliseconds: 16), (
@@ -1063,25 +1424,23 @@ void main() {
         });
         addTearDown(streamTimer.cancel);
 
-        final gesture = await tester.startGesture(
-          cellCenter(const CellOffset(2, 1)),
+        renderTerminal.dispatchSelectionEvent(
+          SelectWordSelectionEvent(
+            globalPosition: cellCenter(const CellOffset(2, 1)),
+          ),
         );
-        await tester.pump(const Duration(milliseconds: 650));
-        await tester.pumpAndSettle();
-        await gesture.up();
         await tester.pumpAndSettle();
 
         streamTimer.cancel();
 
-        expect(terminalView.controller!.selection, isNull);
-        overlayController = tester.widget<TextField>(overlayField).controller;
-        expect(overlayController, isNotNull);
-        expect(overlayController!.selection.isCollapsed, isFalse);
+        terminalSelection = terminalView.controller!.selection;
+        expect(terminalSelection, isNotNull);
         expect(
-          overlayController.selection.textInside(overlayController.text),
+          trimTerminalSelectionText(
+            session.terminal!.buffer.getText(terminalSelection),
+          ),
           'charlie',
         );
-        expect(overlayController.text, isNot(contains('stream')));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1098,7 +1457,7 @@ void main() {
         session.terminal!.write(initialLines);
         await tester.pumpAndSettle();
 
-        Offset? tokenCenter(String token) {
+        ({CellOffset cellOffset, Offset center})? tokenHit(String token) {
           final terminalViewState = tester.state<MonkeyTerminalViewState>(
             find.byType(MonkeyTerminalView),
           );
@@ -1126,39 +1485,52 @@ void main() {
 
             final tapColumn = startColumn + (token.length ~/ 2);
             final cellOffset = CellOffset(tapColumn, row);
-            return renderTerminal.localToGlobal(
-              renderTerminal.getOffset(cellOffset) +
-                  renderTerminal.cellSize.center(Offset.zero),
+            return (
+              cellOffset: cellOffset,
+              center: renderTerminal.localToGlobal(
+                renderTerminal.getOffset(cellOffset) +
+                    renderTerminal.cellSize.center(Offset.zero),
+              ),
             );
           }
 
           return null;
         }
 
-        final alphaCenter = tokenCenter('alpha');
-        expect(alphaCenter, isNotNull);
+        final alphaHit = tokenHit('alpha');
+        expect(alphaHit, isNotNull);
 
-        await tester.longPressAt(alphaCenter!);
+        final renderTerminal = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        renderTerminal.selectWord(
+          renderTerminal.getOffset(alphaHit!.cellOffset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
         await tester.pumpAndSettle();
 
-        final overlayField = find.byType(TextField);
-        expect(overlayField, findsOneWidget);
-        final overlayTextField = tester.widget<TextField>(overlayField);
-        final overlayController = overlayTextField.controller;
-        final overlayScrollController = overlayTextField.scrollController;
-        expect(overlayController, isNotNull);
-        expect(overlayController!.selection.isCollapsed, isFalse);
-        expect(overlayScrollController, isNotNull);
-        expect(overlayScrollController!.hasClients, isTrue);
-
-        final initialOverlayOffset = overlayScrollController.offset;
-        expect(initialOverlayOffset, greaterThan(0));
+        expect(find.byType(TextField), findsNothing);
+        expect(find.byType(SelectionArea), findsOneWidget);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.controller, isNotNull);
+        var terminalSelection = terminalView.controller!.selection;
+        expect(terminalSelection, isNotNull);
+        final selectedText = trimTerminalSelectionText(
+          session.terminal!.buffer.getText(terminalSelection),
+        );
+        expect(selectedText, 'alpha');
 
         session.terminal!.write('\r\ncharlie');
         await tester.pumpAndSettle();
 
-        expect(overlayController.text, isNot(contains('charlie')));
-        expect(overlayScrollController.offset, initialOverlayOffset);
+        terminalSelection = terminalView.controller!.selection;
+        expect(terminalSelection, isNotNull);
+        expect(
+          session.terminal!.buffer.getText(terminalSelection),
+          isNot(contains('charlie')),
+        );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
@@ -1229,28 +1601,28 @@ void main() {
         });
         addTearDown(streamTimer.cancel);
 
-        final gesture = await tester.startGesture(hit.center);
-        await tester.pump(const Duration(milliseconds: 650));
-        await tester.pumpAndSettle();
-        await gesture.up();
+        final renderTerminal = tester
+            .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+            .renderTerminal;
+        renderTerminal.selectWord(
+          renderTerminal.getOffset(hit.cellOffset) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
         await tester.pumpAndSettle();
 
         streamTimer.cancel();
 
-        final overlayField = find.byType(TextField);
-        expect(overlayField, findsOneWidget);
+        expect(find.byType(TextField), findsNothing);
         final terminalView = tester.widget<MonkeyTerminalView>(
           find.byType(MonkeyTerminalView),
         );
         expect(terminalView.controller, isNotNull);
-        expect(terminalView.controller!.selection, isNull);
-        final overlayController = tester
-            .widget<TextField>(overlayField)
-            .controller;
-        expect(overlayController, isNotNull);
-        expect(overlayController!.selection.isCollapsed, isFalse);
         expect(
-          overlayController.selection.textInside(overlayController.text),
+          trimTerminalSelectionText(
+            session.terminal!.buffer.getText(
+              terminalView.controller!.selection,
+            ),
+          ),
           expectedWord,
         );
       },
@@ -1343,6 +1715,85 @@ void main() {
         await tester.pumpAndSettle();
 
         expect(underlineFinder, findsOneWidget);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'mobile path underline taps open SFTP while system selection is enabled',
+      (tester) async {
+        const remotePath = '/var/log/app.log';
+        final sftp = _MockSftpClient();
+        final openedPaths = <String>[];
+
+        when(() => sshClient.sftp()).thenAnswer((_) async => sftp);
+        when(
+          () => sftp.stat(remotePath),
+        ).thenAnswer((_) async => SftpFileAttrs());
+
+        final router = GoRouter(
+          initialLocation:
+              '/terminal/${host.id}?connectionId=${session.connectionId}',
+          routes: [
+            GoRoute(
+              path: '/terminal/:hostId',
+              name: Routes.terminal,
+              builder: (context, state) => TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+            GoRoute(
+              path: '/sftp/:hostId',
+              name: Routes.sftp,
+              builder: (context, state) {
+                openedPaths.add(state.uri.queryParameters['path'] ?? '');
+                return const Scaffold(body: Text('SFTP opened'));
+              },
+            ),
+          ],
+        );
+        addTearDown(router.dispose);
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+            ],
+            child: MaterialApp.router(routerConfig: router),
+          ),
+        );
+        await tester.pump();
+        await tester.pump();
+
+        session.terminal!.write('open $remotePath');
+        await tester.pumpAndSettle();
+
+        final underlineFinder = find.byWidgetPredicate((widget) {
+          final key = widget.key;
+          return key is ValueKey<String> &&
+              key.value.contains('terminal-path-underline:') &&
+              key.value.contains(remotePath);
+        });
+        expect(underlineFinder, findsOneWidget);
+        expect(find.byType(SelectionArea), findsOneWidget);
+
+        await tester.tapAt(tester.getCenter(underlineFinder));
+        await tester.pumpAndSettle();
+
+        expect(openedPaths, [remotePath]);
+        verify(() => sftp.stat(remotePath)).called(1);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

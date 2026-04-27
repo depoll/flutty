@@ -13,7 +13,6 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
     super.key,
     this.child,
     this.onSingleTapUp,
-    this.onTapUp,
     this.onTapDown,
     this.onTapCancel,
     this.onSecondaryTapDown,
@@ -33,8 +32,6 @@ class MonkeyTerminalGestureDetector extends StatefulWidget {
   });
 
   final Widget? child;
-
-  final GestureTapUpCallback? onTapUp;
 
   final GestureTapUpCallback? onSingleTapUp;
 
@@ -165,36 +162,42 @@ class _MonkeyTerminalGestureDetectorState
           },
         );
 
-    gestures[LongPressGestureRecognizer] =
-        GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
-          () => LongPressGestureRecognizer(
-            debugOwner: this,
-            supportedDevices: {
-              PointerDeviceKind.touch,
-              // PointerDeviceKind.mouse, // for debugging purposes only
+    if (widget.onLongPressStart != null ||
+        widget.onLongPressMoveUpdate != null ||
+        widget.onLongPressUp != null) {
+      gestures[LongPressGestureRecognizer] =
+          GestureRecognizerFactoryWithHandlers<LongPressGestureRecognizer>(
+            () => LongPressGestureRecognizer(
+              debugOwner: this,
+              supportedDevices: {
+                PointerDeviceKind.touch,
+                // PointerDeviceKind.mouse, // for debugging purposes only
+              },
+            ),
+            (LongPressGestureRecognizer instance) {
+              instance
+                ..onLongPressStart = widget.onLongPressStart
+                ..onLongPressMoveUpdate = widget.onLongPressMoveUpdate
+                ..onLongPressUp = widget.onLongPressUp;
             },
-          ),
-          (LongPressGestureRecognizer instance) {
-            instance
-              ..onLongPressStart = widget.onLongPressStart
-              ..onLongPressMoveUpdate = widget.onLongPressMoveUpdate
-              ..onLongPressUp = widget.onLongPressUp;
-          },
-        );
+          );
+    }
 
-    gestures[PanGestureRecognizer] =
-        GestureRecognizerFactoryWithHandlers<PanGestureRecognizer>(
-          () => PanGestureRecognizer(
-            debugOwner: this,
-            supportedDevices: <PointerDeviceKind>{PointerDeviceKind.mouse},
-          ),
-          (PanGestureRecognizer instance) {
-            instance
-              ..dragStartBehavior = DragStartBehavior.down
-              ..onStart = widget.onDragStart
-              ..onUpdate = widget.onDragUpdate;
-          },
-        );
+    if (widget.onDragStart != null || widget.onDragUpdate != null) {
+      gestures[PanGestureRecognizer] =
+          GestureRecognizerFactoryWithHandlers<PanGestureRecognizer>(
+            () => PanGestureRecognizer(
+              debugOwner: this,
+              supportedDevices: <PointerDeviceKind>{PointerDeviceKind.mouse},
+            ),
+            (PanGestureRecognizer instance) {
+              instance
+                ..dragStartBehavior = DragStartBehavior.down
+                ..onStart = widget.onDragStart
+                ..onUpdate = widget.onDragUpdate;
+            },
+          );
+    }
 
     if (widget.onTouchScrollStart != null ||
         widget.onTouchScrollUpdate != null ||

@@ -19,7 +19,6 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     required this.terminalView,
     required this.terminalController,
     this.child,
-    this.onTapUp,
     this.onSingleTapUp,
     this.onTapDown,
     this.onDoubleTapDown,
@@ -37,6 +36,7 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
     this.onLinkTap,
     this.readOnly = false,
     this.suppressLongPressDragSelection = false,
+    this.enableTerminalSelectionGestures = true,
   });
 
   final MonkeyTerminalViewState terminalView;
@@ -44,8 +44,6 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   final TerminalController terminalController;
 
   final Widget? child;
-
-  final GestureTapUpCallback? onTapUp;
 
   final GestureTapUpCallback? onSingleTapUp;
 
@@ -93,6 +91,9 @@ class MonkeyTerminalGestureHandler extends StatefulWidget {
   /// and doesn't want to be re-entered on every drag update.
   final bool suppressLongPressDragSelection;
 
+  /// Whether this handler should install xterm-owned selection gestures.
+  final bool enableTerminalSelectionGestures;
+
   @override
   State<MonkeyTerminalGestureHandler> createState() =>
       _TerminalGestureHandlerState();
@@ -113,7 +114,6 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
   Widget build(BuildContext context) {
     return MonkeyTerminalGestureDetector(
       child: widget.child,
-      onTapUp: widget.onTapUp,
       onSingleTapUp: onSingleTapUp,
       onTapDown: onTapDown,
       onTapCancel: _clearPendingLinkTap,
@@ -125,12 +125,22 @@ class _TerminalGestureHandlerState extends State<MonkeyTerminalGestureHandler> {
       onTouchScrollStart: onTouchScrollStart,
       onTouchScrollUpdate: onTouchScrollUpdate,
       onTouchScrollEnd: onTouchScrollEnd,
-      onLongPressStart: onLongPressStart,
-      onLongPressMoveUpdate: onLongPressMoveUpdate,
+      onLongPressStart: widget.enableTerminalSelectionGestures
+          ? onLongPressStart
+          : null,
+      onLongPressMoveUpdate: widget.enableTerminalSelectionGestures
+          ? onLongPressMoveUpdate
+          : null,
       // onLongPressUp: onLongPressUp,
-      onDragStart: onDragStart,
-      onDragUpdate: onDragUpdate,
-      onDoubleTapDown: onDoubleTapDown,
+      onDragStart: widget.enableTerminalSelectionGestures ? onDragStart : null,
+      onDragUpdate: widget.enableTerminalSelectionGestures
+          ? onDragUpdate
+          : null,
+      onDoubleTapDown:
+          widget.enableTerminalSelectionGestures ||
+              widget.onDoubleTapDown != null
+          ? onDoubleTapDown
+          : null,
     );
   }
 
