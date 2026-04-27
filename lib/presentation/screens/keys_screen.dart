@@ -32,7 +32,7 @@ class KeysScreen extends ConsumerWidget {
                 color: theme.colorScheme.error,
               ),
               const SizedBox(height: FluttyTheme.spacingMd),
-              Text('Error loading keys: $error'),
+              const Text('Could not load SSH keys.'),
               const SizedBox(height: FluttyTheme.spacingMd),
               FilledButton.icon(
                 onPressed: () => ref.invalidate(allKeysProvider),

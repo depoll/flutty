@@ -13,9 +13,13 @@ class AppDelegate: FlutterAppDelegate {
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
     if let controller = mainFlutterWindow?.contentViewController as? FlutterViewController {
-      setupTransferChannel(with: controller)
-      setupAppleDatabaseChannel(with: controller)
+      setupFlutterMethodChannels(with: controller)
     }
+  }
+
+  func setupFlutterMethodChannels(with controller: FlutterViewController) {
+    setupTransferChannel(with: controller)
+    setupAppleDatabaseChannel(with: controller)
   }
 
   override func application(_ sender: NSApplication, openFile filename: String) -> Bool {

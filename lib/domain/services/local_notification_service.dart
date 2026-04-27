@@ -135,6 +135,11 @@ class LocalNotificationService {
   /// Ensures the underlying notification plugin is initialized.
   Future<bool> initialize() => _initializeFuture ??= _initializeInternal();
 
+  /// Releases notification routing resources.
+  void dispose() {
+    unawaited(_tmuxAlertTapController.close());
+  }
+
   /// Returns the tmux alert that launched the app, if one has not been consumed.
   Future<TmuxAlertNotificationPayload?> consumeLaunchTmuxAlert() async {
     final didInitialize = await initialize();
@@ -154,6 +159,8 @@ class LocalNotificationService {
   }) async {
     final didInitialize = await initialize();
     if (!didInitialize) return;
+    final hasPermission = await _requestNotificationPermission();
+    if (!hasPermission) return;
 
     const androidDetails = AndroidNotificationDetails(
       tmuxAlertNotificationChannelId,
@@ -206,8 +213,16 @@ class LocalNotificationService {
     try {
       const initializationSettings = InitializationSettings(
         android: AndroidInitializationSettings(_androidNotificationIcon),
-        iOS: DarwinInitializationSettings(),
-        macOS: DarwinInitializationSettings(),
+        iOS: DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+        ),
+        macOS: DarwinInitializationSettings(
+          requestAlertPermission: false,
+          requestBadgePermission: false,
+          requestSoundPermission: false,
+        ),
       );
       final launchDetails = await _plugin.getNotificationAppLaunchDetails();
       _launchTmuxAlert = (launchDetails?.didNotificationLaunchApp ?? false)
@@ -228,7 +243,40 @@ class LocalNotificationService {
       await androidImplementation?.createNotificationChannel(
         _tmuxAlertNotificationChannel,
       );
-      await androidImplementation?.requestNotificationsPermission();
+
+      return true;
+    } on MissingPluginException {
+      return false;
+    }
+  }
+
+  Future<bool> _requestNotificationPermission() async {
+    try {
+      final androidImplementation = _plugin
+          .resolvePlatformSpecificImplementation<
+            AndroidFlutterLocalNotificationsPlugin
+          >();
+      if (androidImplementation != null) {
+        return await androidImplementation.requestNotificationsPermission() ??
+            false;
+      }
+
+      final iOSImplementation = _plugin
+          .resolvePlatformSpecificImplementation<
+            IOSFlutterLocalNotificationsPlugin
+          >();
+      if (iOSImplementation != null) {
+        return await iOSImplementation.requestPermissions(alert: true) ?? false;
+      }
+
+      final macOSImplementation = _plugin
+          .resolvePlatformSpecificImplementation<
+            MacOSFlutterLocalNotificationsPlugin
+          >();
+      if (macOSImplementation != null) {
+        return await macOSImplementation.requestPermissions(alert: true) ??
+            false;
+      }
 
       return true;
     } on MissingPluginException {
@@ -247,4 +295,8 @@ class LocalNotificationService {
 
 /// Provides access to local notifications.
 final Provider<LocalNotificationService> localNotificationServiceProvider =
-    Provider<LocalNotificationService>((ref) => LocalNotificationService());
+    Provider<LocalNotificationService>((ref) {
+      final service = LocalNotificationService();
+      ref.onDispose(service.dispose);
+      return service;
+    });

@@ -1252,11 +1252,11 @@ void main() {
         final result = await resultFuture;
 
         expect(result.success, isFalse);
-        expect(result.message, contains('Failed to finalize purchase'));
+        expect(result.message, 'Could not finalize purchase. Try again.');
         expect(service.currentState.isLoading, isFalse);
         expect(
           service.currentState.lastError,
-          contains('Failed to finalize purchase'),
+          'Could not finalize purchase. Try again.',
         );
       },
     );

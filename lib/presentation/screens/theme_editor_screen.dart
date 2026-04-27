@@ -465,10 +465,17 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         ).showSnackBar(SnackBar(content: Text('Theme "${theme.name}" saved')));
       }
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'terminal themes',
+          context: ErrorDescription('while saving a terminal theme'),
+        ),
+      );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error saving theme: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save theme. Try again.')),
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);

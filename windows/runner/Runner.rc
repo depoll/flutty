@@ -89,13 +89,13 @@ BEGIN
     BEGIN
         BLOCK "040904e4"
         BEGIN
-            VALUE "CompanyName", "com.flutty" "\0"
-            VALUE "FileDescription", "flutty" "\0"
+            VALUE "CompanyName", "DepollSoft" "\0"
+            VALUE "FileDescription", "MonkeySSH" "\0"
             VALUE "FileVersion", VERSION_AS_STRING "\0"
-            VALUE "InternalName", "flutty" "\0"
-            VALUE "LegalCopyright", "Copyright (C) 2026 com.flutty. All rights reserved." "\0"
-            VALUE "OriginalFilename", "flutty.exe" "\0"
-            VALUE "ProductName", "flutty" "\0"
+            VALUE "InternalName", "MonkeySSH" "\0"
+            VALUE "LegalCopyright", "Copyright (C) 2026 DepollSoft. All rights reserved." "\0"
+            VALUE "OriginalFilename", "monkeyssh.exe" "\0"
+            VALUE "ProductName", "MonkeySSH" "\0"
             VALUE "ProductVersion", VERSION_AS_STRING "\0"
         END
     END

@@ -259,12 +259,20 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
         }
       }
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'keys',
+          context: ErrorDescription('while generating an SSH key'),
+        ),
+      );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error generating key: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not generate key. Try again.')),
+        );
       }
     } finally {
+      _passphraseController.clear();
       if (mounted) setState(() => _isGenerating = false);
     }
   }
@@ -444,18 +452,27 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
       }
 
       if (mounted) {
+        _privateKeyController.clear();
         context.pop();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('Key imported successfully')),
         );
       }
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'keys',
+          context: ErrorDescription('while importing an SSH key'),
+        ),
+      );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error importing key: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not import key. Try again.')),
+        );
       }
     } finally {
+      _passphraseController.clear();
       if (mounted) setState(() => _isImporting = false);
     }
   }
@@ -565,12 +582,23 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
         SnackBar(content: Text('Import failed: ${error.message}')),
       );
     } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'keys',
+          context: ErrorDescription(
+            'while importing an encrypted key transfer',
+          ),
+        ),
+      );
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Import failed. Check the file and try again.'),
+        ),
+      );
     } finally {
       if (mounted) {
         setState(() => _isImporting = false);

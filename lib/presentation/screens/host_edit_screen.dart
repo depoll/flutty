@@ -896,7 +896,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           controlAffinity: ListTileControlAffinity.leading,
           title: const Text('Hide tmux status bar'),
           subtitle: const Text(
-            'Append `\\; set status off` so Flutty\'s tmux bar is the only one shown.',
+            'Append `\\; set status off` so MonkeySSH\'s tmux bar is the only one shown.',
           ),
           onChanged: (value) {
             setState(() => _disableTmuxStatusBar = value ?? false);
@@ -952,7 +952,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
               child: AgentToolIcon(tool: _selectedAgentLaunchTool),
             ),
             helperText:
-                'Launch an agent directly, or pair it with tmux so Flutty can show extra window navigation.',
+                'Launch an agent directly, or pair it with tmux so MonkeySSH can show extra window navigation.',
           ),
           items: AgentLaunchTool.values
               .map(
@@ -1022,7 +1022,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           controlAffinity: ListTileControlAffinity.leading,
           title: const Text('Hide tmux status bar'),
           subtitle: const Text(
-            'When a tmux session is set, append `\\; set status off` so Flutty\'s tmux bar is the only one shown.',
+            'When a tmux session is set, append `\\; set status off` so MonkeySSH\'s tmux bar is the only one shown.',
           ),
           onChanged: hasAgentPresetAccess
               ? (value) {
@@ -1459,10 +1459,17 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         );
       }
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'hosts',
+          context: ErrorDescription('while saving a host'),
+        ),
+      );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save host. Try again.')),
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);
@@ -1714,10 +1721,23 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         const SnackBar(content: Text('Connection successful')),
       );
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'hosts',
+          context: ErrorDescription('while testing a host connection'),
+        ),
+      );
       if (!mounted) {
         return;
       }
-      messenger.showSnackBar(SnackBar(content: Text('Connection failed: $e')));
+      messenger.showSnackBar(
+        const SnackBar(
+          content: Text(
+            'Connection failed. Check the host settings and try again.',
+          ),
+        ),
+      );
     }
   }
 
@@ -1789,12 +1809,21 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         SnackBar(content: Text('Import failed: ${error.message}')),
       );
     } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'hosts',
+          context: ErrorDescription('while importing a host transfer'),
+        ),
+      );
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Import failed. Check the file and try again.'),
+        ),
+      );
     }
   }
 

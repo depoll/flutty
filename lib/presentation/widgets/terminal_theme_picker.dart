@@ -146,7 +146,8 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       ],
       body: themesAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (e, _) => Center(child: Text('Error: $e')),
+        error: (_, _) =>
+            const Center(child: Text('Could not load terminal themes.')),
         data: (themes) {
           final filtered = _filterThemes(themes);
           if (filtered.isEmpty) {

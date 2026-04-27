@@ -743,7 +743,11 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
       button = Tooltip(message: tooltip, child: button);
     }
 
-    return button;
+    return Semantics(
+      button: true,
+      label: widget.tooltip ?? widget.label,
+      child: button,
+    );
   }
 }
 
@@ -853,6 +857,16 @@ class _ModifierButtonState extends State<_ModifierButton> {
       button = Tooltip(message: tooltip, child: button);
     }
 
-    return button;
+    return Semantics(
+      button: true,
+      label: widget.tooltip ?? widget.label,
+      toggled: widget.state != null,
+      value: switch (widget.state) {
+        null => 'off',
+        false => 'one-shot',
+        true => 'locked',
+      },
+      child: button,
+    );
   }
 }

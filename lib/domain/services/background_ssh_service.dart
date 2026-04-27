@@ -50,14 +50,19 @@ class BackgroundSshService {
         'connectedCount': connectedCount,
       });
     } on PlatformException catch (error) {
-      debugPrint(
-        'Failed to update background SSH status: ${error.message ?? error.code}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to update background SSH status: '
+          '${error.message ?? error.code}',
+        );
+      }
     } on MissingPluginException catch (error) {
-      debugPrint(
-        'Failed to update background SSH status: '
-        '${error.message ?? 'missing plugin'}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to update background SSH status: '
+          '${error.message ?? 'missing plugin'}',
+        );
+      }
     }
   }
 
@@ -71,15 +76,19 @@ class BackgroundSshService {
         'isForeground': isForeground,
       });
     } on PlatformException catch (error) {
-      debugPrint(
-        'Failed to update background SSH lifecycle: '
-        '${error.message ?? error.code}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to update background SSH lifecycle: '
+          '${error.message ?? error.code}',
+        );
+      }
     } on MissingPluginException catch (error) {
-      debugPrint(
-        'Failed to update background SSH lifecycle: '
-        '${error.message ?? 'missing plugin'}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to update background SSH lifecycle: '
+          '${error.message ?? 'missing plugin'}',
+        );
+      }
     }
   }
 
@@ -91,14 +100,18 @@ class BackgroundSshService {
     try {
       await _channel.invokeMethod<void>('stopService');
     } on PlatformException catch (error) {
-      debugPrint(
-        'Failed to stop background SSH status: ${error.message ?? error.code}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to stop background SSH status: ${error.message ?? error.code}',
+        );
+      }
     } on MissingPluginException catch (error) {
-      debugPrint(
-        'Failed to stop background SSH status: '
-        '${error.message ?? 'missing plugin'}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to stop background SSH status: '
+          '${error.message ?? 'missing plugin'}',
+        );
+      }
     }
   }
 
@@ -113,16 +126,20 @@ class BackgroundSshService {
           ) ??
           false;
     } on PlatformException catch (error) {
-      debugPrint(
-        'Failed to read Android battery optimization status: '
-        '${error.message ?? error.code}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to read Android battery optimization status: '
+          '${error.message ?? error.code}',
+        );
+      }
       return null;
     } on MissingPluginException catch (error) {
-      debugPrint(
-        'Failed to read Android battery optimization status: '
-        '${error.message ?? 'missing plugin'}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to read Android battery optimization status: '
+          '${error.message ?? 'missing plugin'}',
+        );
+      }
       return null;
     }
   }
@@ -138,16 +155,20 @@ class BackgroundSshService {
           ) ??
           false;
     } on PlatformException catch (error) {
-      debugPrint(
-        'Failed to open Android battery optimization settings: '
-        '${error.message ?? error.code}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to open Android battery optimization settings: '
+          '${error.message ?? error.code}',
+        );
+      }
       return false;
     } on MissingPluginException catch (error) {
-      debugPrint(
-        'Failed to open Android battery optimization settings: '
-        '${error.message ?? 'missing plugin'}',
-      );
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to open Android battery optimization settings: '
+          '${error.message ?? 'missing plugin'}',
+        );
+      }
       return false;
     }
   }

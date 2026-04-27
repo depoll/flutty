@@ -23,6 +23,8 @@ import '../widgets/premium_badge.dart';
 import '../widgets/terminal_theme_picker.dart';
 import 'transfer_screen.dart';
 
+const _githubUrl = 'https://github.com/depollsoft/MonkeySSH';
+
 /// Settings screen with appearance, security, terminal, import/export,
 /// background and about sections.
 class SettingsScreen extends ConsumerWidget {
@@ -385,145 +387,161 @@ class _SecuritySection extends ConsumerWidget {
       return null;
     }
 
-    showDialog<void>(
-      context: context,
-      builder: (context) => StatefulBuilder(
-        builder: (context, setState) => AlertDialog(
-          title: const Text('Change PIN'),
-          content: Form(
-            key: formKey,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextFormField(
-                  controller: currentPinController,
-                  decoration: const InputDecoration(
-                    labelText: 'Current PIN',
-                    counterText: '',
+    unawaited(
+      showDialog<void>(
+        context: context,
+        builder: (context) => StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('Change PIN'),
+            content: Form(
+              key: formKey,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextFormField(
+                    controller: currentPinController,
+                    decoration: const InputDecoration(
+                      labelText: 'Current PIN',
+                      counterText: '',
+                    ),
+                    forceErrorText: currentPinErrorText.isEmpty
+                        ? null
+                        : currentPinErrorText,
+                    obscureText: true,
+                    keyboardType: TextInputType.number,
+                    maxLength: 8,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    validator: validateCurrentPin,
+                    onChanged: (_) {
+                      if (currentPinErrorText.isEmpty) return;
+                      setState(() => currentPinErrorText = '');
+                    },
                   ),
-                  forceErrorText: currentPinErrorText.isEmpty
-                      ? null
-                      : currentPinErrorText,
-                  obscureText: true,
-                  keyboardType: TextInputType.number,
-                  maxLength: 8,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  validator: validateCurrentPin,
-                  onChanged: (_) {
-                    if (currentPinErrorText.isEmpty) return;
-                    setState(() => currentPinErrorText = '');
-                  },
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: newPinController,
-                  decoration: const InputDecoration(
-                    labelText: 'New PIN',
-                    counterText: '',
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: newPinController,
+                    decoration: const InputDecoration(
+                      labelText: 'New PIN',
+                      counterText: '',
+                    ),
+                    obscureText: true,
+                    keyboardType: TextInputType.number,
+                    maxLength: 8,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    validator: validateNewPin,
                   ),
-                  obscureText: true,
-                  keyboardType: TextInputType.number,
-                  maxLength: 8,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  validator: validateNewPin,
-                ),
-                const SizedBox(height: 16),
-                TextFormField(
-                  controller: confirmPinController,
-                  decoration: const InputDecoration(
-                    labelText: 'Confirm new PIN',
-                    counterText: '',
+                  const SizedBox(height: 16),
+                  TextFormField(
+                    controller: confirmPinController,
+                    decoration: const InputDecoration(
+                      labelText: 'Confirm new PIN',
+                      counterText: '',
+                    ),
+                    obscureText: true,
+                    keyboardType: TextInputType.number,
+                    maxLength: 8,
+                    inputFormatters: [FilteringTextInputFormatter.digitsOnly],
+                    validator: (v) {
+                      final pinValidationError = validateNewPin(v);
+                      if (pinValidationError != null) return pinValidationError;
+                      if (v != newPinController.text) {
+                        return 'PINs do not match';
+                      }
+                      return null;
+                    },
                   ),
-                  obscureText: true,
-                  keyboardType: TextInputType.number,
-                  maxLength: 8,
-                  inputFormatters: [FilteringTextInputFormatter.digitsOnly],
-                  validator: (v) {
-                    final pinValidationError = validateNewPin(v);
-                    if (pinValidationError != null) return pinValidationError;
-                    if (v != newPinController.text) return 'PINs do not match';
-                    return null;
-                  },
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          actions: [
-            TextButton(
-              onPressed: isChanging ? null : () => Navigator.pop(context),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: isChanging
-                  ? null
-                  : () async {
-                      if (!(formKey.currentState?.validate() ?? false)) return;
+            actions: [
+              TextButton(
+                onPressed: isChanging ? null : () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: isChanging
+                    ? null
+                    : () async {
+                        if (!(formKey.currentState?.validate() ?? false)) {
+                          return;
+                        }
 
-                      setState(() {
-                        currentPinErrorText = '';
-                        isChanging = true;
-                      });
+                        setState(() {
+                          currentPinErrorText = '';
+                          isChanging = true;
+                        });
 
-                      bool success;
-                      try {
-                        success = await ref
-                            .read(authServiceProvider)
-                            .changePin(
-                              currentPinController.text,
-                              newPinController.text,
-                            );
-                      } on Object catch (error, stackTrace) {
-                        FlutterError.reportError(
-                          FlutterErrorDetails(
-                            exception: error,
-                            stack: stackTrace,
-                            library: 'auth',
-                            context: ErrorDescription(
-                              'while changing the app PIN from settings',
-                            ),
-                          ),
-                        );
-                        if (context.mounted) {
-                          ScaffoldMessenger.of(context).showSnackBar(
-                            const SnackBar(
-                              content: Text('Could not change PIN. Try again.'),
+                        bool success;
+                        try {
+                          success = await ref
+                              .read(authServiceProvider)
+                              .changePin(
+                                currentPinController.text,
+                                newPinController.text,
+                              );
+                        } on Object catch (error, stackTrace) {
+                          FlutterError.reportError(
+                            FlutterErrorDetails(
+                              exception: error,
+                              stack: stackTrace,
+                              library: 'auth',
+                              context: ErrorDescription(
+                                'while changing the app PIN from settings',
+                              ),
                             ),
                           );
+                          if (context.mounted) {
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              const SnackBar(
+                                content: Text(
+                                  'Could not change PIN. Try again.',
+                                ),
+                              ),
+                            );
+                          }
+                          return;
+                        } finally {
+                          if (context.mounted) {
+                            setState(() => isChanging = false);
+                          }
                         }
-                        return;
-                      } finally {
-                        if (context.mounted) {
-                          setState(() => isChanging = false);
+
+                        if (!context.mounted) return;
+
+                        if (success) {
+                          Navigator.pop(context);
+                          ScaffoldMessenger.of(context).showSnackBar(
+                            const SnackBar(
+                              content: Text('PIN changed successfully'),
+                            ),
+                          );
+                          return;
                         }
-                      }
 
-                      if (!context.mounted) return;
-
-                      if (success) {
-                        Navigator.pop(context);
-                        ScaffoldMessenger.of(context).showSnackBar(
-                          const SnackBar(
-                            content: Text('PIN changed successfully'),
-                          ),
+                        setState(
+                          () =>
+                              currentPinErrorText = 'Current PIN is incorrect',
                         );
-                        return;
-                      }
-
-                      setState(
-                        () => currentPinErrorText = 'Current PIN is incorrect',
-                      );
-                    },
-              child: isChanging
-                  ? const SizedBox(
-                      height: 20,
-                      width: 20,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Text('Change'),
-            ),
-          ],
+                      },
+                child: isChanging
+                    ? const SizedBox(
+                        height: 20,
+                        width: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Text('Change'),
+              ),
+            ],
+          ),
         ),
-      ),
+      ).whenComplete(() {
+        currentPinController.clear();
+        newPinController.clear();
+        confirmPinController.clear();
+        currentPinController.dispose();
+        newPinController.dispose();
+        confirmPinController.dispose();
+      }),
     );
   }
 
@@ -1138,8 +1156,8 @@ class _AboutSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.code),
           title: const Text('GitHub'),
-          subtitle: const Text('View source code'),
-          onTap: () => _showGitHubInfo(context),
+          subtitle: const Text('Copy source repository URL'),
+          onTap: () => unawaited(_copyGitHubUrl(context)),
         ),
         ListTile(
           leading: const Icon(Icons.description_outlined),
@@ -1161,12 +1179,14 @@ class _AboutSection extends ConsumerWidget {
     error: (_, _) => 'Unavailable',
   );
 
-  void _showGitHubInfo(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text('GitHub: github.com/monkeyssh-app/monkeyssh'),
-      ),
-    );
+  Future<void> _copyGitHubUrl(BuildContext context) async {
+    await Clipboard.setData(const ClipboardData(text: _githubUrl));
+    if (!context.mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('GitHub URL copied')));
   }
 }
 
@@ -1364,12 +1384,19 @@ class _ImportExportSection extends ConsumerWidget {
         sharePositionOrigin: shareOriginFromContext(context),
       );
     } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'settings',
+          context: ErrorDescription('while exporting app data'),
+        ),
+      );
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Export failed: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('Export failed. Try again.')),
+      );
     }
   }
 
@@ -1472,12 +1499,21 @@ class _ImportExportSection extends ConsumerWidget {
         SnackBar(content: Text('Import failed: ${error.message}')),
       );
     } on Exception catch (error) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: error,
+          library: 'settings',
+          context: ErrorDescription('while importing app data'),
+        ),
+      );
       if (!context.mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Import failed. Check the file and try again.'),
+        ),
+      );
     }
   }
 }

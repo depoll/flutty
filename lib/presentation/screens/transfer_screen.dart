@@ -292,44 +292,52 @@ Future<String?> showTransferPassphraseDialog({
   final controller = TextEditingController();
   var obscureText = true;
 
-  final value = await showDialog<String>(
-    context: context,
-    builder: (dialogContext) => StatefulBuilder(
-      builder: (context, setState) => AlertDialog(
-        title: Text(title),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          obscureText: obscureText,
-          decoration: InputDecoration(
-            labelText: 'Transfer passphrase',
-            helperText: 'Required to encrypt/decrypt transfer data',
-            suffixIcon: IconButton(
-              onPressed: () => setState(() => obscureText = !obscureText),
-              icon: Icon(obscureText ? Icons.visibility : Icons.visibility_off),
+  try {
+    final value = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (context, setState) => AlertDialog(
+          title: Text(title),
+          content: TextField(
+            controller: controller,
+            autofocus: true,
+            obscureText: obscureText,
+            decoration: InputDecoration(
+              labelText: 'Transfer passphrase',
+              helperText: 'Required to encrypt/decrypt transfer data',
+              suffixIcon: IconButton(
+                onPressed: () => setState(() => obscureText = !obscureText),
+                icon: Icon(
+                  obscureText ? Icons.visibility : Icons.visibility_off,
+                ),
+              ),
             ),
           ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext),
+              child: const Text('Cancel'),
+            ),
+            FilledButton(
+              onPressed: () =>
+                  Navigator.pop(dialogContext, controller.text.trim()),
+              child: const Text('Continue'),
+            ),
+          ],
         ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(dialogContext),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () =>
-                Navigator.pop(dialogContext, controller.text.trim()),
-            child: const Text('Continue'),
-          ),
-        ],
       ),
-    ),
-  );
+    );
 
-  final trimmed = value?.trim();
-  if (trimmed == null || trimmed.isEmpty) {
-    return null;
+    final trimmed = value?.trim();
+    if (trimmed == null || trimmed.isEmpty) {
+      return null;
+    }
+    return trimmed;
+  } finally {
+    controller
+      ..clear()
+      ..dispose();
   }
-  return trimmed;
 }
 
 /// Requests local authentication for sensitive transfer exports.
@@ -408,28 +416,34 @@ bool _isSensitiveTransferAuthSessionUnlocked(
 
 Future<String?> _showPinDialog(BuildContext context) async {
   final controller = TextEditingController();
-  return showDialog<String>(
-    context: context,
-    builder: (context) => AlertDialog(
-      title: const Text('Enter PIN'),
-      content: TextField(
-        controller: controller,
-        keyboardType: TextInputType.number,
-        obscureText: true,
-        decoration: const InputDecoration(labelText: 'PIN'),
+  try {
+    return await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Enter PIN'),
+        content: TextField(
+          controller: controller,
+          keyboardType: TextInputType.number,
+          obscureText: true,
+          decoration: const InputDecoration(labelText: 'PIN'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, controller.text.trim()),
+            child: const Text('Confirm'),
+          ),
+        ],
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel'),
-        ),
-        FilledButton(
-          onPressed: () => Navigator.pop(context, controller.text.trim()),
-          child: const Text('Confirm'),
-        ),
-      ],
-    ),
-  );
+    );
+  } finally {
+    controller
+      ..clear()
+      ..dispose();
+  }
 }
 
 /// Shared merge/replace mode chooser for migration imports.

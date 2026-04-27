@@ -87,8 +87,15 @@ class MonetizationService {
       _purchaseSubscription = _inAppPurchase.purchaseStream.listen(
         _handlePurchaseUpdates,
         onError: (Object error, StackTrace stackTrace) {
-          debugPrint('Purchase stream error: $error');
-          _emit(_state.copyWith(isLoading: false, lastError: '$error'));
+          if (kDebugMode) {
+            debugPrint('Purchase stream error: $error\n$stackTrace');
+          }
+          _emit(
+            _state.copyWith(
+              isLoading: false,
+              lastError: 'Could not update purchase status. Try again.',
+            ),
+          );
         },
       );
 
@@ -179,7 +186,9 @@ class MonetizationService {
         isLoading: false,
         billingAvailability: MonetizationBillingAvailability.available,
         offers: catalog.offers,
-        lastError: response.error?.message,
+        lastError: response.error == null
+            ? null
+            : 'Could not load purchase options. Try again.',
       ),
     );
   }
@@ -377,16 +386,10 @@ class MonetizationService {
           break;
         case PurchaseStatus.error:
           unawaited(_completePurchaseIfNeeded(purchase));
-          _emit(
-            _state.copyWith(
-              isLoading: false,
-              lastError: purchase.error?.message ?? 'Purchase failed.',
-            ),
-          );
+          const failureMessage = 'Purchase failed. Try again.';
+          _emit(_state.copyWith(isLoading: false, lastError: failureMessage));
           _resolvePendingPurchase(
-            MonetizationActionResult.failure(
-              purchase.error?.message ?? 'Purchase failed.',
-            ),
+            const MonetizationActionResult.failure(failureMessage),
           );
           break;
         case PurchaseStatus.canceled:
@@ -484,10 +487,12 @@ class MonetizationService {
       );
       return MonetizationActionResult.success(successMessage);
     } on Object catch (error, stackTrace) {
-      final message = 'Failed to finalize purchase: $error';
-      debugPrint('$message\n$stackTrace');
+      const message = 'Could not finalize purchase. Try again.';
+      if (kDebugMode) {
+        debugPrint('Failed to finalize purchase: $error\n$stackTrace');
+      }
       _emit(_state.copyWith(isLoading: false, lastError: message));
-      return MonetizationActionResult.failure(message);
+      return const MonetizationActionResult.failure(message);
     }
   }
 
@@ -555,12 +560,10 @@ class MonetizationService {
     _emit(_state.copyWith(isLoading: true, lastError: null));
     try {
       final response = await _playBillingAddition.queryPastPurchases();
-      if (response.error case final error?) {
-        final message = error.message.isEmpty
-            ? 'Could not check Google Play subscriptions.'
-            : error.message;
+      if (response.error != null) {
+        const message = 'Could not check Google Play subscriptions.';
         _emit(_state.copyWith(isLoading: false, lastError: message));
-        return MonetizationActionResult.failure(message);
+        return const MonetizationActionResult.failure(message);
       }
 
       final purchases = response.pastPurchases

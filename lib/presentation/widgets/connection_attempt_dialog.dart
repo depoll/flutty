@@ -44,8 +44,9 @@ Future<SshConnectionResult> connectToHostWithProgressDialog(
         context: ErrorDescription('while connecting to host ${host.id}'),
       ),
     );
-    sessionsNotifier.reportConnectionAttemptError(host.id, '$error');
-    result = SshConnectionResult(success: false, error: '$error');
+    const message = 'Connection failed. Check the host settings and try again.';
+    sessionsNotifier.reportConnectionAttemptError(host.id, message);
+    result = const SshConnectionResult(success: false, error: message);
   }
 
   if (result.success && result.connectionId != null && navigator.mounted) {

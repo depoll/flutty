@@ -551,6 +551,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                   const Spacer(),
                   IconButton(
                     icon: const Icon(Icons.close, size: 20),
+                    tooltip: 'Close tmux navigator',
                     onPressed: () => Navigator.pop(context),
                     visualDensity: VisualDensity.compact,
                   ),
@@ -576,7 +577,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
                     Padding(
                       padding: const EdgeInsets.all(16),
                       child: Text(
-                        'Could not load windows: $_error',
+                        'Could not load tmux windows. Check that tmux is still running, then try again.',
                         style: TextStyle(color: theme.colorScheme.error),
                       ),
                     )
