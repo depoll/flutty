@@ -1,5 +1,4 @@
-@file:Suppress("DEPRECATION")
-
+import com.android.build.api.dsl.ApplicationExtension
 import java.util.Properties
 import org.gradle.api.GradleException
 import org.jetbrains.kotlin.gradle.dsl.JvmTarget
@@ -58,7 +57,7 @@ if (isReleaseBuildRequested && !allowUnsignedRelease) {
     }
 }
 
-android {
+extensions.configure<ApplicationExtension>("android") {
     namespace = "xyz.depollsoft.monkeyssh"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = flutter.ndkVersion
