@@ -2,6 +2,13 @@ import 'package:flutter/foundation.dart';
 
 import 'agent_launch_preset.dart';
 
+/// Field separator used for tmux format strings.
+///
+/// tmux's format engine does not expand `\t`, and titles/commands may contain
+/// visible delimiters such as `|`. ASCII Unit Separator keeps parsed snapshots
+/// stable without constraining user-controlled window names.
+const tmuxWindowFieldSeparator = '\x1f';
+
 /// Represents a tmux session on a remote host.
 @immutable
 class TmuxSession {
@@ -76,16 +83,24 @@ class TmuxWindow {
     this.currentPath,
     this.flags,
     this.paneTitle,
+    this.paneStartCommand,
+    this.agentTool,
     int? idleSeconds,
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
 
-  /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
+  /// Parses a [TmuxWindow] from a tmux format string.
   ///
-  /// Expected format (from `tmux list-windows -F`):
-  /// `index|name|active_flag|command|path|flags|pane_title|activity_epoch`
+  /// Expected primary format (from `tmux list-windows -F`) is Unit
+  /// Separator-delimited:
+  /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
+  /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool`
+  ///
+  /// Legacy pipe-delimited snapshots are still accepted for older tests and
+  /// stale control-mode messages.
   factory TmuxWindow.fromTmuxFormat(String line) {
-    final fields = line.split('|');
+    final parsed = _splitTmuxWindowFormatFields(line);
+    final fields = parsed.fields;
     if (fields.length < 3) {
       throw FormatException('Invalid tmux window format: $line');
     }
@@ -103,6 +118,8 @@ class TmuxWindow {
       lastActivityEpochSeconds: activityEpoch != null && activityEpoch > 0
           ? activityEpoch
           : null,
+      paneStartCommand: parsed.paneStartCommand,
+      agentTool: fields.length > 9 ? _agentToolFromMetadata(fields[9]) : null,
     );
   }
 
@@ -126,6 +143,12 @@ class TmuxWindow {
 
   /// The pane title set by the running application, if available.
   final String? paneTitle;
+
+  /// The command tmux used when creating the pane, if available.
+  final String? paneStartCommand;
+
+  /// App-provided agent tool metadata stored on the tmux window, if available.
+  final AgentLaunchTool? agentTool;
 
   /// tmux's `window_activity` epoch seconds, if available.
   final int? lastActivityEpochSeconds;
@@ -173,6 +196,8 @@ class TmuxWindow {
     String? currentPath,
     String? flags,
     String? paneTitle,
+    String? paneStartCommand,
+    AgentLaunchTool? agentTool,
     int? lastActivityEpochSeconds,
   }) => TmuxWindow(
     index: index,
@@ -182,10 +207,41 @@ class TmuxWindow {
     currentPath: currentPath ?? this.currentPath,
     flags: flags ?? this.flags,
     paneTitle: paneTitle ?? this.paneTitle,
+    paneStartCommand: paneStartCommand ?? this.paneStartCommand,
+    agentTool: agentTool ?? this.agentTool,
     idleSeconds: _snapshotIdleSeconds,
     lastActivityEpochSeconds:
         lastActivityEpochSeconds ?? this.lastActivityEpochSeconds,
   );
+
+  /// A best-effort coding-agent session identifier found in tmux metadata.
+  String? get agentSessionId {
+    final tool = foregroundAgentTool;
+    if (tool == null) return null;
+    return _agentSessionIdFromCommand(paneStartCommand, tool: tool);
+  }
+
+  /// Short coding-agent session label suitable for secondary UI text.
+  String? get agentSessionLabel {
+    final id = agentSessionId;
+    if (id == null || id.isEmpty) return null;
+    return 'session ${_shortenSessionId(id)}';
+  }
+
+  /// Fallback title for agent windows whose pane title is generic or stale.
+  String? get agentContextTitle {
+    final tool = foregroundAgentTool;
+    if (tool == null) return null;
+    final context = _windowContextLabelFromPath(currentPath);
+    if (context != null) {
+      return '${tool.label} · $context';
+    }
+    final sessionId = agentSessionId;
+    if (sessionId != null && sessionId.isNotEmpty) {
+      return '${tool.label} · ${_shortenSessionId(sessionId)}';
+    }
+    return tool.label;
+  }
 
   /// A short display title — prefers the richest usable tmux title.
   String get displayTitle {
@@ -197,7 +253,29 @@ class TmuxWindow {
       name,
       stripPlaceholderPrefix: true,
     );
-    if (normalizedPaneTitle == null) return normalizedName ?? name;
+    final normalizedCommand = _normalizedTmuxTitle(
+      currentCommand,
+      stripPlaceholderPrefix: true,
+    );
+    final agentTitle = agentContextTitle;
+    final foregroundTool = foregroundAgentTool;
+    if (agentTitle != null &&
+        foregroundTool != null &&
+        _isUnhelpfulAgentTitle(
+          normalizedPaneTitle,
+          tool: foregroundTool,
+          contextLabel: _windowContextLabelFromPath(currentPath),
+        )) {
+      return agentTitle;
+    }
+    if (normalizedPaneTitle == null ||
+        _isUnhelpfulTmuxTitle(
+          normalizedPaneTitle,
+          normalizedName: normalizedName,
+          normalizedCommand: normalizedCommand,
+        )) {
+      return agentTitle ?? normalizedName ?? name;
+    }
     if (normalizedName == null) return normalizedPaneTitle;
     if (_hasPlaceholderPrefix(name)) return normalizedPaneTitle;
     if (_isDecoratedVariantOfTitle(name, normalizedPaneTitle)) {
@@ -228,6 +306,24 @@ class TmuxWindow {
       currentCommand,
       stripPlaceholderPrefix: true,
     );
+    final agentTitle = agentContextTitle;
+    final foregroundTool = foregroundAgentTool;
+    if (agentTitle != null &&
+        foregroundTool != null &&
+        _isUnhelpfulAgentTitle(
+          normalizedPaneTitle,
+          tool: foregroundTool,
+          contextLabel: _windowContextLabelFromPath(currentPath),
+        )) {
+      return agentTitle;
+    }
+    if (_isUnhelpfulTmuxTitle(
+      normalizedPaneTitle,
+      normalizedName: normalizedName,
+      normalizedCommand: normalizedCommand,
+    )) {
+      return agentTitle ?? normalizedName ?? displayTitle;
+    }
     if (normalizedPaneTitle != null &&
         normalizedName != null &&
         normalizedCommand != null &&
@@ -241,6 +337,12 @@ class TmuxWindow {
   /// Secondary context for the window title when both pane and window names
   /// are useful and distinct.
   String? get secondaryTitle {
+    final display = displayTitle;
+    final agentTitle = agentContextTitle;
+    if (agentTitle != null && display == agentTitle) {
+      return agentSessionLabel;
+    }
+
     final normalizedPaneTitle = _normalizedTmuxTitle(
       paneTitle,
       stripPlaceholderPrefix: true,
@@ -270,13 +372,14 @@ class TmuxWindow {
 
   /// The supported agent CLI running in the foreground, if one can be inferred.
   AgentLaunchTool? get foregroundAgentTool {
+    if (agentTool != null) return agentTool;
     for (final candidate in [currentCommand, name, paneTitle]) {
       final tool = agentLaunchToolForCommandName(candidate);
       if (tool != null) {
         return tool;
       }
     }
-    return null;
+    return _agentToolFromCommandText(paneStartCommand);
   }
 
   @override
@@ -295,6 +398,8 @@ class TmuxWindow {
           currentPath == other.currentPath &&
           flags == other.flags &&
           paneTitle == other.paneTitle &&
+          paneStartCommand == other.paneStartCommand &&
+          agentTool == other.agentTool &&
           lastActivityEpochSeconds == other.lastActivityEpochSeconds &&
           _snapshotIdleSeconds == other._snapshotIdleSeconds;
 
@@ -307,6 +412,8 @@ class TmuxWindow {
     currentPath,
     flags,
     paneTitle,
+    paneStartCommand,
+    agentTool,
     lastActivityEpochSeconds,
     _snapshotIdleSeconds,
   );
@@ -508,6 +615,32 @@ String? _nonEmpty(String value) {
   return trimmed.isEmpty ? null : trimmed;
 }
 
+({List<String> fields, String? paneStartCommand}) _splitTmuxWindowFormatFields(
+  String line,
+) {
+  if (line.contains(tmuxWindowFieldSeparator)) {
+    final fields = line.split(tmuxWindowFieldSeparator);
+    return (
+      fields: fields,
+      paneStartCommand: fields.length > 8 ? _nonEmpty(fields[8]) : null,
+    );
+  }
+
+  final fields = line.split('|');
+  if (fields.length <= 7) {
+    return (fields: fields, paneStartCommand: null);
+  }
+
+  return (
+    fields: <String>[
+      ...fields.take(6),
+      fields.sublist(6, fields.length - 1).join('|'),
+      fields.last,
+    ],
+    paneStartCommand: null,
+  );
+}
+
 String? _normalizedTmuxTitle(
   String? value, {
   bool stripPlaceholderPrefix = false,
@@ -525,6 +658,89 @@ String? _normalizedTmuxTitle(
 }
 
 bool _hasPlaceholderPrefix(String value) => value.trimLeft().startsWith('_');
+
+const _genericTmuxTitles = <String>{
+  'bash',
+  'fish',
+  'login',
+  'sh',
+  'shell',
+  'terminal',
+  'tmux',
+  'zsh',
+};
+
+bool _isUnhelpfulTmuxTitle(
+  String? value, {
+  String? normalizedName,
+  String? normalizedCommand,
+}) {
+  if (value == null || value.isEmpty) return true;
+  final lowered = value.toLowerCase();
+  if (_genericTmuxTitles.contains(lowered)) return true;
+  if (normalizedName != null && lowered == normalizedName.toLowerCase()) {
+    return true;
+  }
+  if (normalizedCommand != null && lowered == normalizedCommand.toLowerCase()) {
+    return true;
+  }
+  return _isLikelyDefaultHostTitle(value);
+}
+
+bool _isLikelyDefaultHostTitle(String value) {
+  final trimmed = value.trim();
+  if (trimmed.isEmpty || trimmed.contains(RegExp(r'\s'))) return false;
+  final lowered = trimmed.toLowerCase();
+  if (lowered == 'localhost') return true;
+  return RegExp(
+    r'^[a-z0-9][a-z0-9-]*(?:\.[a-z0-9][a-z0-9-]*)+$',
+    caseSensitive: false,
+  ).hasMatch(trimmed);
+}
+
+bool _isUnhelpfulAgentTitle(
+  String? value, {
+  required AgentLaunchTool tool,
+  required String? contextLabel,
+}) {
+  if (value == null || value.isEmpty) return true;
+  final lowered = _normalizeAgentTitleForComparison(value);
+  if (lowered.isEmpty) return true;
+  if (_agentTitleAliases(tool).contains(lowered)) return true;
+
+  final loweredContext = contextLabel?.trim().toLowerCase();
+  if (loweredContext != null &&
+      loweredContext.isNotEmpty &&
+      lowered == loweredContext) {
+    return true;
+  }
+
+  final statusMatch = RegExp(
+    r'^(?:idle|ready|running|thinking|waiting|working)(?:\s+\(([^)]+)\))?$',
+  ).firstMatch(lowered);
+  if (statusMatch == null) return false;
+  final statusContext = statusMatch.group(1)?.trim();
+  return statusContext == null ||
+      statusContext.isEmpty ||
+      statusContext == loweredContext;
+}
+
+String _normalizeAgentTitleForComparison(String value) =>
+    _stripLeadingDecorativePrefix(
+      value,
+    ).replaceAll(RegExp(r'\s+'), ' ').trim().toLowerCase();
+
+Set<String> _agentTitleAliases(AgentLaunchTool tool) => switch (tool) {
+  AgentLaunchTool.claudeCode => const {'claude', 'claude code'},
+  AgentLaunchTool.copilotCli => const {
+    'copilot',
+    'copilot cli',
+    'github copilot',
+  },
+  AgentLaunchTool.codex => const {'codex'},
+  AgentLaunchTool.openCode => const {'opencode', 'open code'},
+  AgentLaunchTool.geminiCli => const {'gemini', 'gemini cli'},
+};
 
 bool _isDecoratedVariantOfTitle(String rawTitle, String? plainTitle) {
   if (plainTitle == null || plainTitle.isEmpty) return false;
@@ -549,6 +765,71 @@ bool _isAsciiLetterOrDigit(int rune) =>
     (rune >= 0x30 && rune <= 0x39) ||
     (rune >= 0x41 && rune <= 0x5A) ||
     (rune >= 0x61 && rune <= 0x7A);
+
+AgentLaunchTool? _agentToolFromCommandText(String? value) =>
+    agentLaunchToolForCommandText(value);
+
+AgentLaunchTool? _agentToolFromMetadata(String? value) =>
+    agentLaunchToolForCommandName(value) ??
+    agentLaunchToolForCommandText(value);
+
+String? _agentSessionIdFromCommand(
+  String? value, {
+  required AgentLaunchTool tool,
+}) {
+  final command = value?.trim();
+  if (command == null || command.isEmpty) return null;
+  final patterns = switch (tool) {
+    AgentLaunchTool.claudeCode => const [
+      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.copilotCli => const [
+      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.codex => const [
+      r'''(?<!\S)resume\s+(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.geminiCli => const [
+      r'''(?<!\S)--resume(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+    AgentLaunchTool.openCode => const [
+      r'''(?<!\S)--session(?:=|\s+)(?:"([^"]+)"|'([^']+)'|(\S+))''',
+    ],
+  };
+
+  for (final pattern in patterns) {
+    final match = RegExp(pattern).firstMatch(command);
+    if (match == null) continue;
+    for (var index = 1; index <= match.groupCount; index++) {
+      final value = match.group(index)?.trim();
+      if (value != null && value.isNotEmpty) return value;
+    }
+  }
+  return null;
+}
+
+String _shortenSessionId(String id) {
+  final trimmed = id.trim();
+  if (trimmed.length <= 14) return trimmed;
+  return '${trimmed.substring(0, 8)}...';
+}
+
+String? _windowContextLabelFromPath(String? value) {
+  final trimmed = value?.trim();
+  if (trimmed == null || trimmed.isEmpty) return null;
+  final parts = trimmed
+      .split('/')
+      .where((part) => part.isNotEmpty && part != '.' && part != '~')
+      .toList(growable: false);
+  if (parts.isEmpty) return null;
+  for (var index = 0; index < parts.length - 1; index++) {
+    final segment = parts[index];
+    if (segment.endsWith('.worktrees')) {
+      return parts[index + 1];
+    }
+  }
+  return parts.last;
+}
 
 // ── tmux command helpers ──────────────────────────────────────────────────
 

@@ -544,6 +544,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
     unawaited(_loadPreferredLaunchTool());
+    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
     _loadWindows();
     _subscribeToWindowChanges();
   }
@@ -578,6 +579,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     unawaited(_windowChangeSubscription?.cancel());
     _subscribeToWindowChanges();
     unawaited(_loadPreferredLaunchTool());
+    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
     _loadWindows();
   }
 
@@ -601,9 +603,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     final preferredLaunchTool = preset?.tool;
     if (_preferredLaunchTool == preferredLaunchTool) return;
     setState(() => _preferredLaunchTool = preferredLaunchTool);
-    if (widget.isProUser) {
-      unawaited(_prefetchPreferredSessionProvider());
-    }
   }
 
   void _subscribeToWindowChanges() {
@@ -658,7 +657,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     _applyWindows(windows);
-    if (widget.isProUser) {
+    if (widget.isProUser && _showSessions) {
       unawaited(_prefetchPreferredSessionProvider(windows: windows));
     }
   }
@@ -916,7 +915,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         _resetWindowReloadRecovery();
       }
       _applyWindows(windows);
-      if (widget.isProUser) {
+      if (widget.isProUser && _showSessions) {
         unawaited(_prefetchPreferredSessionProvider(windows: windows));
       }
     } on Object catch (error) {
@@ -1184,7 +1183,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             // Refresh window list when expanding to get current active state.
             if (!wasExpanded) {
               _loadWindows();
-              if (widget.isProUser) {
+              if (widget.isProUser && _showSessions) {
                 unawaited(_prefetchPreferredSessionProvider());
               }
             }

@@ -95,6 +95,33 @@ AgentLaunchTool? agentLaunchToolForCommandName(String? commandName) {
   return null;
 }
 
+/// Resolves a supported agent CLI from a full shell command.
+///
+/// This accepts commands with environment assignments, paths, and arguments
+/// because tmux can expose wrapper commands rather than a bare executable.
+AgentLaunchTool? agentLaunchToolForCommandText(String? command) {
+  var normalized = command?.trim() ?? '';
+  if (normalized.isEmpty) {
+    return null;
+  }
+
+  while (true) {
+    final cdMatch = _leadingCdCommandPattern.firstMatch(normalized);
+    if (cdMatch == null) break;
+    normalized = normalized.substring(cdMatch.end).trimLeft();
+  }
+
+  while (true) {
+    final assignmentMatch = _leadingEnvironmentAssignmentPattern.firstMatch(
+      normalized,
+    );
+    if (assignmentMatch == null) break;
+    normalized = normalized.substring(assignmentMatch.end).trimLeft();
+  }
+
+  return agentLaunchToolForCommandName(_readLeadingShellToken(normalized));
+}
+
 /// Host-scoped preset for launching a coding agent after connect.
 class AgentLaunchPreset {
   /// Creates a new [AgentLaunchPreset].
@@ -200,7 +227,26 @@ String? _normalizeAgentCommandName(String? commandName) {
   return basename.replaceFirst(RegExp(r'\.exe$'), '');
 }
 
+String? _readLeadingShellToken(String value) {
+  final trimmed = value.trimLeft();
+  if (trimmed.isEmpty) return null;
+  final quote = trimmed.codeUnitAt(0);
+  if (quote == 0x22 || quote == 0x27) {
+    final end = trimmed.indexOf(String.fromCharCode(quote), 1);
+    if (end > 1) {
+      return trimmed.substring(1, end);
+    }
+  }
+  return trimmed.split(RegExp(r'\s+')).first;
+}
+
 final _unquotedTmuxFlagTokenPattern = RegExp(r'^[A-Za-z0-9_./~:=,+-]+$');
+final _leadingCdCommandPattern = RegExp(
+  r'''^cd\s+(?:"[^"]*"|'[^']*'|\S+)\s*&&\s*''',
+);
+final _leadingEnvironmentAssignmentPattern = RegExp(
+  r'''^[A-Za-z_][A-Za-z0-9_]*=(?:"(?:[^"\\]|\\.)*"|'[^']*'|\S+)\s+''',
+);
 final _codexApprovalModeEqualsPattern = RegExp(
   r'''(?<!\S)--approval-mode=(?:"[^"]*"|'[^']*'|\S+)''',
 );

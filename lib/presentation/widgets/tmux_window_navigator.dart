@@ -160,6 +160,8 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   String? _error;
   bool _loadingWindows = false;
   bool _pendingWindowReload = false;
+  bool _showSessions = false;
+  bool _hasInitializedSessionProviders = false;
   int _windowReloadGeneration = 0;
   int _windowEventGeneration = 0;
   Timer? _windowRetryTimer;
@@ -175,7 +177,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   void initState() {
     super.initState();
     unawaited(_loadPreferredLaunchTool());
-    _installedToolsFuture = _tmux.detectInstalledAgentTools(widget.session);
     _subscribeToWindowChanges();
     _loadWindows();
   }
@@ -185,6 +186,9 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.session.hostId != widget.session.hostId) {
       _resetWindowReloadRecovery();
+      _installedToolsFuture = null;
+      _showSessions = false;
+      _hasInitializedSessionProviders = false;
       unawaited(_loadPreferredLaunchTool());
     }
   }
@@ -221,7 +225,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
     final preferredLaunchTool = preset?.tool;
     if (_preferredLaunchTool == preferredLaunchTool) return;
     setState(() => _preferredLaunchTool = preferredLaunchTool);
-    unawaited(_prefetchPreferredSessionProvider());
   }
 
   Future<void> _prefetchPreferredSessionProvider({
@@ -330,7 +333,6 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         _error = null;
         _isLoadingWindows = false;
       });
-      unawaited(_prefetchPreferredSessionProvider(windows: windows));
     } on Exception catch (e) {
       DiagnosticsLogService.instance.warning(
         'tmux.navigator',
@@ -492,11 +494,13 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
   }
 
   void _showNewWindowPicker() {
+    final installedToolsFuture = _installedToolsFuture ??= _tmux
+        .detectInstalledAgentTools(widget.session);
     showModalBottomSheet<void>(
       context: context,
       builder: (context) => TmuxToolPickerSheet(
         isProUser: widget.isProUser,
-        installedToolsFuture: _installedToolsFuture,
+        installedToolsFuture: installedToolsFuture,
         preferredTool: _preferredLaunchTool,
         onToolSelected: (tool) {
           Navigator.pop(context);
@@ -724,42 +728,66 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
         title: const Row(
           children: [Text('Recent AI Sessions'), Spacer(), PremiumBadge()],
         ),
-      ),
-      AiSessionProviderList(
-        key: ValueKey<Object>(
-          Object.hashAll(<Object?>[
-            widget.session.connectionId,
-            widget.tmuxSessionName,
-            widget.scopeWorkingDirectory,
-            _windows
-                ?.where((window) => window.isActive)
-                .firstOrNull
-                ?.currentPath,
-          ]),
+        trailing: Icon(
+          _showSessions ? Icons.expand_less : Icons.expand_more,
+          size: 18,
+          color: theme.colorScheme.onSurfaceVariant,
         ),
-        orderedTools: orderedDiscoveredSessionTools(
-          const <String, List<ToolSessionInfo>>{},
-          const <String>{},
-          preferredToolName: _preferredLaunchTool?.discoveredSessionToolName,
-        ),
-        loadSessionsForTool: (toolName, maxSessions) {
-          final activeWindow = _windows?.where((w) => w.isActive).firstOrNull;
-          final scopeWorkingDirectory =
-              widget.scopeWorkingDirectory ??
-              resolveAgentSessionScopeWorkingDirectory(
-                activeWorkingDirectory: activeWindow?.currentPath,
-                sessionWorkingDirectory: widget.session.workingDirectory,
-              );
-          return _discovery.discoverSessionsStream(
-            widget.session,
-            workingDirectory: scopeWorkingDirectory,
-            maxPerTool: maxSessions,
-            toolName: toolName,
-          );
+        onTap: () {
+          final showSessions = !_showSessions;
+          setState(() {
+            _showSessions = showSessions;
+            if (showSessions) {
+              _hasInitializedSessionProviders = true;
+            }
+          });
+          if (showSessions) {
+            unawaited(_prefetchPreferredSessionProvider());
+          }
         },
-        itemBuilder: (context, provider) =>
-            _buildSessionProviderTile(theme, provider),
       ),
+      if (_hasInitializedSessionProviders)
+        Offstage(
+          offstage: !_showSessions,
+          child: AiSessionProviderList(
+            key: ValueKey<Object>(
+              Object.hashAll(<Object?>[
+                widget.session.connectionId,
+                widget.tmuxSessionName,
+                widget.scopeWorkingDirectory,
+                _windows
+                    ?.where((window) => window.isActive)
+                    .firstOrNull
+                    ?.currentPath,
+              ]),
+            ),
+            orderedTools: orderedDiscoveredSessionTools(
+              const <String, List<ToolSessionInfo>>{},
+              const <String>{},
+              preferredToolName:
+                  _preferredLaunchTool?.discoveredSessionToolName,
+            ),
+            loadSessionsForTool: (toolName, maxSessions) {
+              final activeWindow = _windows
+                  ?.where((w) => w.isActive)
+                  .firstOrNull;
+              final scopeWorkingDirectory =
+                  widget.scopeWorkingDirectory ??
+                  resolveAgentSessionScopeWorkingDirectory(
+                    activeWorkingDirectory: activeWindow?.currentPath,
+                    sessionWorkingDirectory: widget.session.workingDirectory,
+                  );
+              return _discovery.discoverSessionsStream(
+                widget.session,
+                workingDirectory: scopeWorkingDirectory,
+                maxPerTool: maxSessions,
+                toolName: toolName,
+              );
+            },
+            itemBuilder: (context, provider) =>
+                _buildSessionProviderTile(theme, provider),
+          ),
+        ),
     ],
   );
 

@@ -48,14 +48,18 @@ class TmuxService {
   static final Map<int, String> _profileSourceCache = {};
 
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
-  static final Map<int, Set<AgentLaunchTool>> _installedAgentToolsCache = {};
+  static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
 
-  static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
-  _windowObservers = {};
-  static final Map<_TmuxWindowWatchKey, Future<List<TmuxWindow>>>
-  _windowListRequests = {};
+  static final _installedAgentToolRequests =
+      <int, Future<Set<AgentLaunchTool>>>{};
+
+  static final _windowObservers =
+      <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
+  static final _windowListRequests =
+      <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
+  static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
   static final RegExp _execDoneMarkerLinePattern = RegExp(
     '(?:^|\\n)${RegExp.escape(_execDoneMarker)}:([0-9]+)\\n',
   );
@@ -75,6 +79,7 @@ class TmuxService {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _installedAgentToolsCache.remove(connectionId);
+    _installedAgentToolRequests.remove(connectionId);
     _windowListRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -175,43 +180,99 @@ class TmuxService {
   /// command is built per-binary so it also works on POSIX-strict
   /// `/bin/sh` (dash), where `command -v` rejects multiple operands.
   ///
-  /// Successful detections are cached per connection. Empty results
-  /// (typically a transient detection failure) are intentionally not
-  /// cached, so a later call can recover.
+  /// Detection results, including empty sets, are cached per connection.
+  /// Stale cached results are returned immediately while a refresh runs in
+  /// the background.
   Future<Set<AgentLaunchTool>> detectInstalledAgentTools(
     SshSession session,
   ) async {
     final cached = _installedAgentToolsCache[session.connectionId];
     if (cached != null) {
+      final age = DateTime.now().difference(cached.cachedAt);
       DiagnosticsLogService.instance.info(
         'tmux.agent',
         'tool_detection_cached',
         fields: {
           'connectionId': session.connectionId,
-          'toolCount': cached.length,
+          'toolCount': cached.tools.length,
+          'ageMs': age.inMilliseconds,
         },
       );
-      return cached;
+      if (age >= _installedAgentToolsFreshTtl) {
+        unawaited(_refreshInstalledAgentTools(session));
+      }
+      return cached.tools;
     }
+
+    return _refreshInstalledAgentTools(session);
+  }
+
+  /// Warms the installed agent CLI cache in the background.
+  Future<void> prefetchInstalledAgentTools(SshSession session) async {
+    final cached = _installedAgentToolsCache[session.connectionId];
+    if (cached != null &&
+        DateTime.now().difference(cached.cachedAt) <
+            _installedAgentToolsFreshTtl) {
+      return;
+    }
+    try {
+      await _refreshInstalledAgentTools(session);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'tool_detection_prefetch_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+  }
+
+  Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(SshSession session) {
+    final existingRequest = _installedAgentToolRequests[session.connectionId];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'tool_detection_join',
+        fields: {'connectionId': session.connectionId},
+      );
+      return existingRequest;
+    }
+
     DiagnosticsLogService.instance.info(
       'tmux.agent',
       'tool_detection_start',
       fields: {'connectionId': session.connectionId},
     );
-    final output = await _exec(session, buildAgentToolDetectionCommand());
-    final installed = parseInstalledAgentTools(output);
-    if (installed.isNotEmpty) {
-      _installedAgentToolsCache[session.connectionId] = installed;
-    }
-    DiagnosticsLogService.instance.info(
-      'tmux.agent',
-      'tool_detection_complete',
-      fields: {
-        'connectionId': session.connectionId,
-        'toolCount': installed.length,
-      },
-    );
-    return installed;
+    final request = () async {
+      final output = await _exec(session, buildAgentToolDetectionCommand());
+      final installed = parseInstalledAgentTools(output);
+      _installedAgentToolsCache[session.connectionId] =
+          _CachedInstalledAgentTools(
+            tools: Set<AgentLaunchTool>.unmodifiable(installed),
+            cachedAt: DateTime.now(),
+          );
+      DiagnosticsLogService.instance.info(
+        'tmux.agent',
+        'tool_detection_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'toolCount': installed.length,
+        },
+      );
+      return installed;
+    }();
+    _installedAgentToolRequests[session.connectionId] = request;
+    request.whenComplete(() {
+      if (identical(
+        _installedAgentToolRequests[session.connectionId],
+        request,
+      )) {
+        _installedAgentToolRequests.remove(session.connectionId);
+      }
+    }).ignore();
+    return request;
   }
 
   /// Lists all tmux sessions on the remote host.
@@ -406,12 +467,15 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     final quotedName = _shellQuote(sessionName);
+    const sep = r'${SEP}';
     final output = await _exec(
       session,
-      'tmux list-windows -t $quotedName -F '
-      "'#{window_index}|#{window_name}|#{window_active}|"
-      '#{pane_current_command}|#{pane_current_path}|'
-      "#{window_flags}|#{pane_title}|#{window_activity}'",
+      r'SEP=$(printf "\037"); '
+      'tmux -u list-windows -t $quotedName -F '
+      '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
+      '#{pane_current_command}$sep#{pane_current_path}$sep'
+      '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
+      '#{pane_start_command}$sep#{@flutty_agent_tool}"',
     );
     final windows = List<TmuxWindow>.unmodifiable(
       _parseLines(output, TmuxWindow.fromTmuxFormat),
@@ -564,17 +628,33 @@ class TmuxService {
     // (e.g. resuming an AI session in a specific project). Without -c,
     // tmux uses the session's default-directory — matching Ctrl+b,c.
     final parts = <String>[
-      'tmux new-window -t ${_shellQuote(sessionName)}',
+      "tmux new-window -P -F '#{window_index}' -t ${_shellQuote(sessionName)}",
       if (workingDirectory != null && workingDirectory.trim().isNotEmpty)
         '-c ${_shellQuote(workingDirectory.trim())}',
       if (name != null && name.trim().isNotEmpty)
         '-n ${_shellQuote(name.trim())}',
     ];
-    await _exec(session, parts.join(' '));
+    final createdWindowIndex = _parseCreatedWindowIndex(
+      await _exec(session, parts.join(' ')),
+    );
+    final target = createdWindowIndex == null
+        ? sessionName
+        : '$sessionName:$createdWindowIndex';
+    final agentTool = _agentToolForCreatedWindow(command: command, name: name);
+    if (agentTool != null) {
+      await _exec(
+        session,
+        'tmux set-option -w -t ${_shellQuote(target)} '
+        '@flutty_agent_tool ${_shellQuote(agentTool.commandName)}',
+      );
+    }
     DiagnosticsLogService.instance.info(
       'tmux.action',
       'create_window_complete',
-      fields: {'connectionId': session.connectionId},
+      fields: {
+        'connectionId': session.connectionId,
+        'hasAgentTool': agentTool != null,
+      },
     );
 
     // If a command was requested, type it into the new window's shell.
@@ -583,7 +663,7 @@ class TmuxService {
     if (command != null && command.trim().isNotEmpty) {
       _execFireAndForget(
         session,
-        'tmux send-keys -t ${_shellQuote(sessionName)} '
+        'tmux send-keys -t ${_shellQuote(target)} '
         '${_shellQuote(command.trim())} Enter',
       );
       DiagnosticsLogService.instance.info(
@@ -967,6 +1047,31 @@ class TmuxService {
       "'${value.replaceAll("'", "'\"'\"'")}'";
 }
 
+int? _parseCreatedWindowIndex(String output) {
+  for (final rawLine in output.split('\n')) {
+    final index = int.tryParse(rawLine.trim());
+    if (index != null) return index;
+  }
+  return null;
+}
+
+AgentLaunchTool? _agentToolForCreatedWindow({
+  required String? command,
+  required String? name,
+}) =>
+    agentLaunchToolForCommandName(name) ??
+    agentLaunchToolForCommandText(command);
+
+class _CachedInstalledAgentTools {
+  const _CachedInstalledAgentTools({
+    required this.tools,
+    required this.cachedAt,
+  });
+
+  final Set<AgentLaunchTool> tools;
+  final DateTime cachedAt;
+}
+
 String _diagnosticTmuxCommandKind(String command) {
   if (command.contains('attach-session')) {
     return 'control_attach';
@@ -1035,9 +1140,16 @@ bool hasForegroundTmuxClient(String output) {
 }
 
 const _tmuxWindowSubscriptionFormat =
-    '#{window_index}|#{window_name}|#{window_active}|'
-    '#{pane_current_command}|#{pane_current_path}|'
-    '#{window_flags}|#{pane_title}|#{window_activity}';
+    '#{window_index}$tmuxWindowFieldSeparator'
+    '#{window_name}$tmuxWindowFieldSeparator'
+    '#{window_active}$tmuxWindowFieldSeparator'
+    '#{pane_current_command}$tmuxWindowFieldSeparator'
+    '#{pane_current_path}$tmuxWindowFieldSeparator'
+    '#{window_flags}$tmuxWindowFieldSeparator'
+    '#{pane_title}$tmuxWindowFieldSeparator'
+    '#{window_activity}$tmuxWindowFieldSeparator'
+    '#{pane_start_command}$tmuxWindowFieldSeparator'
+    '#{@flutty_agent_tool}';
 
 const _tmuxControlModeClientFlags = 'read-only,ignore-size,no-output,wait-exit';
 

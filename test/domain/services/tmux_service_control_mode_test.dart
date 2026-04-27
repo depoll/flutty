@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 
@@ -27,24 +28,77 @@ void main() {
     test(
       'subscription command watches all windows in the attached session',
       () {
+        const sep = tmuxWindowFieldSeparator;
         expect(
           buildTmuxWindowSubscriptionCommand('flutty-1-42'),
           'refresh-client -B '
           "'flutty-1-42:@*:"
-          '#{window_index}|#{window_name}|#{window_active}|'
-          '#{pane_current_command}|#{pane_current_path}|'
-          "#{window_flags}|#{pane_title}|#{window_activity}'",
+          '#{window_index}$sep#{window_name}$sep#{window_active}$sep'
+          '#{pane_current_command}$sep#{pane_current_path}$sep'
+          '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
+          '#{pane_start_command}$sep'
+          "#{@flutty_agent_tool}'",
         );
       },
     );
+
+    test('detectInstalledAgentTools caches empty results', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 20);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      final first = await service.detectInstalledAgentTools(session);
+      final second = await service.detectInstalledAgentTools(session);
+
+      expect(first, isEmpty);
+      expect(second, isEmpty);
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
+
+    test('prefetchInstalledAgentTools warms the detection cache', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 21);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(
+        stdout: '/opt/homebrew/bin/gemini\n${_doneMarker()}',
+      );
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.prefetchInstalledAgentTools(session);
+      final tools = await service.detectInstalledAgentTools(session);
+
+      expect(tools, {AgentLaunchTool.geminiCli});
+      verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
   });
 
   group('parseTmuxWindowChangeEventFromControlLine', () {
     const subscriptionName = 'flutty-1-42';
+    const sep = tmuxWindowFieldSeparator;
 
     test('returns a window snapshot event for matching subscriptions', () {
+      final snapshotValue = [
+        '1',
+        'renamed',
+        '1',
+        'sleep',
+        '/tmp',
+        '*',
+        'custom-title',
+        '1712930000',
+        'sleep 30',
+        'gemini',
+      ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
-        r'%subscription-changed flutty-1-42 $1 @1 1 %1 : 1|renamed|1|sleep|/tmp|*|custom-title|1712930000',
+        '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
         subscriptionName: subscriptionName,
       );
 
@@ -54,12 +108,27 @@ void main() {
       expect(snapshot.window.name, 'renamed');
       expect(snapshot.window.isActive, isTrue);
       expect(snapshot.window.paneTitle, 'custom-title');
+      expect(snapshot.window.paneStartCommand, 'sleep 30');
+      expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
     });
 
     test('normalizes the wrapped first control-mode line', () {
+      final snapshotValue = [
+        '0',
+        'shell',
+        '1',
+        'sleep',
+        '/tmp',
+        '*',
+        'wrapped-title',
+        '1712930000',
+        'sleep 30',
+        '',
+      ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
-        '\u001bP1000p%subscription-changed flutty-1-42 \$1 @1 1 %1 : '
-        '0|shell|1|sleep|/tmp|*|wrapped-title|1712930000',
+        '\u001bP1000p'
+        '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}'
+        '$snapshotValue',
         subscriptionName: subscriptionName,
       );
 
@@ -367,6 +436,65 @@ void main() {
     });
 
     test(
+      'createWindow tags agent windows and targets the created index',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: '4\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: _doneMarker()),
+          _buildOpenExecSession(),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        await service.createWindow(
+          session,
+          'main',
+          command: 'gemini --yolo',
+          name: 'gemini',
+          workingDirectory: '/tmp/project',
+        );
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u new-window -P -F '#{window_index}' -t "
+                "'main' -c '/tmp/project' -n 'gemini'",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u set-option -w -t 'main:4' "
+                "@flutty_agent_tool 'gemini'",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u send-keys -t 'main:4' 'gemini --yolo' Enter",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
+      },
+    );
+
+    test(
       'selectWindow completes when stdout stays open after the done marker',
       () async {
         final client = _MockSshClient();
@@ -582,16 +710,17 @@ void main() {
   });
 }
 
-SshSession _buildSession(SSHClient client) => SshSession(
-  connectionId: 1,
-  hostId: 1,
-  client: client,
-  config: const SshConnectionConfig(
-    hostname: 'example.com',
-    port: 22,
-    username: 'tester',
-  ),
-);
+SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>
+    SshSession(
+      connectionId: connectionId,
+      hostId: 1,
+      client: client,
+      config: const SshConnectionConfig(
+        hostname: 'example.com',
+        port: 22,
+        username: 'tester',
+      ),
+    );
 
 class _MockSshClient extends Mock implements SSHClient {}
 

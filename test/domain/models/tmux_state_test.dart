@@ -51,7 +51,18 @@ void main() {
 
   group('TmuxWindow', () {
     test('parses from tmux format string with all fields', () {
-      const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
+      const sep = tmuxWindowFieldSeparator;
+      final line = [
+        '0',
+        'vim',
+        '1',
+        'vim',
+        '/home/user/project',
+        '*',
+        'Editing main.dart',
+        '1712930000',
+        'vim main.dart',
+      ].join(sep);
       final window = TmuxWindow.fromTmuxFormat(line);
 
       expect(window.index, 0);
@@ -61,8 +72,27 @@ void main() {
       expect(window.currentPath, '/home/user/project');
       expect(window.flags, '*');
       expect(window.paneTitle, 'Editing main.dart');
+      expect(window.paneStartCommand, 'vim main.dart');
       expect(window.displayTitle, 'Editing main.dart');
       expect(window.hasAlert, false);
+    });
+
+    test('still parses legacy pipe-delimited window snapshots', () {
+      const line = '0|vim|1|vim|/home/user/project|*|Editing main.dart';
+      final window = TmuxWindow.fromTmuxFormat(line);
+
+      expect(window.index, 0);
+      expect(window.name, 'vim');
+      expect(window.displayTitle, 'Editing main.dart');
+    });
+
+    test('preserves pipe characters in legacy pane titles', () {
+      const line = '1|logs|0|tail|/var/log|-|api | worker | errors|1712930000';
+      final window = TmuxWindow.fromTmuxFormat(line);
+
+      expect(window.paneTitle, 'api | worker | errors');
+      expect(window.lastActivityEpochSeconds, 1712930000);
+      expect(window.displayTitle, 'api | worker | errors');
     });
 
     test('parses with minimal fields', () {
@@ -151,6 +181,122 @@ void main() {
       );
 
       expect(window.displayTitle, 'Test session setup');
+    });
+
+    test(
+      'uses agent and worktree context when pane title is the default host',
+      () {
+        const window = TmuxWindow(
+          index: 1,
+          name: 'codex',
+          isActive: false,
+          currentCommand: 'codex',
+          currentPath: '/Users/depoll/Code/flutty.worktrees/fix-title/lib',
+          paneTitle: 'mac-mini.home',
+        );
+
+        expect(window.displayTitle, 'Codex · fix-title');
+        expect(window.handleTitle, 'Codex · fix-title');
+        expect(window.secondaryTitle, isNull);
+      },
+    );
+
+    test('uses useful CLI-provided pane titles over agent fallbacks', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'copilot',
+        isActive: false,
+        currentCommand: 'copilot',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: '✨ Editing main.dart',
+      );
+
+      expect(window.displayTitle, '✨ Editing main.dart');
+      expect(window.secondaryTitle, 'copilot');
+    });
+
+    test('uses agent context when Codex only reports the project title', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'codex',
+        isActive: false,
+        currentCommand: 'codex-aarch64-apple-darwin',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: 'flutty',
+      );
+
+      expect(window.displayTitle, 'Codex · flutty');
+      expect(window.handleTitle, 'Codex · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('uses agent context when Claude only reports its brand title', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'claude',
+        isActive: false,
+        currentCommand: '2.1.119',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: '✳ Claude Code',
+      );
+
+      expect(window.displayTitle, 'Claude Code · flutty');
+      expect(window.handleTitle, 'Claude Code · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('uses agent context when Gemini only reports ready status', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'gemini',
+        isActive: false,
+        currentCommand: 'node',
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle:
+            '◇  Ready (flutty)                                                               ',
+      );
+
+      expect(window.displayTitle, 'Gemini CLI · flutty');
+      expect(window.handleTitle, 'Gemini CLI · flutty');
+      expect(window.secondaryTitle, isNull);
+    });
+
+    test('uses app agent metadata when tmux exposes only wrapper names', () {
+      const sep = tmuxWindowFieldSeparator;
+      final line = [
+        '1',
+        'node',
+        '0',
+        'node',
+        '/Users/depoll/Code/flutty',
+        '',
+        'mac-mini.home',
+        '1712930000',
+        'zsh',
+        'gemini',
+      ].join(sep);
+      final window = TmuxWindow.fromTmuxFormat(line);
+
+      expect(window.agentTool, AgentLaunchTool.geminiCli);
+      expect(window.foregroundAgentTool, AgentLaunchTool.geminiCli);
+      expect(window.displayTitle, 'Gemini CLI · flutty');
+      expect(window.handleTitle, 'Gemini CLI · flutty');
+    });
+
+    test('shows resumed agent session metadata from pane start commands', () {
+      const window = TmuxWindow(
+        index: 1,
+        name: 'agent',
+        isActive: false,
+        currentPath: '/Users/depoll/Code/flutty',
+        paneTitle: 'localhost',
+        paneStartCommand: 'codex resume rollout-2026-04-26-session',
+      );
+
+      expect(window.foregroundAgentTool, AgentLaunchTool.codex);
+      expect(window.agentSessionId, 'rollout-2026-04-26-session');
+      expect(window.displayTitle, 'Codex · flutty');
+      expect(window.secondaryTitle, 'session rollout-...');
     });
 
     test('handles empty command and path', () {

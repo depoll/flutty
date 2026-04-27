@@ -38,6 +38,9 @@ SSHSession _buildExecSession({String stdout = '', String stderr = ''}) {
   return session;
 }
 
+String _remoteSnapshotLine(String path, String content, {int mtime = 0}) =>
+    '$path\x1f$mtime\x1f${base64Encode(utf8.encode(content))}\n';
+
 void main() {
   group('normalizeWorkingDirectoryForComparison', () {
     test('strips worktree branch segments from comparable paths', () {
@@ -493,6 +496,22 @@ branch refs/heads/fix/session-resumption
     );
   });
 
+  group('buildResumeCommand', () {
+    test('resumes Codex with the discovered session UUID', () {
+      const info = ToolSessionInfo(
+        toolName: 'Codex',
+        sessionId: '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d',
+        workingDirectory: '/Users/depoll/Code/flutty',
+      );
+
+      expect(
+        AgentSessionDiscoveryService().buildResumeCommand(info),
+        "cd '/Users/depoll/Code/flutty' && "
+        "codex resume '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d'",
+      );
+    });
+  });
+
   group('compareDiscoveredSessionsByRecency', () {
     test('sorts newest first and leaves untimestamped sessions last', () {
       final sessions = [
@@ -649,12 +668,13 @@ cwd: /tmp/demo
   group('parseCodexRolloutMetadata', () {
     test('prefers the structured user_message event over input_text noise', () {
       final metadata = parseCodexRolloutMetadata('''
-{"timestamp":"2026-04-12T21:07:44.781Z","type":"session_meta","cwd":"/Users/depoll/Code/flutty"}
+{"timestamp":"2026-04-12T21:07:44.781Z","type":"session_meta","payload":{"id":"019d8385-487f-72c1-9abf-766ffc76deff","cwd":"/Users/depoll/Code/flutty"}}
 {"timestamp":"2026-04-12T21:07:45.000Z","type":"response_item","payload":{"type":"message","content":[{"type":"input_text","text":"<permissions instructions>"}]}}
 {"timestamp":"2026-04-12T21:07:48.390Z","type":"event_msg","payload":{"type":"user_message","message":"rename this session","images":[]}}
 ''');
 
       expect(metadata.parsedAny, isTrue);
+      expect(metadata.sessionId, '019d8385-487f-72c1-9abf-766ffc76deff');
       expect(metadata.workingDirectory, '/Users/depoll/Code/flutty');
       expect(metadata.summary, 'rename this session');
       expect(metadata.updatedAt, DateTime.parse('2026-04-12T21:07:44.781Z'));
@@ -748,6 +768,54 @@ cwd: /tmp/demo
   });
 
   group('discoverSessionsStream caching', () {
+    test(
+      'Codex discovery uses resumable UUID instead of rollout filename',
+      () async {
+        final client = _MockSshClient();
+        const rolloutPath =
+            '/Users/demo/.codex/sessions/2026/04/26/'
+            'rollout-2026-04-26T15-44-01-'
+            '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d.jsonl';
+        const sessionId = '019dcbf6-c80e-7c30-b7fa-3d352bda8c4d';
+        when(() => client.execute(any())).thenAnswer((invocation) async {
+          final command = invocation.positionalArguments.first as String;
+          if (command.contains('find ~/.codex/sessions')) {
+            return _buildExecSession(stdout: rolloutPath);
+          }
+          if (command.contains('~/.codex/session_index.jsonl')) {
+            return _buildExecSession(
+              stdout:
+                  '{"id":"$sessionId","thread_name":"Fix tmux titles",'
+                  ' "updated_at":"2026-04-26T22:44:35.656609Z"}\n',
+            );
+          }
+          if (command.contains(rolloutPath)) {
+            return _buildExecSession(
+              stdout: _remoteSnapshotLine(rolloutPath, '''
+{"timestamp":"2026-04-26T22:44:20.349Z","type":"session_meta","payload":{"id":"$sessionId","timestamp":"2026-04-26T22:44:01.169Z","cwd":"/Users/depoll/Code/flutty"}}
+{"timestamp":"2026-04-26T22:44:48.390Z","type":"event_msg","payload":{"type":"user_message","message":"fix codex resume","images":[]}}
+''', mtime: 1777243460),
+            );
+          }
+          return _buildExecSession();
+        });
+
+        final discovery = AgentSessionDiscoveryService();
+        final session = _buildDiscoverySession(client);
+        final result = await discovery.discoverSessions(
+          session,
+          toolName: 'Codex',
+        );
+
+        expect(result.sessions, hasLength(1));
+        expect(result.sessions.single.sessionId, sessionId);
+        expect(
+          discovery.buildResumeCommand(result.sessions.single),
+          "cd '/Users/depoll/Code/flutty' && codex resume '$sessionId'",
+        );
+      },
+    );
+
     test('toolName limits discovery to the requested provider', () async {
       final client = _MockSshClient();
       final commands = <String>[];

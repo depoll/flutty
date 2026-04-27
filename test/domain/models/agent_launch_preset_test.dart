@@ -35,6 +35,27 @@ void main() {
     });
   });
 
+  group('agentLaunchToolForCommandText', () {
+    test('detects tools in wrapped shell commands', () {
+      expect(
+        agentLaunchToolForCommandText(
+          r'OPENCODE_PERMISSION="{\"*\":\"allow\"}" /opt/bin/opencode -s abc',
+        ),
+        AgentLaunchTool.openCode,
+      );
+      expect(
+        agentLaunchToolForCommandText('cd ~/repo && codex resume abc'),
+        AgentLaunchTool.codex,
+      );
+    });
+
+    test('returns null for commands without supported tools', () {
+      expect(agentLaunchToolForCommandText('node ./script.js'), isNull);
+      expect(agentLaunchToolForCommandText("cd '/tmp/codex' && node"), isNull);
+      expect(agentLaunchToolForCommandText(''), isNull);
+    });
+  });
+
   group('buildAgentLaunchCommand', () {
     test('builds a working-directory command without tmux', () {
       const preset = AgentLaunchPreset(

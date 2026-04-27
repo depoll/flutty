@@ -50,7 +50,7 @@ void main() {
       );
 
       expect(find.text('✨ Editing main.dart'), findsOneWidget);
-      expect(find.text('claude'), findsOneWidget);
+      expect(find.text('Claude Code'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
       expect(find.text('htop'), findsOneWidget);
       expect(find.text('running'), findsNWidgets(3));
@@ -70,7 +70,7 @@ void main() {
 
       expect(find.text('tmux:'), findsOneWidget);
       expect(find.text('✨ Editing main.dart'), findsOneWidget);
-      expect(find.text('claude'), findsOneWidget);
+      expect(find.text('Claude Code'), findsOneWidget);
       expect(find.text('bash'), findsOneWidget);
     });
 
@@ -102,7 +102,7 @@ void main() {
       expect(find.text('Resume'), findsOneWidget);
     });
 
-    testWidgets('shows AI session providers without expanding a section', (
+    testWidgets('loads AI session providers only after expanding the section', (
       tester,
     ) async {
       final tmuxService = _MockTmuxService();
@@ -183,8 +183,32 @@ void main() {
 
       expect(find.text('Recent AI Sessions'), findsOneWidget);
       expect(find.text('Claude Code'), findsOneWidget);
-      expect(find.byIcon(Icons.expand_more), findsNothing);
+      expect(find.byIcon(Icons.expand_more), findsOneWidget);
       expect(find.byIcon(Icons.expand_less), findsNothing);
+      verifyNever(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      );
+      verifyNever(() => tmuxService.detectInstalledAgentTools(session));
+
+      await tester.ensureVisible(find.text('Recent AI Sessions'));
+      await tester.pump();
+      await tester.tap(find.text('Recent AI Sessions'));
+      await tester.pumpAndSettle();
+
+      expect(find.byIcon(Icons.expand_less), findsOneWidget);
+      verify(
+        () => discoveryService.discoverSessionsStream(
+          session,
+          workingDirectory: any(named: 'workingDirectory'),
+          maxPerTool: any(named: 'maxPerTool'),
+          toolName: any(named: 'toolName'),
+        ),
+      ).called(5);
     });
 
     testWidgets('recovers from a transient empty window reload', (
