@@ -48,16 +48,15 @@ class TmuxService {
   static final Map<int, String> _profileSourceCache = {};
 
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
-  static final Map<int, _CachedInstalledAgentTools> _installedAgentToolsCache =
-      {};
+  static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
 
-  static final Map<int, Future<Set<AgentLaunchTool>>>
-  _installedAgentToolRequests = {};
+  static final _installedAgentToolRequests =
+      <int, Future<Set<AgentLaunchTool>>>{};
 
-  static final Map<_TmuxWindowWatchKey, _TmuxWindowChangeObserver>
-  _windowObservers = {};
-  static final Map<_TmuxWindowWatchKey, Future<List<TmuxWindow>>>
-  _windowListRequests = {};
+  static final _windowObservers =
+      <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
+  static final _windowListRequests =
+      <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
@@ -181,9 +180,9 @@ class TmuxService {
   /// command is built per-binary so it also works on POSIX-strict
   /// `/bin/sh` (dash), where `command -v` rejects multiple operands.
   ///
-  /// Successful detections are cached per connection. Empty results
-  /// (typically a transient detection failure) are intentionally not
-  /// cached, so a later call can recover.
+  /// Detection results, including empty sets, are cached per connection.
+  /// Stale cached results are returned immediately while a refresh runs in
+  /// the background.
   Future<Set<AgentLaunchTool>> detectInstalledAgentTools(
     SshSession session,
   ) async {

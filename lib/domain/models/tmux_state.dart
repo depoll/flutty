@@ -89,9 +89,10 @@ class TmuxWindow {
     this.lastActivityEpochSeconds,
   }) : _snapshotIdleSeconds = idleSeconds;
 
-  /// Parses a [TmuxWindow] from a pipe-delimited tmux format string.
+  /// Parses a [TmuxWindow] from a tmux format string.
   ///
-  /// Expected format (from `tmux list-windows -F`):
+  /// Expected primary format (from `tmux list-windows -F`) is Unit
+  /// Separator-delimited:
   /// `index<US>name<US>active_flag<US>command<US>path<US>flags<US>`
   /// `pane_title<US>activity_epoch<US>pane_start_command<US>agent_tool`
   ///
@@ -267,14 +268,12 @@ class TmuxWindow {
         )) {
       return agentTitle;
     }
-    if (_isUnhelpfulTmuxTitle(
-      normalizedPaneTitle,
-      normalizedName: normalizedName,
-      normalizedCommand: normalizedCommand,
-    )) {
-      return agentTitle ?? normalizedName ?? name;
-    }
-    if (normalizedPaneTitle == null) {
+    if (normalizedPaneTitle == null ||
+        _isUnhelpfulTmuxTitle(
+          normalizedPaneTitle,
+          normalizedName: normalizedName,
+          normalizedCommand: normalizedCommand,
+        )) {
       return agentTitle ?? normalizedName ?? name;
     }
     if (normalizedName == null) return normalizedPaneTitle;
@@ -628,11 +627,17 @@ String? _nonEmpty(String value) {
   }
 
   final fields = line.split('|');
+  if (fields.length <= 7) {
+    return (fields: fields, paneStartCommand: null);
+  }
+
   return (
-    fields: fields,
-    paneStartCommand: fields.length > 8
-        ? _nonEmpty(fields.sublist(8).join('|'))
-        : null,
+    fields: <String>[
+      ...fields.take(6),
+      fields.sublist(6, fields.length - 1).join('|'),
+      fields.last,
+    ],
+    paneStartCommand: null,
   );
 }
 

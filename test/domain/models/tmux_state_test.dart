@@ -86,6 +86,15 @@ void main() {
       expect(window.displayTitle, 'Editing main.dart');
     });
 
+    test('preserves pipe characters in legacy pane titles', () {
+      const line = '1|logs|0|tail|/var/log|-|api | worker | errors|1712930000';
+      final window = TmuxWindow.fromTmuxFormat(line);
+
+      expect(window.paneTitle, 'api | worker | errors');
+      expect(window.lastActivityEpochSeconds, 1712930000);
+      expect(window.displayTitle, 'api | worker | errors');
+    });
+
     test('parses with minimal fields', () {
       const line = '2|bash|0';
       final window = TmuxWindow.fromTmuxFormat(line);
