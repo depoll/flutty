@@ -3126,6 +3126,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
   final Set<String> _verifyingTerminalPathCacheKeys = <String>{};
   String? _terminalPathCacheScope;
+  String? _pendingTerminalLinkTap;
+  int? _pendingTerminalLinkTapPointer;
+  Offset? _pendingTerminalLinkTapDownPosition;
+  Duration? _pendingTerminalLinkTapDownTimestamp;
+  String? _recentlyOpenedTerminalLinkTap;
   String? _pendingTerminalPathTap;
   int? _pendingTerminalPathTapPointer;
   Offset? _pendingTerminalPathTapDownPosition;
@@ -6829,37 +6834,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   String? _resolveTerminalLinkTap(CellOffset offset) {
-    if (!shouldResolveTerminalTapLinks(
-      showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
-    )) {
-      return null;
-    }
-
-    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
-    if (trackedHyperlink != null) {
+    final externalLink = _resolveTerminalExternalLinkAtOffset(offset);
+    if (externalLink != null) {
       _pendingTerminalPathTap = null;
-      return trackedHyperlink;
-    }
-
-    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
-    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
-    final line = _terminal.buffer.lines[row];
-    if (line.getCodePoint(column) != 0) {
-      final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
-      if (wrappedSnapshot != null) {
-        final rowIndex = row - wrappedSnapshot.startRow;
-        final textOffset =
-            wrappedSnapshot.rowStarts[rowIndex] +
-            wrappedSnapshot.columnOffsets[rowIndex][column];
-        final detectedLink = detectTerminalLinkAtTextOffset(
-          wrappedSnapshot.text,
-          textOffset,
-        );
-        if (detectedLink != null) {
-          _pendingTerminalPathTap = null;
-          return detectedLink.uri.toString();
-        }
+      if (_consumeRecentlyOpenedTerminalLinkTap(externalLink)) {
+        return null;
       }
+      return externalLink;
     }
 
     if (!ref.read(terminalPathLinksNotifierProvider)) {
@@ -6888,6 +6869,41 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
     return '$_terminalSftpPathPrefix$detectedPath';
+  }
+
+  String? _resolveTerminalExternalLinkAtOffset(CellOffset offset) {
+    if (!shouldResolveTerminalTapLinks(
+      showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
+    )) {
+      return null;
+    }
+
+    final trackedHyperlink = _terminalHyperlinkTracker?.resolveLinkAt(offset);
+    if (trackedHyperlink != null) {
+      return trackedHyperlink;
+    }
+
+    final row = offset.y.clamp(0, _terminal.buffer.height - 1);
+    final column = offset.x.clamp(0, _terminal.buffer.viewWidth - 1);
+    final line = _terminal.buffer.lines[row];
+    if (line.getCodePoint(column) == 0) {
+      return null;
+    }
+
+    final wrappedSnapshot = _buildWrappedTerminalLinkSnapshot(row);
+    if (wrappedSnapshot == null) {
+      return null;
+    }
+
+    final rowIndex = row - wrappedSnapshot.startRow;
+    final textOffset =
+        wrappedSnapshot.rowStarts[rowIndex] +
+        wrappedSnapshot.columnOffsets[rowIndex][column];
+    final detectedLink = detectTerminalLinkAtTextOffset(
+      wrappedSnapshot.text,
+      textOffset,
+    );
+    return detectedLink?.uri.toString();
   }
 
   String? _resolveTerminalFilePathAtOffset(
@@ -7147,6 +7163,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _pendingTerminalPathTapDownTimestamp = null;
   }
 
+  void _clearPendingTerminalLinkTap() {
+    _pendingTerminalLinkTap = null;
+    _pendingTerminalLinkTapPointer = null;
+    _pendingTerminalLinkTapDownPosition = null;
+    _pendingTerminalLinkTapDownTimestamp = null;
+  }
+
+  bool _consumeRecentlyOpenedTerminalLinkTap(String link) {
+    if (_recentlyOpenedTerminalLinkTap != link) {
+      return false;
+    }
+    _recentlyOpenedTerminalLinkTap = null;
+    return true;
+  }
+
   bool _consumeRecentlyOpenedTerminalPathTap(String path) {
     if (_recentlyOpenedTerminalPathTap != path) {
       return false;
@@ -7167,28 +7198,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalPointerDown(PointerDownEvent event) {
-    _handleTerminalPathPointerDown(event);
+    _handleTerminalLinkPointerDown(event);
+    if (_pendingTerminalLinkTap == null) {
+      _handleTerminalPathPointerDown(event);
+    } else {
+      _clearPendingTerminalPathTap();
+    }
     _handleTerminalDoubleTapPointerDown(
       event,
-      allowDoubleTap: _pendingTerminalPathTap == null,
+      allowDoubleTap:
+          _pendingTerminalLinkTap == null && _pendingTerminalPathTap == null,
     );
     _handleTerminalMouseTapPointerDown(
       event,
       allowTap:
+          _pendingTerminalLinkTap == null &&
           _pendingTerminalPathTap == null &&
           _terminalDoubleTapConsumedPointer != event.pointer,
     );
   }
 
   void _handleTerminalPointerMove(PointerMoveEvent event) {
+    _handleTerminalLinkPointerMove(event);
     _handleTerminalPathPointerMove(event);
     _handleTerminalDoubleTapPointerMove(event);
     _handleTerminalMouseTapPointerMove(event);
   }
 
   void _handleTerminalPointerUp(PointerUpEvent event) {
-    final pathTapConsumed = _handleTerminalPathPointerUp(event);
-    if (!pathTapConsumed) {
+    final linkTapConsumed = _handleTerminalLinkPointerUp(event);
+    final pathTapConsumed =
+        !linkTapConsumed && _handleTerminalPathPointerUp(event);
+    if (!linkTapConsumed && !pathTapConsumed) {
       _handleTerminalDoubleTapPointerUp(event);
       _handleTerminalMouseTapPointerUp(event);
     } else {
@@ -7198,9 +7239,81 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalPointerCancel(PointerCancelEvent event) {
+    _handleTerminalLinkPointerCancel(event);
     _handleTerminalPathPointerCancel(event);
     _handleTerminalDoubleTapPointerCancel(event);
     _clearPendingTerminalMouseTap(event.pointer);
+  }
+
+  void _handleTerminalLinkPointerDown(PointerDownEvent event) {
+    final terminalViewState = _terminalViewKey.currentState;
+    _clearPendingTerminalLinkTap();
+    if (event.kind != PointerDeviceKind.touch || terminalViewState == null) {
+      return;
+    }
+
+    final terminalLocalPosition = terminalViewState.renderTerminal
+        .globalToLocal(event.position);
+    final offset = terminalViewState.renderTerminal.getCellOffset(
+      terminalLocalPosition,
+    );
+    final tappedLink = _resolveTerminalExternalLinkAtOffset(offset);
+    if (tappedLink == null) {
+      return;
+    }
+
+    _terminalTextInputController.suppressNextTouchKeyboardRequest();
+    _pendingTerminalLinkTap = tappedLink;
+    _pendingTerminalLinkTapPointer = event.pointer;
+    _pendingTerminalLinkTapDownPosition = event.position;
+    _pendingTerminalLinkTapDownTimestamp = event.timeStamp;
+  }
+
+  void _handleTerminalLinkPointerMove(PointerMoveEvent event) {
+    if (_pendingTerminalLinkTapPointer != event.pointer) {
+      return;
+    }
+    final downPosition = _pendingTerminalLinkTapDownPosition;
+    if (downPosition != null &&
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalLinkTap();
+    }
+  }
+
+  bool _handleTerminalLinkPointerUp(PointerUpEvent event) {
+    if (event.kind != PointerDeviceKind.touch) {
+      return false;
+    }
+
+    final pendingLink = _pendingTerminalLinkTap;
+    final downPosition = _pendingTerminalLinkTapDownPosition;
+    final downTimestamp = _pendingTerminalLinkTapDownTimestamp;
+    if (pendingLink == null ||
+        _pendingTerminalLinkTapPointer != event.pointer ||
+        downPosition == null ||
+        downTimestamp == null ||
+        event.timeStamp - downTimestamp > kLongPressTimeout ||
+        (event.position - downPosition).distance > kTouchSlop) {
+      _clearPendingTerminalLinkTap();
+      return pendingLink != null;
+    }
+
+    _clearPendingTerminalLinkTap();
+    _clearPendingTerminalPathTap();
+    _recentlyOpenedTerminalLinkTap = pendingLink;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_recentlyOpenedTerminalLinkTap == pendingLink) {
+        _recentlyOpenedTerminalLinkTap = null;
+      }
+    });
+    _handleTerminalLinkTap(pendingLink);
+    return true;
+  }
+
+  void _handleTerminalLinkPointerCancel(PointerCancelEvent event) {
+    if (_pendingTerminalLinkTapPointer == event.pointer) {
+      _clearPendingTerminalLinkTap();
+    }
   }
 
   void _handleTerminalMouseTapPointerDown(

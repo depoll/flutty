@@ -1162,6 +1162,64 @@ void main() {
     );
 
     testWidgets(
+      'terminal URL taps open links while system selection is enabled',
+      (tester) async {
+        const url = 'https://example.com/docs';
+        const urlLauncherChannel = MethodChannel(
+          'plugins.flutter.io/url_launcher',
+        );
+        final launchedUrls = <String>[];
+        tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+          urlLauncherChannel,
+          (call) async {
+            if (call.method == 'launch') {
+              final arguments = call.arguments! as Map<Object?, Object?>;
+              launchedUrls.add(arguments['url']! as String);
+              return true;
+            }
+            return false;
+          },
+        );
+        addTearDown(
+          () => tester.binding.defaultBinaryMessenger.setMockMethodCallHandler(
+            urlLauncherChannel,
+            null,
+          ),
+        );
+
+        await pumpScreen(tester);
+
+        session.terminal!.write('visit $url');
+        await tester.pumpAndSettle();
+
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        final lineText = trimTerminalLinePadding(
+          session.terminal!.buffer.lines[0].getText(
+            0,
+            session.terminal!.buffer.viewWidth,
+          ),
+        );
+        final startColumn = lineText.indexOf(url);
+        expect(startColumn, isNonNegative);
+        final cellOffset = CellOffset(startColumn + (url.length ~/ 2), 0);
+
+        await tester.tapAt(
+          renderTerminal.localToGlobal(
+            renderTerminal.getOffset(cellOffset) +
+                renderTerminal.cellSize.center(Offset.zero),
+          ),
+        );
+        await tester.pumpAndSettle();
+
+        expect(launchedUrls, [url]);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'toolbar navigation keys clear the screen IME buffer',
       (tester) async {
         await pumpScreen(tester);
