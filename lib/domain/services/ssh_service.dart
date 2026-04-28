@@ -17,6 +17,7 @@ import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
 import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
+import 'ssh_exec_queue.dart';
 import 'terminal_hyperlink_tracker.dart';
 
 /// Connection state for an SSH session.
@@ -2185,6 +2186,17 @@ class SshSession {
       rethrow;
     }
   }
+
+  /// Runs short-lived exec work through this connection's bounded exec queue.
+  ///
+  /// The callback should open, consume, and close any SSH exec channel it uses.
+  /// Long-lived channels such as the interactive shell and tmux control-mode
+  /// watcher should not use this queue because they would permanently occupy a
+  /// short-command slot.
+  Future<T> runQueuedExec<T>(
+    Future<T> Function() operation, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) => runQueuedSshExec(connectionId, operation, priority: priority);
 
   /// Start an SFTP session.
   Future<SftpClient> sftp() => client.sftp();

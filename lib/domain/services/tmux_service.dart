@@ -8,6 +8,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../models/agent_launch_preset.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
+import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 
 /// Error thrown when a tmux command channel ends before confirming completion.
@@ -57,6 +58,8 @@ class TmuxService {
       <_TmuxWindowWatchKey, _TmuxWindowChangeObserver>{};
   static final _windowListRequests =
       <_TmuxWindowWatchKey, Future<List<TmuxWindow>>>{};
+  static final _windowSnapshotCache = <_TmuxWindowWatchKey, List<TmuxWindow>>{};
+  static final _execChannelBackoffs = <int, _TmuxExecChannelBackoff>{};
 
   static const _execDoneMarker = '__flutty_tmux_exec_done__';
   static const _installedAgentToolsFreshTtl = Duration(minutes: 30);
@@ -80,6 +83,10 @@ class TmuxService {
     _profileSourceCache.remove(connectionId);
     _installedAgentToolsCache.remove(connectionId);
     _installedAgentToolRequests.remove(connectionId);
+    _execChannelBackoffs.remove(connectionId);
+    _windowSnapshotCache.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
     _windowListRequests.removeWhere(
       (key, _) => key.connectionId == connectionId,
     );
@@ -231,8 +238,16 @@ class TmuxService {
             _installedAgentToolsFreshTtl) {
       return;
     }
+    if (_isExecChannelCoolingDown(session)) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.agent',
+        'tool_detection_prefetch_deferred',
+        fields: {'connectionId': session.connectionId},
+      );
+      return;
+    }
     try {
-      await _refreshInstalledAgentTools(session);
+      await _refreshInstalledAgentTools(session, priority: SshExecPriority.low);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
@@ -245,7 +260,10 @@ class TmuxService {
     }
   }
 
-  Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(SshSession session) {
+  Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(
+    SshSession session, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) {
     final existingRequest = _installedAgentToolRequests[session.connectionId];
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
@@ -262,7 +280,11 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     final request = () async {
-      final output = await _exec(session, buildAgentToolDetectionCommand());
+      final output = await _exec(
+        session,
+        buildAgentToolDetectionCommand(),
+        priority: priority,
+      );
       final installed = parseInstalledAgentTools(output);
       _installedAgentToolsCache[session.connectionId] =
           _CachedInstalledAgentTools(
@@ -463,6 +485,20 @@ class TmuxService {
       connectionId: session.connectionId,
       sessionName: sessionName,
     );
+    if (_isExecChannelCoolingDown(session)) {
+      final cachedWindows = _windowSnapshotCache[key];
+      if (cachedWindows != null && cachedWindows.isNotEmpty) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.query',
+          'list_windows_cached_during_backoff',
+          fields: {
+            'connectionId': session.connectionId,
+            'windowCount': cachedWindows.length,
+          },
+        );
+        return cachedWindows;
+      }
+    }
     final existingRequest = _windowListRequests[key];
     if (existingRequest != null) {
       DiagnosticsLogService.instance.debug(
@@ -497,29 +533,57 @@ class TmuxService {
     );
     final quotedName = _shellQuote(sessionName);
     const sep = r'${SEP}';
-    final output = await _exec(
-      session,
-      r'SEP=$(printf "\037"); '
-      'tmux -u list-windows -t $quotedName -F '
-      '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
-      '#{pane_current_command}$sep#{pane_current_path}$sep'
-      '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
-      '#{pane_start_command}$sep#{@flutty_agent_tool}"',
-    );
-    final windows = List<TmuxWindow>.unmodifiable(
-      _parseLines(output, TmuxWindow.fromTmuxFormat),
-    );
-    DiagnosticsLogService.instance.info(
-      'tmux.query',
-      'list_windows_complete',
-      fields: {
-        'connectionId': session.connectionId,
-        'windowCount': windows.length,
-        'activeWindowCount': windows.where((window) => window.isActive).length,
-        'alertWindowCount': windows.where((window) => window.hasAlert).length,
-      },
-    );
-    return windows;
+    try {
+      final output = await _exec(
+        session,
+        r'SEP=$(printf "\037"); '
+        'tmux -u list-windows -t $quotedName -F '
+        '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
+        '#{pane_current_command}$sep#{pane_current_path}$sep'
+        '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
+        '#{pane_start_command}$sep#{@flutty_agent_tool}"',
+      );
+      final windows = List<TmuxWindow>.unmodifiable(
+        _parseLines(output, TmuxWindow.fromTmuxFormat),
+      );
+      if (windows.isNotEmpty) {
+        _cacheWindowSnapshot(session, sessionName, windows);
+      }
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'list_windows_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'windowCount': windows.length,
+          'activeWindowCount': windows
+              .where((window) => window.isActive)
+              .length,
+          'alertWindowCount': windows.where((window) => window.hasAlert).length,
+        },
+      );
+      return windows;
+    } on Object catch (error) {
+      final cachedWindows =
+          _windowSnapshotCache[_TmuxWindowWatchKey(
+            connectionId: session.connectionId,
+            sessionName: sessionName,
+          )];
+      if (cachedWindows != null &&
+          cachedWindows.isNotEmpty &&
+          shouldUseCachedTmuxWindowsAfterListFailure(error)) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.query',
+          'list_windows_cached_after_failure',
+          fields: {
+            'connectionId': session.connectionId,
+            'windowCount': cachedWindows.length,
+            'errorType': error.runtimeType,
+          },
+        );
+        return cachedWindows;
+      }
+      rethrow;
+    }
   }
 
   /// Returns the active pane working directory for [sessionName], if tmux
@@ -769,6 +833,76 @@ class TmuxService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
+  bool _isExecChannelCoolingDown(SshSession session) {
+    final backoff = _execChannelBackoffs[session.connectionId];
+    if (backoff == null) return false;
+    if (backoff.cooldownUntil.isAfter(DateTime.now())) {
+      return true;
+    }
+    _execChannelBackoffs.remove(session.connectionId);
+    return false;
+  }
+
+  void _recordExecChannelFailure(int connectionId, Object error) {
+    final failureCount =
+        (_execChannelBackoffs[connectionId]?.failureCount ?? 0) + 1;
+    final delay = resolveTmuxExecChannelBackoffDelay(failureCount);
+    _execChannelBackoffs[connectionId] = _TmuxExecChannelBackoff(
+      failureCount: failureCount,
+      cooldownUntil: DateTime.now().add(delay),
+    );
+    DiagnosticsLogService.instance.warning(
+      'tmux.exec',
+      'channel_backoff',
+      fields: {
+        'connectionId': connectionId,
+        'failureCount': failureCount,
+        'delayMs': delay.inMilliseconds,
+        'errorType': error.runtimeType,
+      },
+    );
+  }
+
+  void _clearExecChannelBackoff(int connectionId) {
+    if (_execChannelBackoffs.remove(connectionId) != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.exec',
+        'channel_backoff_cleared',
+        fields: {'connectionId': connectionId},
+      );
+    }
+  }
+
+  void _cacheWindowSnapshot(
+    SshSession session,
+    String sessionName,
+    List<TmuxWindow> windows,
+  ) {
+    if (windows.isEmpty) return;
+    _windowSnapshotCache[_TmuxWindowWatchKey(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+    )] = List<TmuxWindow>.unmodifiable(
+      windows,
+    );
+  }
+
+  void _applyCachedWindowEvent(
+    SshSession session,
+    String sessionName,
+    TmuxWindowChangeEvent event,
+  ) {
+    final key = _TmuxWindowWatchKey(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+    );
+    final cachedWindows = _windowSnapshotCache[key];
+    if (cachedWindows == null || cachedWindows.isEmpty) return;
+    _windowSnapshotCache[key] = List<TmuxWindow>.unmodifiable(
+      applyTmuxWindowChangeEvent(cachedWindows, event),
+    );
+  }
+
   /// Returns the profile source prefix for this session's login shell.
   ///
   /// Only sources the profile file appropriate for the user's shell:
@@ -810,7 +944,7 @@ class TmuxService {
     SshSession session,
     String command, {
     SSHPtyConfig? pty,
-  }) {
+  }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.exec',
       'open_start',
@@ -821,26 +955,35 @@ class TmuxService {
       },
     );
     final openFuture = session.execute(command, pty: pty);
-    return openFuture.timeout(
-      _execOpenTimeout,
-      onTimeout: () {
-        DiagnosticsLogService.instance.warning(
-          'tmux.exec',
-          'open_timeout',
-          fields: {
-            'connectionId': session.connectionId,
-            'commandKind': _diagnosticTmuxCommandKind(command),
-            'timeoutMs': _execOpenTimeout.inMilliseconds,
-            'pty': pty != null,
-          },
-        );
-        openFuture.then((exec) => exec.close()).ignore();
-        throw TimeoutException(
-          'Timed out opening SSH exec channel',
-          _execOpenTimeout,
-        );
-      },
-    );
+    try {
+      final exec = await openFuture.timeout(
+        _execOpenTimeout,
+        onTimeout: () {
+          DiagnosticsLogService.instance.warning(
+            'tmux.exec',
+            'open_timeout',
+            fields: {
+              'connectionId': session.connectionId,
+              'commandKind': _diagnosticTmuxCommandKind(command),
+              'timeoutMs': _execOpenTimeout.inMilliseconds,
+              'pty': pty != null,
+            },
+          );
+          openFuture.then((exec) => exec.close()).ignore();
+          throw TimeoutException(
+            'Timed out opening SSH exec channel',
+            _execOpenTimeout,
+          );
+        },
+      );
+      _clearExecChannelBackoff(session.connectionId);
+      return exec;
+    } on Object catch (error) {
+      if (shouldBackOffTmuxExecChannelAfterFailure(error)) {
+        _recordExecChannelFailure(session.connectionId, error);
+      }
+      rethrow;
+    }
   }
 
   /// Runs a command via SSH exec channel and returns stdout as a string.
@@ -852,7 +995,16 @@ class TmuxService {
   /// marker arrives. Some SSH servers leave exec streams open after the
   /// command exits, so waiting for stream completion can turn successful tmux
   /// actions into apparent hangs.
-  Future<String> _exec(SshSession session, String command) async {
+  Future<String> _exec(
+    SshSession session,
+    String command, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) => session.runQueuedExec(
+    () => _execUnqueued(session, command),
+    priority: priority,
+  );
+
+  Future<String> _execUnqueued(SshSession session, String command) async {
     final startedAt = DateTime.now();
     final wrappedCommand = _wrapCommand(session, command);
     final execSession = await _openExec(
@@ -959,11 +1111,9 @@ class TmuxService {
 
   /// Fire-and-forget: sends a tmux command without waiting for output.
   ///
-  /// Used for operations like `select-window` where the result is
-  /// visible immediately in the interactive terminal. Avoids the
-  /// latency of draining stdout/stderr.
+  /// Used for follow-up operations where completion does not need to block the
+  /// caller, but still closes the exec channel once the command marker returns.
   void _execFireAndForget(SshSession session, String command) {
-    final wrappedCommand = _wrapCommand(session, command);
     DiagnosticsLogService.instance.debug(
       'tmux.exec',
       'fire_and_forget_start',
@@ -972,25 +1122,18 @@ class TmuxService {
         'commandKind': _diagnosticTmuxCommandKind(command),
       },
     );
-    // Launch and ignore — the exec channel self-closes on completion.
-    _openExec(session, wrappedCommand)
-        .then((exec) {
-          // Drain streams to prevent backpressure, but don't wait.
-          exec.stdout.drain<void>().ignore();
-          exec.stderr.drain<void>().ignore();
-        })
-        .catchError((Object error) {
-          DiagnosticsLogService.instance.warning(
-            'tmux.exec',
-            'fire_and_forget_failed',
-            fields: {
-              'connectionId': session.connectionId,
-              'commandKind': _diagnosticTmuxCommandKind(command),
-              'errorType': error.runtimeType,
-            },
-          );
-        })
-        .ignore();
+    _exec(session, command).catchError((Object error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.exec',
+        'fire_and_forget_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'commandKind': _diagnosticTmuxCommandKind(command),
+          'errorType': error.runtimeType,
+        },
+      );
+      return '';
+    }).ignore();
   }
 
   /// Detects the user's login shell and resolves the tmux binary path.
@@ -1099,6 +1242,49 @@ class _CachedInstalledAgentTools {
 
   final Set<AgentLaunchTool> tools;
   final DateTime cachedAt;
+}
+
+class _TmuxExecChannelBackoff {
+  const _TmuxExecChannelBackoff({
+    required this.failureCount,
+    required this.cooldownUntil,
+  });
+
+  final int failureCount;
+  final DateTime cooldownUntil;
+}
+
+/// Returns whether a failed tmux exec open should trigger channel backoff.
+@visibleForTesting
+bool shouldBackOffTmuxExecChannelAfterFailure(Object error) =>
+    error is SSHChannelOpenError || error is TimeoutException;
+
+/// Returns whether stale tmux windows are safer than failing a refresh.
+@visibleForTesting
+bool shouldUseCachedTmuxWindowsAfterListFailure(Object error) =>
+    shouldBackOffTmuxExecChannelAfterFailure(error);
+
+/// Resolves the tmux exec channel cooldown after repeated open failures.
+@visibleForTesting
+Duration resolveTmuxExecChannelBackoffDelay(int failureCount) {
+  final retryAttempt = failureCount <= 1 ? 0 : failureCount - 1;
+  return resolveTmuxWindowReloadRetryDelay(retryAttempt);
+}
+
+/// Resolves how quickly the control-mode watcher should restart.
+@visibleForTesting
+Duration resolveTmuxControlRestartDelay(
+  int restartAttempts, {
+  required bool channelOpenFailure,
+}) {
+  if (channelOpenFailure) {
+    return resolveTmuxWindowReloadRetryDelay(
+      restartAttempts,
+      initialDelay: const Duration(seconds: 5),
+    );
+  }
+  final cappedAttempt = restartAttempts.clamp(0, 4);
+  return Duration(seconds: 1 << cappedAttempt);
 }
 
 String _diagnosticTmuxCommandKind(String command) {
@@ -1509,6 +1695,7 @@ class _TmuxWindowChangeObserver {
       if (!_preserveScheduledReloadThroughSnapshots) {
         _cancelScheduledReload();
       }
+      service._applyCachedWindowEvent(session, sessionName, event);
       DiagnosticsLogService.instance.debug(
         'tmux.watch',
         'snapshot_event',
@@ -1582,7 +1769,10 @@ class _TmuxWindowChangeObserver {
         'errorType': error.runtimeType,
       },
     );
-    _scheduleRestart();
+    _cleanupControlSession();
+    _scheduleRestart(
+      channelOpenFailure: shouldBackOffTmuxExecChannelAfterFailure(error),
+    );
   }
 
   void _handleControlClosed() {
@@ -1595,12 +1785,14 @@ class _TmuxWindowChangeObserver {
     _scheduleRestart();
   }
 
-  void _scheduleRestart() {
+  void _scheduleRestart({bool channelOpenFailure = false}) {
     if (_disposed || !_controller.hasListener) return;
     _stopHeartbeat();
     _restartTimer?.cancel();
-    final cappedAttempt = _restartAttempts.clamp(0, 4);
-    final delay = Duration(seconds: 1 << cappedAttempt);
+    final delay = resolveTmuxControlRestartDelay(
+      _restartAttempts,
+      channelOpenFailure: channelOpenFailure,
+    );
     _restartAttempts += 1;
     DiagnosticsLogService.instance.warning(
       'tmux.watch',
@@ -1609,6 +1801,7 @@ class _TmuxWindowChangeObserver {
         'connectionId': session.connectionId,
         'attempt': _restartAttempts,
         'delayMs': delay.inMilliseconds,
+        'channelOpenFailure': channelOpenFailure,
       },
     );
     _restartTimer = Timer(delay, () => unawaited(_ensureStarted()));

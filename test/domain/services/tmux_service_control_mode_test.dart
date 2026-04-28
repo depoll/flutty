@@ -131,6 +131,52 @@ void main() {
         );
       },
     );
+
+    test(
+      'listWindows serves the last cached snapshot when channels are exhausted',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 32);
+        const service = TmuxService();
+        const sep = tmuxWindowFieldSeparator;
+        var executeCalls = 0;
+        final windowLine = [
+          '0',
+          'shell',
+          '1',
+          'bash',
+          '/tmp/project',
+          '*',
+          'title',
+          '100',
+          'bash',
+          '',
+        ].join(sep);
+        final execSession = _buildOpenExecSession(
+          stdout: '$windowLine\n${_doneMarker()}',
+        );
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer((
+          _,
+        ) async {
+          executeCalls += 1;
+          if (executeCalls == 1) {
+            return execSession;
+          }
+          return Future<SSHSession>.error(
+            SSHChannelOpenError(2, 'open failed'),
+          );
+        });
+
+        final initial = await service.listWindows(session, 'main');
+        final cached = await service.listWindows(session, 'main');
+
+        expect(initial, hasLength(1));
+        expect(cached, initial);
+        expect(cached.single.name, 'shell');
+        verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
+      },
+    );
   });
 
   group('parseTmuxWindowChangeEventFromControlLine', () {
@@ -760,6 +806,55 @@ void main() {
         );
       },
     );
+  });
+
+  group('channel backoff helpers', () {
+    test('identifies transient channel-open failures', () {
+      expect(
+        shouldBackOffTmuxExecChannelAfterFailure(
+          SSHChannelOpenError(2, 'open failed'),
+        ),
+        isTrue,
+      );
+      expect(
+        shouldUseCachedTmuxWindowsAfterListFailure(
+          SSHChannelOpenError(2, 'open failed'),
+        ),
+        isTrue,
+      );
+      expect(
+        shouldBackOffTmuxExecChannelAfterFailure(StateError('tmux missing')),
+        isFalse,
+      );
+    });
+
+    test('backs off control restarts more slowly after channel failures', () {
+      expect(
+        resolveTmuxControlRestartDelay(0, channelOpenFailure: false),
+        const Duration(seconds: 1),
+      );
+      expect(
+        resolveTmuxControlRestartDelay(0, channelOpenFailure: true),
+        const Duration(seconds: 5),
+      );
+      expect(
+        resolveTmuxControlRestartDelay(2, channelOpenFailure: true),
+        const Duration(seconds: 20),
+      );
+      expect(
+        resolveTmuxControlRestartDelay(4, channelOpenFailure: true),
+        const Duration(seconds: 30),
+      );
+    });
+
+    test('uses capped exec channel cooldowns', () {
+      expect(resolveTmuxExecChannelBackoffDelay(1), const Duration(seconds: 2));
+      expect(resolveTmuxExecChannelBackoffDelay(2), const Duration(seconds: 4));
+      expect(
+        resolveTmuxExecChannelBackoffDelay(6),
+        const Duration(seconds: 30),
+      );
+    });
   });
 }
 

@@ -5,6 +5,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/tmux_state.dart';
+import 'ssh_exec_queue.dart';
 import 'ssh_service.dart';
 
 const _genericSessionSummaries = <String>{
@@ -2137,20 +2138,21 @@ class AgentSessionDiscoveryService {
 
   // ── Helpers ────────────────────────────────────────────────────────────
 
-  Future<String> _exec(SshSession session, String command) async {
-    final execSession = await session.execute(
-      '$_profileSourcingPrefix$command',
-    );
-    try {
-      final results = await Future.wait([
-        execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
-        execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
-      ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
-      return results[0];
-    } finally {
-      execSession.close();
-    }
-  }
+  Future<String> _exec(SshSession session, String command) =>
+      session.runQueuedExec(() async {
+        final execSession = await session.execute(
+          '$_profileSourcingPrefix$command',
+        );
+        try {
+          final results = await Future.wait([
+            execSession.stdout.cast<List<int>>().transform(utf8.decoder).join(),
+            execSession.stderr.cast<List<int>>().transform(utf8.decoder).join(),
+          ]).timeout(const Duration(seconds: 10), onTimeout: () => ['', '']);
+          return results[0];
+        } finally {
+          execSession.close();
+        }
+      }, priority: SshExecPriority.low);
 
   Future<List<String>> _listCopilotWorkspacePaths(
     SshSession session,
