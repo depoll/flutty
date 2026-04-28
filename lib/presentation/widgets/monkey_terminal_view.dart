@@ -1535,16 +1535,7 @@ class MonkeyRenderTerminal extends RenderBox
     final nextEnd = _clampSelectionOffset(end);
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
-    _isApplyingSelectableSelection = true;
-    try {
-      _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(nextStart)),
-        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(nextEnd)),
-        mode: SelectionMode.line,
-      );
-    } finally {
-      _isApplyingSelectableSelection = false;
-    }
+    _syncControllerSelectionFromSelectableOffsets();
     markNeedsPaint();
     _updateSelectionGeometry(deferNotification: true);
   }
@@ -1578,7 +1569,36 @@ class MonkeyRenderTerminal extends RenderBox
       _selectionEndOffset = nextEnd;
       markNeedsPaint();
     }
+    _syncControllerSelectionFromSelectableOffsets();
     _updateSelectionGeometry(deferNotification: true, forceNotify: true);
+  }
+
+  void _syncControllerSelectionFromSelectableOffsets() {
+    final start = _selectionStartOffset;
+    final end = _selectionEndOffset;
+    if (start == null || end == null || _terminalSelectionContentLength <= 0) {
+      return;
+    }
+
+    final selection = _controller.selection;
+    final isControllerSelectionCurrent =
+        selection != null &&
+        _textOffsetForCell(selection.begin) == start &&
+        _textOffsetForCell(selection.end) == end;
+    if (isControllerSelectionCurrent) {
+      return;
+    }
+
+    _isApplyingSelectableSelection = true;
+    try {
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(start)),
+        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(end)),
+        mode: SelectionMode.line,
+      );
+    } finally {
+      _isApplyingSelectableSelection = false;
+    }
   }
 
   void _syncSelectableSelectionFromController() {
