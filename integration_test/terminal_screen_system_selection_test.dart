@@ -63,10 +63,6 @@ Host _buildHost({required int id}) => Host(
   sortOrder: 0,
 );
 
-bool _hasWidgetTypeContaining(WidgetTester tester, String text) => tester
-    .allWidgets
-    .any((widget) => widget.runtimeType.toString().contains(text));
-
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -76,7 +72,7 @@ void main() {
   });
 
   testWidgets(
-    'first long press keeps selection handles visible while output streams',
+    'first long press keeps selection toolbar visible while output streams',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 932));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -199,11 +195,7 @@ void main() {
       await tester.pumpAndSettle();
 
       expect(renderTerminal.getSelectedContent()?.plainText, 'alpha');
-      expect(
-        _hasWidgetTypeContaining(tester, '_SelectionHandleOverlay'),
-        isTrue,
-      );
-      expect(_hasWidgetTypeContaining(tester, 'TextSelectionToolbar'), isTrue);
+      expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
     },
   );
 }
