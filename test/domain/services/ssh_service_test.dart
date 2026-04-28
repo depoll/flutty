@@ -19,6 +19,7 @@ import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
+import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:xterm/xterm.dart';
 
@@ -536,6 +537,8 @@ void main() {
   });
 
   group('SshSession terminal previews', () {
+    tearDown(resetQueuedSshExecsForTesting);
+
     test('forwards execute requests with an optional PTY config', () async {
       final client = _MockSshClient();
       final execSession = _MockExecSession();
@@ -566,6 +569,45 @@ void main() {
           pty: const SSHPtyConfig(width: 120, height: 30),
         ),
       ).called(1);
+    });
+
+    test('runs queued exec work against the session connection', () async {
+      final client = _MockSshClient();
+      final session = SshSession(
+        connectionId: 9,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+      final completers = List.generate(3, (_) => Completer<int>());
+      final started = <int>[];
+      final futures = [
+        for (var index = 0; index < completers.length; index++)
+          session.runQueuedExec(() {
+            started.add(index);
+            return completers[index].future;
+          }),
+      ];
+
+      await pumpEventQueue();
+
+      expect(started, [0, 1]);
+      expect(activeQueuedSshExecCountForTesting(9), 2);
+      expect(pendingQueuedSshExecCountForTesting(9), 1);
+
+      completers[0].complete(0);
+      await pumpEventQueue();
+
+      expect(started, [0, 1, 2]);
+
+      completers[1].complete(1);
+      completers[2].complete(2);
+
+      expect(await Future.wait(futures), [0, 1, 2]);
     });
 
     test('builds preview from the latest non-empty lines', () {
