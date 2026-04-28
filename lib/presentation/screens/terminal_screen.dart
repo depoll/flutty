@@ -6288,7 +6288,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       systemSelectionContextMenuBuilder: isMobile
           ? _buildTerminalSelectionContextMenu
           : null,
-      focusNode: isMobile ? null : _terminalFocusNode,
+      focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
       padding: terminalViewportPadding,
@@ -6488,6 +6488,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           !_showsNativeSelectionOverlay &&
           overlayMessage == null,
       showKeyboardOnFocus: false,
+      manageFocus: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>

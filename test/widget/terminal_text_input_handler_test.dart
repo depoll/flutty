@@ -5315,6 +5315,125 @@ void main() {
       },
     );
 
+    testWidgets('routes hardware keys when the child owns focus', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final otherFocusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                Focus(
+                  focusNode: otherFocusNode,
+                  child: const SizedBox(
+                    width: 50,
+                    height: 50,
+                    key: ValueKey('other-focus-target'),
+                  ),
+                ),
+                Expanded(
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    child: Focus(
+                      focusNode: focusNode,
+                      child: const SizedBox.expand(
+                        key: ValueKey('terminal-focus-owner'),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+
+      expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.arrowLeft));
+
+      terminalOutput.clear();
+      otherFocusNode.requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+
+      expect(terminalOutput, isEmpty);
+
+      focusNode.dispose();
+      otherFocusNode.dispose();
+    });
+
+    testWidgets('consumes composing hardware keys when the child owns focus', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              manageFocus: false,
+              child: Focus(
+                focusNode: focusNode,
+                child: const SizedBox.expand(
+                  key: ValueKey('terminal-focus-owner'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          'hello',
+          selectionOffset: 'hello'.length,
+          composing: const TextRange(start: 0, end: 5),
+        ),
+      );
+      await tester.pump();
+
+      final handledKeyDown = await tester.sendKeyDownEvent(
+        LogicalKeyboardKey.arrowLeft,
+      );
+      final handledKeyUp = await tester.sendKeyUpEvent(
+        LogicalKeyboardKey.arrowLeft,
+      );
+      await tester.pump();
+
+      expect(terminalOutput, isEmpty);
+      expect(handledKeyDown, isTrue);
+      expect(handledKeyUp, isTrue);
+
+      focusNode.dispose();
+    });
+
     testWidgets('does not open the keyboard after a suppressed touch tap', (
       tester,
     ) async {

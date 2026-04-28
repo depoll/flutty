@@ -187,6 +187,7 @@ class TerminalTextInputHandler extends StatefulWidget {
     this.readOnly = false,
     this.tapToShowKeyboard = true,
     this.showKeyboardOnFocus,
+    this.manageFocus = true,
     super.key,
   });
 
@@ -255,6 +256,12 @@ class TerminalTextInputHandler extends StatefulWidget {
   /// the user explicitly taps the terminal.
   final bool? showKeyboardOnFocus;
 
+  /// Whether this widget should wrap [child] in a [Focus] using [focusNode].
+  ///
+  /// Set this to false when the child already owns the same [focusNode], for
+  /// example a [SelectionArea] that must share focus with the input connection.
+  final bool manageFocus;
+
   @override
   State<TerminalTextInputHandler> createState() =>
       _TerminalTextInputHandlerState();
@@ -310,6 +317,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     super.initState();
     widget.focusNode.addListener(_onFocusChange);
     widget.controller?._attach(this);
+    if (!widget.manageFocus) {
+      HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
+    }
   }
 
   @override
@@ -322,6 +332,13 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (widget.controller != oldWidget.controller) {
       oldWidget.controller?._detach(this);
       widget.controller?._attach(this);
+    }
+    if (widget.manageFocus != oldWidget.manageFocus) {
+      if (widget.manageFocus) {
+        HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
+      } else {
+        HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
+      }
     }
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
@@ -339,6 +356,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void dispose() {
     widget.controller?._detach(this);
+    if (!widget.manageFocus) {
+      HardwareKeyboard.instance.removeHandler(_handleGlobalKeyEvent);
+    }
     widget.focusNode.removeListener(_onFocusChange);
     _stopHardwareKeyRepeat();
     _cancelDeferredTrailingBackspaceImeClear();
@@ -356,19 +376,34 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   @override
-  Widget build(BuildContext context) => Listener(
-    behavior: HitTestBehavior.translucent,
-    onPointerDown: _handlePointerDown,
-    onPointerMove: _handlePointerMove,
-    onPointerUp: _handlePointerUp,
-    onPointerCancel: _handlePointerCancel,
-    child: Focus(
-      focusNode: widget.focusNode,
-      autofocus: true,
-      onKeyEvent: _onKeyEvent,
-      child: widget.child,
-    ),
-  );
+  Widget build(BuildContext context) {
+    final child = widget.manageFocus
+        ? Focus(
+            focusNode: widget.focusNode,
+            autofocus: true,
+            onKeyEvent: _onKeyEvent,
+            child: widget.child,
+          )
+        : widget.child;
+
+    return Listener(
+      behavior: HitTestBehavior.translucent,
+      onPointerDown: _handlePointerDown,
+      onPointerMove: _handlePointerMove,
+      onPointerUp: _handlePointerUp,
+      onPointerCancel: _handlePointerCancel,
+      child: child,
+    );
+  }
+
+  bool _handleGlobalKeyEvent(KeyEvent event) {
+    if (widget.manageFocus || !widget.focusNode.hasFocus) {
+      return false;
+    }
+    final result = _onKeyEvent(widget.focusNode, event);
+    return result == KeyEventResult.handled ||
+        result == KeyEventResult.skipRemainingHandlers;
+  }
 
   void _handlePointerDown(PointerDownEvent event) {
     if (event.kind == PointerDeviceKind.touch) {
