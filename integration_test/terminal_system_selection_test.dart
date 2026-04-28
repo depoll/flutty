@@ -244,6 +244,7 @@ void main() {
     await tester.longPressAt(cellCenter(CellOffset(5, selectedRow)));
     await tester.pumpAndSettle();
     expect(harness.controller.selection, isNotNull);
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
 
     await dragStartHandleToRow(tester, renderTerminal, targetRow: targetRow);
 
@@ -288,6 +289,7 @@ void main() {
     await tester.longPressAt(cellCenter(CellOffset(5, selectedRow)));
     await tester.pumpAndSettle();
     expect(harness.controller.selection, isNotNull);
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
 
     await dragStartHandleToRow(tester, renderTerminal, targetRow: targetRow);
 

@@ -1520,7 +1520,7 @@ class MonkeyRenderTerminal extends RenderBox
     _selectionEndOffset = nextEnd;
     _syncControllerSelectionFromSelectableOffsets();
     markNeedsPaint();
-    _updateSelectionGeometry(deferNotification: true);
+    _updateSelectionGeometry(forceNotify: true);
   }
 
   void _clearSelectableTextSelection() {
@@ -1536,7 +1536,7 @@ class MonkeyRenderTerminal extends RenderBox
       _isApplyingSelectableSelection = false;
     }
     markNeedsPaint();
-    _updateSelectionGeometry(deferNotification: true);
+    _updateSelectionGeometry(forceNotify: true);
   }
 
   void _preserveSelectableSelectionAcrossTerminalChange() {
@@ -1591,7 +1591,7 @@ class MonkeyRenderTerminal extends RenderBox
         _selectionStartOffset = null;
         _selectionEndOffset = null;
         markNeedsPaint();
-        _updateSelectionGeometry(deferNotification: true);
+        _updateSelectionGeometry(forceNotify: true);
       }
       return;
     }
@@ -1603,7 +1603,7 @@ class MonkeyRenderTerminal extends RenderBox
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
     markNeedsPaint();
-    _updateSelectionGeometry(deferNotification: true);
+    _updateSelectionGeometry(forceNotify: true);
   }
 
   Offset _localPositionForTextOffset(int textOffset) {
@@ -1773,7 +1773,7 @@ class MonkeyRenderTerminal extends RenderBox
     };
     if (previousStart != _selectionStartOffset ||
         previousEnd != _selectionEndOffset) {
-      _updateSelectionGeometry(deferNotification: true, forceNotify: true);
+      _updateSelectionGeometry(forceNotify: true);
     }
     return result;
   }
