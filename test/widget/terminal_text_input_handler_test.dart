@@ -4949,6 +4949,49 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets('closes the keyboard when touch becomes selection intent', (
+      tester,
+    ) async {
+      final terminal = Terminal();
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      final gesture = await tester.createGesture();
+      await gesture.down(target);
+      await tester.pump(terminalKeyboardTapLongPressTimeout);
+
+      expect(focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      await gesture.up();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isFalse);
+
+      focusNode.dispose();
+    });
+
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {

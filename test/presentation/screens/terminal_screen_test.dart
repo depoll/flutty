@@ -1107,7 +1107,7 @@ void main() {
     );
 
     testWidgets(
-      'system selection does not hide an already visible mobile keyboard',
+      'system selection hides an already visible mobile keyboard',
       (tester) async {
         await pumpScreen(tester);
 
@@ -1131,7 +1131,7 @@ void main() {
         await tester.longPressAt(target);
         await tester.pumpAndSettle();
 
-        expect(tester.testTextInput.isVisible, isTrue);
+        expect(tester.testTextInput.isVisible, isFalse);
         final selection = terminalViewState.renderTerminal.getSelectedContent();
         expect(selection?.plainText, 'alpha');
       },

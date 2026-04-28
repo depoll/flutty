@@ -346,7 +346,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _touchLongPressTimers[event.pointer]?.cancel();
       _touchLongPressTimers[event.pointer] = Timer(
         terminalKeyboardTapLongPressTimeout,
-        () => _touchPointersPressedBeyondLongPressTimeout.add(event.pointer),
+        () {
+          _touchPointersPressedBeyondLongPressTimeout.add(event.pointer);
+          _closeInputConnectionIfNeeded();
+        },
       );
       if (_activeTouchPointers.length > 1) {
         _touchSequenceHadMultiplePointers = true;

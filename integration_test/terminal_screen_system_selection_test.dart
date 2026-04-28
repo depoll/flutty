@@ -63,6 +63,20 @@ Host _buildHost({required int id}) => Host(
   sortOrder: 0,
 );
 
+Future<double> _waitForKeyboardInset(
+  WidgetTester tester, {
+  required bool visible,
+}) async {
+  for (var attempt = 0; attempt < 30; attempt += 1) {
+    await tester.pump(const Duration(milliseconds: 100));
+    final bottomInset = tester.view.viewInsets.bottom;
+    if (visible ? bottomInset > 0 : bottomInset == 0) {
+      return bottomInset;
+    }
+  }
+  return tester.view.viewInsets.bottom;
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -72,7 +86,7 @@ void main() {
   });
 
   testWidgets(
-    'first long press keeps selection toolbar visible while output streams',
+    'first long press keeps selection toolbar visible after keyboard input',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(430, 932));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -150,6 +164,14 @@ void main() {
       );
       await tester.pumpAndSettle();
 
+      await tester.tap(find.byType(MonkeyTerminalView));
+      final shownKeyboardInset = await _waitForKeyboardInset(
+        tester,
+        visible: true,
+      );
+      expect(shownKeyboardInset, greaterThan(0));
+      await tester.pumpAndSettle();
+
       final terminalViewState = tester.state<MonkeyTerminalViewState>(
         find.byType(MonkeyTerminalView),
       );
@@ -194,6 +216,11 @@ void main() {
       await gesture.up();
       await tester.pumpAndSettle();
 
+      final hiddenKeyboardInset = await _waitForKeyboardInset(
+        tester,
+        visible: false,
+      );
+      expect(hiddenKeyboardInset, 0);
       expect(renderTerminal.getSelectedContent()?.plainText, 'alpha');
       expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
     },
