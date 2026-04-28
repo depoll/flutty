@@ -209,6 +209,28 @@ const _tmuxDetectionRetrySchedule = <Duration>[
 ];
 const _shellCompletionDebounce = Duration(milliseconds: 220);
 const _shellCompletionTmuxPathTimeout = Duration(milliseconds: 800);
+const _shellCompletionShellCommands = <String>{
+  'ash',
+  'bash',
+  'csh',
+  'dash',
+  'elvish',
+  'fish',
+  'ion',
+  'ksh',
+  'ksh93',
+  'mksh',
+  'nu',
+  'oil',
+  'osh',
+  'powershell',
+  'pwsh',
+  'sh',
+  'tcsh',
+  'xonsh',
+  'yash',
+  'zsh',
+};
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -314,6 +336,50 @@ bool shouldReviewTerminalCommandInsertion({
     return false;
   }
   return shellStatus != TerminalShellStatus.runningCommand;
+}
+
+/// Returns whether a tmux pane foreground command is shell-like enough for
+/// shell completion popups.
+@visibleForTesting
+bool isShellCompletionTmuxShellCommand(String? command) {
+  var normalized = command?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return false;
+  }
+  normalized = normalized.split('/').last;
+  if (normalized.startsWith('-')) {
+    normalized = normalized.substring(1);
+  }
+  return _shellCompletionShellCommands.contains(normalized);
+}
+
+/// Returns whether terminal input should start a shell completion refresh.
+@visibleForTesting
+bool canTerminalOutputTriggerShellCompletion({
+  required String output,
+  required bool isUsingAltBuffer,
+  required bool isTmuxActive,
+  required bool showsNativeSelectionOverlay,
+}) {
+  if (output.isEmpty || showsNativeSelectionOverlay) {
+    return false;
+  }
+  if (isUsingAltBuffer && !isTmuxActive) {
+    return false;
+  }
+  if (output == '\x7F' || output == '\b') {
+    return true;
+  }
+  if (output.length > 32) {
+    return false;
+  }
+  for (var index = 0; index < output.length; index++) {
+    final codeUnit = output.codeUnitAt(index);
+    if (codeUnit < 0x20 || codeUnit == 0x7F) {
+      return false;
+    }
+  }
+  return true;
 }
 
 /// Resolves the safe-area insets the tmux bar should stay within.
@@ -3785,24 +3851,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _queueShellCompletionRefresh();
   }
 
-  bool _terminalOutputCanTriggerShellCompletion(String output) {
-    if (output.isEmpty || _isUsingAltBuffer || _showsNativeSelectionOverlay) {
-      return false;
-    }
-    if (output == '\x7F' || output == '\b') {
-      return true;
-    }
-    if (output.length > 32) {
-      return false;
-    }
-    for (var index = 0; index < output.length; index++) {
-      final codeUnit = output.codeUnitAt(index);
-      if (codeUnit < 0x20 || codeUnit == 0x7F) {
-        return false;
-      }
-    }
-    return true;
-  }
+  bool _terminalOutputCanTriggerShellCompletion(String output) =>
+      canTerminalOutputTriggerShellCompletion(
+        output: output,
+        isUsingAltBuffer: _isUsingAltBuffer,
+        isTmuxActive: _isTmuxActive,
+        showsNativeSelectionOverlay: _showsNativeSelectionOverlay,
+      );
 
   void _queueShellCompletionRefresh() {
     if (!ref.read(shellCompletionsNotifierProvider)) {
@@ -3837,7 +3892,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final workingDirectory = await _resolveShellCompletionWorkingDirectory(
+    final shellCompletionContext = await _resolveShellCompletionContext(
       session,
       generation,
     );
@@ -3846,9 +3901,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !ref.read(shellCompletionsNotifierProvider)) {
       return;
     }
+    if (!shellCompletionContext.canComplete) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
 
     final invocation = _buildCurrentShellCompletionInvocation(
-      workingDirectory: workingDirectory,
+      workingDirectory: shellCompletionContext.workingDirectory,
     );
     final anchor = _resolveTerminalCursorGlobalRect();
     if (invocation == null || anchor == null) {
@@ -3889,20 +3948,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<String?> _resolveShellCompletionWorkingDirectory(
-    SshSession session,
-    int generation,
-  ) async {
+  Future<({bool canComplete, String? workingDirectory})>
+  _resolveShellCompletionContext(SshSession session, int generation) async {
     var workingDirectory = _workingDirectoryPath;
     final tmuxSessionName = _isTmuxActive ? _tmuxSessionName : null;
     if (tmuxSessionName == null) {
-      return workingDirectory;
+      return (canComplete: true, workingDirectory: workingDirectory);
     }
 
     try {
-      final tmuxPath = await ref
+      final paneContext = await ref
           .read(tmuxServiceProvider)
-          .currentPanePath(
+          .currentPaneContext(
             session,
             tmuxSessionName,
             priority: SshExecPriority.low,
@@ -3910,13 +3967,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           .timeout(_shellCompletionTmuxPathTimeout, onTimeout: () => null);
       if (!mounted ||
           generation != _shellCompletionGeneration ||
-          tmuxPath == null ||
-          tmuxPath.trim().isEmpty) {
-        return workingDirectory;
+          paneContext == null) {
+        return (
+          canComplete: !_isUsingAltBuffer,
+          workingDirectory: workingDirectory,
+        );
       }
-      workingDirectory = tmuxPath.trim();
-      if (_tmuxWorkingDirectory != workingDirectory) {
-        setState(() => _tmuxWorkingDirectory = workingDirectory);
+      if (_isUsingAltBuffer &&
+          !isShellCompletionTmuxShellCommand(paneContext.currentCommand)) {
+        DiagnosticsLogService.instance.debug(
+          'shell_completion',
+          'tmux_non_shell_pane',
+          fields: {'connectionId': session.connectionId},
+        );
+        return (canComplete: false, workingDirectory: workingDirectory);
+      }
+
+      final tmuxPath = paneContext.currentPath?.trim();
+      if (tmuxPath != null && tmuxPath.isNotEmpty) {
+        workingDirectory = tmuxPath;
+        if (_tmuxWorkingDirectory != workingDirectory) {
+          setState(() => _tmuxWorkingDirectory = workingDirectory);
+        }
       }
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
@@ -3927,16 +3999,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'errorType': error.runtimeType,
         },
       );
+      return (
+        canComplete: !_isUsingAltBuffer,
+        workingDirectory: workingDirectory,
+      );
     }
 
-    return workingDirectory;
+    return (canComplete: true, workingDirectory: workingDirectory);
   }
 
   ShellCompletionInvocation? _buildCurrentShellCompletionInvocation({
     required String? workingDirectory,
   }) {
     if (!ref.read(shellCompletionsNotifierProvider) ||
-        _isUsingAltBuffer ||
+        (_isUsingAltBuffer && !_isTmuxActive) ||
         _showsNativeSelectionOverlay) {
       return null;
     }

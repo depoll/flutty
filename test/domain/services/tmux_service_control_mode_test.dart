@@ -427,6 +427,9 @@ void main() {
         parseTmuxCurrentPanePath('\n  /tmp/workspace  \n'),
         '/tmp/workspace',
       );
+      final context = parseTmuxCurrentPaneContext('/tmp/project\x1fzsh\n');
+      expect(context?.currentPath, '/tmp/project');
+      expect(context?.currentCommand, 'zsh');
       expect(parseTmuxCurrentPanePath(' \n \n'), isNull);
     });
 

@@ -506,6 +506,44 @@ void main() {
         isFalse,
       );
     });
+
+    test('identifies shell-like tmux foreground commands for completions', () {
+      expect(isShellCompletionTmuxShellCommand('zsh'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('/bin/bash'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('-fish'), isTrue);
+      expect(isShellCompletionTmuxShellCommand('vim'), isFalse);
+      expect(isShellCompletionTmuxShellCommand(null), isFalse);
+    });
+
+    test('allows shell completion triggers inside active tmux alt buffer', () {
+      expect(
+        canTerminalOutputTriggerShellCompletion(
+          output: 'g',
+          isUsingAltBuffer: true,
+          isTmuxActive: true,
+          showsNativeSelectionOverlay: false,
+        ),
+        isTrue,
+      );
+      expect(
+        canTerminalOutputTriggerShellCompletion(
+          output: 'g',
+          isUsingAltBuffer: true,
+          isTmuxActive: false,
+          showsNativeSelectionOverlay: false,
+        ),
+        isFalse,
+      );
+      expect(
+        canTerminalOutputTriggerShellCompletion(
+          output: '\r',
+          isUsingAltBuffer: true,
+          isTmuxActive: true,
+          showsNativeSelectionOverlay: false,
+        ),
+        isFalse,
+      );
+    });
   });
 
   group('tmux bar safe insets vs. keyboard toolbar', () {

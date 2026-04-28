@@ -592,30 +592,47 @@ class TmuxService {
     SshSession session,
     String sessionName, {
     SshExecPriority priority = SshExecPriority.normal,
+  }) async => (await currentPaneContext(
+    session,
+    sessionName,
+    priority: priority,
+  ))?.currentPath;
+
+  /// Returns active pane metadata for [sessionName], if tmux reports it.
+  Future<TmuxPaneContext?> currentPaneContext(
+    SshSession session,
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
   }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.query',
-      'current_pane_path_start',
+      'current_pane_context_start',
       fields: {'connectionId': session.connectionId},
     );
     try {
+      const sep = r'${SEP}';
       final output = await _exec(
         session,
+        r'SEP=$(printf "\037"); '
         'tmux display-message -p -t ${_shellQuote('$sessionName:')} '
-        "'#{pane_current_path}'",
+        '"#{pane_current_path}$sep#{pane_current_command}"',
         priority: priority,
       );
-      final path = parseTmuxCurrentPanePath(output);
+      final context = parseTmuxCurrentPaneContext(output);
       DiagnosticsLogService.instance.info(
         'tmux.query',
-        'current_pane_path_complete',
-        fields: {'connectionId': session.connectionId, 'hasPath': path != null},
+        'current_pane_context_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasPath': context?.currentPath != null,
+          'hasCommand': context?.currentCommand != null,
+        },
       );
-      return path;
+      return context;
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.query',
-        'current_pane_path_failed',
+        'current_pane_context_failed',
         fields: {
           'connectionId': session.connectionId,
           'errorType': error.runtimeType,
@@ -1334,14 +1351,31 @@ String _diagnosticTmuxCommandKind(String command) {
 
 /// Parses the current pane path reported by `tmux display-message`.
 @visibleForTesting
-String? parseTmuxCurrentPanePath(String output) {
+String? parseTmuxCurrentPanePath(String output) =>
+    parseTmuxCurrentPaneContext(output)?.currentPath;
+
+/// Parses current pane metadata reported by `tmux display-message`.
+@visibleForTesting
+TmuxPaneContext? parseTmuxCurrentPaneContext(String output) {
   for (final rawLine in output.split('\n')) {
     final line = rawLine.trim();
     if (line.isNotEmpty) {
-      return line;
+      final fields = line.split(tmuxWindowFieldSeparator);
+      final path = _nonEmptyTmuxPaneField(fields.first);
+      final command = fields.length > 1
+          ? _nonEmptyTmuxPaneField(fields[1])
+          : null;
+      if (path != null || command != null) {
+        return TmuxPaneContext(currentPath: path, currentCommand: command);
+      }
     }
   }
   return null;
+}
+
+String? _nonEmptyTmuxPaneField(String value) {
+  final trimmed = value.trim();
+  return trimmed.isEmpty ? null : trimmed;
 }
 
 /// Returns whether `tmux list-clients` output includes a non-control client.

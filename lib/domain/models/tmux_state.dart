@@ -9,6 +9,19 @@ import 'agent_launch_preset.dart';
 /// stable without constraining user-controlled window names.
 const tmuxWindowFieldSeparator = '\x1f';
 
+/// Current tmux pane metadata needed for side-channel terminal features.
+@immutable
+class TmuxPaneContext {
+  /// Creates a tmux pane context snapshot.
+  const TmuxPaneContext({this.currentPath, this.currentCommand});
+
+  /// The working directory of the active pane, if available.
+  final String? currentPath;
+
+  /// The foreground command in the active pane, if available.
+  final String? currentCommand;
+}
+
 /// Represents a tmux session on a remote host.
 @immutable
 class TmuxSession {
