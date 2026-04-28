@@ -118,4 +118,28 @@ void main() {
       r'Project\ Files/\(draft\)',
     );
   });
+
+  test('remote command sources startup files through the user shell', () {
+    const invocation = ShellCompletionInvocation(
+      commandLine: 'gi',
+      cursorOffset: 2,
+      token: 'gi',
+      tokenStart: 0,
+      mode: ShellCompletionMode.command,
+      workingDirectory: '/Users/depoll/project',
+    );
+
+    final command = buildShellCompletionRemoteCommand(invocation);
+
+    expect(command, contains(r'flutty_shell=${SHELL:-}'));
+    expect(command, contains(r'FLUTTY_PROFILE_KIND=$flutty_profile_kind'));
+    expect(command, contains('zsh) { . ~/.zprofile; . ~/.zshrc; }'));
+    expect(
+      command,
+      contains(
+        'bash) { . ~/.bash_profile; . ~/.bash_login; . ~/.profile; . ~/.bashrc; }',
+      ),
+    );
+    expect(command, contains("FLUTTY_CWD='/Users/depoll/project'"));
+  });
 }

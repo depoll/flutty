@@ -203,6 +203,38 @@ void main() {
       );
     });
 
+    testWidgets('toggles shell completion popups from terminal settings', (
+      tester,
+    ) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Shell completion popups'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      final tile = find.widgetWithText(
+        SwitchListTile,
+        'Shell completion popups',
+      );
+      expect(tile, findsOneWidget);
+
+      await tester.tap(tile);
+      await tester.pumpAndSettle();
+
+      expect(
+        await SettingsService(
+          db,
+        ).getBool(SettingKeys.shellCompletions, defaultValue: true),
+        isFalse,
+      );
+    });
+
     testWidgets('shows active subscription state when Pro is unlocked', (
       tester,
     ) async {

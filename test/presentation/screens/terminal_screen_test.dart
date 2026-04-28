@@ -574,6 +574,50 @@ void main() {
     }
 
     testWidgets(
+      'mobile terminal paints cursor from the text input focus node',
+      (tester) async {
+        await pumpScreen(tester);
+
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+
+        expect(terminalView.focusNode, isNull);
+        expect(terminalView.cursorFocusNode, isNotNull);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets('overflow menu toggles shell completion popups', (
+      tester,
+    ) async {
+      await pumpScreen(tester);
+
+      await tester.tap(find.byType(PopupMenuButton<String>));
+      await tester.pumpAndSettle();
+
+      final menuItem = find.widgetWithText(
+        CheckedPopupMenuItem<String>,
+        'Shell Completion Popups',
+      );
+      expect(menuItem, findsOneWidget);
+      expect(
+        tester.widget<CheckedPopupMenuItem<String>>(menuItem).checked,
+        isTrue,
+      );
+
+      await tester.tap(menuItem);
+      await tester.pumpAndSettle();
+
+      expect(
+        await SettingsService(
+          db,
+        ).getBool(SettingKeys.shellCompletions, defaultValue: true),
+        isFalse,
+      );
+    });
+
+    testWidgets(
       'keeps a primed tmux bar visible after transient detection failure',
       (tester) async {
         final tmuxService = _MockTmuxService();

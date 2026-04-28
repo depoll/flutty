@@ -40,6 +40,9 @@ abstract final class SettingKeys {
   /// Show underlines for clickable terminal file paths.
   static const terminalPathLinkUnderlines = 'terminal_path_link_badges';
 
+  /// Enable shell completion popups while typing in the terminal.
+  static const shellCompletions = 'shell_completions';
+
   /// Enable haptic feedback.
   static const hapticFeedback = 'haptic_feedback';
 
@@ -547,6 +550,42 @@ class TerminalPathLinkUnderlinesNotifier extends Notifier<bool> {
 final terminalPathLinkUnderlinesNotifierProvider =
     NotifierProvider<TerminalPathLinkUnderlinesNotifier, bool>(
       TerminalPathLinkUnderlinesNotifier.new,
+    );
+
+/// Notifier for terminal shell completion popups with write capability.
+class ShellCompletionsNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.shellCompletions,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Sets terminal shell completion popups.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.shellCompletions, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal shell completion popups with write capability.
+final shellCompletionsNotifierProvider =
+    NotifierProvider<ShellCompletionsNotifier, bool>(
+      ShellCompletionsNotifier.new,
     );
 
 /// State for terminal theme settings (light and dark).

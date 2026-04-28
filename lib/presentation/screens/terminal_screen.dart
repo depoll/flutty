@@ -3251,6 +3251,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _terminalPathVerificationHomeDirectory;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
+  late final ProviderSubscription<bool> _shellCompletionsSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
   Timer? _terminalInputIndicatorTimer;
@@ -3443,6 +3444,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
       ),
     );
+    _shellCompletionsSubscription = ref.listenManual<bool>(
+      shellCompletionsNotifierProvider,
+      (previous, next) {
+        if (!next) {
+          _hideShellCompletionPopup();
+        }
+      },
+    );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
@@ -3486,7 +3495,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
-    if (_shellCompletionPromptPrefix != null &&
+    if (ref.read(shellCompletionsNotifierProvider) &&
+        _shellCompletionPromptPrefix != null &&
         _shellCompletionDebounceTimer == null &&
         _shellCompletionSuggestions.isEmpty) {
       _queueShellCompletionRefresh();
@@ -3762,6 +3772,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTerminalOutputForShellCompletion(String output) {
+    if (!ref.read(shellCompletionsNotifierProvider)) {
+      _hideShellCompletionPopup();
+      return;
+    }
     if (!_terminalOutputCanTriggerShellCompletion(output)) {
       _hideShellCompletionPopup();
       return;
@@ -3791,6 +3805,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _queueShellCompletionRefresh() {
+    if (!ref.read(shellCompletionsNotifierProvider)) {
+      _hideShellCompletionPopup();
+      return;
+    }
     _shellCompletionDebounceTimer?.cancel();
     final generation = ++_shellCompletionGeneration;
     _shellCompletionDebounceTimer = Timer(_shellCompletionDebounce, () {
@@ -3799,7 +3817,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _refreshShellCompletions(int generation) async {
-    if (!mounted || generation != _shellCompletionGeneration) {
+    if (!mounted ||
+        generation != _shellCompletionGeneration ||
+        !ref.read(shellCompletionsNotifierProvider)) {
       return;
     }
 
@@ -3821,7 +3841,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       session,
       generation,
     );
-    if (!mounted || generation != _shellCompletionGeneration) {
+    if (!mounted ||
+        generation != _shellCompletionGeneration ||
+        !ref.read(shellCompletionsNotifierProvider)) {
       return;
     }
 
@@ -3838,7 +3860,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final suggestions = await ref
           .read(shellCompletionServiceProvider)
           .complete(session, invocation);
-      if (!mounted || generation != _shellCompletionGeneration) {
+      if (!mounted ||
+          generation != _shellCompletionGeneration ||
+          !ref.read(shellCompletionsNotifierProvider)) {
         return;
       }
       if (suggestions.isEmpty) {
@@ -3911,7 +3935,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ShellCompletionInvocation? _buildCurrentShellCompletionInvocation({
     required String? workingDirectory,
   }) {
-    if (_isUsingAltBuffer || _showsNativeSelectionOverlay) {
+    if (!ref.read(shellCompletionsNotifierProvider) ||
+        _isUsingAltBuffer ||
+        _showsNativeSelectionOverlay) {
       return null;
     }
     final snapshot = _buildWrappedTerminalCommandSnapshot();
@@ -5718,6 +5744,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.removeObserver(this);
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
+    _shellCompletionsSubscription.close();
     _stopSharedClipboardSync();
     _terminalInputIndicatorTimer?.cancel();
     _promptOutputImeResetTimer?.cancel();
@@ -6080,6 +6107,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     checked: ref.read(tapToShowKeyboardNotifierProvider),
                     child: const Text('Tap to Show Keyboard'),
                   ),
+                CheckedPopupMenuItem(
+                  value: 'toggle_shell_completions',
+                  checked: ref.read(shellCompletionsNotifierProvider),
+                  child: const Text('Shell Completion Popups'),
+                ),
                 const PopupMenuDivider(),
                 if (!isMobile)
                   PopupMenuItem(
@@ -6726,7 +6758,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       systemSelectionContextMenuBuilder: isMobile
           ? _buildTerminalSelectionContextMenu
           : null,
-      focusNode: _terminalFocusNode,
+      focusNode: isMobile ? null : _terminalFocusNode,
+      cursorFocusNode: isMobile ? _terminalFocusNode : null,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
       padding: terminalViewportPadding,
@@ -7057,6 +7090,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         await notifier.setEnabled(
           enabled: !ref.read(tapToShowKeyboardNotifierProvider),
         );
+        break;
+      case 'toggle_shell_completions':
+        final notifier = ref.read(shellCompletionsNotifierProvider.notifier);
+        final enabled = !ref.read(shellCompletionsNotifierProvider);
+        await notifier.setEnabled(enabled: enabled);
+        if (!enabled) {
+          _hideShellCompletionPopup();
+        }
         break;
       case 'native_select':
         _toggleNativeSelectionMode();
