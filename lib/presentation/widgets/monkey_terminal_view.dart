@@ -476,6 +476,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     if (widget.useSystemSelection) {
       child = SelectionArea(
+        focusNode: widget.hardwareKeyboardOnly ? _focusNode : null,
         contextMenuBuilder:
             widget.systemSelectionContextMenuBuilder ??
             _defaultSystemSelectionContextMenu,
@@ -518,7 +519,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         readOnly: widget.readOnly,
         child: child,
       );
-    } else if (!widget.readOnly) {
+    } else if (!widget.readOnly && !widget.useSystemSelection) {
       // Only listen for key input from a hardware keyboard.
       child = CustomKeyboardListener(
         child: child,
