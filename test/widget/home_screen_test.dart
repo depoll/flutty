@@ -501,7 +501,7 @@ void main() {
       expect(find.text('No hosts yet'), findsOneWidget);
       expect(find.text('Import config'), findsNothing);
       expect(find.text('Paste SSH URL'), findsOneWidget);
-      expect(find.text('Try local test host'), findsOneWidget);
+      expect(find.text('Try local test host'), findsNothing);
     });
 
     testWidgets('connections empty state explains where sessions appear', (

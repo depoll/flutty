@@ -747,9 +747,7 @@ class HostsPanel extends ConsumerWidget {
     child: _GuidedEmptyState(
       icon: Icons.dns_outlined,
       title: 'No hosts yet',
-      subtitle:
-          'Add an SSH server, paste an ssh:// URL, or prefill localhost after '
-          'running the local test setup.',
+      subtitle: 'Add an SSH server or paste an ssh:// URL to get started.',
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
@@ -757,11 +755,6 @@ class HostsPanel extends ConsumerWidget {
           icon: Icons.content_paste_go_outlined,
           label: 'Paste SSH URL',
           onTap: () => unawaited(_openPastedSshUrl(context)),
-        ),
-        _EmptyStateAction(
-          icon: Icons.computer_outlined,
-          label: 'Try local test host',
-          onTap: () => context.push('/hosts/add?template=local'),
         ),
       ],
     ),

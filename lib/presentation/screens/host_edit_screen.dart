@@ -85,21 +85,13 @@ String? _resolveTmuxExtraFlags({
 /// Screen for adding or editing a host.
 class HostEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [HostEditScreen].
-  const HostEditScreen({
-    this.hostId,
-    this.initialSshUrl,
-    this.useLocalhostTemplate = false,
-    super.key,
-  });
+  const HostEditScreen({this.hostId, this.initialSshUrl, super.key});
 
   /// The host ID to edit, or null for a new host.
   final int? hostId;
 
   /// SSH URL used to prefill a new host.
   final String? initialSshUrl;
-
-  /// Whether to prefill a local SSH test host.
-  final bool useLocalhostTemplate;
 
   @override
   ConsumerState<HostEditScreen> createState() => _HostEditScreenState();
@@ -190,8 +182,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _loadHost();
     } else if (widget.initialSshUrl?.trim().isNotEmpty ?? false) {
       _applySshUrl(widget.initialSshUrl!.trim());
-    } else if (widget.useLocalhostTemplate) {
-      _applyLocalhostTemplate();
     }
   }
 
@@ -210,11 +200,6 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       final userInfoParts = uri.userInfo.split(':');
       _usernameController.text = Uri.decodeComponent(userInfoParts.first);
     }
-  }
-
-  void _applyLocalhostTemplate() {
-    _labelController.text = 'Local test host';
-    _hostnameController.text = 'localhost';
   }
 
   Future<void> _loadHost() async {

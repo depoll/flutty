@@ -1064,6 +1064,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       0x7fffffff;
 
   void _sendAlertNotification(TmuxWindow window) {
+    final title = _tmuxAlertNotificationTitle(window);
+    final sessionName = _tmuxAlertNotificationLabel(widget.tmuxSessionName);
     unawaited(HapticFeedback.mediumImpact());
     unawaited(
       widget.ref
@@ -1074,8 +1076,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               widget.tmuxSessionName,
               window.index,
             ),
-            title: 'tmux window needs attention',
-            body: 'Open MonkeySSH to view the alert.',
+            title: title,
+            body:
+                'tmux window #${window.index} in $sessionName needs attention.',
             payload: TmuxAlertNotificationPayload(
               hostId: widget.session.hostId,
               connectionId: widget.session.connectionId,
@@ -1085,6 +1088,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
     );
   }
+
+  String _tmuxAlertNotificationTitle(TmuxWindow window) {
+    final title = _tmuxAlertNotificationLabel(window.displayTitle);
+    if (title.isEmpty) {
+      return 'tmux window #${window.index}';
+    }
+    return title;
+  }
+
+  String _tmuxAlertNotificationLabel(String value) =>
+      value.replaceAll(RegExp(r'\s+'), ' ').trim();
 
   void _clearAlertNotification(int windowIndex) {
     unawaited(
