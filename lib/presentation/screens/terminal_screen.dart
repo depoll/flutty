@@ -38,6 +38,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_clipboard_sync_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/shell_completion_service.dart';
 import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
@@ -206,6 +207,8 @@ const _tmuxDetectionRetrySchedule = <Duration>[
   Duration(milliseconds: 700),
   Duration(milliseconds: 1400),
 ];
+const _shellCompletionDebounce = Duration(milliseconds: 220);
+const _shellCompletionTmuxPathTimeout = Duration(milliseconds: 800);
 
 /// Resolves the retry schedule used for tmux detection after connect.
 @visibleForTesting
@@ -3252,6 +3255,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Timer? _remoteClipboardSyncTimer;
   Timer? _terminalInputIndicatorTimer;
   Timer? _promptOutputImeResetTimer;
+  Timer? _shellCompletionDebounceTimer;
   bool _isPollingRemoteClipboard = false;
   bool _isPushingLocalClipboard = false;
   bool _remoteClipboardUnsupported = false;
@@ -3260,6 +3264,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
   String? _terminalInputIndicatorLabel;
+  int _shellCompletionGeneration = 0;
+  String? _shellCompletionPromptPrefix;
+  ShellCompletionInvocation? _shellCompletionInvocation;
+  List<ShellCompletionSuggestion> _shellCompletionSuggestions =
+      const <ShellCompletionSuggestion>[];
+  Rect? _shellCompletionAnchorGlobalRect;
 
   // Theme state
   Host? _host;
@@ -3476,6 +3486,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _queueVisibleTerminalPathUnderlineRefresh();
+    if (_shellCompletionPromptPrefix != null &&
+        _shellCompletionDebounceTimer == null &&
+        _shellCompletionSuggestions.isEmpty) {
+      _queueShellCompletionRefresh();
+    }
 
     if (_shouldFollowLiveOutput && !_isTerminalOutputFollowPaused) {
       _queueTerminalScrollToBottom();
@@ -3746,6 +3761,237 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _queueTerminalScrollToBottom();
   }
 
+  void _handleTerminalOutputForShellCompletion(String output) {
+    if (!_terminalOutputCanTriggerShellCompletion(output)) {
+      _hideShellCompletionPopup();
+      return;
+    }
+
+    _shellCompletionPromptPrefix ??= _terminalTextBeforeCursor();
+    _queueShellCompletionRefresh();
+  }
+
+  bool _terminalOutputCanTriggerShellCompletion(String output) {
+    if (output.isEmpty || _isUsingAltBuffer || _showsNativeSelectionOverlay) {
+      return false;
+    }
+    if (output == '\x7F' || output == '\b') {
+      return true;
+    }
+    if (output.length > 32) {
+      return false;
+    }
+    for (var index = 0; index < output.length; index++) {
+      final codeUnit = output.codeUnitAt(index);
+      if (codeUnit < 0x20 || codeUnit == 0x7F) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void _queueShellCompletionRefresh() {
+    _shellCompletionDebounceTimer?.cancel();
+    final generation = ++_shellCompletionGeneration;
+    _shellCompletionDebounceTimer = Timer(_shellCompletionDebounce, () {
+      unawaited(_refreshShellCompletions(generation));
+    });
+  }
+
+  Future<void> _refreshShellCompletions(int generation) async {
+    if (!mounted || generation != _shellCompletionGeneration) {
+      return;
+    }
+
+    final session = _activeSession();
+    if (session == null) {
+      _hideShellCompletionPopup();
+      return;
+    }
+
+    final cachedInvocation = _buildCurrentShellCompletionInvocation(
+      workingDirectory: _workingDirectoryPath,
+    );
+    if (cachedInvocation == null) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
+
+    final workingDirectory = await _resolveShellCompletionWorkingDirectory(
+      session,
+      generation,
+    );
+    if (!mounted || generation != _shellCompletionGeneration) {
+      return;
+    }
+
+    final invocation = _buildCurrentShellCompletionInvocation(
+      workingDirectory: workingDirectory,
+    );
+    final anchor = _resolveTerminalCursorGlobalRect();
+    if (invocation == null || anchor == null) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
+
+    try {
+      final suggestions = await ref
+          .read(shellCompletionServiceProvider)
+          .complete(session, invocation);
+      if (!mounted || generation != _shellCompletionGeneration) {
+        return;
+      }
+      if (suggestions.isEmpty) {
+        _hideShellCompletionPopup(resetPromptPrefix: false);
+        return;
+      }
+      setState(() {
+        _shellCompletionInvocation = invocation;
+        _shellCompletionSuggestions = suggestions;
+        _shellCompletionAnchorGlobalRect = anchor;
+      });
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'shell_completion',
+        'ui_request_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      if (mounted && generation == _shellCompletionGeneration) {
+        _hideShellCompletionPopup(resetPromptPrefix: false);
+      }
+    }
+  }
+
+  Future<String?> _resolveShellCompletionWorkingDirectory(
+    SshSession session,
+    int generation,
+  ) async {
+    var workingDirectory = _workingDirectoryPath;
+    final tmuxSessionName = _isTmuxActive ? _tmuxSessionName : null;
+    if (tmuxSessionName == null) {
+      return workingDirectory;
+    }
+
+    try {
+      final tmuxPath = await ref
+          .read(tmuxServiceProvider)
+          .currentPanePath(
+            session,
+            tmuxSessionName,
+            priority: SshExecPriority.low,
+          )
+          .timeout(_shellCompletionTmuxPathTimeout, onTimeout: () => null);
+      if (!mounted ||
+          generation != _shellCompletionGeneration ||
+          tmuxPath == null ||
+          tmuxPath.trim().isEmpty) {
+        return workingDirectory;
+      }
+      workingDirectory = tmuxPath.trim();
+      if (_tmuxWorkingDirectory != workingDirectory) {
+        setState(() => _tmuxWorkingDirectory = workingDirectory);
+      }
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'shell_completion',
+        'tmux_path_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+
+    return workingDirectory;
+  }
+
+  ShellCompletionInvocation? _buildCurrentShellCompletionInvocation({
+    required String? workingDirectory,
+  }) {
+    if (_isUsingAltBuffer || _showsNativeSelectionOverlay) {
+      return null;
+    }
+    final snapshot = _buildWrappedTerminalCommandSnapshot();
+    if (snapshot == null) {
+      return null;
+    }
+    return buildShellCompletionInvocation(
+      terminalText: snapshot.text,
+      terminalCursorOffset: snapshot.cursorOffset,
+      promptPrefix: _shellCompletionPromptPrefix,
+      workingDirectory: workingDirectory,
+    );
+  }
+
+  Rect? _resolveTerminalCursorGlobalRect() {
+    final terminalViewState = _terminalViewKey.currentState;
+    if (terminalViewState == null) {
+      return null;
+    }
+    return terminalViewState.globalCursorRect;
+  }
+
+  void _hideShellCompletionPopup({bool resetPromptPrefix = true}) {
+    _shellCompletionDebounceTimer?.cancel();
+    _shellCompletionDebounceTimer = null;
+    _shellCompletionGeneration += 1;
+    if (resetPromptPrefix) {
+      _shellCompletionPromptPrefix = null;
+    }
+    if (_shellCompletionInvocation == null &&
+        _shellCompletionSuggestions.isEmpty &&
+        _shellCompletionAnchorGlobalRect == null) {
+      return;
+    }
+    void clearState() {
+      _shellCompletionInvocation = null;
+      _shellCompletionSuggestions = const <ShellCompletionSuggestion>[];
+      _shellCompletionAnchorGlobalRect = null;
+    }
+
+    if (mounted) {
+      setState(clearState);
+    } else {
+      clearState();
+    }
+  }
+
+  void _acceptShellCompletion(ShellCompletionSuggestion suggestion) {
+    final invocation = _shellCompletionInvocation;
+    if (invocation == null) {
+      return;
+    }
+    final currentInvocation = _buildCurrentShellCompletionInvocation(
+      workingDirectory: invocation.workingDirectory,
+    );
+    if (currentInvocation == null ||
+        currentInvocation.commandLine != invocation.commandLine ||
+        currentInvocation.cursorOffset != invocation.cursorOffset) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
+
+    final deleteCount = invocation.cursorOffset - suggestion.replacementStart;
+    if (deleteCount < 0) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
+
+    _hideShellCompletionPopup(resetPromptPrefix: false);
+    for (var index = 0; index < deleteCount; index++) {
+      _terminal.keyInput(TerminalKey.backspace);
+    }
+    final text = '${suggestion.replacement}${suggestion.commitSuffix}';
+    if (text.isNotEmpty) {
+      _terminal.textInput(text);
+    }
+    _followLiveOutput();
+    _terminalTextInputController.clearImeBuffer();
+  }
+
   void _handleTerminalDoubleTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
@@ -3935,6 +4181,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellStdoutSubscription = null;
     _promptOutputImeResetTimer?.cancel();
     _promptOutputImeResetTimer = null;
+    _hideShellCompletionPopup();
     _shell = null;
 
     setState(() {
@@ -4156,6 +4403,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // characters in pasted or multi-char input.
       final output = data == '\n' ? '\r' : data;
 
+      _handleTerminalOutputForShellCompletion(output);
       _shell?.write(utf8.encode(output));
     };
 
@@ -5363,6 +5611,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     unawaited(SystemChannels.textInput.invokeMethod<void>('TextInput.hide'));
     _terminalFocusNode.unfocus();
+    _hideShellCompletionPopup();
     setState(() {
       _clearTmuxState();
       _isConnecting = false;
@@ -5472,6 +5721,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _stopSharedClipboardSync();
     _terminalInputIndicatorTimer?.cancel();
     _promptOutputImeResetTimer?.cancel();
+    _shellCompletionDebounceTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
     _terminal.removeListener(_onTerminalStateChanged);
@@ -6073,6 +6323,166 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ),
   );
 
+  Widget _wrapTerminalShellCompletionOverlay(
+    Widget child, {
+    required ThemeData theme,
+    required TerminalThemeData terminalTheme,
+  }) {
+    final suggestions = _shellCompletionSuggestions;
+    final anchorGlobalRect = _shellCompletionAnchorGlobalRect;
+    if (suggestions.isEmpty || anchorGlobalRect == null) {
+      return child;
+    }
+
+    return Stack(
+      fit: StackFit.expand,
+      clipBehavior: Clip.none,
+      children: [
+        child,
+        Positioned.fill(
+          child: LayoutBuilder(
+            builder: (overlayContext, constraints) {
+              final overlayObject = overlayContext.findRenderObject();
+              if (overlayObject is! RenderBox || !overlayObject.hasSize) {
+                return const SizedBox.shrink();
+              }
+
+              final anchor = Rect.fromPoints(
+                overlayObject.globalToLocal(anchorGlobalRect.topLeft),
+                overlayObject.globalToLocal(anchorGlobalRect.bottomRight),
+              );
+              const horizontalMargin = 12.0;
+              const rowHeight = 44.0;
+              const popupPadding = 6.0;
+              final visibleCount = min(suggestions.length, 5);
+              final popupHeight = (visibleCount * rowHeight) + popupPadding;
+              final popupWidth = min(
+                360,
+                max(220, constraints.maxWidth - (horizontalMargin * 2)),
+              ).toDouble();
+              final maxLeft = max(
+                horizontalMargin,
+                constraints.maxWidth - popupWidth - horizontalMargin,
+              );
+              final left = anchor.left < horizontalMargin
+                  ? horizontalMargin
+                  : anchor.left > maxLeft
+                  ? maxLeft
+                  : anchor.left;
+              final preferredTop = anchor.top >= popupHeight + 12
+                  ? anchor.top - popupHeight - 8
+                  : anchor.bottom + 8;
+              final maxTop = max(
+                8,
+                constraints.maxHeight - popupHeight - 8,
+              ).toDouble();
+              final top = preferredTop < 8
+                  ? 8.0
+                  : preferredTop > maxTop
+                  ? maxTop
+                  : preferredTop;
+
+              return Stack(
+                children: [
+                  Positioned(
+                    left: left,
+                    top: top,
+                    width: popupWidth,
+                    child: _buildShellCompletionPopup(
+                      theme: theme,
+                      terminalTheme: terminalTheme,
+                      suggestions: suggestions,
+                      rowHeight: rowHeight,
+                    ),
+                  ),
+                ],
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildShellCompletionPopup({
+    required ThemeData theme,
+    required TerminalThemeData terminalTheme,
+    required List<ShellCompletionSuggestion> suggestions,
+    required double rowHeight,
+  }) {
+    final popupColor = Color.alphaBlend(
+      theme.colorScheme.surfaceTint.withValues(alpha: 0.08),
+      theme.colorScheme.surfaceContainerHighest.withValues(alpha: 0.96),
+    );
+    final textStyle = theme.textTheme.titleMedium?.copyWith(
+      color: theme.colorScheme.onSurface,
+      fontFamily: _host?.terminalFontFamily,
+    );
+
+    return Material(
+      color: popupColor,
+      elevation: 10,
+      shadowColor: Colors.black.withValues(alpha: 0.35),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(8),
+        side: BorderSide(
+          color: terminalTheme.foreground.withValues(alpha: 0.14),
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: (rowHeight * 5) + 6),
+        child: ListView.separated(
+          padding: const EdgeInsets.symmetric(vertical: 3),
+          shrinkWrap: true,
+          itemCount: suggestions.length,
+          separatorBuilder: (context, index) => Divider(
+            height: 1,
+            thickness: 1,
+            color: theme.colorScheme.outlineVariant.withValues(alpha: 0.45),
+          ),
+          itemBuilder: (context, index) {
+            final suggestion = suggestions[index];
+            return InkWell(
+              onTap: () => _acceptShellCompletion(suggestion),
+              child: SizedBox(
+                height: rowHeight,
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  child: Row(
+                    children: [
+                      Icon(
+                        _shellCompletionIcon(suggestion.kind),
+                        size: 18,
+                        color: terminalTheme.foreground.withValues(alpha: 0.76),
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          suggestion.label,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: textStyle,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  IconData _shellCompletionIcon(ShellCompletionSuggestionKind kind) =>
+      switch (kind) {
+        ShellCompletionSuggestionKind.command => Icons.terminal_rounded,
+        ShellCompletionSuggestionKind.directory => Icons.folder_outlined,
+        ShellCompletionSuggestionKind.file => Icons.insert_drive_file_outlined,
+      };
+
   Future<void> _showThemePicker() async {
     final currentId = _sessionThemeOverride?.id ?? _currentTheme?.id;
     final theme = await showThemePickerDialog(
@@ -6445,6 +6855,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         child: terminalView,
       );
     }
+
+    terminalView = _wrapTerminalShellCompletionOverlay(
+      terminalView,
+      theme: theme,
+      terminalTheme: terminalTheme,
+    );
 
     if (!isMobile) {
       return overlayMessage == null

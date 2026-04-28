@@ -590,8 +590,9 @@ class TmuxService {
   /// reports one.
   Future<String?> currentPanePath(
     SshSession session,
-    String sessionName,
-  ) async {
+    String sessionName, {
+    SshExecPriority priority = SshExecPriority.normal,
+  }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.query',
       'current_pane_path_start',
@@ -602,6 +603,7 @@ class TmuxService {
         session,
         'tmux display-message -p -t ${_shellQuote('$sessionName:')} '
         "'#{pane_current_path}'",
+        priority: priority,
       );
       final path = parseTmuxCurrentPanePath(output);
       DiagnosticsLogService.instance.info(
