@@ -1271,7 +1271,11 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _onTerminalChange() {
-    _syncSelectableSelectionFromController();
+    if (registrar != null && _hasSelectableTextSelection) {
+      _preserveSelectableSelectionAcrossTerminalChange();
+    } else {
+      _syncSelectableSelectionFromController();
+    }
     markNeedsLayout();
     _notifyEditableRect();
   }
@@ -1443,6 +1447,9 @@ class MonkeyRenderTerminal extends RenderBox
   int _clampSelectionOffset(int offset) =>
       offset.clamp(0, _terminalSelectionContentLength);
 
+  bool get _hasSelectableTextSelection =>
+      _selectionStartOffset != null && _selectionEndOffset != null;
+
   int _textOffsetForCell(CellOffset cellOffset) {
     final lineCount = _terminal.buffer.lines.length;
     if (lineCount == 0 || _terminal.viewWidth <= 0) {
@@ -1539,7 +1546,7 @@ class MonkeyRenderTerminal extends RenderBox
       _isApplyingSelectableSelection = false;
     }
     markNeedsPaint();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(deferNotification: true);
   }
 
   void _clearSelectableTextSelection() {
@@ -1555,7 +1562,23 @@ class MonkeyRenderTerminal extends RenderBox
       _isApplyingSelectableSelection = false;
     }
     markNeedsPaint();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(deferNotification: true);
+  }
+
+  void _preserveSelectableSelectionAcrossTerminalChange() {
+    if (_terminalSelectionContentLength <= 0) {
+      _clearSelectableTextSelection();
+      return;
+    }
+
+    final nextStart = _clampSelectionOffset(_selectionStartOffset!);
+    final nextEnd = _clampSelectionOffset(_selectionEndOffset!);
+    if (_selectionStartOffset != nextStart || _selectionEndOffset != nextEnd) {
+      _selectionStartOffset = nextStart;
+      _selectionEndOffset = nextEnd;
+      markNeedsPaint();
+    }
+    _updateSelectionGeometry(deferNotification: true, forceNotify: true);
   }
 
   void _syncSelectableSelectionFromController() {
@@ -1565,7 +1588,7 @@ class MonkeyRenderTerminal extends RenderBox
         _selectionStartOffset = null;
         _selectionEndOffset = null;
         markNeedsPaint();
-        _updateSelectionGeometry();
+        _updateSelectionGeometry(deferNotification: true);
       }
       return;
     }
@@ -1577,7 +1600,7 @@ class MonkeyRenderTerminal extends RenderBox
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
     markNeedsPaint();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(deferNotification: true);
   }
 
   Offset _localPositionForTextOffset(int textOffset) {
@@ -1658,12 +1681,18 @@ class MonkeyRenderTerminal extends RenderBox
     );
   }
 
-  void _updateSelectionGeometry({bool deferNotification = false}) {
+  void _updateSelectionGeometry({
+    bool deferNotification = false,
+    bool forceNotify = false,
+  }) {
     final nextGeometry = _computeSelectionGeometry();
-    if (nextGeometry == _selectionGeometry) {
+    final didChange = nextGeometry != _selectionGeometry;
+    if (!didChange && !forceNotify) {
       return;
     }
-    _selectionGeometry = nextGeometry;
+    if (didChange) {
+      _selectionGeometry = nextGeometry;
+    }
     if (deferNotification) {
       _scheduleSelectionGeometryNotification();
       return;
@@ -1741,7 +1770,7 @@ class MonkeyRenderTerminal extends RenderBox
     };
     if (previousStart != _selectionStartOffset ||
         previousEnd != _selectionEndOffset) {
-      _updateSelectionGeometry();
+      _updateSelectionGeometry(deferNotification: true, forceNotify: true);
     }
     return result;
   }

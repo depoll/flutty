@@ -77,6 +77,33 @@ Future<double> _waitForKeyboardInset(
   return tester.view.viewInsets.bottom;
 }
 
+Offset _cellCenter(MonkeyRenderTerminal renderTerminal, CellOffset offset) =>
+    renderTerminal.localToGlobal(
+      renderTerminal.getOffset(offset) +
+          renderTerminal.cellSize.center(Offset.zero),
+    );
+
+Future<void> _dragStartHandleToCell(
+  WidgetTester tester,
+  MonkeyRenderTerminal renderTerminal, {
+  required CellOffset targetCell,
+}) async {
+  final startSelectionPoint = renderTerminal.value.startSelectionPoint;
+  expect(startSelectionPoint, isNotNull);
+  final startHandlePosition = renderTerminal.localToGlobal(
+    startSelectionPoint!.localPosition,
+  );
+  final handleDragPosition =
+      startHandlePosition + Offset(0, renderTerminal.cellSize.height);
+
+  await tester.timedDragFrom(
+    handleDragPosition,
+    _cellCenter(renderTerminal, targetCell) - handleDragPosition,
+    const Duration(milliseconds: 600),
+  );
+  await tester.pumpAndSettle();
+}
+
 void main() {
   IntegrationTestWidgetsFlutterBinding.ensureInitialized();
 
@@ -223,6 +250,116 @@ void main() {
       expect(hiddenKeyboardInset, 0);
       expect(renderTerminal.getSelectedContent()?.plainText, 'alpha');
       expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+
+      await _dragStartHandleToCell(
+        tester,
+        renderTerminal,
+        targetCell: const CellOffset(0, 26),
+      );
+      expect(
+        renderTerminal.getSelectedContent()?.plainText,
+        contains('line 26'),
+      );
+      expect(renderTerminal.getSelectedContent()?.plainText, contains('alpha'));
+
+      for (var index = 0; index < 12; index += 1) {
+        session.terminal!.write('\rprogress $index');
+        await tester.pump(const Duration(milliseconds: 50));
+        expect(renderTerminal.getSelectedContent(), isNotNull);
+        expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+      }
     },
   );
+
+  testWidgets('selection survives animated progress on selected line', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(430, 932));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final hostRepository = _MockHostRepository();
+    final sshClient = _MockSshClient();
+    final shellChannel = _MockShellChannel();
+    final host = _buildHost(id: 43);
+    final shellDoneCompleter = Completer<void>();
+
+    when(() => hostRepository.getById(host.id)).thenAnswer((_) async => host);
+    when(
+      () => sshClient.shell(pty: any(named: 'pty')),
+    ).thenAnswer((_) async => shellChannel);
+    when(
+      () => shellChannel.stdout,
+    ).thenAnswer((_) => const Stream<Uint8List>.empty());
+    when(
+      () => shellChannel.stderr,
+    ).thenAnswer((_) => const Stream<Uint8List>.empty());
+    when(() => shellChannel.done).thenAnswer((_) => shellDoneCompleter.future);
+    when(() => shellChannel.write(any())).thenReturn(null);
+
+    final session = SshSession(
+      connectionId: 43,
+      hostId: host.id,
+      client: sshClient,
+      config: const SshConnectionConfig(
+        hostname: 'terminal.example.com',
+        port: 22,
+        username: 'root',
+      ),
+    )..getOrCreateTerminal();
+    final container = ProviderContainer(
+      overrides: [
+        databaseProvider.overrideWithValue(db),
+        hostRepositoryProvider.overrideWithValue(hostRepository),
+        sharedClipboardProvider.overrideWith((ref) async => false),
+        activeSessionsProvider.overrideWith(
+          () => _TestActiveSessionsNotifier(session),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: MaterialApp(
+          home: TerminalScreen(
+            hostId: host.id,
+            connectionId: session.connectionId,
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump();
+
+    session.terminal!.write(
+      List<String>.generate(
+        24,
+        (index) => index == 23 ? 'progress 0' : 'line $index',
+      ).join('\r\n'),
+    );
+    await tester.pumpAndSettle();
+
+    final terminalViewState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+    final renderTerminal = terminalViewState.renderTerminal;
+    final target = _cellCenter(renderTerminal, const CellOffset(3, 23));
+
+    await tester.longPressAt(target);
+    await tester.pumpAndSettle();
+
+    expect(renderTerminal.getSelectedContent()?.plainText, 'progress');
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+
+    for (var index = 1; index <= 12; index += 1) {
+      session.terminal!.write('\r\x1b[2Kprogress $index');
+      await tester.pump(const Duration(milliseconds: 50));
+
+      expect(renderTerminal.getSelectedContent()?.plainText, 'progress');
+      expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+    }
+  });
 }
