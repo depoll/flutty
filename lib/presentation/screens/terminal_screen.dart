@@ -137,6 +137,43 @@ String? formatTerminalConnectionIdentity({
   return '$hostWithPort · $sessionLabel';
 }
 
+/// Resolves the user-visible text for a tmux alert notification.
+@visibleForTesting
+({String title, String body}) resolveTmuxAlertNotificationContent({
+  required String tmuxSessionName,
+  required TmuxWindow window,
+  required Iterable<TmuxWindow> windows,
+}) {
+  final sessionName = _tmuxAlertNotificationLabel(tmuxSessionName);
+  final title = sessionName.isEmpty
+      ? 'tmux alert'
+      : 'tmux alert · $sessionName';
+  final windowTitle = _tmuxAlertNotificationLabel(window.displayTitle);
+  if (windowTitle.isEmpty) {
+    return (title: title, body: 'Window #${window.index} needs attention');
+  }
+
+  final normalizedWindowTitle = windowTitle.toLowerCase();
+  var matchingTitleCount = 0;
+  for (final candidate in windows) {
+    final candidateTitle = _tmuxAlertNotificationLabel(
+      candidate.displayTitle,
+    ).toLowerCase();
+    if (candidateTitle != normalizedWindowTitle) {
+      continue;
+    }
+    matchingTitleCount += 1;
+    if (matchingTitleCount > 1) {
+      return (title: title, body: '$windowTitle (window #${window.index})');
+    }
+  }
+
+  return (title: title, body: windowTitle);
+}
+
+String _tmuxAlertNotificationLabel(String value) =>
+    value.replaceAll(RegExp(r'\s+'), ' ').trim();
+
 /// Resolves how much vertical space the tmux bar can safely expand into.
 @visibleForTesting
 double resolveTmuxBarMaxContentHeight(
@@ -734,7 +771,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       unawaited(_bounceController.forward(from: 0));
       for (final w in newAlerts) {
         _seenAlertWindows.add(w.index);
-        _sendAlertNotification(w);
+        _sendAlertNotification(w, windows);
       }
     }
 
@@ -1063,9 +1100,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       ) &
       0x7fffffff;
 
-  void _sendAlertNotification(TmuxWindow window) {
-    final title = _tmuxAlertNotificationTitle(window);
-    final sessionName = _tmuxAlertNotificationLabel(widget.tmuxSessionName);
+  void _sendAlertNotification(TmuxWindow window, List<TmuxWindow> windows) {
+    final content = resolveTmuxAlertNotificationContent(
+      tmuxSessionName: widget.tmuxSessionName,
+      window: window,
+      windows: windows,
+    );
     unawaited(HapticFeedback.mediumImpact());
     unawaited(
       widget.ref
@@ -1076,9 +1116,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               widget.tmuxSessionName,
               window.index,
             ),
-            title: title,
-            body:
-                'tmux window #${window.index} in $sessionName needs attention.',
+            title: content.title,
+            body: content.body,
             payload: TmuxAlertNotificationPayload(
               hostId: widget.session.hostId,
               connectionId: widget.session.connectionId,
@@ -1088,17 +1127,6 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
     );
   }
-
-  String _tmuxAlertNotificationTitle(TmuxWindow window) {
-    final title = _tmuxAlertNotificationLabel(window.displayTitle);
-    if (title.isEmpty) {
-      return 'tmux window #${window.index}';
-    }
-    return title;
-  }
-
-  String _tmuxAlertNotificationLabel(String value) =>
-      value.replaceAll(RegExp(r'\s+'), ' ').trim();
 
   void _clearAlertNotification(int windowIndex) {
     unawaited(
