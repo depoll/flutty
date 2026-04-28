@@ -647,7 +647,7 @@ String buildShellCompletionRemoteCommand(ShellCompletionInvocation invocation) {
       'cd'.startsWith(invocation.token);
 
   return '''
-export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')}; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')}; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
 case "\$FLUTTY_PROFILE_KIND" in
   zsh) { . ~/.zprofile; . ~/.zshrc; } >/dev/null 2>&1 ;;
   bash) { . ~/.bash_profile; . ~/.bash_login; . ~/.profile; . ~/.bashrc; } >/dev/null 2>&1 ;;

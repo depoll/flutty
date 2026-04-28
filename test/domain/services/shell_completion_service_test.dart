@@ -132,6 +132,12 @@ void main() {
     final command = buildShellCompletionRemoteCommand(invocation);
 
     expect(command, contains(r'flutty_shell=${SHELL:-}'));
+    expect(
+      command,
+      contains(
+        "export FLUTTY_MODE='command' FLUTTY_TOKEN='gi' FLUTTY_INCLUDE_CD_SHORTCUTS=0 FLUTTY_CWD='/Users/depoll/project';",
+      ),
+    );
     expect(command, contains(r'FLUTTY_PROFILE_KIND=$flutty_profile_kind'));
     expect(command, contains('zsh) { . ~/.zprofile; . ~/.zshrc; }'));
     expect(
