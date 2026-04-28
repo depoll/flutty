@@ -4,6 +4,8 @@ import 'package:flutter/widgets.dart';
 import 'package:xterm/core.dart';
 import 'package:xterm/src/ui/infinite_scroll_view.dart';
 
+import 'terminal_scroll_mouse_input.dart';
+
 /// Handles alt-buffer scrolling while preserving trackpad gesture position.
 class MonkeyTerminalScrollGestureHandler extends StatefulWidget {
   const MonkeyTerminalScrollGestureHandler({
@@ -89,11 +91,14 @@ class _MonkeyTerminalScrollGestureHandlerState
   /// will simulate scroll events by sending up/down arrow keys.
   void _sendScrollEvent(bool up) {
     final position = widget.getCellOffset(lastPointerPosition);
+    final button = up
+        ? TerminalMouseButton.wheelUp
+        : TerminalMouseButton.wheelDown;
 
-    final handled = widget.terminal.mouseInput(
-      up ? TerminalMouseButton.wheelUp : TerminalMouseButton.wheelDown,
-      TerminalMouseButtonState.down,
-      position,
+    final handled = sendTerminalScrollMouseInput(
+      terminal: widget.terminal,
+      button: button,
+      position: position,
     );
 
     if (!handled && widget.simulateScroll) {
@@ -135,14 +140,14 @@ class _MonkeyTerminalScrollGestureHandlerState
     }
 
     return Listener(
-      onPointerSignal: (event) => _rememberPointerPosition(event.position),
-      onPointerHover: (event) => _rememberPointerPosition(event.position),
-      onPointerMove: (event) => _rememberPointerPosition(event.position),
-      onPointerDown: (event) => _rememberPointerPosition(event.position),
+      onPointerSignal: (event) => _rememberPointerPosition(event.localPosition),
+      onPointerHover: (event) => _rememberPointerPosition(event.localPosition),
+      onPointerMove: (event) => _rememberPointerPosition(event.localPosition),
+      onPointerDown: (event) => _rememberPointerPosition(event.localPosition),
       onPointerPanZoomStart: (event) =>
-          _rememberPointerPosition(event.position),
+          _rememberPointerPosition(event.localPosition),
       onPointerPanZoomUpdate: (event) =>
-          _rememberPointerPosition(event.position + event.pan),
+          _rememberPointerPosition(event.localPosition + event.pan),
       child: InfiniteScrollView(onScroll: _onScroll, child: widget.child),
     );
   }

@@ -51,6 +51,7 @@ void main() {
       final targetRect = tester.getRect(
         find.byKey(const ValueKey('trackpad-target')),
       );
+      final localTargetRect = Offset.zero & targetRect.size;
       final gesture = await tester.createGesture(
         kind: PointerDeviceKind.trackpad,
       );
@@ -66,10 +67,11 @@ void main() {
       await tester.pump();
 
       expect(output, hasLength(2));
+      expect(output, everyElement(startsWith('\x1b[<65;')));
       expect(reportedPositions, hasLength(2));
       for (final position in reportedPositions) {
         expect(position, isNot(Offset.zero));
-        expect(targetRect.contains(position), isTrue);
+        expect(localTargetRect.contains(position), isTrue);
       }
     },
   );
@@ -137,4 +139,59 @@ void main() {
       await tester.pump();
     },
   );
+
+  testWidgets('trackpad scrolling reports SGR wheel up as button 64', (
+    tester,
+  ) async {
+    final terminal = Terminal()
+      ..useAltBuffer()
+      ..setMouseMode(MouseMode.upDownScroll)
+      ..setMouseReportMode(MouseReportMode.sgr);
+    final output = <String>[];
+    terminal.onOutput = output.add;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Directionality(
+          textDirection: TextDirection.ltr,
+          child: Center(
+            child: SizedBox(
+              width: 200,
+              height: 200,
+              child: MonkeyTerminalScrollGestureHandler(
+                terminal: terminal,
+                simulateScroll: false,
+                getCellOffset: (_) => const CellOffset(1, 1),
+                getLineHeight: () => 10,
+                child: const ColoredBox(
+                  key: ValueKey('sgr-wheel-up-target'),
+                  color: Colors.black,
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final center = tester.getCenter(
+      find.byKey(const ValueKey('sgr-wheel-up-target')),
+    );
+    final gesture = await tester.createGesture(
+      kind: PointerDeviceKind.trackpad,
+    );
+
+    await gesture.panZoomStart(center);
+    await tester.pump();
+    await gesture.panZoomUpdate(
+      center + const Offset(0, 10),
+      pan: const Offset(0, 10),
+    );
+    await tester.pump();
+    await gesture.panZoomEnd();
+    await tester.pump();
+
+    expect(output, hasLength(1));
+    expect(output.single, startsWith('\x1b[<64;'));
+  });
 }
