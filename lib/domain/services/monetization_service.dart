@@ -13,6 +13,12 @@ import 'package:in_app_purchase_storekit/store_kit_wrappers.dart';
 import '../models/monetization.dart';
 import 'settings_service.dart';
 
+const _lifetimeAlreadyActiveMessage =
+    'MonkeySSH Pro Lifetime is already active. Manage your subscription in the '
+    'store if you need to cancel a monthly or annual renewal.';
+const _noActiveStorePurchaseMessage =
+    'No active MonkeySSH Pro purchase could be restored.';
+
 /// Coordinates local premium state and mobile store purchase flows.
 class MonetizationService {
   /// Creates a new [MonetizationService].
@@ -204,15 +210,20 @@ class MonetizationService {
     await initialize();
     if (!_supportsStoreBilling) {
       return const MonetizationActionResult.failure(
-        'Subscriptions are only available through the App Store and Google Play.',
+        'Purchases are only available through the App Store and Google Play.',
       );
     }
     if (_state.isLifetimeUnlocked) {
       return const MonetizationActionResult.failure(
-        'MonkeySSH Pro Lifetime is already active. Manage your subscription in the store if you need to cancel a monthly or annual renewal.',
+        _lifetimeAlreadyActiveMessage,
       );
     }
     await _tryRecoverStaleAndroidPurchaseAttempt();
+    if (_state.isLifetimeUnlocked) {
+      return const MonetizationActionResult.failure(
+        _lifetimeAlreadyActiveMessage,
+      );
+    }
     if (_pendingPurchaseResult != null || _restoreInFlight) {
       return const MonetizationActionResult.failure(
         'Another purchase or restore is already in progress.',
@@ -289,6 +300,11 @@ class MonetizationService {
         'Restoring purchases is only available through the App Store and Google Play.',
       );
     }
+    if (_state.isLifetimeUnlocked) {
+      return const MonetizationActionResult.success(
+        'MonkeySSH Pro Lifetime is already active.',
+      );
+    }
     await _tryRecoverStaleAndroidPurchaseAttempt();
     if (_pendingPurchaseResult != null || _restoreInFlight) {
       return const MonetizationActionResult.failure(
@@ -319,12 +335,12 @@ class MonetizationService {
         _restoreInFlight = false;
         _restoreObservedPurchaseUpdate = false;
         if (!restoreObservedPurchaseUpdate) {
-          await _clearCachedStoreEntitlement();
+          await _clearCachedStoreEntitlement(preserveLifetime: true);
         } else {
           _emit(_state.copyWith(isLoading: false));
         }
         return const MonetizationActionResult.failure(
-          'No active subscription could be restored.',
+          _noActiveStorePurchaseMessage,
         );
       },
     );
@@ -502,7 +518,13 @@ class MonetizationService {
     }
   }
 
-  Future<void> _clearCachedStoreEntitlement() async {
+  Future<void> _clearCachedStoreEntitlement({
+    bool preserveLifetime = false,
+  }) async {
+    if (preserveLifetime && _state.isLifetimeUnlocked) {
+      _emit(_state.copyWith(isLoading: false, lastError: null));
+      return;
+    }
     await _settings.setBool(SettingKeys.monetizationProUnlocked, value: false);
     await _settings.delete(SettingKeys.monetizationActiveProductId);
     await _settings.delete(SettingKeys.monetizationActiveOfferId);
@@ -561,7 +583,7 @@ class MonetizationService {
     try {
       final response = await _playBillingAddition.queryPastPurchases();
       if (response.error != null) {
-        const message = 'Could not check Google Play subscriptions.';
+        const message = 'Could not check Google Play purchases.';
         _emit(_state.copyWith(isLoading: false, lastError: message));
         return const MonetizationActionResult.failure(message);
       }
@@ -575,26 +597,11 @@ class MonetizationService {
       if (purchases.isEmpty) {
         await _clearCachedStoreEntitlement();
         return const MonetizationActionResult.failure(
-          'No active subscription could be restored.',
+          _noActiveStorePurchaseMessage,
         );
       }
 
-      // Lifetime takes precedence over any subscription that might be
-      // returned alongside it, even if the subscription has a newer
-      // purchaseTime. A user who owns lifetime should always see the
-      // "Lifetime" label, regardless of whether they later subscribed.
-      final lifetimePurchase = purchases.firstWhereOrNull(
-        (purchase) => MonetizationProductIds.isLifetime(purchase.productID),
-      );
-      final selectedPurchase =
-          lifetimePurchase ??
-          purchases.reduce(
-            (latest, purchase) =>
-                purchase.billingClientPurchase.purchaseTime >
-                    latest.billingClientPurchase.purchaseTime
-                ? purchase
-                : latest,
-          );
+      final selectedPurchase = _preferredAndroidEntitlementPurchase(purchases);
 
       final isLifetime = MonetizationProductIds.isLifetime(
         selectedPurchase.productID,
@@ -626,24 +633,11 @@ class MonetizationService {
       return;
     }
 
-    // Recompute the active product from the surviving purchase set so
-    // that, e.g., a lapsed subscription leaves the cached active SKU
-    // pointing at the still-owned lifetime non-consumable instead of
-    // the now-defunct sub. Lifetime always takes precedence.
-    final lifetime = knownPurchases.firstWhereOrNull(
-      (purchase) => MonetizationProductIds.isLifetime(purchase.productID),
-    );
-    final selected =
-        lifetime ??
-        knownPurchases.reduce(
-          (latest, purchase) =>
-              purchase.billingClientPurchase.purchaseTime >
-                  latest.billingClientPurchase.purchaseTime
-              ? purchase
-              : latest,
-        );
+    final selected = _preferredAndroidEntitlementPurchase(knownPurchases);
 
-    if (_state.activeProductId == selected.productID) {
+    final isLifetime = MonetizationProductIds.isLifetime(selected.productID);
+    if (_state.activeProductId == selected.productID &&
+        (!isLifetime || _state.activeOfferId == null)) {
       return;
     }
 
@@ -651,7 +645,6 @@ class MonetizationService {
       SettingKeys.monetizationActiveProductId,
       selected.productID,
     );
-    final isLifetime = MonetizationProductIds.isLifetime(selected.productID);
     if (isLifetime) {
       await _settings.delete(SettingKeys.monetizationActiveOfferId);
     }
@@ -691,18 +684,36 @@ class MonetizationService {
       return;
     }
 
-    final latestPurchase = purchases.reduce(
+    final selectedPurchase = _preferredAndroidEntitlementPurchase(purchases);
+    final isLifetime = MonetizationProductIds.isLifetime(
+      selectedPurchase.productID,
+    );
+    final result = await _applySuccessfulPurchase(
+      selectedPurchase,
+      successMessage: isLifetime
+          ? 'MonkeySSH Pro Lifetime activated.'
+          : 'MonkeySSH Pro unlocked.',
+    );
+    _resolvePendingPurchase(result);
+  }
+
+  GooglePlayPurchaseDetails _preferredAndroidEntitlementPurchase(
+    List<GooglePlayPurchaseDetails> purchases,
+  ) {
+    final lifetimePurchase = purchases.firstWhereOrNull(
+      (purchase) => MonetizationProductIds.isLifetime(purchase.productID),
+    );
+    if (lifetimePurchase != null) {
+      return lifetimePurchase;
+    }
+
+    return purchases.reduce(
       (latest, purchase) =>
           purchase.billingClientPurchase.purchaseTime >
               latest.billingClientPurchase.purchaseTime
           ? purchase
           : latest,
     );
-    final result = await _applySuccessfulPurchase(
-      latestPurchase,
-      successMessage: 'MonkeySSH Pro unlocked.',
-    );
-    _resolvePendingPurchase(result);
   }
 
   DateTime? _parseCachedDate(String? rawValue) =>
