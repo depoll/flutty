@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -2088,6 +2089,55 @@ void main() {
         );
 
         focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'accelerates iOS hardware backspace repeat and suppresses native repeats',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+          final backspaceOutput = _terminalKeyOutput(TerminalKey.backspace);
+          int backspaceCount() => harness.terminalOutput
+              .where((value) => value == backspaceOutput)
+              .length;
+
+          await tester.sendKeyDownEvent(LogicalKeyboardKey.backspace);
+          await tester.pump();
+
+          expect(backspaceCount(), 1);
+
+          await tester.sendKeyRepeatEvent(LogicalKeyboardKey.backspace);
+          await tester.pump();
+
+          expect(backspaceCount(), 1);
+
+          await tester.pump(terminalIosHardwareKeyRepeatStartDelay);
+
+          expect(backspaceCount(), 2);
+
+          await tester.pump(terminalIosHardwareKeyRepeatInterval);
+
+          expect(backspaceCount(), 3);
+
+          await tester.sendKeyUpEvent(LogicalKeyboardKey.backspace);
+          await tester.pump();
+          final countAfterKeyUp = backspaceCount();
+
+          await tester.pump(
+            Duration(
+              milliseconds:
+                  terminalIosHardwareKeyRepeatInterval.inMilliseconds * 3,
+            ),
+          );
+
+          expect(backspaceCount(), countAfterKeyUp);
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
       },
     );
 
@@ -6533,6 +6583,113 @@ void main() {
       );
 
       focusNode.dispose();
+    });
+
+    testWidgets(
+      'defers iOS trailing backspace buffer clears so native repeat stays fast',
+      (tester) async {
+        debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+        try {
+          final harness = await _pumpTerminalHarness(tester);
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('hello', selectionOffset: 5),
+          );
+          await tester.pump();
+          tester.testTextInput.log.clear();
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('hell', selectionOffset: 4),
+          );
+          await tester.pump();
+
+          expect(_terminalTextFromEvents(harness.terminalOutput), 'hell');
+          expect(
+            tester.testTextInput.log.where(
+              (call) => call.method == 'TextInput.setEditingState',
+            ),
+            isEmpty,
+          );
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            _editingValue('hell', selectionOffset: 4),
+          );
+
+          tester.testTextInput.updateEditingValue(
+            _editingValue('hel', selectionOffset: 3),
+          );
+          await tester.pump();
+
+          expect(_terminalTextFromEvents(harness.terminalOutput), 'hel');
+          expect(
+            tester.testTextInput.log.where(
+              (call) => call.method == 'TextInput.setEditingState',
+            ),
+            isEmpty,
+          );
+
+          await tester.pump(terminalIosBackspaceRepeatSettleDelay);
+
+          expect(
+            _terminalTextInputClient(tester).currentTextEditingValue,
+            const TextEditingValue(
+              text: _deleteDetectionMarker,
+              selection: TextSelection.collapsed(offset: 2),
+            ),
+          );
+          expect(
+            tester.testTextInput.log
+                .where((call) => call.method == 'TextInput.setEditingState')
+                .length,
+            1,
+          );
+
+          await _disposeTerminalHarness(tester, harness);
+        } finally {
+          debugDefaultTargetPlatformOverride = null;
+        }
+      },
+    );
+
+    testWidgets('typing cancels the deferred iOS trailing backspace clear', (
+      tester,
+    ) async {
+      debugDefaultTargetPlatformOverride = TargetPlatform.iOS;
+      try {
+        final harness = await _pumpTerminalHarness(tester);
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hello', selectionOffset: 5),
+        );
+        await tester.pump();
+        tester.testTextInput.log.clear();
+
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hell', selectionOffset: 4),
+        );
+        await tester.pump();
+        tester.testTextInput.updateEditingValue(
+          _editingValue('hellp', selectionOffset: 5),
+        );
+        await tester.pump();
+        await tester.pump(terminalIosBackspaceRepeatSettleDelay);
+
+        expect(_terminalTextFromEvents(harness.terminalOutput), 'hellp');
+        expect(
+          _terminalTextInputClient(tester).currentTextEditingValue,
+          _editingValue('hellp', selectionOffset: 5),
+        );
+        expect(
+          tester.testTextInput.log.where(
+            (call) => call.method == 'TextInput.setEditingState',
+          ),
+          isEmpty,
+        );
+
+        await _disposeTerminalHarness(tester, harness);
+      } finally {
+        debugDefaultTargetPlatformOverride = null;
+      }
     });
 
     testWidgets('typing after trailing backspace inserts from a fresh buffer', (

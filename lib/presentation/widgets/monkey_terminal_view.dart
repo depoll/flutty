@@ -19,7 +19,6 @@ import 'package:xterm/src/core/buffer/segment.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
-import 'package:xterm/src/core/mouse/mode.dart';
 import 'package:xterm/src/terminal.dart';
 import 'package:xterm/src/ui/controller.dart';
 import 'package:xterm/src/ui/cursor_type.dart';
@@ -39,6 +38,7 @@ import 'package:xterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
+import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
 /// Terminal render padding.
@@ -847,28 +847,11 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   bool _sendTouchScrollMouseInput(
     TerminalMouseButton button,
     CellOffset position,
-  ) {
-    if (widget.terminal.mouseMode.reportScroll &&
-        widget.terminal.mouseReportMode == MouseReportMode.sgr) {
-      final sgrButtonId = switch (button) {
-        TerminalMouseButton.wheelUp => 64,
-        TerminalMouseButton.wheelDown => 65,
-        TerminalMouseButton.wheelLeft => 66,
-        TerminalMouseButton.wheelRight => 67,
-        _ => button.id,
-      };
-      widget.terminal.onOutput?.call(
-        '\x1b[<$sgrButtonId;${position.x + 1};${position.y + 1}M',
-      );
-      return true;
-    }
-
-    return widget.terminal.mouseInput(
-      button,
-      TerminalMouseButtonState.down,
-      position,
-    );
-  }
+  ) => sendTerminalScrollMouseInput(
+    terminal: widget.terminal,
+    button: button,
+    position: position,
+  );
 
   CellOffset _resolveViewportMousePosition(Offset localPosition) {
     final cellSize = renderTerminal.cellSize;
