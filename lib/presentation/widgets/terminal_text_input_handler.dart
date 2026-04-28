@@ -347,6 +347,9 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _touchLongPressTimers[event.pointer] = Timer(
         terminalKeyboardTapLongPressTimeout,
         () {
+          if (!_isTouchSelectionIntentCandidate(event.pointer)) {
+            return;
+          }
           _touchPointersPressedBeyondLongPressTimeout.add(event.pointer);
           _closeInputConnectionIfNeeded();
         },
@@ -356,6 +359,12 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       }
     }
   }
+
+  bool _isTouchSelectionIntentCandidate(int pointer) =>
+      _activeTouchPointers.length == 1 &&
+      _activeTouchPointers.contains(pointer) &&
+      !_touchSequenceHadMultiplePointers &&
+      !_touchPointersMovedBeyondTapSlop.contains(pointer);
 
   void _handlePointerMove(PointerMoveEvent event) {
     if (event.kind != PointerDeviceKind.touch ||

@@ -4992,6 +4992,62 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'keeps the keyboard visible when a held touch starts scrolling',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+
+        expect(harness.focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        final gesture = await tester.startGesture(target);
+        await tester.pump();
+        await gesture.moveBy(const Offset(0, 80));
+        await tester.pump(terminalKeyboardTapLongPressTimeout);
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await gesture.up();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('keeps the keyboard visible during held multitouch', (
+      tester,
+    ) async {
+      final harness = await _pumpTerminalHarness(tester);
+
+      expect(harness.focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      final firstGesture = await tester.createGesture();
+      final secondGesture = await tester.createGesture();
+      await firstGesture.down(target);
+      await tester.pump();
+      await secondGesture.down(target + const Offset(60, 0));
+      await tester.pump(terminalKeyboardTapLongPressTimeout);
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      await secondGesture.up();
+      await firstGesture.up();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {
