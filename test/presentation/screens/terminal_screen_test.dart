@@ -1594,6 +1594,60 @@ void main() {
     );
 
     testWidgets(
+      'touch press pauses live output auto-scroll before long press resolves',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(430, 932));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        session.terminal!
+          ..setMouseMode(MouseMode.upDownScroll)
+          ..setMouseReportMode(MouseReportMode.sgr);
+        await pumpScreen(tester);
+
+        session.terminal!.write(
+          List<String>.generate(
+            60,
+            (index) => index == 59 ? 'alpha bravo' : 'line $index',
+          ).join('\r\n'),
+        );
+        await tester.pumpAndSettle();
+
+        final scrollableFinder = find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        );
+        expect(scrollableFinder, findsOneWidget);
+        final scrollableState = tester.state<ScrollableState>(scrollableFinder);
+        final initialOffset = scrollableState.position.pixels;
+        expect(initialOffset, scrollableState.position.maxScrollExtent);
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(find.byType(MonkeyTerminalView)),
+        );
+        await tester.pump();
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .liveOutputAutoScroll,
+          isFalse,
+        );
+        session.terminal!.write(
+          '\r\n${List<String>.generate(20, (index) => 'stream $index').join('\r\n')}',
+        );
+        await tester.pump();
+
+        expect(scrollableState.position.pixels, initialOffset);
+
+        await gesture.up();
+        await tester.pumpAndSettle();
+        expect(
+          scrollableState.position.pixels,
+          scrollableState.position.maxScrollExtent,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'link long press keeps the touched word selected while output streams during the hold',
       (tester) async {
         await pumpScreen(tester);

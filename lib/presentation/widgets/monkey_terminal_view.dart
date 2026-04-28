@@ -171,6 +171,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
+    this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
     this.onSystemSelectionChanged,
@@ -296,6 +297,10 @@ class MonkeyTerminalView extends StatefulWidget {
   /// If true, vertical touch drags are converted into terminal scroll input
   /// instead of scrolling the Flutter viewport.
   final bool touchScrollToTerminal;
+
+  /// If true, the terminal keeps the viewport pinned to the newest output while
+  /// it is already scrolled to the bottom.
+  final bool liveOutputAutoScroll;
 
   /// True when Flutter's [SelectableRegion] should own terminal selection
   /// gestures and handles.
@@ -454,6 +459,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           padding: EdgeInsets.zero,
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
+          liveOutputAutoScroll: widget.liveOutputAutoScroll,
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
           theme: widget.theme,
@@ -980,6 +986,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.padding,
     required this.alignToTrailingEdges,
     required this.autoResize,
+    required this.liveOutputAutoScroll,
     required this.textStyle,
     required this.textScaler,
     required this.theme,
@@ -1002,6 +1009,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final bool alignToTrailingEdges;
 
   final bool autoResize;
+
+  final bool liveOutputAutoScroll;
 
   final TerminalStyle textStyle;
 
@@ -1030,6 +1039,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       padding: padding,
       alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
+      liveOutputAutoScroll: liveOutputAutoScroll,
       textStyle: textStyle,
       textScaler: textScaler,
       theme: theme,
@@ -1054,6 +1064,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..padding = padding
       ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
+      ..liveOutputAutoScroll = liveOutputAutoScroll
       ..textStyle = textStyle
       ..textScaler = textScaler
       ..theme = theme
@@ -1075,6 +1086,7 @@ class MonkeyRenderTerminal extends RenderBox
     required EdgeInsets padding,
     required bool alignToTrailingEdges,
     required bool autoResize,
+    required bool liveOutputAutoScroll,
     required TerminalStyle textStyle,
     required TextScaler textScaler,
     required TerminalTheme theme,
@@ -1090,6 +1102,7 @@ class MonkeyRenderTerminal extends RenderBox
        _padding = padding,
        _alignToTrailingEdges = alignToTrailingEdges,
        _autoResize = autoResize,
+       _liveOutputAutoScroll = liveOutputAutoScroll,
        _focusNode = focusNode,
        _cursorType = cursorType,
        _alwaysShowCursor = alwaysShowCursor,
@@ -1155,6 +1168,20 @@ class MonkeyRenderTerminal extends RenderBox
   set autoResize(bool value) {
     if (value == _autoResize) return;
     _autoResize = value;
+    markNeedsLayout();
+  }
+
+  /// Whether layout should keep the viewport pinned to the newest output while
+  /// the user is already at the bottom.
+  bool get liveOutputAutoScroll => _liveOutputAutoScroll;
+
+  bool _liveOutputAutoScroll;
+  set liveOutputAutoScroll(bool value) {
+    if (value == _liveOutputAutoScroll) {
+      return;
+    }
+
+    _liveOutputAutoScroll = value;
     markNeedsLayout();
   }
 
@@ -1318,10 +1345,10 @@ class MonkeyRenderTerminal extends RenderBox
     _updateViewportSize();
     _updateScrollOffset();
 
-    if (_stickToBottom) {
+    if (_liveOutputAutoScroll && _stickToBottom) {
       _offset.correctBy(_maxScrollExtent - _scrollOffset);
     }
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(deferNotification: true);
   }
 
   double get _terminalHeight =>
