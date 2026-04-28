@@ -39,6 +39,18 @@ const modifierChordFollowUpWindow = Duration(milliseconds: 500);
 @visibleForTesting
 const terminalKeyboardTapLongPressTimeout = kLongPressTimeout;
 
+/// How long iOS keeps the IME buffer intact after a trailing backspace.
+@visibleForTesting
+const terminalIosBackspaceRepeatSettleDelay = Duration(milliseconds: 250);
+
+/// Delay before iOS hardware keys begin app-controlled repeat.
+@visibleForTesting
+const terminalIosHardwareKeyRepeatStartDelay = Duration(milliseconds: 250);
+
+/// Repeat interval for iOS hardware terminal navigation/editing keys.
+@visibleForTesting
+const terminalIosHardwareKeyRepeatInterval = Duration(milliseconds: 35);
+
 DateTime Function()? _modifierChordClockOverride;
 
 DateTime _readModifierChordClock() =>
@@ -268,6 +280,20 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   bool _allowSplitLeadingTokenNormalization = false;
   bool _clearImeAfterNextTouchCursorMove = false;
   bool _hasPendingPromptOutputImeReset = false;
+  Timer? _deferredTrailingBackspaceImeClearTimer;
+  ({String baselineText, int baselineCursorOffset, String? deletedSuffixText})?
+  _deferredTrailingBackspaceImeClear;
+  Timer? _hardwareKeyRepeatStartTimer;
+  Timer? _hardwareKeyRepeatTimer;
+  LogicalKeyboardKey? _hardwareRepeatingLogicalKey;
+  ({
+    TerminalKey key,
+    bool ctrl,
+    bool alt,
+    bool shift,
+    bool hasShortcutModifier,
+  })?
+  _hardwareRepeatInput;
   DateTime? _modifierChordResetTime;
   String? _pendingDeleteResetBaselineText;
   int? _pendingDeleteResetBaselineCursorOffset;
@@ -304,12 +330,18 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         show: widget.showKeyboardOnFocus ?? widget.tapToShowKeyboard,
       );
     }
+    if (widget.readOnly) {
+      _stopHardwareKeyRepeat();
+      _cancelDeferredTrailingBackspaceImeClear();
+    }
   }
 
   @override
   void dispose() {
     widget.controller?._detach(this);
     widget.focusNode.removeListener(_onFocusChange);
+    _stopHardwareKeyRepeat();
+    _cancelDeferredTrailingBackspaceImeClear();
     for (final timer in _touchLongPressTimers.values) {
       timer.cancel();
     }
@@ -440,6 +472,159 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     widget.onUserInput?.call();
   }
 
+  bool get _shouldDeferTrailingBackspaceImeClear =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  bool get _shouldUseCustomHardwareKeyRepeat =>
+      !kIsWeb && defaultTargetPlatform == TargetPlatform.iOS;
+
+  bool _isRepeatableHardwareTerminalKey(TerminalKey key) => switch (key) {
+    TerminalKey.backspace ||
+    TerminalKey.delete ||
+    TerminalKey.arrowLeft ||
+    TerminalKey.arrowRight ||
+    TerminalKey.arrowUp ||
+    TerminalKey.arrowDown ||
+    TerminalKey.home ||
+    TerminalKey.end ||
+    TerminalKey.pageUp ||
+    TerminalKey.pageDown => true,
+    _ => false,
+  };
+
+  void _cancelDeferredTrailingBackspaceImeClear() {
+    _deferredTrailingBackspaceImeClearTimer?.cancel();
+    _deferredTrailingBackspaceImeClearTimer = null;
+    _deferredTrailingBackspaceImeClear = null;
+  }
+
+  void _scheduleDeferredTrailingBackspaceImeClear({
+    required String baselineText,
+    required int baselineCursorOffset,
+    required String? deletedSuffixText,
+  }) {
+    _cancelDeferredTrailingBackspaceImeClear();
+    _deferredTrailingBackspaceImeClear = (
+      baselineText: baselineText,
+      baselineCursorOffset: baselineCursorOffset,
+      deletedSuffixText: deletedSuffixText,
+    );
+    _deferredTrailingBackspaceImeClearTimer = Timer(
+      terminalIosBackspaceRepeatSettleDelay,
+      () {
+        if (!mounted) {
+          return;
+        }
+        final pendingClear = _deferredTrailingBackspaceImeClear;
+        if (pendingClear == null) {
+          return;
+        }
+        _clearImeBufferForFreshInput(
+          deleteResetBaselineText: pendingClear.baselineText,
+          deleteResetBaselineCursorOffset: pendingClear.baselineCursorOffset,
+          deleteResetDeletedSuffixText: pendingClear.deletedSuffixText,
+        );
+        _sawImeComposition = false;
+      },
+    );
+  }
+
+  bool _sendHardwareTerminalKey(
+    TerminalKey key, {
+    required bool ctrl,
+    required bool alt,
+    required bool shift,
+    required bool hasShortcutModifier,
+  }) {
+    final handled = widget.terminal.keyInput(
+      key,
+      ctrl: ctrl,
+      alt: alt,
+      shift: shift,
+    );
+
+    if (handled) {
+      _notifyUserInput();
+      _trackHandledHardwareCursorKey(
+        key,
+        hasShortcutModifier: hasShortcutModifier,
+      );
+    }
+
+    return handled;
+  }
+
+  void _startHardwareKeyRepeat({
+    required LogicalKeyboardKey logicalKey,
+    required TerminalKey key,
+    required bool ctrl,
+    required bool alt,
+    required bool shift,
+    required bool hasShortcutModifier,
+  }) {
+    _stopHardwareKeyRepeat();
+    _hardwareRepeatingLogicalKey = logicalKey;
+    _hardwareRepeatInput = (
+      key: key,
+      ctrl: ctrl,
+      alt: alt,
+      shift: shift,
+      hasShortcutModifier: hasShortcutModifier,
+    );
+    _hardwareKeyRepeatStartTimer = Timer(
+      terminalIosHardwareKeyRepeatStartDelay,
+      () {
+        if (!mounted) {
+          _stopHardwareKeyRepeat();
+          return;
+        }
+        final repeatInput = _hardwareRepeatInput;
+        if (repeatInput == null) {
+          return;
+        }
+        _sendHardwareTerminalKey(
+          repeatInput.key,
+          ctrl: repeatInput.ctrl,
+          alt: repeatInput.alt,
+          shift: repeatInput.shift,
+          hasShortcutModifier: repeatInput.hasShortcutModifier,
+        );
+        _hardwareKeyRepeatTimer = Timer.periodic(
+          terminalIosHardwareKeyRepeatInterval,
+          (_) {
+            if (!mounted) {
+              _stopHardwareKeyRepeat();
+              return;
+            }
+            final repeatInput = _hardwareRepeatInput;
+            if (repeatInput == null) {
+              return;
+            }
+            _sendHardwareTerminalKey(
+              repeatInput.key,
+              ctrl: repeatInput.ctrl,
+              alt: repeatInput.alt,
+              shift: repeatInput.shift,
+              hasShortcutModifier: repeatInput.hasShortcutModifier,
+            );
+          },
+        );
+      },
+    );
+  }
+
+  void _stopHardwareKeyRepeat({LogicalKeyboardKey? logicalKey}) {
+    if (logicalKey != null && _hardwareRepeatingLogicalKey != logicalKey) {
+      return;
+    }
+    _hardwareKeyRepeatStartTimer?.cancel();
+    _hardwareKeyRepeatTimer?.cancel();
+    _hardwareKeyRepeatStartTimer = null;
+    _hardwareKeyRepeatTimer = null;
+    _hardwareRepeatingLogicalKey = null;
+    _hardwareRepeatInput = null;
+  }
+
   void _trackHandledHardwareCursorKey(
     TerminalKey key, {
     required bool hasShortcutModifier,
@@ -477,6 +662,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
 
   KeyEventResult _onKeyEvent(FocusNode focusNode, KeyEvent event) {
     if (widget.readOnly) {
+      _stopHardwareKeyRepeat();
       return KeyEventResult.ignored;
     }
 
@@ -489,6 +675,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     }
 
     if (event is KeyUpEvent) {
+      _stopHardwareKeyRepeat(logicalKey: event.logicalKey);
       return KeyEventResult.ignored;
     }
 
@@ -497,17 +684,32 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       return KeyEventResult.ignored;
     }
 
-    final handled = widget.terminal.keyInput(
+    final ctrl = HardwareKeyboard.instance.isControlPressed;
+    final alt = HardwareKeyboard.instance.isAltPressed;
+    final shift = HardwareKeyboard.instance.isShiftPressed;
+    final useCustomRepeat =
+        _shouldUseCustomHardwareKeyRepeat &&
+        _isRepeatableHardwareTerminalKey(key);
+
+    if (event is KeyRepeatEvent && useCustomRepeat) {
+      return KeyEventResult.handled;
+    }
+
+    final handled = _sendHardwareTerminalKey(
       key,
-      ctrl: HardwareKeyboard.instance.isControlPressed,
-      alt: HardwareKeyboard.instance.isAltPressed,
-      shift: HardwareKeyboard.instance.isShiftPressed,
+      ctrl: ctrl,
+      alt: alt,
+      shift: shift,
+      hasShortcutModifier: hasShortcutModifier,
     );
 
-    if (handled) {
-      _notifyUserInput();
-      _trackHandledHardwareCursorKey(
-        key,
+    if (handled && event is KeyDownEvent && useCustomRepeat) {
+      _startHardwareKeyRepeat(
+        logicalKey: event.logicalKey,
+        key: key,
+        ctrl: ctrl,
+        alt: alt,
+        shift: shift,
         hasShortcutModifier: hasShortcutModifier,
       );
     }
@@ -548,6 +750,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     String? deleteResetDeletedSuffixText,
     bool flushPlatformContext = false,
   }) {
+    _cancelDeferredTrailingBackspaceImeClear();
     if (flushPlatformContext && hasInputConnection) {
       // Reset the editing state in-place rather than closing/reopening
       // the input connection. Closing triggers a keyboard dismiss+reshow
@@ -613,6 +816,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         );
       }
     } else if (!widget.focusNode.hasFocus) {
+      _stopHardwareKeyRepeat();
       _closeInputConnectionIfNeeded();
     }
   }
@@ -673,6 +877,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   }
 
   void _closeInputConnectionIfNeeded() {
+    _stopHardwareKeyRepeat();
+    _cancelDeferredTrailingBackspaceImeClear();
     if (_connection != null && _connection!.attached) {
       _connection!.close();
       _connection = null;
@@ -962,6 +1168,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     bool clearPendingPerformedEnterText = true,
     bool clearPendingDeleteResetBaseline = true,
   }) {
+    _cancelDeferredTrailingBackspaceImeClear();
     _lastSentText = '';
     _lastSentCursorOffset = 0;
     if (clearPendingPerformedEnterText) {
@@ -1810,6 +2017,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     try {
       // Handle composing (IME input in progress).
       if (!value.composing.isCollapsed) {
+        _cancelDeferredTrailingBackspaceImeClear();
         _sawImeComposition = true;
         return;
       }
@@ -1836,6 +2044,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         _extractInputText(value.text),
       );
       if (normalizedPendingEnter.ignored) {
+        _cancelDeferredTrailingBackspaceImeClear();
         _syncEditingStateWithUserText('');
         _sawImeComposition = false;
         return;
@@ -1901,6 +2110,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           _sawImeComposition = false;
           return;
         }
+        _cancelDeferredTrailingBackspaceImeClear();
         _syncEditingStateWithUserText(
           normalizedCurrentText,
           sourceValue: value,
@@ -1930,6 +2140,14 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         previousTextOverride: deleteResetContinuation?.previousText,
         lastCursorOffsetOverride: deleteResetContinuation?.previousCursorOffset,
       );
+      final pendingInputIsTrailingPureDeletion =
+          deltaPreviousText.isNotEmpty &&
+          delta.deletedCount > 0 &&
+          delta.appendedText.isEmpty &&
+          delta.deleteCursorOffset == deltaPreviousText.characters.length;
+      if (!pendingInputIsTrailingPureDeletion) {
+        _cancelDeferredTrailingBackspaceImeClear();
+      }
       final review = _reviewForInsertedText(effectiveCurrentText, delta);
       if (review != null) {
         final shouldInsert = await widget.onReviewInsertedText!(review);
@@ -1937,6 +2155,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           return;
         }
         if (!shouldInsert) {
+          _cancelDeferredTrailingBackspaceImeClear();
           _syncEditingStateWithUserText(_lastSentText);
           _sawImeComposition = false;
           return;
@@ -1979,8 +2198,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
           delta.deletedCount > 0 &&
           delta.appendedText.isEmpty;
       final wasTrailingPureDeletion =
-          wasPureDeletion &&
-          delta.deleteCursorOffset == previousText.characters.length;
+          wasPureDeletion && pendingInputIsTrailingPureDeletion;
       final wasModifiedSingleChar =
           delta.deletedCount == 0 &&
           delta.appendedText.characters.length == 1 &&
@@ -2027,17 +2245,28 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         final currentGraphemes = effectiveCurrentText.characters.toList(
           growable: false,
         );
-        _clearImeBufferForFreshInput(
-          deleteResetBaselineText: effectiveCurrentText,
-          deleteResetBaselineCursorOffset: _lastSentCursorOffset,
-          deleteResetDeletedSuffixText: previousGraphemes
-              .sublist(currentGraphemes.length)
-              .join(),
-        );
+        final deletedSuffixText = previousGraphemes
+            .sublist(currentGraphemes.length)
+            .join();
+        if (_shouldDeferTrailingBackspaceImeClear) {
+          _trimLeadingSuggestionSpaceAfterDelete = true;
+          _scheduleDeferredTrailingBackspaceImeClear(
+            baselineText: effectiveCurrentText,
+            baselineCursorOffset: _lastSentCursorOffset,
+            deletedSuffixText: deletedSuffixText,
+          );
+        } else {
+          _clearImeBufferForFreshInput(
+            deleteResetBaselineText: effectiveCurrentText,
+            deleteResetBaselineCursorOffset: _lastSentCursorOffset,
+            deleteResetDeletedSuffixText: deletedSuffixText,
+          );
+        }
         _sawImeComposition = false;
         return;
       }
 
+      _cancelDeferredTrailingBackspaceImeClear();
       _clearPendingDeleteResetBaseline();
 
       // For IME replacements that shorten text (e.g. autocorrect), keep the
@@ -2107,6 +2336,8 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
   @override
   void connectionClosed() {
     _connection = null;
+    _stopHardwareKeyRepeat();
+    _cancelDeferredTrailingBackspaceImeClear();
     _invalidatePendingEditingUpdates();
     _sawImeComposition = false;
     _hasPendingPromptOutputImeReset = false;
