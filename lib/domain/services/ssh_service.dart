@@ -944,7 +944,9 @@ class SshService {
       );
       return presentedHostKey;
     } finally {
-      await probeAuthentication;
+      if (probeAuthentication != null) {
+        await probeAuthentication;
+      }
       probeClient?.close();
       await verificationSocket.socket.close();
     }

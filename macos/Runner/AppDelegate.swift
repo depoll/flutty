@@ -9,6 +9,7 @@ class AppDelegate: FlutterAppDelegate {
   private let maxTransferPayloadBytes = 10 * 1024 * 1024
   private var transferChannel: FlutterMethodChannel?
   private var appleDatabaseChannel: FlutterMethodChannel?
+  private var didSetupFlutterMethodChannels = false
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
@@ -18,6 +19,10 @@ class AppDelegate: FlutterAppDelegate {
   }
 
   func setupFlutterMethodChannels(with controller: FlutterViewController) {
+    guard !didSetupFlutterMethodChannels else {
+      return
+    }
+    didSetupFlutterMethodChannels = true
     setupTransferChannel(with: controller)
     setupAppleDatabaseChannel(with: controller)
   }
