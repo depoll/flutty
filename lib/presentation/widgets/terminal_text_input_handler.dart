@@ -383,7 +383,6 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
             return;
           }
           _touchPointersPressedBeyondLongPressTimeout.add(event.pointer);
-          _closeInputConnectionIfNeeded();
         },
       );
       if (_activeTouchPointers.length > 1) {

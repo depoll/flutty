@@ -243,11 +243,11 @@ void main() {
       await gesture.up();
       await tester.pumpAndSettle();
 
-      final hiddenKeyboardInset = await _waitForKeyboardInset(
+      final selectionKeyboardInset = await _waitForKeyboardInset(
         tester,
-        visible: false,
+        visible: true,
       );
-      expect(hiddenKeyboardInset, 0);
+      expect(selectionKeyboardInset, greaterThan(0));
       expect(renderTerminal.getSelectedContent()?.plainText, 'alpha');
       expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
 

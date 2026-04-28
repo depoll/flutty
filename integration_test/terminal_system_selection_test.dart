@@ -245,6 +245,7 @@ void main() {
     await tester.pumpAndSettle();
     expect(harness.controller.selection, isNotNull);
     expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+    expect(tester.view.viewInsets.bottom, greaterThan(0));
 
     await dragStartHandleToRow(tester, renderTerminal, targetRow: targetRow);
 

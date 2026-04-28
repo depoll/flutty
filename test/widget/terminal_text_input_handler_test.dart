@@ -4999,48 +4999,49 @@ void main() {
       focusNode.dispose();
     });
 
-    testWidgets('closes the keyboard when touch becomes selection intent', (
-      tester,
-    ) async {
-      final terminal = Terminal();
-      final focusNode = FocusNode();
+    testWidgets(
+      'keeps the keyboard visible when touch becomes selection intent',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
 
-      await tester.pumpWidget(
-        MaterialApp(
-          home: Scaffold(
-            body: TerminalTextInputHandler(
-              terminal: terminal,
-              focusNode: focusNode,
-              deleteDetection: true,
-              child: const SizedBox.expand(key: ValueKey('terminal-child')),
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
             ),
           ),
-        ),
-      );
+        );
 
-      focusNode.requestFocus();
-      await tester.pump();
+        focusNode.requestFocus();
+        await tester.pump();
 
-      expect(focusNode.hasFocus, isTrue);
-      expect(tester.testTextInput.isVisible, isTrue);
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
 
-      final target =
-          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
-          const Offset(40, 40);
-      final gesture = await tester.createGesture();
-      await gesture.down(target);
-      await tester.pump(terminalKeyboardTapLongPressTimeout);
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        final gesture = await tester.createGesture();
+        await gesture.down(target);
+        await tester.pump(terminalKeyboardTapLongPressTimeout);
 
-      expect(focusNode.hasFocus, isTrue);
-      expect(tester.testTextInput.isVisible, isFalse);
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
 
-      await gesture.up();
-      await tester.pump();
+        await gesture.up();
+        await tester.pump();
 
-      expect(tester.testTextInput.isVisible, isFalse);
+        expect(tester.testTextInput.isVisible, isTrue);
 
-      focusNode.dispose();
-    });
+        focusNode.dispose();
+      },
+    );
 
     testWidgets(
       'keeps the keyboard visible when a held touch starts scrolling',
