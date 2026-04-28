@@ -22,7 +22,7 @@ class PortForwardsScreen extends ConsumerWidget {
       appBar: AppBar(title: const Text('Port Forwards')),
       body: portForwardsAsync.when(
         loading: () => const Center(child: CircularProgressIndicator()),
-        error: (error, stack) => Center(
+        error: (_, _) => Center(
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
@@ -32,7 +32,7 @@ class PortForwardsScreen extends ConsumerWidget {
                 color: theme.colorScheme.error,
               ),
               const SizedBox(height: FluttyTheme.spacingMd),
-              Text('Error: $error'),
+              const Text('Could not load port forwards.'),
               const SizedBox(height: FluttyTheme.spacingMd),
               FilledButton.icon(
                 onPressed: () => ref.invalidate(_allPortForwardsProvider),
@@ -44,7 +44,7 @@ class PortForwardsScreen extends ConsumerWidget {
         ),
         data: (portForwards) => hostsAsync.when(
           loading: () => const Center(child: CircularProgressIndicator()),
-          error: (error, stack) => Center(child: Text('Error: $error')),
+          error: (_, _) => const Center(child: Text('Could not load hosts.')),
           data: (hosts) =>
               _buildPortForwardsList(context, ref, portForwards, hosts),
         ),

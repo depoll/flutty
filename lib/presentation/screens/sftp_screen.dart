@@ -17,6 +17,7 @@ import 'package:video_player/video_player.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../domain/models/monetization.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/diagnostics_log_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/remote_file_service.dart';
 import '../../domain/services/settings_service.dart';
@@ -568,6 +569,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       }
       await _openFallbackDirectory(preferredPath: _fallbackDirectoryPath);
     } on Exception catch (e) {
+      DiagnosticsLogService.instance.warning(
+        'sftp',
+        'connect_failed',
+        fields: {'errorType': e.runtimeType},
+      );
       pendingSftp?.close();
       if (!mounted) {
         return;
@@ -576,7 +582,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         _isLoading = false;
         _error = e is TimeoutException
             ? sftpTimeoutMessage('opening the SFTP browser')
-            : 'SFTP connection failed: $e';
+            : 'SFTP connection failed. Check the connection and try again.';
       });
     }
   }
@@ -699,6 +705,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       if (e is TimeoutException && rethrowTimeout) {
         rethrow;
       }
+      DiagnosticsLogService.instance.warning(
+        'sftp',
+        'list_failed',
+        fields: {'errorType': e.runtimeType},
+      );
       if (!mounted) {
         return false;
       }
@@ -706,8 +717,8 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         _isLoading = false;
         if (showError) {
           _error = e is TimeoutException
-              ? sftpTimeoutMessage('listing "$path"')
-              : 'Failed to list directory: $e';
+              ? sftpTimeoutMessage('listing this directory')
+              : 'Failed to list this directory. Try another folder.';
         }
       });
       return false;
@@ -962,6 +973,7 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       ),
       floatingActionButton: FloatingActionButton(
         onPressed: _showUploadDialog,
+        tooltip: 'Upload files',
         child: const Icon(Icons.upload_file),
       ),
     ),
@@ -1258,48 +1270,10 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
   }
 
   Future<void> _showCreateDirectoryDialog() async {
-    final controller = TextEditingController();
-
     final name = await showDialog<String>(
       context: context,
-      builder: (context) => ValueListenableBuilder<TextEditingValue>(
-        valueListenable: controller,
-        builder: (context, value, _) {
-          final validationMessage = validateSftpDirectoryName(value.text);
-          final canCreate = validationMessage == null;
-
-          return AlertDialog(
-            title: const Text('Create Folder'),
-            content: TextField(
-              controller: controller,
-              autofocus: true,
-              textInputAction: TextInputAction.done,
-              decoration: InputDecoration(
-                labelText: 'Folder name',
-                helperText: 'Created inside $_currentPath',
-                errorText: value.text.isEmpty ? null : validationMessage,
-              ),
-              onSubmitted: canCreate
-                  ? (value) => Navigator.pop(context, value.trim())
-                  : null,
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => Navigator.pop(context),
-                child: const Text('Cancel'),
-              ),
-              FilledButton(
-                onPressed: canCreate
-                    ? () => Navigator.pop(context, value.text.trim())
-                    : null,
-                child: const Text('Create'),
-              ),
-            ],
-          );
-        },
-      ),
+      builder: (context) => _CreateDirectoryDialog(currentPath: _currentPath),
     );
-    controller.dispose();
 
     if (name == null || _sftp == null) {
       return;
@@ -1327,37 +1301,18 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         );
       }
     } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(content: Text('Could not create "$remotePath": $e')),
-        );
-      }
+      _showSftpFailureSnackBar(
+        message: 'Could not create folder. Check permissions and try again.',
+        eventName: 'create_directory_failed',
+        error: e,
+      );
     }
   }
 
   Future<void> _showRenameDialog(SftpName file) async {
-    final controller = TextEditingController(text: file.filename);
-
     final newName = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('Rename'),
-        content: TextField(
-          controller: controller,
-          autofocus: true,
-          decoration: const InputDecoration(labelText: 'New name'),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(context, controller.text),
-            child: const Text('Rename'),
-          ),
-        ],
-      ),
+      builder: (context) => _RenameDialog(initialName: file.filename),
     );
 
     if (newName != null && newName.isNotEmpty && _sftp != null) {
@@ -1373,11 +1328,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           ).showSnackBar(SnackBar(content: Text('Renamed to "$newName"')));
         }
       } on Exception catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
-        }
+        _showSftpFailureSnackBar(
+          message: 'Could not rename item. Check permissions and try again.',
+          eventName: 'rename_failed',
+          error: e,
+        );
       }
     }
   }
@@ -1419,11 +1374,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
           ).showSnackBar(SnackBar(content: Text('Deleted "${file.filename}"')));
         }
       } on Exception catch (e) {
-        if (mounted) {
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('Error: $e')));
-        }
+        _showSftpFailureSnackBar(
+          message: 'Could not delete item. Check permissions and try again.',
+          eventName: 'delete_failed',
+          error: e,
+        );
       }
     }
   }
@@ -1457,11 +1412,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         );
       }
     } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Download failed: $e')));
-      }
+      _showSftpFailureSnackBar(
+        message: 'Download failed. Check the connection and try again.',
+        eventName: 'download_failed',
+        error: e,
+      );
     }
   }
 
@@ -1521,11 +1476,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         ).showSnackBar(SnackBar(content: Text(message)));
       }
     } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Upload failed: $e')));
-      }
+      _showSftpFailureSnackBar(
+        message: 'Upload failed. Check the connection and try again.',
+        eventName: 'upload_failed',
+        error: e,
+      );
     }
   }
 
@@ -1604,9 +1559,11 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Preview failed: $e')));
+      _showSftpFailureSnackBar(
+        message: 'Preview failed. Download the file to open it locally.',
+        eventName: 'preview_failed',
+        error: e,
+      );
     }
   }
 
@@ -1990,16 +1947,147 @@ class _SftpScreenState extends ConsumerState<SftpScreen> {
         ).showSnackBar(SnackBar(content: Text('Saved "${file.filename}"')));
       }
     } on Exception catch (e) {
-      if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Edit failed: $e')));
-      }
+      _showSftpFailureSnackBar(
+        message: 'Could not save changes. Check permissions and try again.',
+        eventName: 'edit_failed',
+        error: e,
+      );
     }
+  }
+
+  void _showSftpFailureSnackBar({
+    required String message,
+    required String eventName,
+    required Object error,
+  }) {
+    DiagnosticsLogService.instance.warning(
+      'sftp',
+      eventName,
+      fields: {'errorType': error.runtimeType},
+    );
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   String _joinRemotePath(String directory, String name) =>
       joinRemotePath(directory, name);
+}
+
+class _CreateDirectoryDialog extends StatefulWidget {
+  const _CreateDirectoryDialog({required this.currentPath});
+
+  final String currentPath;
+
+  @override
+  State<_CreateDirectoryDialog> createState() => _CreateDirectoryDialogState();
+}
+
+class _CreateDirectoryDialogState extends State<_CreateDirectoryDialog> {
+  late final TextEditingController _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      ValueListenableBuilder<TextEditingValue>(
+        valueListenable: _controller,
+        builder: (context, value, _) {
+          final validationMessage = validateSftpDirectoryName(value.text);
+          final canCreate = validationMessage == null;
+
+          return AlertDialog(
+            title: const Text('Create Folder'),
+            content: TextField(
+              controller: _controller,
+              autofocus: true,
+              textInputAction: TextInputAction.done,
+              decoration: InputDecoration(
+                labelText: 'Folder name',
+                helperText: 'Created inside ${widget.currentPath}',
+                errorText: value.text.isEmpty ? null : validationMessage,
+              ),
+              onSubmitted: canCreate ? _submit : null,
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                onPressed: canCreate ? () => _submit(value.text) : null,
+                child: const Text('Create'),
+              ),
+            ],
+          );
+        },
+      );
+
+  void _submit(String value) {
+    final trimmed = value.trim();
+    if (validateSftpDirectoryName(trimmed) != null) {
+      return;
+    }
+    Navigator.pop(context, trimmed);
+  }
+}
+
+class _RenameDialog extends StatefulWidget {
+  const _RenameDialog({required this.initialName});
+
+  final String initialName;
+
+  @override
+  State<_RenameDialog> createState() => _RenameDialogState();
+}
+
+class _RenameDialogState extends State<_RenameDialog> {
+  late final TextEditingController _controller = TextEditingController(
+    text: widget.initialName,
+  );
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Rename'),
+    content: TextField(
+      controller: _controller,
+      autofocus: true,
+      decoration: const InputDecoration(labelText: 'New name'),
+      textInputAction: TextInputAction.done,
+      onSubmitted: _submit,
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('Cancel'),
+      ),
+      FilledButton(
+        onPressed: () => _submit(_controller.text),
+        child: const Text('Rename'),
+      ),
+    ],
+  );
+
+  void _submit(String value) {
+    final trimmed = value.trim();
+    if (trimmed.isEmpty) {
+      return;
+    }
+    Navigator.pop(context, trimmed);
+  }
 }
 
 class _FileListTile extends StatelessWidget {
@@ -2645,9 +2733,9 @@ class _RemoteVideoViewerScreenState extends State<_RemoteVideoViewerScreen> {
     return box.localToGlobal(Offset.zero) & box.size;
   }
 
-  String _playbackErrorMessage(Object error) =>
+  String _playbackErrorMessage(Object _) =>
       'This platform could not decode or play the video. Try saving or '
-      'opening the cached copy in another app. $error';
+      'opening the cached copy in another app.';
 
   String _formatVideoDuration(Duration duration) {
     final hours = duration.inHours;

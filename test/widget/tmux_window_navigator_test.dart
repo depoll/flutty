@@ -342,8 +342,7 @@ void main() {
 
       expect(
         find.text(
-          'Could not load windows: '
-          'tmux did not return any windows yet. Retrying...',
+          'Could not load tmux windows. Check that tmux is still running, then try again.',
         ),
         findsOneWidget,
       );

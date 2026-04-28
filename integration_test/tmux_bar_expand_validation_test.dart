@@ -63,6 +63,9 @@ void main() {
 
     await tester.binding.setSurfaceSize(const Size(430, 932));
     addTearDown(() => tester.binding.setSurfaceSize(null));
+    if (Platform.isAndroid) {
+      await binding.convertFlutterSurfaceToImage();
+    }
 
     final container = ProviderContainer(
       overrides: [

@@ -283,10 +283,17 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
         );
       }
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'snippets',
+          context: ErrorDescription('while saving a snippet'),
+        ),
+      );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Could not save snippet. Try again.')),
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);

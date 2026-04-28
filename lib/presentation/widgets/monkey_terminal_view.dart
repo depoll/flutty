@@ -1229,12 +1229,13 @@ class MonkeyRenderTerminal extends RenderBox
   LayerLink? _startHandleLayerLink;
   LayerLink? _endHandleLayerLink;
   SelectionGeometry _selectionGeometry;
+  bool _selectionGeometryNotificationScheduled = false;
   final Set<VoidCallback> _selectionListeners = <VoidCallback>{};
 
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
     markNeedsLayout();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(deferNotification: true);
     _notifyEditableRect();
   }
 
@@ -1630,12 +1631,34 @@ class MonkeyRenderTerminal extends RenderBox
     );
   }
 
-  void _updateSelectionGeometry() {
+  void _updateSelectionGeometry({bool deferNotification = false}) {
     final nextGeometry = _computeSelectionGeometry();
     if (nextGeometry == _selectionGeometry) {
       return;
     }
     _selectionGeometry = nextGeometry;
+    if (deferNotification) {
+      _scheduleSelectionGeometryNotification();
+      return;
+    }
+    _notifySelectionGeometryListeners();
+  }
+
+  void _scheduleSelectionGeometryNotification() {
+    if (_selectionGeometryNotificationScheduled) {
+      return;
+    }
+    _selectionGeometryNotificationScheduled = true;
+    SchedulerBinding.instance.addPostFrameCallback((_) {
+      _selectionGeometryNotificationScheduled = false;
+      if (!attached) {
+        return;
+      }
+      _notifySelectionGeometryListeners();
+    });
+  }
+
+  void _notifySelectionGeometryListeners() {
     for (final listener in List<VoidCallback>.of(_selectionListeners)) {
       listener();
     }

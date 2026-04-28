@@ -9,13 +9,22 @@ class AppDelegate: FlutterAppDelegate {
   private let maxTransferPayloadBytes = 10 * 1024 * 1024
   private var transferChannel: FlutterMethodChannel?
   private var appleDatabaseChannel: FlutterMethodChannel?
+  private var didSetupFlutterMethodChannels = false
 
   override func applicationDidFinishLaunching(_ notification: Notification) {
     super.applicationDidFinishLaunching(notification)
     if let controller = mainFlutterWindow?.contentViewController as? FlutterViewController {
-      setupTransferChannel(with: controller)
-      setupAppleDatabaseChannel(with: controller)
+      setupFlutterMethodChannels(with: controller)
     }
+  }
+
+  func setupFlutterMethodChannels(with controller: FlutterViewController) {
+    guard !didSetupFlutterMethodChannels else {
+      return
+    }
+    didSetupFlutterMethodChannels = true
+    setupTransferChannel(with: controller)
+    setupAppleDatabaseChannel(with: controller)
   }
 
   override func application(_ sender: NSApplication, openFile filename: String) -> Bool {

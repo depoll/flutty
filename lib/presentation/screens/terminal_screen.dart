@@ -1064,10 +1064,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       0x7fffffff;
 
   void _sendAlertNotification(TmuxWindow window) {
+    final title = _tmuxAlertNotificationTitle(window);
+    final sessionName = _tmuxAlertNotificationLabel(widget.tmuxSessionName);
     unawaited(HapticFeedback.mediumImpact());
-    final title = 'tmux alert · ${widget.tmuxSessionName}';
-    final name = window.displayTitle.trim();
-    final body = name.isEmpty ? 'Window ${window.index} needs attention' : name;
     unawaited(
       widget.ref
           .read(localNotificationServiceProvider)
@@ -1078,7 +1077,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               window.index,
             ),
             title: title,
-            body: body,
+            body:
+                'tmux window #${window.index} in $sessionName needs attention.',
             payload: TmuxAlertNotificationPayload(
               hostId: widget.session.hostId,
               connectionId: widget.session.connectionId,
@@ -1088,6 +1088,17 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           ),
     );
   }
+
+  String _tmuxAlertNotificationTitle(TmuxWindow window) {
+    final title = _tmuxAlertNotificationLabel(window.displayTitle);
+    if (title.isEmpty) {
+      return 'tmux window #${window.index}';
+    }
+    return title;
+  }
+
+  String _tmuxAlertNotificationLabel(String value) =>
+      value.replaceAll(RegExp(r'\s+'), ' ').trim();
 
   void _clearAlertNotification(int windowIndex) {
     unawaited(
@@ -4049,7 +4060,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (!mounted) return;
       setState(() {
         _isConnecting = false;
-        _error = 'Failed to start shell: $e';
+        _error = 'Failed to start shell. Try reconnecting.';
       });
     }
   }
@@ -4070,8 +4081,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellStdoutSubscription = session.shellStdoutStream.listen(
       _schedulePromptOutputImeResetCheck,
       onError: (Object error, StackTrace stackTrace) {
-        debugPrint('Terminal stdout stream error: $error');
-        debugPrint('$stackTrace');
+        if (kDebugMode) {
+          debugPrint('Terminal stdout stream error: $error');
+          debugPrint('$stackTrace');
+        }
         DiagnosticsLogService.instance.error(
           'terminal',
           'stdout_listener_error',
@@ -4310,9 +4323,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final snippetRepo = ref.read(snippetRepositoryProvider);
       final snippet = await snippetRepo.getById(snippetId);
       if (snippet == null) {
-        debugPrint(
-          'Auto-connect snippet $snippetId is unavailable; using cached command.',
-        );
+        if (kDebugMode) {
+          debugPrint(
+            'Auto-connect snippet $snippetId is unavailable; '
+            'using cached command.',
+          );
+        }
       } else {
         snippetCommand = snippet.command;
         resolvedSnippetId = snippet.id;
@@ -4998,7 +5014,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final message = switch (error) {
       TimeoutException() =>
         'Timed out waiting for tmux. Reconnect if actions keep failing.',
-      _ => 'tmux action failed: $error',
+      _ => 'tmux action failed. Check the session and try again.',
     };
     ScaffoldMessenger.of(
       context,
@@ -8373,10 +8389,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       return null;
     } on Object catch (error, stackTrace) {
-      debugPrint(
-        'Failed to resolve terminal file path "$terminalPath": $error',
+      DiagnosticsLogService.instance.warning(
+        'terminal',
+        'sftp_path_resolution_failed',
+        fields: {'errorType': error.runtimeType},
       );
-      debugPrint('$stackTrace');
+      if (kDebugMode) {
+        debugPrint(
+          'Failed to resolve terminal file path "$terminalPath": $error',
+        );
+        debugPrint('$stackTrace');
+      }
       if (showErrors && isExplicitPath) {
         _showTerminalLinkMessage('Could not open "$terminalPath" in SFTP');
       }
@@ -8456,23 +8479,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminalController.clearSelection();
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
     } on PlatformException catch (error) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage(
-        'Clipboard access failed: ${error.message ?? error.code}',
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'paste_failed',
+        fields: {'errorType': error.runtimeType},
       );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Clipboard access failed. Try again.');
     } on FileSystemException catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'file_upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('Clipboard file upload failed. Try again.');
+    } on SftpError catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'remote_upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       _showClipboardMessage(
-        error.message.isEmpty
-            ? 'Clipboard file upload failed'
-            : 'Clipboard file upload failed: ${error.message}',
+        'Remote upload failed. Check permissions and try again.',
       );
-    } on SftpError catch (error) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('Remote upload failed: ${error.message}');
     } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('Clipboard upload failed: $error');
+      _showClipboardMessage('Clipboard upload failed. Try again.');
     }
   }
 
@@ -8530,23 +8569,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         itemLabelPlural: itemLabelPlural,
       );
     } on PlatformException catch (error) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage(
-        '$failureContext failed: ${error.message ?? error.code}',
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picker_failed',
+        fields: {'errorType': error.runtimeType},
       );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed. Try again.');
     } on FileSystemException catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picked_file_failed',
+        fields: {'errorType': error.runtimeType},
+      );
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      _showClipboardMessage('$failureContext failed. Try again.');
+    } on SftpError catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picked_remote_upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
       _showClipboardMessage(
-        error.message.isEmpty
-            ? '$failureContext failed'
-            : '$failureContext failed: ${error.message}',
+        'Remote upload failed. Check permissions and try again.',
       );
-    } on SftpError catch (error) {
-      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('Remote upload failed: ${error.message}');
     } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.clipboard',
+        'picked_upload_failed',
+        fields: {'errorType': error.runtimeType},
+      );
       _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
-      _showClipboardMessage('$failureContext failed: $error');
+      _showClipboardMessage('$failureContext failed. Try again.');
     }
   }
 

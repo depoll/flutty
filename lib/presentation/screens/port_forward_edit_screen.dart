@@ -387,10 +387,19 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
         );
       }
     } on Exception catch (e) {
+      FlutterError.reportError(
+        FlutterErrorDetails(
+          exception: e,
+          library: 'port forwards',
+          context: ErrorDescription('while saving a port forward'),
+        ),
+      );
       if (mounted) {
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Error: $e')));
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Could not save port forward. Try again.'),
+          ),
+        );
       }
     } finally {
       if (mounted) setState(() => _isLoading = false);

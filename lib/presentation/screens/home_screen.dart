@@ -271,13 +271,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text('Import failed: ${error.message}')),
       );
-    } on Exception catch (error) {
+    } on Exception {
       if (!mounted) {
         return;
       }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(SnackBar(content: Text('Import failed: $error')));
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Import failed. Check the file and try again.'),
+        ),
+      );
     }
   }
 
@@ -722,7 +724,7 @@ class HostsPanel extends ConsumerWidget {
     loading: () => _buildCenteredHostsState(
       child: const CircularProgressIndicator(strokeWidth: 2),
     ),
-    error: (error, _) => _buildCenteredHostsState(
+    error: (_, _) => _buildCenteredHostsState(
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
@@ -732,7 +734,7 @@ class HostsPanel extends ConsumerWidget {
             color: Theme.of(context).colorScheme.error,
           ),
           const SizedBox(height: 12),
-          Text('Error: $error'),
+          const Text('Could not load hosts. Pull to refresh or try again.'),
         ],
       ),
     ),
@@ -745,41 +747,18 @@ class HostsPanel extends ConsumerWidget {
     child: _GuidedEmptyState(
       icon: Icons.dns_outlined,
       title: 'No hosts yet',
-      subtitle:
-          'Add an SSH server, paste an ssh:// URL, or prefill localhost after '
-          'running the local test setup.',
+      subtitle: 'Add an SSH server or paste an ssh:// URL to get started.',
       primaryLabel: 'Add Host',
       onPrimary: () => context.push('/hosts/add'),
       secondaryActions: [
-        _EmptyStateAction(
-          icon: Icons.file_open_outlined,
-          label: 'Import config',
-          onTap: () => _showOpenSshImportMessage(context),
-        ),
         _EmptyStateAction(
           icon: Icons.content_paste_go_outlined,
           label: 'Paste SSH URL',
           onTap: () => unawaited(_openPastedSshUrl(context)),
         ),
-        _EmptyStateAction(
-          icon: Icons.computer_outlined,
-          label: 'Try local test host',
-          onTap: () => context.push('/hosts/add?template=local'),
-        ),
       ],
     ),
   );
-
-  void _showOpenSshImportMessage(BuildContext context) {
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'OpenSSH config import is not available yet. Add a host manually or '
-          'paste an ssh:// URL.',
-        ),
-      ),
-    );
-  }
 
   Future<void> _openPastedSshUrl(BuildContext context) async {
     final clipboard = await Clipboard.getData(Clipboard.kTextPlain);
@@ -1950,7 +1929,8 @@ class _KeysPanel extends ConsumerWidget {
           child: keysAsync.when(
             loading: () =>
                 const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (e, _) => Center(child: Text('Error: $e')),
+            error: (_, _) =>
+                const Center(child: Text('Could not load SSH keys.')),
             data: (keys) => keys.isEmpty
                 ? _buildEmptyState(context)
                 : _buildKeysList(context, ref, keys),
@@ -2300,7 +2280,8 @@ class SnippetsPanel extends ConsumerWidget {
           child: snippetsAsync.when(
             loading: () =>
                 const Center(child: CircularProgressIndicator(strokeWidth: 2)),
-            error: (e, _) => Center(child: Text('Error: $e')),
+            error: (_, _) =>
+                const Center(child: Text('Could not load snippets.')),
             data: (snippets) => snippets.isEmpty
                 ? _buildEmptyState(context, ref)
                 : _buildSnippetsList(context, ref, snippets),
@@ -3123,11 +3104,15 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     unawaited(
       action.then<void>(
         (_) {},
-        onError: (Object error, StackTrace _) {
+        onError: (Object _, StackTrace _) {
           if (!mounted) return;
-          ScaffoldMessenger.of(
-            context,
-          ).showSnackBar(SnackBar(content: Text('tmux action failed: $error')));
+          ScaffoldMessenger.of(context).showSnackBar(
+            const SnackBar(
+              content: Text(
+                'tmux action failed. Check the session and try again.',
+              ),
+            ),
+          );
         },
       ),
     );

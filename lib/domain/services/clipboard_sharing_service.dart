@@ -59,7 +59,9 @@ class ClipboardSharingService {
 
       await _handleSet(payload);
     } on PlatformException catch (e) {
-      debugPrint('OSC 52 clipboard operation failed: $e');
+      if (kDebugMode) {
+        debugPrint('OSC 52 clipboard operation failed: $e');
+      }
     }
     return null;
   }

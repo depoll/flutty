@@ -21,6 +21,7 @@
 		97C146FC1CF9000F007C117D /* Main.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FA1CF9000F007C117D /* Main.storyboard */; };
 		97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FD1CF9000F007C117D /* Assets.xcassets */; };
 		97C147011CF9000F007C117D /* LaunchScreen.storyboard in Resources */ = {isa = PBXBuildFile; fileRef = 97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */; };
+		A2D56B9B41F34E978DB60210 /* PrivacyInfo.xcprivacy in Resources */ = {isa = PBXBuildFile; fileRef = A2D56B9A41F34E978DB60210 /* PrivacyInfo.xcprivacy */; };
 		DD783BB2BA23C838BCACD3C0 /* AppIcon-private.icon in Resources */ = {isa = PBXBuildFile; fileRef = 47B1DB4833F7FC740D4324B9 /* AppIcon-private.icon */; };
 		E6E3D2D0CB976578F784B54A /* Pods_Runner.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 9476D1F8792EFC31903B5B95 /* Pods_Runner.framework */; };
 		F282391CEEDF4515759E057E /* AppIcon-production.icon in Resources */ = {isa = PBXBuildFile; fileRef = 9FEC3F55B80F78C630674143 /* AppIcon-production.icon */; };
@@ -100,6 +101,7 @@
 		97C147001CF9000F007C117D /* Base */ = {isa = PBXFileReference; lastKnownFileType = file.storyboard; name = Base; path = Base.lproj/LaunchScreen.storyboard; sourceTree = "<group>"; };
 		97C147021CF9000F007C117D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		9FEC3F55B80F78C630674143 /* AppIcon-production.icon */ = {isa = PBXFileReference; lastKnownFileType = "document.icon-composer"; path = "AppIcon-production.icon"; sourceTree = "<group>"; };
+		A2D56B9A41F34E978DB60210 /* PrivacyInfo.xcprivacy */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = PrivacyInfo.xcprivacy; sourceTree = "<group>"; };
 		A7D5024F73DEF28DEBB69428 /* Pods-RunnerTests.release.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-RunnerTests.release.xcconfig"; path = "Target Support Files/Pods-RunnerTests/Pods-RunnerTests.release.xcconfig"; sourceTree = "<group>"; };
 		AFA5B966A7A6BA67D7633CB8 /* Pods_RunnerTests.framework */ = {isa = PBXFileReference; explicitFileType = wrapper.framework; includeInIndex = 0; path = Pods_RunnerTests.framework; sourceTree = BUILT_PRODUCTS_DIR; };
 		BF3AD2B28587AFE0302C016E /* Pods-Runner.release-production.xcconfig */ = {isa = PBXFileReference; includeInIndex = 1; lastKnownFileType = text.xcconfig; name = "Pods-Runner.release-production.xcconfig"; path = "Target Support Files/Pods-Runner/Pods-Runner.release-production.xcconfig"; sourceTree = "<group>"; };
@@ -203,6 +205,7 @@
 				47B1DB4833F7FC740D4324B9 /* AppIcon-private.icon */,
 				97C146FF1CF9000F007C117D /* LaunchScreen.storyboard */,
 				97C147021CF9000F007C117D /* Info.plist */,
+				A2D56B9A41F34E978DB60210 /* PrivacyInfo.xcprivacy */,
 				1498D2321E8E86230040F4C2 /* GeneratedPluginRegistrant.h */,
 				1498D2331E8E89220040F4C2 /* GeneratedPluginRegistrant.m */,
 				74858FAE1ED2DC5600515810 /* AppDelegate.swift */,
@@ -383,6 +386,7 @@
 				3B3967161E833CAA004F5970 /* AppFrameworkInfo.plist in Resources */,
 				97C146FE1CF9000F007C117D /* Assets.xcassets in Resources */,
 				F282391CEEDF4515759E057E /* AppIcon-production.icon in Resources */,
+				A2D56B9B41F34E978DB60210 /* PrivacyInfo.xcprivacy in Resources */,
 				DD783BB2BA23C838BCACD3C0 /* AppIcon-private.icon in Resources */,
 				97C146FC1CF9000F007C117D /* Main.storyboard in Resources */,
 			);

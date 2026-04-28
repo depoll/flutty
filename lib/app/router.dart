@@ -98,11 +98,8 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/hosts/add',
         name: 'host-add',
-        builder: (context, state) => HostEditScreen(
-          initialSshUrl: state.uri.queryParameters['sshUrl'],
-          useLocalhostTemplate:
-              state.uri.queryParameters['template'] == 'local',
-        ),
+        builder: (context, state) =>
+            HostEditScreen(initialSshUrl: state.uri.queryParameters['sshUrl']),
       ),
       GoRoute(
         path: '/hosts/edit/:hostId',

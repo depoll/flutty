@@ -358,6 +358,7 @@ class SshService {
   /// Keeping this below common server `MaxAuthTries` defaults avoids
   /// "too many authentication failures" disconnects in Auto mode.
   static const _maxAutoKeysPerAttempt = 5;
+  static const _hostKeyProbeSettleTimeout = Duration(seconds: 1);
 
   /// Host repository for looking up hosts.
   final HostRepository? hostRepository;
@@ -884,7 +885,10 @@ class SshService {
       );
       client?.close();
       _closeClients(dependentClients);
-      return SshConnectionResult(success: false, error: 'Connection error: $e');
+      return const SshConnectionResult(
+        success: false,
+        error: 'Connection failed. Check the host settings and try again.',
+      );
     }
   }
 
@@ -911,6 +915,7 @@ class SshService {
   }) async {
     final verificationSocket = _prepareHostKeyCapture(socket);
     SSHClient? probeClient;
+    Future<void>? probeAuthentication;
     String? callbackKeyType;
     String? callbackFingerprint;
 
@@ -924,7 +929,7 @@ class SshService {
           return true;
         },
       );
-      unawaited(probeClient.authenticated.catchError((_) {}));
+      probeAuthentication = _drainHostKeyProbeAuthentication(probeClient);
     }
 
     try {
@@ -940,9 +945,26 @@ class SshService {
       );
       return presentedHostKey;
     } finally {
+      if (probeAuthentication != null) {
+        await probeAuthentication;
+      }
       probeClient?.close();
       await verificationSocket.socket.close();
     }
+  }
+
+  Future<void> _drainHostKeyProbeAuthentication(SSHClient probeClient) async {
+    final authentication = probeClient.authenticated.then<void>(
+      (_) {},
+      onError: (Object error, StackTrace _) {
+        DiagnosticsLogService.instance.info(
+          'ssh.host_key',
+          'probe_authentication_ended',
+          fields: {'errorType': error.runtimeType},
+        );
+      },
+    );
+    await authentication.timeout(_hostKeyProbeSettleTimeout, onTimeout: () {});
   }
 
   _PreparedHostKeySocket _prepareHostKeyCapture(SSHSocket socket) {
@@ -2044,8 +2066,15 @@ class SshSession {
             }
           })
           .catchError((Object error, StackTrace stackTrace) {
-            debugPrint('Error handling OSC 52 sequence: $error');
-            debugPrint('$stackTrace');
+            DiagnosticsLogService.instance.warning(
+              'ssh.clipboard',
+              'osc52_failed',
+              fields: {'errorType': error.runtimeType},
+            );
+            if (kDebugMode) {
+              debugPrint('Error handling OSC 52 sequence: $error');
+              debugPrint('$stackTrace');
+            }
           }),
     );
   }
@@ -2209,7 +2238,14 @@ class SshSession {
 
           await Future.any<void>([forwardToSocket, socketToForward]);
         } on Exception catch (e) {
-          debugPrint('Port forward connection error: $e');
+          DiagnosticsLogService.instance.warning(
+            'ssh.forward',
+            'local_connection_failed',
+            fields: {'errorType': e.runtimeType},
+          );
+          if (kDebugMode) {
+            debugPrint('Port forward connection error: $e');
+          }
         } finally {
           try {
             await forward?.sink.close();
@@ -2226,7 +2262,14 @@ class SshSession {
 
       return true;
     } on Exception catch (e) {
-      debugPrint('Failed to start local forward: $e');
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'local_start_failed',
+        fields: {'errorType': e.runtimeType},
+      );
+      if (kDebugMode) {
+        debugPrint('Failed to start local forward: $e');
+      }
       return false;
     }
   }
@@ -2271,7 +2314,14 @@ class SshSession {
           final localToRemote = socket.cast<List<int>>().pipe(channel.sink);
           await Future.any<void>([remoteToLocal, localToRemote]);
         } on Exception catch (e) {
-          debugPrint('Remote forward connection error: $e');
+          DiagnosticsLogService.instance.warning(
+            'ssh.forward',
+            'remote_connection_failed',
+            fields: {'errorType': e.runtimeType},
+          );
+          if (kDebugMode) {
+            debugPrint('Remote forward connection error: $e');
+          }
         } finally {
           try {
             await channel.sink.close();
@@ -2288,7 +2338,14 @@ class SshSession {
 
       return true;
     } on Exception catch (e) {
-      debugPrint('Failed to start remote forward: $e');
+      DiagnosticsLogService.instance.warning(
+        'ssh.forward',
+        'remote_start_failed',
+        fields: {'errorType': e.runtimeType},
+      );
+      if (kDebugMode) {
+        debugPrint('Failed to start remote forward: $e');
+      }
       return false;
     }
   }
