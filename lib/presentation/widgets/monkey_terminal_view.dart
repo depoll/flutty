@@ -134,6 +134,17 @@ double resolveTerminalHorizontalFillScale({
   return (viewportWidth / contentWidth).clamp(1.0, 1.03);
 }
 
+/// Resolves the pixel dimensions to report with terminal resize events.
+@visibleForTesting
+({int width, int height}) resolveTerminalResizePixelDimensions({
+  required Size viewportSize,
+  EdgeInsets padding = EdgeInsets.zero,
+}) {
+  final width = math.max(0.0, viewportSize.width - padding.horizontal);
+  final height = math.max(0.0, viewportSize.height - padding.vertical);
+  return (width: width.round(), height: height.round());
+}
+
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
   const MonkeyTerminalView(
@@ -1952,11 +1963,15 @@ class MonkeyRenderTerminal extends RenderBox
 
   void _resizeTerminalIfNeeded() {
     if (_autoResize && _viewportSize != null) {
+      final pixelDimensions = resolveTerminalResizePixelDimensions(
+        viewportSize: size,
+        padding: _padding,
+      );
       _terminal.resize(
         _viewportSize!.width,
         _viewportSize!.height,
-        _painter.cellSize.width.round(),
-        _painter.cellSize.height.round(),
+        pixelDimensions.width,
+        pixelDimensions.height,
       );
     }
   }

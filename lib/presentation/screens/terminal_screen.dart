@@ -4108,7 +4108,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     };
 
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
-      _shell?.resizeTerminal(width, height);
+      _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
     };
   }
 

@@ -189,4 +189,26 @@ void main() {
       );
     });
   });
+
+  group('resolveTerminalResizePixelDimensions', () {
+    test('reports the padded terminal viewport in pixels', () {
+      expect(
+        resolveTerminalResizePixelDimensions(
+          viewportSize: const Size(390.4, 844.6),
+          padding: const EdgeInsets.fromLTRB(4.2, 8.8, 5.4, 10.1),
+        ),
+        (width: 381, height: 826),
+      );
+    });
+
+    test('clamps fully padded viewports to zero', () {
+      expect(
+        resolveTerminalResizePixelDimensions(
+          viewportSize: const Size(10, 12),
+          padding: const EdgeInsets.all(20),
+        ),
+        (width: 0, height: 0),
+      );
+    });
+  });
 }
