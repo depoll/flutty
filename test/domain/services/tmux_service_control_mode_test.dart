@@ -25,6 +25,18 @@ void main() {
       },
     );
 
+    test('attach command includes extraFlags when provided', () {
+      expect(
+        buildTmuxControlModeAttachCommand(
+          'main',
+          extraFlags: '-S /tmp/tmux-socket',
+        ),
+        'tmux -S /tmp/tmux-socket -CC attach-session -f '
+        'read-only,ignore-size,no-output,wait-exit '
+        "-t 'main'",
+      );
+    });
+
     test(
       'subscription command watches all windows in the attached session',
       () {
@@ -621,6 +633,33 @@ void main() {
         verify(execSession.close).called(1);
       },
     );
+
+    test('selectWindow uses extraFlags when provided', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.selectWindow(
+        session,
+        'main',
+        2,
+        extraFlags: '-S /tmp/socket',
+      );
+
+      verify(
+        () => client.execute(
+          any(
+            that: contains("tmux -u -S /tmp/socket select-window -t 'main':2"),
+          ),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+    });
 
     test(
       'killWindow waits for the done marker so failures can surface',

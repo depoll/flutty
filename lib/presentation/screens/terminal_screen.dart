@@ -485,6 +485,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.ref,
     required this.onAction,
     required this.onExpandedChanged,
+    this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
     this.onWindowLoadStalled,
     super.key,
@@ -495,6 +496,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// The tmux session name.
   final String tmuxSessionName;
+
+  /// Optional extra flags for tmux commands (e.g. custom socket path).
+  final String? tmuxExtraFlags;
 
   /// The available terminal height the bar can expand into.
   final double availableHeight;
@@ -592,7 +596,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
     unawaited(_loadPreferredLaunchTool());
-    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
+    unawaited(
+      _tmux.prefetchInstalledAgentTools(
+        widget.session,
+        extraFlags: widget.tmuxExtraFlags,
+      ),
+    );
     _loadWindows();
     _subscribeToWindowChanges();
   }
@@ -602,7 +611,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     super.didUpdateWidget(oldWidget);
     final sessionChanged =
         oldWidget.session.connectionId != widget.session.connectionId ||
-        oldWidget.tmuxSessionName != widget.tmuxSessionName;
+        oldWidget.tmuxSessionName != widget.tmuxSessionName ||
+        oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
     final recoveryChanged =
         oldWidget.recoveryGeneration != widget.recoveryGeneration;
     if (!sessionChanged && !recoveryChanged) {
@@ -634,7 +644,12 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           }
         });
       }
-      unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
+      unawaited(
+        _tmux.prefetchInstalledAgentTools(
+          widget.session,
+          extraFlags: widget.tmuxExtraFlags,
+        ),
+      );
     } else if (!(_windows?.isNotEmpty ?? false)) {
       setState(() => _isLoading = true);
     }
@@ -679,7 +694,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     _windowChangeSubscription = _tmux
-        .watchWindowChanges(widget.session, widget.tmuxSessionName)
+        .watchWindowChanges(
+          widget.session,
+          widget.tmuxSessionName,
+          extraFlags: widget.tmuxExtraFlags,
+        )
         .listen((event) => _handleWindowChangeEvent(event, generation));
   }
 
@@ -915,6 +934,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       final reloadedWindows = await _tmux.listWindows(
         widget.session,
         widget.tmuxSessionName,
+        extraFlags: widget.tmuxExtraFlags,
       );
       if (!mounted) return;
       if (reloadGeneration < _windowReloadGeneration) return;
@@ -4482,8 +4502,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final bool active;
         try {
           active = candidateSessionName != null
-              ? await tmux.hasSessionOrThrow(session, candidateSessionName)
-              : await tmux.isTmuxActiveOrThrow(session);
+              ? await tmux.hasSessionOrThrow(
+                  session,
+                  candidateSessionName,
+                  extraFlags: host?.tmuxExtraFlags,
+                )
+              : await tmux.isTmuxActiveOrThrow(
+                  session,
+                  extraFlags: host?.tmuxExtraFlags,
+                );
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -4528,7 +4555,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
         var sessionName = candidateSessionName;
         try {
-          sessionName ??= await tmux.currentSessionName(session);
+          sessionName ??= await tmux.currentSessionName(
+            session,
+            extraFlags: host?.tmuxExtraFlags,
+          );
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -4557,7 +4587,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
         final List<TmuxWindow> windows;
         try {
-          windows = await tmux.listWindows(session, sessionName);
+          windows = await tmux.listWindows(
+            session,
+            sessionName,
+            extraFlags: host?.tmuxExtraFlags,
+          );
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -4853,6 +4887,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       key: _tmuxBarKey,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
+      tmuxExtraFlags: _host?.tmuxExtraFlags,
       availableHeight: availableHeight,
       recoveryGeneration: _tmuxBarRecoveryGeneration,
       isProUser: isProUser,
@@ -4959,6 +4994,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ref: ref,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
+      tmuxExtraFlags: _host?.tmuxExtraFlags,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -5037,7 +5073,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     await ref
         .read(tmuxServiceProvider)
-        .selectWindow(session, sessionName, windowIndex);
+        .selectWindow(
+          session,
+          sessionName,
+          windowIndex,
+          extraFlags: _host?.tmuxExtraFlags,
+        );
 
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
@@ -5070,6 +5111,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       currentPaneWorkingDirectory = await tmux.currentPanePath(
         session,
         sessionName,
+        extraFlags: _host?.tmuxExtraFlags,
       );
     }
     if (!mounted) return;
@@ -5086,6 +5128,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
+      extraFlags: _host?.tmuxExtraFlags,
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     await _reattachTmuxIfNeeded(session, sessionName);
@@ -5098,7 +5141,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     await ref
         .read(tmuxServiceProvider)
-        .killWindow(session, sessionName, windowIndex);
+        .killWindow(
+          session,
+          sessionName,
+          windowIndex,
+          extraFlags: _host?.tmuxExtraFlags,
+        );
   }
 
   Future<void> _reattachTmuxIfNeeded(
@@ -5110,6 +5158,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hasForegroundClient = await tmux.hasForegroundClient(
       session,
       sessionName,
+      extraFlags: _host?.tmuxExtraFlags,
     );
     if (!mounted || hasForegroundClient) {
       DiagnosticsLogService.instance.info(

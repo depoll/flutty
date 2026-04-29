@@ -55,6 +55,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   required String tmuxSessionName,
   required bool isProUser,
   required bool startClisInYoloMode,
+  String? tmuxExtraFlags,
   String? scopeWorkingDirectory,
 }) => showModalBottomSheet<TmuxNavigatorAction>(
   context: context,
@@ -62,6 +63,7 @@ Future<TmuxNavigatorAction?> showTmuxNavigator({
   builder: (context) => _TmuxNavigatorSheet(
     session: session,
     tmuxSessionName: tmuxSessionName,
+    tmuxExtraFlags: tmuxExtraFlags,
     isProUser: isProUser,
     startClisInYoloMode: startClisInYoloMode,
     ref: ref,
@@ -133,11 +135,13 @@ class _TmuxNavigatorSheet extends StatefulWidget {
     required this.isProUser,
     required this.startClisInYoloMode,
     required this.ref,
+    this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
   });
 
   final SshSession session;
   final String tmuxSessionName;
+  final String? tmuxExtraFlags;
   final bool isProUser;
   final bool startClisInYoloMode;
   final WidgetRef ref;
@@ -211,7 +215,11 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       },
     );
     _windowChangeSubscription = _tmux
-        .watchWindowChanges(widget.session, widget.tmuxSessionName)
+        .watchWindowChanges(
+          widget.session,
+          widget.tmuxSessionName,
+          extraFlags: widget.tmuxExtraFlags,
+        )
         .listen((event) => _handleWindowChangeEvent(event, generation));
   }
 
@@ -274,6 +282,7 @@ class _TmuxNavigatorSheetState extends State<_TmuxNavigatorSheet> {
       final reloadedWindows = await _tmux.listWindows(
         widget.session,
         widget.tmuxSessionName,
+        extraFlags: widget.tmuxExtraFlags,
       );
       if (!mounted) return;
       if (reloadGeneration < _windowReloadGeneration) return;
