@@ -6542,8 +6542,36 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
-    final buttonItems = <ContextMenuButtonItem>[
-      ...selectableRegionState.contextMenuButtonItems,
+    var hasCopy = false;
+    final buttonItems = <ContextMenuButtonItem>[];
+    for (final item in selectableRegionState.contextMenuButtonItems) {
+      if (item.type == ContextMenuButtonType.copy) {
+        hasCopy = true;
+        buttonItems.add(
+          item.copyWith(
+            onPressed: () {
+              selectableRegionState.hideToolbar();
+              unawaited(_copySelection());
+            },
+          ),
+        );
+      } else {
+        buttonItems.add(item);
+      }
+    }
+    if (!hasCopy) {
+      buttonItems.insert(
+        0,
+        ContextMenuButtonItem(
+          onPressed: () {
+            selectableRegionState.hideToolbar();
+            unawaited(_copySelection());
+          },
+          type: ContextMenuButtonType.copy,
+        ),
+      );
+    }
+    buttonItems.add(
       ContextMenuButtonItem(
         onPressed: () {
           selectableRegionState.hideToolbar();
@@ -6551,7 +6579,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
         type: ContextMenuButtonType.paste,
       ),
-    ];
+    );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
       buttonItems: buttonItems,
