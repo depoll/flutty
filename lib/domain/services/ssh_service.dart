@@ -22,6 +22,89 @@ import 'ssh_exec_queue.dart';
 import 'terminal_hyperlink_tracker.dart';
 import 'wifi_network_service.dart';
 
+/// Current terminal dimensions used to answer terminal size queries.
+typedef TerminalWindowMetrics = ({
+  int columns,
+  int rows,
+  int pixelWidth,
+  int pixelHeight,
+});
+
+/// Builds responses for terminal window/cell size reports in shell output.
+///
+/// [pendingInput] should be the pending suffix returned by the previous call,
+/// so split CSI sequences can be recognized across UTF-8 stream chunks.
+({String? response, String pendingInput})
+buildTerminalWindowControlQueryResponses({
+  required String input,
+  required String pendingInput,
+  required TerminalWindowMetrics? metrics,
+}) {
+  final combinedInput = pendingInput + input;
+  final responses = StringBuffer();
+
+  for (final match in _terminalWindowQueryPattern.allMatches(combinedInput)) {
+    final params = match.group(1) ?? '';
+    final primaryParam = params.split(';').first;
+    final response = _buildTerminalWindowQueryResponse(primaryParam, metrics);
+    if (response != null) {
+      responses.write(response);
+    }
+  }
+
+  final response = responses.isEmpty ? null : responses.toString();
+  return (
+    response: response,
+    pendingInput: _terminalWindowQueryPendingSuffix(combinedInput),
+  );
+}
+
+final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalWindowQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?]*)$');
+
+String? _buildTerminalWindowQueryResponse(
+  String primaryParam,
+  TerminalWindowMetrics? metrics,
+) {
+  if (!_hasValidTerminalWindowMetrics(metrics)) {
+    return null;
+  }
+
+  final validMetrics = metrics!;
+  switch (primaryParam) {
+    case '14':
+      return '\x1b[4;${validMetrics.pixelHeight};${validMetrics.pixelWidth}t';
+    case '16':
+      final cellWidth = (validMetrics.pixelWidth / validMetrics.columns)
+          .round();
+      final cellHeight = (validMetrics.pixelHeight / validMetrics.rows).round();
+      if (cellWidth < 1 || cellHeight < 1) {
+        return null;
+      }
+      return '\x1b[6;$cellHeight;${cellWidth}t';
+    default:
+      return null;
+  }
+}
+
+bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
+    metrics != null &&
+    metrics.columns > 0 &&
+    metrics.rows > 0 &&
+    metrics.pixelWidth > 0 &&
+    metrics.pixelHeight > 0;
+
+String _terminalWindowQueryPendingSuffix(String input) {
+  final start = input.length > 16 ? input.length - 16 : 0;
+  for (var index = start; index < input.length; index += 1) {
+    final suffix = input.substring(index);
+    if (_terminalWindowQueryPrefixPattern.hasMatch(suffix)) {
+      return suffix;
+    }
+  }
+  return '';
+}
+
 /// Connection state for an SSH session.
 enum SshConnectionState {
   /// Not connected.
@@ -1588,6 +1671,8 @@ class SshSession {
   int _shellStderrCharCount = 0;
   int _shellStdinWriteCount = 0;
   int _shellStdinCharCount = 0;
+  TerminalWindowMetrics? _terminalWindowMetrics;
+  String _terminalWindowQueryPendingInput = '';
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
@@ -1627,6 +1712,21 @@ class SshSession {
 
   /// The latest command exit code emitted through shell integration.
   int? get lastExitCode => _lastExitCode;
+
+  /// Records visible terminal dimensions used to answer size report queries.
+  void updateTerminalWindowMetrics({
+    required int columns,
+    required int rows,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    _terminalWindowMetrics = (
+      columns: columns,
+      rows: rows,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+    );
+  }
 
   /// Adds a listener for terminal preview and preview-adjacent metadata changes.
   void addPreviewListener(VoidCallback listener) {
@@ -1789,6 +1889,8 @@ class SshSession {
     _workingDirectory = null;
     _shellStatus = null;
     _lastExitCode = null;
+    _terminalWindowMetrics = null;
+    _terminalWindowQueryPendingInput = '';
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
@@ -1816,6 +1918,7 @@ class SshSession {
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
+            _respondToTerminalWindowControlQueries(data);
             terminal.write(data);
             _scheduleTerminalPreviewRefresh();
             final stdoutController = _shellStdoutController;
@@ -1971,6 +2074,22 @@ class SshSession {
     _shellStdinCharCount = 0;
   }
 
+  void _respondToTerminalWindowControlQueries(String data) {
+    final result = buildTerminalWindowControlQueryResponses(
+      input: data,
+      pendingInput: _terminalWindowQueryPendingInput,
+      metrics: _terminalWindowMetrics,
+    );
+    _terminalWindowQueryPendingInput = result.pendingInput;
+
+    final response = result.response;
+    if (response == null) {
+      return;
+    }
+
+    _shell?.write(utf8.encode(response));
+  }
+
   void _scheduleTerminalPreviewRefresh() {
     if (_previewRefreshTimer?.isActive ?? false) {
       return;
@@ -2049,6 +2168,9 @@ class SshSession {
     }
 
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
+    if (code == '8') {
+      return;
+    }
 
     if (code == '7') {
       final nextWorkingDirectory = parseTerminalWorkingDirectoryUri(args);
@@ -2095,7 +2217,22 @@ class SshSession {
         },
       );
       _notifyMetadataChanged();
+      return;
     }
+
+    _logUnhandledPrivateOsc(code, args);
+  }
+
+  void _logUnhandledPrivateOsc(String code, List<String> args) {
+    DiagnosticsLogService.instance.debug(
+      'terminal.osc',
+      'unhandled',
+      fields: {
+        'connectionId': connectionId,
+        'oscCode': int.tryParse(code) ?? -1,
+        'argCount': args.length,
+      },
+    );
   }
 
   void _handleOsc52(List<String> args) {

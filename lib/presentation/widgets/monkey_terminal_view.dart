@@ -148,6 +148,8 @@ double resolveTerminalHorizontalFillScale({
 /// How long to wait for keyboard inset animations to settle before resizing.
 @visibleForTesting
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
+const _terminalFocusInReport = '\x1b[I';
+const _terminalFocusOutReport = '\x1b[O';
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
@@ -1303,6 +1305,11 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _onFocusChange() {
+    if (_terminal.reportFocusMode) {
+      _terminal.onOutput?.call(
+        _focusNode.hasFocus ? _terminalFocusInReport : _terminalFocusOutReport,
+      );
+    }
     markNeedsPaint();
   }
 

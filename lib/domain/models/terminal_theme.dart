@@ -22,6 +22,10 @@ String? buildTerminalThemeOscResponse({
       return _buildSingleColorOscResponse(code, theme.background, args);
     case '12':
       return _buildSingleColorOscResponse(code, theme.cursor, args);
+    case '17':
+      return _buildSingleColorOscResponse(code, theme.selection, args);
+    case '19':
+      return _buildSingleColorOscResponse(code, theme.foreground, args);
     default:
       return null;
   }

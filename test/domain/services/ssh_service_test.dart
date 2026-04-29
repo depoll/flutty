@@ -289,6 +289,52 @@ void main() {
         expect(exitState.lastExitCode, 17);
       },
     );
+
+    test('answers terminal window and cell size reports', () {
+      final result = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[14tmiddle\x1b[16tafter',
+        pendingInput: '',
+        metrics: const (
+          columns: 80,
+          rows: 24,
+          pixelWidth: 960,
+          pixelHeight: 480,
+        ),
+      );
+
+      expect(result.response, '\x1b[4;480;960t\x1b[6;20;12t');
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split terminal size report queries across chunks', () {
+      final first = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[1',
+        pendingInput: '',
+        metrics: const (
+          columns: 80,
+          rows: 24,
+          pixelWidth: 960,
+          pixelHeight: 480,
+        ),
+      );
+
+      expect(first.response, isNull);
+      expect(first.pendingInput, '\x1b[1');
+
+      final second = buildTerminalWindowControlQueryResponses(
+        input: '6tafter',
+        pendingInput: first.pendingInput,
+        metrics: const (
+          columns: 80,
+          rows: 24,
+          pixelWidth: 960,
+          pixelHeight: 480,
+        ),
+      );
+
+      expect(second.response, '\x1b[6;20;12t');
+      expect(second.pendingInput, isEmpty);
+    });
   });
 
   group('host key capture', () {

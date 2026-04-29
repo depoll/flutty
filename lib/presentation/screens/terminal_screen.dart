@@ -4164,6 +4164,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     };
 
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      session.updateTerminalWindowMetrics(
+        columns: width,
+        rows: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
     };
   }

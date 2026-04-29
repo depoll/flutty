@@ -255,6 +255,22 @@ void main() {
         ),
         '\x1b]12;rgb:0404/4242/8989\x1b\\',
       );
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '17',
+          args: const ['?'],
+        ),
+        '\x1b]17;rgb:b4b4/d5d5/fefe\x1b\\',
+      );
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '19',
+          args: const ['?'],
+        ),
+        '\x1b]19;rgb:7272/7676/7979\x1b\\',
+      );
     });
 
     test('buildTerminalThemeOscResponse answers ANSI palette queries', () {
