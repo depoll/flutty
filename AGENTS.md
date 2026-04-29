@@ -3,6 +3,20 @@
 - Use JDK 17 for Android/Gradle builds in this repo. JDK 25 fails in the Android/Kotlin toolchain with `IllegalArgumentException: 25.0.1`.
 - On macOS, set `JAVA_HOME="$(/usr/libexec/java_home -v 17)"` before running `flutter build ...` or `./gradlew ...` for Android.
 
+## iOS provisioning profiles after capability changes
+
+After enabling a new App ID capability in the Apple Developer portal (e.g. Access WiFi Information, Push Notifications, App Groups), the existing provisioning profiles in the match git repo are stale — they don't include the new entitlement, so signing with the new entitlements file in `ios/Runner/Runner.entitlements` will fail.
+
+Refresh once via the **Regenerate iOS Provisioning Profiles** GitHub Actions workflow (`workflow_dispatch`), or run locally:
+
+```bash
+cd ios
+bundle exec fastlane regenerate_profiles            # both Private + Production
+bundle exec fastlane regenerate_profiles scheme:Private
+```
+
+Local Xcode builds with automatic signing pick up the new entitlement on next build without any extra step (Xcode regenerates dev profiles via the developer portal automatically).
+
 ## Manual testing: tmux navigation
 
 The tmux navigator feature requires a real SSH connection to a host running tmux. Use the setup script to create a local test environment:
