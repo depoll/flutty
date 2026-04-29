@@ -171,6 +171,7 @@ class MonkeyTerminalView extends StatefulWidget {
     this.hardwareKeyboardOnly = false,
     this.simulateScroll = true,
     this.touchScrollToTerminal = false,
+    this.liveOutputAutoScroll = true,
     this.useSystemSelection = false,
     this.systemSelectionContextMenuBuilder,
     this.onSystemSelectionChanged,
@@ -296,6 +297,10 @@ class MonkeyTerminalView extends StatefulWidget {
   /// If true, vertical touch drags are converted into terminal scroll input
   /// instead of scrolling the Flutter viewport.
   final bool touchScrollToTerminal;
+
+  /// If true, the terminal keeps the viewport pinned to the newest output while
+  /// it is already scrolled to the bottom.
+  final bool liveOutputAutoScroll;
 
   /// True when Flutter's [SelectableRegion] should own terminal selection
   /// gestures and handles.
@@ -454,6 +459,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           padding: EdgeInsets.zero,
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
+          liveOutputAutoScroll: widget.liveOutputAutoScroll,
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
           theme: widget.theme,
@@ -470,6 +476,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
     if (widget.useSystemSelection) {
       child = SelectionArea(
+        focusNode: widget.hardwareKeyboardOnly ? _focusNode : null,
         contextMenuBuilder:
             widget.systemSelectionContextMenuBuilder ??
             _defaultSystemSelectionContextMenu,
@@ -512,7 +519,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         readOnly: widget.readOnly,
         child: child,
       );
-    } else if (!widget.readOnly) {
+    } else if (!widget.readOnly && !widget.useSystemSelection) {
       // Only listen for key input from a hardware keyboard.
       child = CustomKeyboardListener(
         child: child,
@@ -963,6 +970,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.padding,
     required this.alignToTrailingEdges,
     required this.autoResize,
+    required this.liveOutputAutoScroll,
     required this.textStyle,
     required this.textScaler,
     required this.theme,
@@ -985,6 +993,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final bool alignToTrailingEdges;
 
   final bool autoResize;
+
+  final bool liveOutputAutoScroll;
 
   final TerminalStyle textStyle;
 
@@ -1013,6 +1023,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       padding: padding,
       alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
+      liveOutputAutoScroll: liveOutputAutoScroll,
       textStyle: textStyle,
       textScaler: textScaler,
       theme: theme,
@@ -1037,6 +1048,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..padding = padding
       ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
+      ..liveOutputAutoScroll = liveOutputAutoScroll
       ..textStyle = textStyle
       ..textScaler = textScaler
       ..theme = theme
@@ -1058,6 +1070,7 @@ class MonkeyRenderTerminal extends RenderBox
     required EdgeInsets padding,
     required bool alignToTrailingEdges,
     required bool autoResize,
+    required bool liveOutputAutoScroll,
     required TerminalStyle textStyle,
     required TextScaler textScaler,
     required TerminalTheme theme,
@@ -1073,6 +1086,7 @@ class MonkeyRenderTerminal extends RenderBox
        _padding = padding,
        _alignToTrailingEdges = alignToTrailingEdges,
        _autoResize = autoResize,
+       _liveOutputAutoScroll = liveOutputAutoScroll,
        _focusNode = focusNode,
        _cursorType = cursorType,
        _alwaysShowCursor = alwaysShowCursor,
@@ -1138,6 +1152,20 @@ class MonkeyRenderTerminal extends RenderBox
   set autoResize(bool value) {
     if (value == _autoResize) return;
     _autoResize = value;
+    markNeedsLayout();
+  }
+
+  /// Whether layout should keep the viewport pinned to the newest output while
+  /// the user is already at the bottom.
+  bool get liveOutputAutoScroll => _liveOutputAutoScroll;
+
+  bool _liveOutputAutoScroll;
+  set liveOutputAutoScroll(bool value) {
+    if (value == _liveOutputAutoScroll) {
+      return;
+    }
+
+    _liveOutputAutoScroll = value;
     markNeedsLayout();
   }
 
@@ -1227,7 +1255,11 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   void _onTerminalChange() {
-    _syncSelectableSelectionFromController();
+    if (registrar != null && _hasSelectableTextSelection) {
+      _preserveSelectableSelectionAcrossTerminalChange();
+    } else {
+      _syncSelectableSelectionFromController();
+    }
     markNeedsLayout();
     _notifyEditableRect();
   }
@@ -1301,10 +1333,10 @@ class MonkeyRenderTerminal extends RenderBox
     _updateViewportSize();
     _updateScrollOffset();
 
-    if (_stickToBottom) {
+    if (_liveOutputAutoScroll && _stickToBottom) {
       _offset.correctBy(_maxScrollExtent - _scrollOffset);
     }
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(deferNotification: true);
   }
 
   double get _terminalHeight =>
@@ -1399,6 +1431,9 @@ class MonkeyRenderTerminal extends RenderBox
   int _clampSelectionOffset(int offset) =>
       offset.clamp(0, _terminalSelectionContentLength);
 
+  bool get _hasSelectableTextSelection =>
+      _selectionStartOffset != null && _selectionEndOffset != null;
+
   int _textOffsetForCell(CellOffset cellOffset) {
     final lineCount = _terminal.buffer.lines.length;
     if (lineCount == 0 || _terminal.viewWidth <= 0) {
@@ -1484,18 +1519,9 @@ class MonkeyRenderTerminal extends RenderBox
     final nextEnd = _clampSelectionOffset(end);
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
-    _isApplyingSelectableSelection = true;
-    try {
-      _controller.setSelection(
-        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(nextStart)),
-        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(nextEnd)),
-        mode: SelectionMode.line,
-      );
-    } finally {
-      _isApplyingSelectableSelection = false;
-    }
+    _syncControllerSelectionFromSelectableOffsets();
     markNeedsPaint();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(forceNotify: true);
   }
 
   void _clearSelectableTextSelection() {
@@ -1511,7 +1537,52 @@ class MonkeyRenderTerminal extends RenderBox
       _isApplyingSelectableSelection = false;
     }
     markNeedsPaint();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(forceNotify: true);
+  }
+
+  void _preserveSelectableSelectionAcrossTerminalChange() {
+    if (_terminalSelectionContentLength <= 0) {
+      _clearSelectableTextSelection();
+      return;
+    }
+
+    final nextStart = _clampSelectionOffset(_selectionStartOffset!);
+    final nextEnd = _clampSelectionOffset(_selectionEndOffset!);
+    if (_selectionStartOffset != nextStart || _selectionEndOffset != nextEnd) {
+      _selectionStartOffset = nextStart;
+      _selectionEndOffset = nextEnd;
+      markNeedsPaint();
+    }
+    _syncControllerSelectionFromSelectableOffsets();
+    _updateSelectionGeometry(deferNotification: true, forceNotify: true);
+  }
+
+  void _syncControllerSelectionFromSelectableOffsets() {
+    final start = _selectionStartOffset;
+    final end = _selectionEndOffset;
+    if (start == null || end == null || _terminalSelectionContentLength <= 0) {
+      return;
+    }
+
+    final selection = _controller.selection;
+    final isControllerSelectionCurrent =
+        selection != null &&
+        _textOffsetForCell(selection.begin) == start &&
+        _textOffsetForCell(selection.end) == end;
+    if (isControllerSelectionCurrent) {
+      return;
+    }
+
+    _isApplyingSelectableSelection = true;
+    try {
+      _controller.setSelection(
+        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(start)),
+        _terminal.buffer.createAnchorFromOffset(_cellForTextOffset(end)),
+        mode: SelectionMode.line,
+      );
+    } finally {
+      _isApplyingSelectableSelection = false;
+    }
   }
 
   void _syncSelectableSelectionFromController() {
@@ -1521,7 +1592,7 @@ class MonkeyRenderTerminal extends RenderBox
         _selectionStartOffset = null;
         _selectionEndOffset = null;
         markNeedsPaint();
-        _updateSelectionGeometry();
+        _updateSelectionGeometry(forceNotify: true);
       }
       return;
     }
@@ -1533,7 +1604,7 @@ class MonkeyRenderTerminal extends RenderBox
     _selectionStartOffset = nextStart;
     _selectionEndOffset = nextEnd;
     markNeedsPaint();
-    _updateSelectionGeometry();
+    _updateSelectionGeometry(forceNotify: true);
   }
 
   Offset _localPositionForTextOffset(int textOffset) {
@@ -1614,12 +1685,18 @@ class MonkeyRenderTerminal extends RenderBox
     );
   }
 
-  void _updateSelectionGeometry({bool deferNotification = false}) {
+  void _updateSelectionGeometry({
+    bool deferNotification = false,
+    bool forceNotify = false,
+  }) {
     final nextGeometry = _computeSelectionGeometry();
-    if (nextGeometry == _selectionGeometry) {
+    final didChange = nextGeometry != _selectionGeometry;
+    if (!didChange && !forceNotify) {
       return;
     }
-    _selectionGeometry = nextGeometry;
+    if (didChange) {
+      _selectionGeometry = nextGeometry;
+    }
     if (deferNotification) {
       _scheduleSelectionGeometryNotification();
       return;
@@ -1697,7 +1774,7 @@ class MonkeyRenderTerminal extends RenderBox
     };
     if (previousStart != _selectionStartOffset ||
         previousEnd != _selectionEndOffset) {
-      _updateSelectionGeometry();
+      _updateSelectionGeometry(forceNotify: true);
     }
     return result;
   }
@@ -1713,12 +1790,20 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   SelectionResult _handleSelectableSelectWord(SelectWordSelectionEvent event) {
-    final before = _controller.selection;
-    selectWord(globalToLocal(event.globalPosition));
-    _syncSelectableSelectionFromController();
-    if (_controller.selection == before) {
+    if (_terminalSelectionContentLength <= 0) {
+      _clearSelectableTextSelection();
       return SelectionResult.none;
     }
+
+    final localPosition = globalToLocal(event.globalPosition);
+    final offsets = _wordTextOffsetsAt(localPosition);
+    if (offsets == null) {
+      final collapsedOffset = _textOffsetForLocalPosition(localPosition);
+      _applySelectableTextSelection(collapsedOffset, collapsedOffset);
+      return SelectionResult.end;
+    }
+
+    _applySelectableTextSelection(offsets.start, offsets.end);
     return SelectionResult.end;
   }
 

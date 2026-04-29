@@ -3193,6 +3193,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   double? _sessionFontSizeOverride;
   bool _isPinchZooming = false;
   bool _shouldFollowLiveOutput = true;
+  double _lastTerminalScrollOffset = 0;
   bool _isTerminalScrollToBottomQueued = false;
   TerminalHyperlinkTracker? _terminalHyperlinkTracker;
   SshSession? _observedSession;
@@ -3231,6 +3232,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _pendingTerminalMouseTapPointer;
   Offset? _pendingTerminalMouseTapDownPosition;
   Duration? _pendingTerminalMouseTapDownTimestamp;
+  final Set<int> _terminalOutputPauseTouchPointers = <int>{};
   Rect? _hoveredTerminalPathUnderline;
   List<({String path, Rect underlineRect, Rect touchRect})>
   _visibleTerminalPathUnderlines =
@@ -3284,6 +3286,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool get _hasExpandedNativeOverlaySelection =>
       _isNativeSelectionMode &&
       hasActiveNativeOverlaySelection(_nativeSelectionController.selection);
+
+  bool get _hasActiveSystemSelection {
+    final selection = _terminalController.selection;
+    return selection != null && !selection.isCollapsed;
+  }
+
+  bool get _isTerminalOutputFollowPaused =>
+      _terminalOutputPauseTouchPointers.isNotEmpty ||
+      _hasExpandedNativeOverlaySelection ||
+      _hasActiveSystemSelection;
+
+  bool get _terminalLiveOutputAutoScrollEnabled =>
+      !_isTerminalOutputFollowPaused;
 
   bool get _routesTouchScrollToTerminal => shouldRouteTouchScrollToTerminal(
     isMobile: _isMobilePlatform,
@@ -3462,7 +3477,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     _queueVisibleTerminalPathUnderlineRefresh();
 
-    if (_shouldFollowLiveOutput && !_hasExpandedNativeOverlaySelection) {
+    if (_shouldFollowLiveOutput && !_isTerminalOutputFollowPaused) {
       _queueTerminalScrollToBottom();
     }
 
@@ -3708,15 +3723,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }, priority: SshExecPriority.low);
 
   void _handleTerminalScroll() {
-    _shouldFollowLiveOutput = shouldFollowTerminalOutput(
-      hasScrollClients: _terminalScrollController.hasClients,
-      currentOffset: _terminalScrollController.hasClients
-          ? _terminalScrollController.offset
-          : 0,
-      maxScrollExtent: _terminalScrollController.hasClients
-          ? _terminalScrollController.position.maxScrollExtent
-          : 0,
-    );
+    final currentOffset = _terminalScrollController.hasClients
+        ? _terminalScrollController.offset
+        : 0.0;
+    final didScrollOffsetChange = currentOffset != _lastTerminalScrollOffset;
+    _lastTerminalScrollOffset = currentOffset;
+    if (!_isTerminalOutputFollowPaused || didScrollOffsetChange) {
+      _shouldFollowLiveOutput = shouldFollowTerminalOutput(
+        hasScrollClients: _terminalScrollController.hasClients,
+        currentOffset: currentOffset,
+        maxScrollExtent: _terminalScrollController.hasClients
+            ? _terminalScrollController.position.maxScrollExtent
+            : 0,
+      );
+    }
     _syncNativeScrollFromTerminal();
     _refreshVisibleTerminalPathUnderlines();
   }
@@ -3776,6 +3796,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isTerminalScrollToBottomQueued = false;
       if (!mounted ||
           !_shouldFollowLiveOutput ||
+          _isTerminalOutputFollowPaused ||
           !_terminalScrollController.hasClients) {
         return;
       }
@@ -3798,10 +3819,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final selection = _terminalController.selection;
-    final hasSelection = selection != null;
-    if (hasSelection) {
-      setState(() {});
+    final hasActiveSelection = _hasActiveSystemSelection;
+    _syncTerminalLiveOutputAutoScroll();
+    setState(() {});
+    if (!hasActiveSelection &&
+        _shouldFollowLiveOutput &&
+        !_isTerminalOutputFollowPaused) {
+      _queueTerminalScrollToBottom();
     }
   }
 
@@ -6287,11 +6311,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onLinkTap: _handleTerminalLinkTap,
       onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       suppressLongPressDragSelection: isMobile,
+      liveOutputAutoScroll: _terminalLiveOutputAutoScrollEnabled,
       useSystemSelection: isMobile,
       systemSelectionContextMenuBuilder: isMobile
           ? _buildTerminalSelectionContextMenu
           : null,
-      focusNode: isMobile ? null : _terminalFocusNode,
+      focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
       padding: terminalViewportPadding,
@@ -6491,6 +6516,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           !_showsNativeSelectionOverlay &&
           overlayMessage == null,
       showKeyboardOnFocus: false,
+      manageFocus: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
@@ -7317,7 +7343,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _lastTerminalTapTimestamp = null;
   }
 
+  void _pauseTerminalOutputFollowForTouch(PointerDownEvent event) {
+    if (!_isMobilePlatform || event.kind != PointerDeviceKind.touch) {
+      return;
+    }
+
+    if (_terminalOutputPauseTouchPointers.add(event.pointer)) {
+      if (_terminalScrollController.hasClients) {
+        _lastTerminalScrollOffset = _terminalScrollController.offset;
+        _shouldFollowLiveOutput = shouldFollowTerminalOutput(
+          hasScrollClients: true,
+          currentOffset: _terminalScrollController.offset,
+          maxScrollExtent: _terminalScrollController.position.maxScrollExtent,
+        );
+      }
+      _syncTerminalLiveOutputAutoScroll();
+      setState(() {});
+    }
+  }
+
+  void _resumeTerminalOutputFollowForTouch(int pointer) {
+    if (!_terminalOutputPauseTouchPointers.remove(pointer)) {
+      return;
+    }
+
+    _syncTerminalLiveOutputAutoScroll();
+    setState(() {});
+    if (_terminalOutputPauseTouchPointers.isNotEmpty ||
+        !_shouldFollowLiveOutput ||
+        _isTerminalOutputFollowPaused) {
+      return;
+    }
+
+    _queueTerminalScrollToBottom();
+  }
+
+  void _syncTerminalLiveOutputAutoScroll() {
+    _terminalViewKey.currentState?.renderTerminal.liveOutputAutoScroll =
+        _terminalLiveOutputAutoScrollEnabled;
+  }
+
   void _handleTerminalPointerDown(PointerDownEvent event) {
+    _pauseTerminalOutputFollowForTouch(event);
     _handleTerminalLinkPointerDown(event);
     if (_pendingTerminalLinkTap == null) {
       _handleTerminalPathPointerDown(event);
@@ -7356,6 +7423,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _clearPendingTerminalMouseTap(event.pointer);
       _clearLastTerminalTap();
     }
+    _resumeTerminalOutputFollowForTouch(event.pointer);
   }
 
   void _handleTerminalPointerCancel(PointerCancelEvent event) {
@@ -7363,6 +7431,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _handleTerminalPathPointerCancel(event);
     _handleTerminalDoubleTapPointerCancel(event);
     _clearPendingTerminalMouseTap(event.pointer);
+    _resumeTerminalOutputFollowForTouch(event.pointer);
   }
 
   void _handleTerminalLinkPointerDown(PointerDownEvent event) {

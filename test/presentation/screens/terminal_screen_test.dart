@@ -1107,7 +1107,7 @@ void main() {
     );
 
     testWidgets(
-      'system selection does not hide an already visible mobile keyboard',
+      'system selection preserves an already visible mobile keyboard',
       (tester) async {
         await pumpScreen(tester);
 
@@ -1504,6 +1504,67 @@ void main() {
     );
 
     testWidgets(
+      'system selectable anchors drags that start in terminal whitespace',
+      (tester) async {
+        await pumpScreen(tester);
+
+        const lineText = 'alpha bravo';
+        session.terminal!.write(lineText);
+        await tester.pumpAndSettle();
+
+        Offset cellCenter(CellOffset offset) {
+          final terminalViewState = tester.state<MonkeyTerminalViewState>(
+            find.byType(MonkeyTerminalView),
+          );
+          final renderTerminal = terminalViewState.renderTerminal;
+          return renderTerminal.localToGlobal(
+            renderTerminal.getOffset(offset) +
+                renderTerminal.cellSize.center(Offset.zero),
+          );
+        }
+
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        const whitespaceCell = CellOffset(lineText.length + 4, 0);
+        expect(
+          session.terminal!.buffer.getWordBoundary(whitespaceCell),
+          isNull,
+        );
+
+        renderTerminal
+          ..dispatchSelectionEvent(
+            SelectWordSelectionEvent(
+              globalPosition: cellCenter(whitespaceCell),
+            ),
+          )
+          ..dispatchSelectionEvent(
+            SelectionEdgeUpdateEvent.forEnd(
+              globalPosition: cellCenter(const CellOffset(0, 0)),
+              granularity: TextGranularity.word,
+            ),
+          );
+        await tester.pumpAndSettle();
+
+        expect(renderTerminal.getSelectedContent()?.plainText, lineText);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.controller, isNotNull);
+        expect(
+          trimTerminalSelectionText(
+            session.terminal!.buffer.getText(
+              terminalView.controller!.selection,
+            ),
+          ),
+          lineText,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'overlay scroll stays fixed while a native selection is active',
       (tester) async {
         await pumpScreen(tester);
@@ -1588,6 +1649,60 @@ void main() {
         expect(
           session.terminal!.buffer.getText(terminalSelection),
           isNot(contains('charlie')),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
+      'touch press pauses live output auto-scroll before long press resolves',
+      (tester) async {
+        await tester.binding.setSurfaceSize(const Size(430, 932));
+        addTearDown(() => tester.binding.setSurfaceSize(null));
+        session.terminal!
+          ..setMouseMode(MouseMode.upDownScroll)
+          ..setMouseReportMode(MouseReportMode.sgr);
+        await pumpScreen(tester);
+
+        session.terminal!.write(
+          List<String>.generate(
+            60,
+            (index) => index == 59 ? 'alpha bravo' : 'line $index',
+          ).join('\r\n'),
+        );
+        await tester.pumpAndSettle();
+
+        final scrollableFinder = find.descendant(
+          of: find.byType(MonkeyTerminalView),
+          matching: find.byType(Scrollable),
+        );
+        expect(scrollableFinder, findsOneWidget);
+        final scrollableState = tester.state<ScrollableState>(scrollableFinder);
+        final initialOffset = scrollableState.position.pixels;
+        expect(initialOffset, scrollableState.position.maxScrollExtent);
+
+        final gesture = await tester.startGesture(
+          tester.getCenter(find.byType(MonkeyTerminalView)),
+        );
+        await tester.pump();
+        expect(
+          tester
+              .widget<MonkeyTerminalView>(find.byType(MonkeyTerminalView))
+              .liveOutputAutoScroll,
+          isFalse,
+        );
+        session.terminal!.write(
+          '\r\n${List<String>.generate(20, (index) => 'stream $index').join('\r\n')}',
+        );
+        await tester.pump();
+
+        expect(scrollableState.position.pixels, initialOffset);
+
+        await gesture.up();
+        await tester.pumpAndSettle();
+        expect(
+          scrollableState.position.pixels,
+          scrollableState.position.maxScrollExtent,
         );
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),

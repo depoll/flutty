@@ -4999,6 +4999,106 @@ void main() {
       focusNode.dispose();
     });
 
+    testWidgets(
+      'keeps the keyboard visible when touch becomes selection intent',
+      (tester) async {
+        final terminal = Terminal();
+        final focusNode = FocusNode();
+
+        await tester.pumpWidget(
+          MaterialApp(
+            home: Scaffold(
+              body: TerminalTextInputHandler(
+                terminal: terminal,
+                focusNode: focusNode,
+                deleteDetection: true,
+                child: const SizedBox.expand(key: ValueKey('terminal-child')),
+              ),
+            ),
+          ),
+        );
+
+        focusNode.requestFocus();
+        await tester.pump();
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        final gesture = await tester.createGesture();
+        await gesture.down(target);
+        await tester.pump(terminalKeyboardTapLongPressTimeout);
+
+        expect(focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await gesture.up();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        focusNode.dispose();
+      },
+    );
+
+    testWidgets(
+      'keeps the keyboard visible when a held touch starts scrolling',
+      (tester) async {
+        final harness = await _pumpTerminalHarness(tester);
+
+        expect(harness.focusNode.hasFocus, isTrue);
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        final target =
+            tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+            const Offset(40, 40);
+        final gesture = await tester.startGesture(target);
+        await tester.pump();
+        await gesture.moveBy(const Offset(0, 80));
+        await tester.pump(terminalKeyboardTapLongPressTimeout);
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await gesture.up();
+        await tester.pump();
+
+        expect(tester.testTextInput.isVisible, isTrue);
+
+        await _disposeTerminalHarness(tester, harness);
+      },
+    );
+
+    testWidgets('keeps the keyboard visible during held multitouch', (
+      tester,
+    ) async {
+      final harness = await _pumpTerminalHarness(tester);
+
+      expect(harness.focusNode.hasFocus, isTrue);
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      final target =
+          tester.getTopLeft(find.byType(TerminalTextInputHandler)) +
+          const Offset(40, 40);
+      final firstGesture = await tester.createGesture();
+      final secondGesture = await tester.createGesture();
+      await firstGesture.down(target);
+      await tester.pump();
+      await secondGesture.down(target + const Offset(60, 0));
+      await tester.pump(terminalKeyboardTapLongPressTimeout);
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      await secondGesture.up();
+      await firstGesture.up();
+      await tester.pump();
+
+      expect(tester.testTextInput.isVisible, isTrue);
+
+      await _disposeTerminalHarness(tester, harness);
+    });
+
     testWidgets('does not open the keyboard after a touch drag', (
       tester,
     ) async {
@@ -5214,6 +5314,125 @@ void main() {
         focusNode.dispose();
       },
     );
+
+    testWidgets('routes hardware keys when the child owns focus', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+      final otherFocusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Column(
+              children: [
+                Focus(
+                  focusNode: otherFocusNode,
+                  child: const SizedBox(
+                    width: 50,
+                    height: 50,
+                    key: ValueKey('other-focus-target'),
+                  ),
+                ),
+                Expanded(
+                  child: TerminalTextInputHandler(
+                    terminal: terminal,
+                    focusNode: focusNode,
+                    deleteDetection: true,
+                    manageFocus: false,
+                    child: Focus(
+                      focusNode: focusNode,
+                      child: const SizedBox.expand(
+                        key: ValueKey('terminal-focus-owner'),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      expect(focusNode.hasFocus, isTrue);
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+
+      expect(terminalOutput.join(), _terminalKeyOutput(TerminalKey.arrowLeft));
+
+      terminalOutput.clear();
+      otherFocusNode.requestFocus();
+      await tester.pump();
+
+      await tester.sendKeyDownEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.sendKeyUpEvent(LogicalKeyboardKey.arrowLeft);
+      await tester.pump();
+
+      expect(terminalOutput, isEmpty);
+
+      focusNode.dispose();
+      otherFocusNode.dispose();
+    });
+
+    testWidgets('consumes composing hardware keys when the child owns focus', (
+      tester,
+    ) async {
+      final terminalOutput = <String>[];
+      final terminal = Terminal(onOutput: terminalOutput.add);
+      final focusNode = FocusNode();
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: TerminalTextInputHandler(
+              terminal: terminal,
+              focusNode: focusNode,
+              deleteDetection: true,
+              manageFocus: false,
+              child: Focus(
+                focusNode: focusNode,
+                child: const SizedBox.expand(
+                  key: ValueKey('terminal-focus-owner'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      focusNode.requestFocus();
+      await tester.pump();
+
+      tester.testTextInput.updateEditingValue(
+        _editingValue(
+          'hello',
+          selectionOffset: 'hello'.length,
+          composing: const TextRange(start: 0, end: 5),
+        ),
+      );
+      await tester.pump();
+
+      final handledKeyDown = await tester.sendKeyDownEvent(
+        LogicalKeyboardKey.arrowLeft,
+      );
+      final handledKeyUp = await tester.sendKeyUpEvent(
+        LogicalKeyboardKey.arrowLeft,
+      );
+      await tester.pump();
+
+      expect(terminalOutput, isEmpty);
+      expect(handledKeyDown, isTrue);
+      expect(handledKeyUp, isTrue);
+
+      focusNode.dispose();
+    });
 
     testWidgets('does not open the keyboard after a suppressed touch tap', (
       tester,
