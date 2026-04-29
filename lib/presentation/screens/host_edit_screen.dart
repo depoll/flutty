@@ -2706,7 +2706,7 @@ class _SkipJumpHostOnWifiSectionState
   }
 
   void _addSsid(String ssid) {
-    final sanitized = ssid.replaceAll(RegExp(r'[\r\n]'), '').trim();
+    final sanitized = sanitizeSsidInput(ssid);
     if (sanitized.isEmpty) return;
     if (widget.ssids.contains(sanitized)) return;
     widget.onChanged([...widget.ssids, sanitized]);
@@ -2763,7 +2763,7 @@ class _SkipJumpHostOnWifiSectionState
               for (final ssid in widget.ssids)
                 InputChip(
                   key: ValueKey('skip-jump-ssid-$ssid'),
-                  label: Text(ssid),
+                  label: Text(ssid.isEmpty ? '(unnamed)' : ssid),
                   avatar: const Icon(Icons.wifi, size: 18),
                   onDeleted: () => _removeSsid(ssid),
                 ),

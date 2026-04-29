@@ -84,12 +84,36 @@ class WifiNetworkService {
     if (value.length >= 2 && value.startsWith('"') && value.endsWith('"')) {
       value = value.substring(1, value.length - 1);
     }
-    value = value.trim();
+    value = _stripInvisibleCharacters(value).trim();
     if (value.isEmpty) return null;
     // Some platforms return placeholder strings when permissions are missing.
     if (value == '<unknown ssid>' || value == '0x') return null;
     return value;
   }
+}
+
+/// Removes characters that render as nothing — ASCII control codes (0x00–0x1F,
+/// 0x7F), C1 control codes (0x80–0x9F), zero-width and bidi format characters
+/// (Unicode general category Cf in the BMP), and the Unicode replacement
+/// character. SSIDs containing only such characters would otherwise produce
+/// blank chips in the editor and unmatchable storage values.
+String _stripInvisibleCharacters(String value) {
+  final buffer = StringBuffer();
+  for (final rune in value.runes) {
+    if (rune <= 0x1F || (rune >= 0x7F && rune <= 0x9F)) continue;
+    // Cf characters (zero-width, bidi marks, joiners) plus the
+    // U+FEFF byte order mark and the U+FFFD replacement character.
+    if (rune == 0x00AD ||
+        (rune >= 0x200B && rune <= 0x200F) ||
+        (rune >= 0x2028 && rune <= 0x202F) ||
+        (rune >= 0x2060 && rune <= 0x206F) ||
+        rune == 0xFEFF ||
+        rune == 0xFFFD) {
+      continue;
+    }
+    buffer.writeCharCode(rune);
+  }
+  return buffer.toString();
 }
 
 /// Provider for [WifiNetworkService].
@@ -117,19 +141,26 @@ String? encodeSkipJumpHostSsids(Iterable<String> ssids) {
 }
 
 String _sanitizeSsidForStorage(String raw) =>
-    // Strip CR/LF anywhere in the value before trimming surrounding whitespace.
-    raw.replaceAll(RegExp(r'[\r\n]'), '').trim();
+    _stripInvisibleCharacters(raw).trim();
+
+/// Public helper used by UI code to normalize manual SSID entry to the same
+/// rules the storage layer applies (strip invisibles + trim).
+String sanitizeSsidInput(String raw) => _sanitizeSsidForStorage(raw);
 
 /// Decodes the stored SSID list back into a list of unique entries.
+///
+/// Applies the same invisible-character stripping the encoder uses, so that
+/// any pre-existing rows that contain control or zero-width characters
+/// (e.g. SSIDs captured before the encoder hardening) come back clean.
 List<String> decodeSkipJumpHostSsids(String? stored) {
   if (stored == null || stored.isEmpty) return const [];
   final result = <String>[];
   final seen = <String>{};
   for (final line in stored.split('\n')) {
-    final trimmed = line.trim();
-    if (trimmed.isEmpty) continue;
-    if (seen.add(trimmed)) {
-      result.add(trimmed);
+    final sanitized = _sanitizeSsidForStorage(line);
+    if (sanitized.isEmpty) continue;
+    if (seen.add(sanitized)) {
+      result.add(sanitized);
     }
   }
   return result;

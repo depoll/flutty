@@ -31,6 +31,15 @@ void main() {
     test('drops entries that become empty after stripping line breaks', () {
       expect(encodeSkipJumpHostSsids(const ['\n\r\n', 'home']), 'home');
     });
+
+    test('strips zero-width and bidi format characters from SSIDs', () {
+      // U+200B zero-width space, U+200E left-to-right mark, U+FEFF BOM.
+      expect(encodeSkipJumpHostSsids(const ['​ho‎me﻿']), 'home');
+    });
+
+    test('drops entries that contain only invisible characters', () {
+      expect(encodeSkipJumpHostSsids(const ['​‎﻿', 'home']), 'home');
+    });
   });
 
   group('decodeSkipJumpHostSsids', () {
@@ -51,6 +60,12 @@ void main() {
       const input = ['network one', 'two', 'café'];
       final encoded = encodeSkipJumpHostSsids(input);
       expect(decodeSkipJumpHostSsids(encoded), input);
+    });
+
+    test('cleans invisible characters from previously-stored values', () {
+      // Simulates a row written before encoder hardening that still has a
+      // BOM/ZWSP/LRM lurking in it.
+      expect(decodeSkipJumpHostSsids('﻿ho​m‎e\nshop'), const ['home', 'shop']);
     });
   });
 
