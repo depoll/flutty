@@ -7018,6 +7018,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     Widget terminalViewWithInput = TerminalTextInputHandler(
       terminal: _terminal,
+      // The mobile terminal view owns a separate SelectionArea focus node.
+      // Keep IME focus attached here so keyboard input and prompt resets
+      // still flow through the shared terminal focus node.
       focusNode: _terminalFocusNode,
       controller: _terminalTextInputController,
       deleteDetection: true,
@@ -7041,7 +7044,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           !_showsNativeSelectionOverlay &&
           overlayMessage == null,
       showKeyboardOnFocus: false,
-      manageFocus: false,
       child: TerminalPinchZoomGestureHandler(
         onPinchStart: () => _handleTerminalScaleStart(storedFontSize),
         onPinchUpdate: (scale) =>
