@@ -134,6 +134,21 @@ double resolveTerminalHorizontalFillScale({
   return (viewportWidth / contentWidth).clamp(1.0, 1.03);
 }
 
+/// Resolves the pixel dimensions to report with terminal resize events.
+@visibleForTesting
+({int width, int height}) resolveTerminalResizePixelDimensions({
+  required Size viewportSize,
+  EdgeInsets padding = EdgeInsets.zero,
+}) {
+  final width = math.max(0.0, viewportSize.width - padding.horizontal);
+  final height = math.max(0.0, viewportSize.height - padding.vertical);
+  return (width: width.round(), height: height.round());
+}
+
+/// How long to wait for keyboard inset animations to settle before resizing.
+@visibleForTesting
+const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
+
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
   const MonkeyTerminalView(
@@ -459,6 +474,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
           padding: EdgeInsets.zero,
           alignToTrailingEdges: shouldAlignTerminalToTrailingEdges(mediaQuery),
           autoResize: widget.autoResize,
+          resizeBottomInset: mediaQuery.viewInsets.bottom,
           liveOutputAutoScroll: widget.liveOutputAutoScroll,
           textStyle: widget.textStyle,
           textScaler: widget.textScaler ?? MediaQuery.textScalerOf(context),
@@ -970,6 +986,7 @@ class _TerminalView extends LeafRenderObjectWidget {
     required this.padding,
     required this.alignToTrailingEdges,
     required this.autoResize,
+    required this.resizeBottomInset,
     required this.liveOutputAutoScroll,
     required this.textStyle,
     required this.textScaler,
@@ -993,6 +1010,8 @@ class _TerminalView extends LeafRenderObjectWidget {
   final bool alignToTrailingEdges;
 
   final bool autoResize;
+
+  final double resizeBottomInset;
 
   final bool liveOutputAutoScroll;
 
@@ -1023,6 +1042,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       padding: padding,
       alignToTrailingEdges: alignToTrailingEdges,
       autoResize: autoResize,
+      resizeBottomInset: resizeBottomInset,
       liveOutputAutoScroll: liveOutputAutoScroll,
       textStyle: textStyle,
       textScaler: textScaler,
@@ -1048,6 +1068,7 @@ class _TerminalView extends LeafRenderObjectWidget {
       ..padding = padding
       ..alignToTrailingEdges = alignToTrailingEdges
       ..autoResize = autoResize
+      ..resizeBottomInset = resizeBottomInset
       ..liveOutputAutoScroll = liveOutputAutoScroll
       ..textStyle = textStyle
       ..textScaler = textScaler
@@ -1070,6 +1091,7 @@ class MonkeyRenderTerminal extends RenderBox
     required EdgeInsets padding,
     required bool alignToTrailingEdges,
     required bool autoResize,
+    required double resizeBottomInset,
     required bool liveOutputAutoScroll,
     required TerminalStyle textStyle,
     required TextScaler textScaler,
@@ -1086,6 +1108,7 @@ class MonkeyRenderTerminal extends RenderBox
        _padding = padding,
        _alignToTrailingEdges = alignToTrailingEdges,
        _autoResize = autoResize,
+       _resizeBottomInset = resizeBottomInset,
        _liveOutputAutoScroll = liveOutputAutoScroll,
        _focusNode = focusNode,
        _cursorType = cursorType,
@@ -1152,6 +1175,20 @@ class MonkeyRenderTerminal extends RenderBox
   set autoResize(bool value) {
     if (value == _autoResize) return;
     _autoResize = value;
+    if (!_autoResize) {
+      _cancelPendingTerminalResize();
+    }
+    markNeedsLayout();
+  }
+
+  double _resizeBottomInset;
+  set resizeBottomInset(double value) {
+    if (value == _resizeBottomInset) return;
+    final previousInset = _resizeBottomInset;
+    _resizeBottomInset = math.max(0.0, value);
+    if (previousInset > 0 || _resizeBottomInset > 0) {
+      _debounceKeyboardResize();
+    }
     markNeedsLayout();
   }
 
@@ -1230,6 +1267,15 @@ class MonkeyRenderTerminal extends RenderBox
 
   TerminalSize? _viewportSize;
 
+  ({int width, int height})? _viewportPixelSize;
+
+  Timer? _keyboardResizeDebounceTimer;
+
+  bool _isDebouncingKeyboardResize = false;
+
+  ({TerminalSize viewportSize, ({int width, int height}) pixelSize})?
+  _pendingTerminalResize;
+
   final TerminalPainter _painter;
 
   var _stickToBottom = true;
@@ -1294,6 +1340,7 @@ class MonkeyRenderTerminal extends RenderBox
 
   @override
   void dispose() {
+    _cancelPendingTerminalResize();
     _selectionListeners.clear();
     super.dispose();
   }
@@ -2028,22 +2075,85 @@ class MonkeyRenderTerminal extends RenderBox
       availableWidth ~/ _painter.cellSize.width,
       availableHeight ~/ _painter.cellSize.height,
     );
+    final pixelSize = resolveTerminalResizePixelDimensions(
+      viewportSize: size,
+      padding: _padding,
+    );
 
-    if (_viewportSize != viewportSize) {
-      _viewportSize = viewportSize;
-      _resizeTerminalIfNeeded();
+    if (_viewportSize != viewportSize || _viewportPixelSize != pixelSize) {
+      _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
     }
   }
 
-  void _resizeTerminalIfNeeded() {
-    if (_autoResize && _viewportSize != null) {
-      _terminal.resize(
-        _viewportSize!.width,
-        _viewportSize!.height,
-        _painter.cellSize.width.round(),
-        _painter.cellSize.height.round(),
-      );
+  void _resizeTerminalIfNeeded({
+    TerminalSize? viewportSize,
+    ({int width, int height})? pixelSize,
+  }) {
+    if (!_autoResize) {
+      return;
     }
+    final nextViewportSize = viewportSize ?? _viewportSize;
+    if (nextViewportSize == null) {
+      return;
+    }
+    final nextPixelSize =
+        pixelSize ??
+        resolveTerminalResizePixelDimensions(
+          viewportSize: size,
+          padding: _padding,
+        );
+
+    if (_isDebouncingKeyboardResize) {
+      _pendingTerminalResize = (
+        viewportSize: nextViewportSize,
+        pixelSize: nextPixelSize,
+      );
+      return;
+    }
+
+    _applyTerminalResize(nextViewportSize, nextPixelSize);
+  }
+
+  void _applyTerminalResize(
+    TerminalSize viewportSize,
+    ({int width, int height}) pixelSize,
+  ) {
+    _viewportSize = viewportSize;
+    _viewportPixelSize = pixelSize;
+    _terminal.resize(
+      viewportSize.width,
+      viewportSize.height,
+      pixelSize.width,
+      pixelSize.height,
+    );
+  }
+
+  void _debounceKeyboardResize() {
+    _isDebouncingKeyboardResize = true;
+    _keyboardResizeDebounceTimer?.cancel();
+    _keyboardResizeDebounceTimer = Timer(
+      terminalKeyboardResizeDebounceDuration,
+      () {
+        _keyboardResizeDebounceTimer = null;
+        _isDebouncingKeyboardResize = false;
+        final pendingResize = _pendingTerminalResize;
+        _pendingTerminalResize = null;
+        if (pendingResize == null || !_autoResize) {
+          return;
+        }
+        _applyTerminalResize(
+          pendingResize.viewportSize,
+          pendingResize.pixelSize,
+        );
+      },
+    );
+  }
+
+  void _cancelPendingTerminalResize() {
+    _keyboardResizeDebounceTimer?.cancel();
+    _keyboardResizeDebounceTimer = null;
+    _isDebouncingKeyboardResize = false;
+    _pendingTerminalResize = null;
   }
 
   void _updateScrollOffset() {
