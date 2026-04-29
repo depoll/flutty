@@ -6542,8 +6542,73 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
-    final buttonItems = <ContextMenuButtonItem>[
-      ...selectableRegionState.contextMenuButtonItems,
+    var hasCopy = false;
+    final buttonItems = <ContextMenuButtonItem>[];
+    for (final item in selectableRegionState.contextMenuButtonItems) {
+      switch (item.type) {
+        case ContextMenuButtonType.copy:
+          hasCopy = true;
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_copySelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.lookUp:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_lookUpTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.searchWeb:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_searchWebForTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.share:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_shareTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.selectAll:
+        case ContextMenuButtonType.cut:
+        case ContextMenuButtonType.delete:
+          // Drop items that have no meaningful action against the
+          // terminal's xterm-managed selection.
+          continue;
+        case ContextMenuButtonType.paste:
+          // Replaced below with our terminal-aware paste handler.
+          continue;
+        default:
+          buttonItems.add(item);
+      }
+    }
+    if (!hasCopy) {
+      buttonItems.insert(
+        0,
+        ContextMenuButtonItem(
+          onPressed: () {
+            selectableRegionState.hideToolbar();
+            unawaited(_copySelection());
+          },
+          type: ContextMenuButtonType.copy,
+        ),
+      );
+    }
+    buttonItems.add(
       ContextMenuButtonItem(
         onPressed: () {
           selectableRegionState.hideToolbar();
@@ -6551,7 +6616,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
         type: ContextMenuButtonType.paste,
       ),
-    ];
+    );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
       buttonItems: buttonItems,
@@ -8205,6 +8270,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  String? _currentTerminalSelectionText() {
+    if (_isNativeSelectionMode) {
+      final text = selectedNativeOverlayText(_nativeSelectionController.value);
+      return text.isEmpty ? null : text;
+    }
+    final selection = _terminalController.selection;
+    if (selection == null) {
+      return null;
+    }
+    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
+    return text.isEmpty ? null : text;
+  }
+
+  Future<void> _lookUpTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>('LookUp.invoke', text);
+    } on PlatformException {
+      // Platform doesn't support LookUp; ignore.
+    }
+  }
+
+  Future<void> _searchWebForTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>(
+        'SearchWeb.invoke',
+        text,
+      );
+    } on PlatformException {
+      // Platform doesn't support SearchWeb; ignore.
+    }
+  }
+
+  Future<void> _shareTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>('Share.invoke', text);
+    } on PlatformException {
+      // Platform doesn't support Share; ignore.
+    }
   }
 
   void _showClipboardMessage(String message) {
