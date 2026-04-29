@@ -1,0 +1,54 @@
+name: Regenerate iOS Provisioning Profiles
+
+# Run this workflow manually after changing App ID capabilities in Apple
+# Developer (e.g. enabling "Access WiFi Information"). It force-regenerates
+# the provisioning profiles via fastlane match so that the new entitlements
+# are baked into the profile stored in the match git repo. Subsequent
+# normal builds will then pick up the refreshed profile via setup_signing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      scheme:
+        description: 'Which scheme to regenerate (default: both)'
+        required: false
+        type: choice
+        default: 'both'
+        options:
+          - both
+          - Private
+          - Production
+
+permissions:
+  contents: read
+
+jobs:
+  regenerate:
+    name: Regenerate provisioning profiles
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        with:
+          persist-credentials: false
+
+      - uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Regenerate provisioning profiles
+        env:
+          MATCH_GIT_URL: ${{ secrets.MATCH_GIT_URL }}
+          MATCH_PASSWORD: ${{ secrets.MATCH_PASSWORD }}
+          MATCH_GIT_BASIC_AUTHORIZATION: ${{ secrets.MATCH_GIT_BASIC_AUTHORIZATION }}
+          APP_STORE_CONNECT_API_KEY_ID: ${{ secrets.APP_STORE_CONNECT_API_KEY_ID }}
+          APP_STORE_CONNECT_API_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_API_ISSUER_ID }}
+          APP_STORE_CONNECT_API_KEY_CONTENT: ${{ secrets.APP_STORE_CONNECT_API_KEY_CONTENT }}
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          cd ios
+          if [ "${{ inputs.scheme }}" = "both" ]; then
+            bundle exec fastlane regenerate_profiles
+          else
+            bundle exec fastlane regenerate_profiles scheme:${{ inputs.scheme }}
+          fi
