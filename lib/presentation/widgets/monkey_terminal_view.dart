@@ -1289,11 +1289,17 @@ class MonkeyRenderTerminal extends RenderBox
   bool _selectionGeometryNotificationScheduled = false;
   final Set<VoidCallback> _selectionListeners = <VoidCallback>{};
 
+  int _lastKnownLineCount = -1;
+
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
-    markNeedsLayout();
-    _updateSelectionGeometry(deferNotification: true);
-    _notifyEditableRect();
+    markNeedsPaint();
+    if (_hasSelectableTextSelection) {
+      _updateSelectionGeometry(deferNotification: true);
+    }
+    if (_onEditableRect != null) {
+      _notifyEditableRect();
+    }
   }
 
   void _onFocusChange() {
@@ -1306,8 +1312,16 @@ class MonkeyRenderTerminal extends RenderBox
     } else {
       _syncSelectableSelectionFromController();
     }
-    markNeedsLayout();
-    _notifyEditableRect();
+    final lineCount = _terminal.buffer.lines.length;
+    if (lineCount != _lastKnownLineCount) {
+      _lastKnownLineCount = lineCount;
+      markNeedsLayout();
+    } else {
+      markNeedsPaint();
+    }
+    if (_onEditableRect != null) {
+      _notifyEditableRect();
+    }
   }
 
   void _onControllerUpdate() {
