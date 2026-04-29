@@ -1763,7 +1763,6 @@ final _terminalStandalonePathMetadataPattern = RegExp(
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
-const _terminalInputIndicatorDuration = Duration(milliseconds: 700);
 
 typedef _TerminalPathMatch = ({
   String path,
@@ -1853,11 +1852,6 @@ double upgradeSnackBarBottomMargin(
   double keyboardToolbarHeight = 84,
   double baseSpacing = 16,
 }) => (showKeyboardToolbar ? keyboardToolbarHeight : 0) + baseSpacing;
-
-/// Resolves the transient indicator label for a terminal double-tap Tab gesture.
-@visibleForTesting
-String resolveTerminalTabGestureIndicatorLabel({required bool shiftActive}) =>
-    shiftActive ? 'Shift+Tab' : 'Tab';
 
 /// Resolves a readable display name for a picked upload file.
 @visibleForTesting
@@ -3228,7 +3222,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _terminalDoubleTapConsumedPointer;
   Offset? _lastTerminalTapPosition;
   Duration? _lastTerminalTapTimestamp;
-  bool _recentlyHandledTerminalDoubleTap = false;
   int? _pendingTerminalMouseTapPointer;
   Offset? _pendingTerminalMouseTapDownPosition;
   Duration? _pendingTerminalMouseTapDownTimestamp;
@@ -3250,7 +3243,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
-  Timer? _terminalInputIndicatorTimer;
   Timer? _promptOutputImeResetTimer;
   bool _isPollingRemoteClipboard = false;
   bool _isPushingLocalClipboard = false;
@@ -3259,7 +3251,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
-  String? _terminalInputIndicatorLabel;
 
   // Theme state
   Host? _host;
@@ -3746,44 +3737,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _queueTerminalScrollToBottom();
   }
 
-  void _handleTerminalDoubleTapDown(
-    TapDownDetails tapDetails,
-    CellOffset cellOffset,
-  ) {
-    if (_recentlyHandledTerminalDoubleTap) {
-      return;
-    }
-    _recentlyHandledTerminalDoubleTap = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _recentlyHandledTerminalDoubleTap = false;
-    });
-
-    final shiftActive = _toolbarController.isShiftActive;
-    _terminalTextInputController.suppressNextTouchKeyboardRequest();
-    _terminal.textInput(resolveTerminalTabInput(shiftActive: shiftActive));
-    _followLiveOutput();
-    _toolbarController.consumeOneShot();
-    _showTerminalInputIndicator(
-      resolveTerminalTabGestureIndicatorLabel(shiftActive: shiftActive),
-    );
-  }
-
   void _handleTerminalLinkTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
-  }
-
-  void _showTerminalInputIndicator(String label) {
-    _terminalInputIndicatorTimer?.cancel();
-    setState(() => _terminalInputIndicatorLabel = label);
-    _terminalInputIndicatorTimer = Timer(_terminalInputIndicatorDuration, () {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _terminalInputIndicatorLabel = null);
-    });
   }
 
   void _queueTerminalScrollToBottom() {
@@ -5470,7 +5428,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
     _stopSharedClipboardSync();
-    _terminalInputIndicatorTimer?.cancel();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
@@ -6309,7 +6266,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       resolveLinkTap: _resolveTerminalLinkTap,
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
-      onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       suppressLongPressDragSelection: isMobile,
       liveOutputAutoScroll: _terminalLiveOutputAutoScrollEnabled,
       useSystemSelection: isMobile,
@@ -6459,34 +6415,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var mobileTerminalView = terminalView;
 
-    final terminalInputIndicatorLabel = _terminalInputIndicatorLabel;
-    if (_isPinchZooming || terminalInputIndicatorLabel != null) {
+    if (_isPinchZooming) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          if (terminalInputIndicatorLabel != null)
-            Positioned(
-              top: 12,
-              left: 0,
-              right: 0,
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: _buildTerminalTransientIndicator(
-                  theme: theme,
-                  label: terminalInputIndicatorLabel,
-                ),
-              ),
+          Positioned(
+            top: 12,
+            right: 12,
+            child: _buildTerminalTransientIndicator(
+              theme: theme,
+              label: '${fontSize.toStringAsFixed(0)} pt',
             ),
-          if (_isPinchZooming)
-            Positioned(
-              top: 12,
-              right: 12,
-              child: _buildTerminalTransientIndicator(
-                theme: theme,
-                label: '${fontSize.toStringAsFixed(0)} pt',
-              ),
-            ),
+          ),
         ],
       );
     }
@@ -7648,10 +7589,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (event.position - lastTapPosition).distance <= kDoubleTapSlop;
 
     if (isDoubleTap) {
+      // Let SelectionArea handle text selection without also forwarding the
+      // second tap as terminal mouse input.
       _terminalDoubleTapConsumedPointer = event.pointer;
       _clearPendingTerminalDoubleTap();
       _clearLastTerminalTap();
-      _triggerTerminalDoubleTap(event.position, event.kind);
       return;
     }
 
@@ -7706,28 +7648,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_terminalDoubleTapConsumedPointer == event.pointer) {
       _terminalDoubleTapConsumedPointer = null;
     }
-  }
-
-  void _triggerTerminalDoubleTap(
-    Offset globalPosition,
-    PointerDeviceKind kind,
-  ) {
-    final terminalViewState = _terminalViewKey.currentState;
-    if (terminalViewState == null) {
-      return;
-    }
-
-    final localPosition = terminalViewState.renderTerminal.globalToLocal(
-      globalPosition,
-    );
-    _handleTerminalDoubleTapDown(
-      TapDownDetails(
-        kind: kind,
-        globalPosition: globalPosition,
-        localPosition: localPosition,
-      ),
-      terminalViewState.renderTerminal.getCellOffset(localPosition),
-    );
   }
 
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
