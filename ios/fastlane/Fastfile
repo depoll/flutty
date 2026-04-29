@@ -43,6 +43,7 @@ platform :ios do
     app_id = options[:app_identifier]
     match_type = options[:type] || 'appstore'
     readonly = options.key?(:readonly) ? options[:readonly] : true
+    force = options[:force] == true
 
     api_key = get_api_key
 
@@ -51,6 +52,7 @@ platform :ios do
       app_identifier: app_id,
       api_key: api_key,
       readonly: readonly,
+      force: force,
     )
   end
 
@@ -244,6 +246,26 @@ platform :ios do
   lane :setup_signing do |options|
     app_id = options[:app_identifier] || 'xyz.depollsoft.monkeyssh.private'
     sync_certs(app_identifier: app_id, type: 'appstore')
+  end
+
+  desc 'Force-regenerate provisioning profiles for both bundle IDs and their ' \
+       'live activity extensions. Run this after enabling a new App ID ' \
+       'capability (e.g. Access WiFi Information) so the new entitlement is ' \
+       'baked into the profile stored in the match git repo.'
+  lane :regenerate_profiles do |options|
+    schemes = options[:scheme] ? [options[:scheme]] : APP_IDS.keys
+    schemes.each do |scheme|
+      app_id = APP_IDS[scheme]
+      live_activity_app_id = LIVE_ACTIVITY_APP_IDS[scheme]
+      UI.user_error!("Unknown scheme '#{scheme}'") unless app_id && live_activity_app_id
+
+      sync_certs(
+        app_identifier: [app_id, live_activity_app_id],
+        type: 'appstore',
+        readonly: false,
+        force: true,
+      )
+    end
   end
 
   desc 'Build and sign an IPA without uploading it'
