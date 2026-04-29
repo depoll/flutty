@@ -109,6 +109,37 @@ double measureUnwrappedEditorContentWidth({
   return hasVisibleText ? maxWidth + trailingSlack : 0;
 }
 
+/// Measures rich editor text exactly as [EditableText] lays it out.
+@visibleForTesting
+double measureUnwrappedEditorTextSpanContentWidth({
+  required InlineSpan textSpan,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+  double trailingSlack = _unwrappedEditorTrailingSlack,
+}) => _measureLaidOutUnwrappedEditorContentWidth(
+  _layoutUnwrappedEditorTextSpan(
+    textSpan: textSpan,
+    textDirection: textDirection,
+    textScaler: textScaler,
+  ),
+  trailingSlack,
+);
+
+TextPainter _layoutUnwrappedEditorTextSpan({
+  required InlineSpan textSpan,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) => TextPainter(
+  text: textSpan,
+  textDirection: textDirection,
+  textScaler: textScaler,
+)..layout();
+
+double _measureLaidOutUnwrappedEditorContentWidth(
+  TextPainter painter,
+  double trailingSlack,
+) => painter.width > 0 ? painter.width + trailingSlack : 0;
+
 /// Returns the current line prefix that appears before the text offset.
 @visibleForTesting
 String currentLinePrefixAtTextOffset(String text, int textOffset) {
@@ -151,6 +182,68 @@ double resolveUnwrappedEditorSelectionScrollOffset({
     trailingSlack: 0,
     measureLineWidth: measureLineWidth,
   );
+  final viewportEnd = currentOffset + viewportWidth;
+  final caretLeadingEdge = caretOffset > trailingSlack
+      ? caretOffset - trailingSlack
+      : 0.0;
+  final caretTrailingEdge = caretOffset + trailingSlack;
+
+  if (caretLeadingEdge < currentOffset) {
+    return caretLeadingEdge;
+  }
+  if (caretTrailingEdge > viewportEnd) {
+    return caretTrailingEdge - viewportWidth;
+  }
+  return currentOffset;
+}
+
+/// Resolves the horizontal scroll offset for rich unwrapped editor text.
+@visibleForTesting
+double resolveUnwrappedEditorTextSpanSelectionScrollOffset({
+  required InlineSpan textSpan,
+  required TextSelection selection,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+  required double viewportWidth,
+  double currentOffset = 0,
+  double trailingSlack = _unwrappedEditorTrailingSlack,
+}) {
+  if (!selection.isValid || viewportWidth <= 0) {
+    return currentOffset;
+  }
+
+  final plainText = textSpan.toPlainText(includeSemanticsLabels: false);
+  final painter = _layoutUnwrappedEditorTextSpan(
+    textSpan: textSpan,
+    textDirection: textDirection,
+    textScaler: textScaler,
+  );
+  return _resolveUnwrappedEditorTextPainterSelectionScrollOffset(
+    painter: painter,
+    selection: selection,
+    textLength: plainText.length,
+    viewportWidth: viewportWidth,
+    currentOffset: currentOffset,
+    trailingSlack: trailingSlack,
+  );
+}
+
+double _resolveUnwrappedEditorTextPainterSelectionScrollOffset({
+  required TextPainter painter,
+  required TextSelection selection,
+  required int textLength,
+  required double viewportWidth,
+  required double currentOffset,
+  required double trailingSlack,
+}) {
+  final selectionOffset = selection.extentOffset < 0
+      ? 0
+      : selection.extentOffset > textLength
+      ? textLength
+      : selection.extentOffset;
+  final caretOffset = painter
+      .getOffsetForCaret(TextPosition(offset: selectionOffset), Rect.zero)
+      .dx;
   final viewportEnd = currentOffset + viewportWidth;
   final caretLeadingEdge = caretOffset > trailingSlack
       ? caretOffset - trailingSlack
@@ -282,6 +375,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   ({int line, int column}) _cachedCaretPosition = (line: 1, column: 1);
   String? _cachedMeasuredWidthText;
   double? _cachedMeasuredWidth;
+  TextPainter? _cachedMeasuredTextPainter;
   TextDirection? _cachedMeasuredWidthTextDirection;
   double? _cachedMeasuredWidthTextScale;
   String? _cachedMeasuredWidthFontFamily;
@@ -318,6 +412,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       _cachedSelection = null;
       _cachedMeasuredWidthText = null;
       _cachedMeasuredWidth = null;
+      _cachedMeasuredTextPainter = null;
       _refreshCachedMetrics();
       _scheduleSelectionVisibilityUpdate();
     }
@@ -440,15 +535,19 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       Theme.of(context),
       widget.terminalTheme,
     );
-    final targetOffset = resolveUnwrappedEditorSelectionScrollOffset(
-      text: widget.controller.text,
-      selection: widget.controller.selection,
-      style: editorStyle,
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      viewportWidth: _editorViewportWidth,
-      currentOffset: _horizontalScrollController.offset,
+    final measuredTextPainter = _layoutUnwrappedContentTextPainter(
+      context,
+      editorStyle,
     );
+    final targetOffset =
+        _resolveUnwrappedEditorTextPainterSelectionScrollOffset(
+          painter: measuredTextPainter,
+          selection: widget.controller.selection,
+          textLength: widget.controller.text.length,
+          viewportWidth: _editorViewportWidth,
+          currentOffset: _horizontalScrollController.offset,
+          trailingSlack: _unwrappedEditorTrailingSlack,
+        );
     final clampedOffset = targetOffset.clamp(
       0.0,
       _horizontalScrollController.position.maxScrollExtent,
@@ -540,6 +639,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     ).copyWith(color: colors.foreground, height: 1.35);
   }
 
+  InlineSpan _buildMeasuredTextSpan(BuildContext context, TextStyle style) =>
+      widget.controller.buildTextSpan(
+        context: context,
+        style: style,
+        withComposing: false,
+      );
+
   double _measureLineHeight(BuildContext context, TextStyle style) {
     final painter = TextPainter(
       text: TextSpan(text: '0', style: style),
@@ -563,34 +669,46 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
         _remoteEditorGutterRightPadding;
   }
 
-  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
+  TextPainter _layoutUnwrappedContentTextPainter(
+    BuildContext context,
+    TextStyle style,
+  ) {
     final text = widget.controller.text;
     final textDirection = Directionality.of(context);
     final textScaler = MediaQuery.textScalerOf(context);
     final textScale = textScaler.scale(1);
 
-    if (_cachedMeasuredWidth != null &&
+    if (_cachedMeasuredTextPainter != null &&
+        _cachedMeasuredWidth != null &&
         identical(_cachedMeasuredWidthText, text) &&
         _cachedMeasuredWidthTextDirection == textDirection &&
         _cachedMeasuredWidthTextScale == textScale &&
         _cachedMeasuredWidthFontFamily == style.fontFamily &&
         _cachedMeasuredWidthFontSize == style.fontSize) {
-      return _cachedMeasuredWidth!;
+      return _cachedMeasuredTextPainter!;
     }
 
-    final measuredWidth = measureUnwrappedEditorContentWidth(
-      lines: text.split('\n'),
-      style: style,
+    final painter = _layoutUnwrappedEditorTextSpan(
+      textSpan: _buildMeasuredTextSpan(context, style),
       textDirection: textDirection,
       textScaler: textScaler,
     );
     _cachedMeasuredWidthText = text;
-    _cachedMeasuredWidth = measuredWidth;
+    _cachedMeasuredWidth = _measureLaidOutUnwrappedEditorContentWidth(
+      painter,
+      _unwrappedEditorTrailingSlack,
+    );
+    _cachedMeasuredTextPainter = painter;
     _cachedMeasuredWidthTextDirection = textDirection;
     _cachedMeasuredWidthTextScale = textScale;
     _cachedMeasuredWidthFontFamily = style.fontFamily;
     _cachedMeasuredWidthFontSize = style.fontSize;
-    return measuredWidth;
+    return painter;
+  }
+
+  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
+    _layoutUnwrappedContentTextPainter(context, style);
+    return _cachedMeasuredWidth!;
   }
 
   @override
