@@ -4,6 +4,7 @@ import 'package:drift/drift.dart' as drift;
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:go_router/go_router.dart';
+import 'package:permission_handler/permission_handler.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
@@ -595,8 +596,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                   ),
                                 ),
                               ],
-                              onChanged: (value) =>
-                                  setState(() => _selectedJumpHostId = value),
+                              onChanged: (value) => setState(() {
+                                _selectedJumpHostId = value;
+                                if (value == null) {
+                                  _skipJumpHostOnSsids = const [];
+                                }
+                              }),
                             );
                           },
                         ),
@@ -2627,14 +2632,35 @@ class _SkipJumpHostOnWifiSectionState
     setState(() => _detecting = true);
     final messenger = ScaffoldMessenger.of(context);
     try {
-      final ssid = await ref.read(wifiNetworkServiceProvider).getCurrentSsid();
+      final wifiService = ref.read(wifiNetworkServiceProvider);
+      final permission = await wifiService.requestPermission();
+      if (!mounted) return;
+      if (permission != WifiPermissionStatus.granted) {
+        messenger.showSnackBar(
+          SnackBar(
+            content: const Text(
+              'Location permission is required to read the current Wi-Fi '
+              'network name. You can also add the SSID manually.',
+            ),
+            action: permission == WifiPermissionStatus.permanentlyDenied
+                ? const SnackBarAction(
+                    label: 'Settings',
+                    onPressed: openAppSettings,
+                  )
+                : null,
+          ),
+        );
+        return;
+      }
+      final ssid = await wifiService.getCurrentSsid();
       if (!mounted) return;
       if (ssid == null) {
         messenger.showSnackBar(
           const SnackBar(
             content: Text(
-              'Could not detect current Wi-Fi network. Make sure you are '
-              'connected and that location/Wi-Fi permission is granted.',
+              'Could not detect the current Wi-Fi network. Make sure you '
+              'are connected to Wi-Fi and try again, or add the SSID '
+              'manually.',
             ),
           ),
         );
@@ -2655,9 +2681,11 @@ class _SkipJumpHostOnWifiSectionState
         content: TextField(
           controller: controller,
           autofocus: true,
+          maxLength: 32,
           decoration: const InputDecoration(
             labelText: 'SSID',
             hintText: 'Network name',
+            counterText: '',
           ),
           onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
         ),

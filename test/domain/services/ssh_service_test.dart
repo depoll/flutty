@@ -48,16 +48,13 @@ class _CapturingSshService extends SshService {
   }
 }
 
-class _StubWifiNetworkService implements WifiNetworkService {
+class _StubWifiNetworkService extends WifiNetworkService {
   _StubWifiNetworkService(this.ssid);
 
   final String? ssid;
 
   @override
   Future<String?> getCurrentSsid() async => ssid;
-
-  @override
-  dynamic noSuchMethod(Invocation invocation) => super.noSuchMethod(invocation);
 }
 
 class _CountingKeyRepository extends KeyRepository {

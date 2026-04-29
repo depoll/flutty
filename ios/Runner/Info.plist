@@ -55,6 +55,8 @@
 	<string>$(PRODUCT_NAME) needs camera access to scan sync recovery key QR codes.</string>
 	<key>NSFaceIDUsageDescription</key>
 	<string>$(PRODUCT_NAME) uses Face ID to unlock your encrypted SSH credentials.</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
 	<key>CFBundleDocumentTypes</key>
 	<array>
 		<dict>
