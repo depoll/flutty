@@ -7,6 +7,32 @@ import 'package:uuid/uuid.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../widgets/unsaved_changes_guard.dart';
+
+typedef _ThemeEditDraft = ({
+  String name,
+  bool isDark,
+  Color foreground,
+  Color background,
+  Color cursor,
+  Color selection,
+  Color black,
+  Color red,
+  Color green,
+  Color yellow,
+  Color blue,
+  Color magenta,
+  Color cyan,
+  Color white,
+  Color brightBlack,
+  Color brightRed,
+  Color brightGreen,
+  Color brightYellow,
+  Color brightBlue,
+  Color brightMagenta,
+  Color brightCyan,
+  Color brightWhite,
+});
 
 /// Screen for creating or editing custom terminal themes.
 class ThemeEditorScreen extends ConsumerStatefulWidget {
@@ -50,6 +76,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   bool _isDark = true;
   bool _isLoading = false;
   TerminalThemeData? _existingTheme;
+  _ThemeEditDraft? _initialDraft;
 
   @override
   void initState() {
@@ -59,6 +86,8 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
 
     if (widget.themeId != null) {
       _loadTheme();
+    } else {
+      _initialDraft = _currentDraft();
     }
   }
 
@@ -118,6 +147,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         _brightCyan = theme.brightCyan;
         _brightWhite = theme.brightWhite;
         _isLoading = false;
+        _initialDraft = _currentDraft();
       });
     }
   }
@@ -159,180 +189,232 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   Widget build(BuildContext context) {
     final isEditing = widget.themeId != null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(isEditing ? 'Edit Theme' : 'Create Theme'),
-        actions: [TextButton(onPressed: _saveTheme, child: const Text('Save'))],
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Row(
-              children: [
-                // Editor panel
-                Expanded(
-                  flex: 2,
-                  child: Form(
-                    key: _formKey,
-                    child: ListView(
-                      padding: const EdgeInsets.all(16),
-                      children: [
-                        // Theme name
-                        TextFormField(
-                          controller: _nameController,
-                          decoration: const InputDecoration(
-                            labelText: 'Theme Name',
-                            hintText: 'My Custom Theme',
+    return UnsavedChangesGuard(
+      hasUnsavedChanges: _hasUnsavedChanges,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(isEditing ? 'Edit Theme' : 'Create Theme'),
+          actions: [
+            TextButton(onPressed: _saveTheme, child: const Text('Save')),
+          ],
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Row(
+                children: [
+                  // Editor panel
+                  Expanded(
+                    flex: 2,
+                    child: Form(
+                      key: _formKey,
+                      onChanged: () => setState(() {}),
+                      child: ListView(
+                        padding: const EdgeInsets.all(16),
+                        children: [
+                          // Theme name
+                          TextFormField(
+                            controller: _nameController,
+                            decoration: const InputDecoration(
+                              labelText: 'Theme Name',
+                              hintText: 'My Custom Theme',
+                            ),
+                            validator: (v) =>
+                                v?.isEmpty ?? true ? 'Name is required' : null,
                           ),
-                          validator: (v) =>
-                              v?.isEmpty ?? true ? 'Name is required' : null,
-                        ),
-                        const SizedBox(height: 16),
+                          const SizedBox(height: 16),
 
-                        // Dark/Light toggle
-                        SwitchListTile(
-                          title: const Text('Dark Theme'),
-                          subtitle: Text(
-                            _isDark ? 'Dark background' : 'Light background',
+                          // Dark/Light toggle
+                          SwitchListTile(
+                            title: const Text('Dark Theme'),
+                            subtitle: Text(
+                              _isDark ? 'Dark background' : 'Light background',
+                            ),
+                            value: _isDark,
+                            onChanged: (v) => setState(() => _isDark = v),
                           ),
-                          value: _isDark,
-                          onChanged: (v) => setState(() => _isDark = v),
-                        ),
-                        const Divider(height: 32),
+                          const Divider(height: 32),
 
-                        // Special colors section
-                        const _SectionHeader(title: 'Special Colors'),
-                        _ColorRow(
-                          label: 'Background',
-                          color: _background,
-                          onChanged: (c) => setState(() => _background = c),
-                        ),
-                        _ColorRow(
-                          label: 'Foreground',
-                          color: _foreground,
-                          onChanged: (c) => setState(() => _foreground = c),
-                        ),
-                        _ColorRow(
-                          label: 'Cursor',
-                          color: _cursor,
-                          onChanged: (c) => setState(() => _cursor = c),
-                        ),
-                        _ColorRow(
-                          label: 'Selection',
-                          color: _selection,
-                          onChanged: (c) => setState(() => _selection = c),
-                        ),
-                        const Divider(height: 32),
+                          // Special colors section
+                          const _SectionHeader(title: 'Special Colors'),
+                          _ColorRow(
+                            label: 'Background',
+                            color: _background,
+                            onChanged: (c) => setState(() => _background = c),
+                          ),
+                          _ColorRow(
+                            label: 'Foreground',
+                            color: _foreground,
+                            onChanged: (c) => setState(() => _foreground = c),
+                          ),
+                          _ColorRow(
+                            label: 'Cursor',
+                            color: _cursor,
+                            onChanged: (c) => setState(() => _cursor = c),
+                          ),
+                          _ColorRow(
+                            label: 'Selection',
+                            color: _selection,
+                            onChanged: (c) => setState(() => _selection = c),
+                          ),
+                          const Divider(height: 32),
 
-                        // Standard ANSI colors
-                        const _SectionHeader(title: 'Standard Colors'),
-                        _ColorRow(
-                          label: 'Black',
-                          color: _black,
-                          onChanged: (c) => setState(() => _black = c),
-                        ),
-                        _ColorRow(
-                          label: 'Red',
-                          color: _red,
-                          onChanged: (c) => setState(() => _red = c),
-                        ),
-                        _ColorRow(
-                          label: 'Green',
-                          color: _green,
-                          onChanged: (c) => setState(() => _green = c),
-                        ),
-                        _ColorRow(
-                          label: 'Yellow',
-                          color: _yellow,
-                          onChanged: (c) => setState(() => _yellow = c),
-                        ),
-                        _ColorRow(
-                          label: 'Blue',
-                          color: _blue,
-                          onChanged: (c) => setState(() => _blue = c),
-                        ),
-                        _ColorRow(
-                          label: 'Magenta',
-                          color: _magenta,
-                          onChanged: (c) => setState(() => _magenta = c),
-                        ),
-                        _ColorRow(
-                          label: 'Cyan',
-                          color: _cyan,
-                          onChanged: (c) => setState(() => _cyan = c),
-                        ),
-                        _ColorRow(
-                          label: 'White',
-                          color: _white,
-                          onChanged: (c) => setState(() => _white = c),
-                        ),
-                        const Divider(height: 32),
+                          // Standard ANSI colors
+                          const _SectionHeader(title: 'Standard Colors'),
+                          _ColorRow(
+                            label: 'Black',
+                            color: _black,
+                            onChanged: (c) => setState(() => _black = c),
+                          ),
+                          _ColorRow(
+                            label: 'Red',
+                            color: _red,
+                            onChanged: (c) => setState(() => _red = c),
+                          ),
+                          _ColorRow(
+                            label: 'Green',
+                            color: _green,
+                            onChanged: (c) => setState(() => _green = c),
+                          ),
+                          _ColorRow(
+                            label: 'Yellow',
+                            color: _yellow,
+                            onChanged: (c) => setState(() => _yellow = c),
+                          ),
+                          _ColorRow(
+                            label: 'Blue',
+                            color: _blue,
+                            onChanged: (c) => setState(() => _blue = c),
+                          ),
+                          _ColorRow(
+                            label: 'Magenta',
+                            color: _magenta,
+                            onChanged: (c) => setState(() => _magenta = c),
+                          ),
+                          _ColorRow(
+                            label: 'Cyan',
+                            color: _cyan,
+                            onChanged: (c) => setState(() => _cyan = c),
+                          ),
+                          _ColorRow(
+                            label: 'White',
+                            color: _white,
+                            onChanged: (c) => setState(() => _white = c),
+                          ),
+                          const Divider(height: 32),
 
-                        // Bright ANSI colors
-                        const _SectionHeader(title: 'Bright Colors'),
-                        _ColorRow(
-                          label: 'Bright Black',
-                          color: _brightBlack,
-                          onChanged: (c) => setState(() => _brightBlack = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright Red',
-                          color: _brightRed,
-                          onChanged: (c) => setState(() => _brightRed = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright Green',
-                          color: _brightGreen,
-                          onChanged: (c) => setState(() => _brightGreen = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright Yellow',
-                          color: _brightYellow,
-                          onChanged: (c) => setState(() => _brightYellow = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright Blue',
-                          color: _brightBlue,
-                          onChanged: (c) => setState(() => _brightBlue = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright Magenta',
-                          color: _brightMagenta,
-                          onChanged: (c) => setState(() => _brightMagenta = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright Cyan',
-                          color: _brightCyan,
-                          onChanged: (c) => setState(() => _brightCyan = c),
-                        ),
-                        _ColorRow(
-                          label: 'Bright White',
-                          color: _brightWhite,
-                          onChanged: (c) => setState(() => _brightWhite = c),
-                        ),
-                        const SizedBox(height: 32),
-                      ],
-                    ),
-                  ),
-                ),
-                // Preview panel
-                Expanded(
-                  child: Container(
-                    margin: const EdgeInsets.all(16),
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(12),
-                      border: Border.all(
-                        color: Theme.of(context).colorScheme.outline,
+                          // Bright ANSI colors
+                          const _SectionHeader(title: 'Bright Colors'),
+                          _ColorRow(
+                            label: 'Bright Black',
+                            color: _brightBlack,
+                            onChanged: (c) => setState(() => _brightBlack = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright Red',
+                            color: _brightRed,
+                            onChanged: (c) => setState(() => _brightRed = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright Green',
+                            color: _brightGreen,
+                            onChanged: (c) => setState(() => _brightGreen = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright Yellow',
+                            color: _brightYellow,
+                            onChanged: (c) => setState(() => _brightYellow = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright Blue',
+                            color: _brightBlue,
+                            onChanged: (c) => setState(() => _brightBlue = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright Magenta',
+                            color: _brightMagenta,
+                            onChanged: (c) =>
+                                setState(() => _brightMagenta = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright Cyan',
+                            color: _brightCyan,
+                            onChanged: (c) => setState(() => _brightCyan = c),
+                          ),
+                          _ColorRow(
+                            label: 'Bright White',
+                            color: _brightWhite,
+                            onChanged: (c) => setState(() => _brightWhite = c),
+                          ),
+                          const SizedBox(height: 32),
+                        ],
                       ),
                     ),
-                    child: ClipRRect(
-                      borderRadius: BorderRadius.circular(11),
-                      child: _buildPreview(),
+                  ),
+                  // Preview panel
+                  Expanded(
+                    child: Container(
+                      margin: const EdgeInsets.all(16),
+                      decoration: BoxDecoration(
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: Theme.of(context).colorScheme.outline,
+                        ),
+                      ),
+                      child: ClipRRect(
+                        borderRadius: BorderRadius.circular(11),
+                        child: _buildPreview(),
+                      ),
                     ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              ),
+      ),
     );
+  }
+
+  bool get _hasUnsavedChanges {
+    final initialDraft = _initialDraft;
+    return initialDraft != null && _currentDraft() != initialDraft;
+  }
+
+  _ThemeEditDraft _currentDraft() => (
+    name: _nameController.text,
+    isDark: _isDark,
+    foreground: _foreground,
+    background: _background,
+    cursor: _cursor,
+    selection: _selection,
+    black: _black,
+    red: _red,
+    green: _green,
+    yellow: _yellow,
+    blue: _blue,
+    magenta: _magenta,
+    cyan: _cyan,
+    white: _white,
+    brightBlack: _brightBlack,
+    brightRed: _brightRed,
+    brightGreen: _brightGreen,
+    brightYellow: _brightYellow,
+    brightBlue: _brightBlue,
+    brightMagenta: _brightMagenta,
+    brightCyan: _brightCyan,
+    brightWhite: _brightWhite,
+  );
+
+  void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _initialDraft = _currentDraft();
+      _isLoading = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      messenger.showSnackBar(snackBar);
+    });
   }
 
   Widget _buildPreview() => Container(
@@ -448,6 +530,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
+    var didScheduleClose = false;
 
     try {
       final service = ref.read(terminalThemeServiceProvider);
@@ -459,10 +542,10 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         ..invalidate(customTerminalThemesProvider);
 
       if (mounted) {
-        context.pop();
-        ScaffoldMessenger.of(
-          context,
-        ).showSnackBar(SnackBar(content: Text('Theme "${theme.name}" saved')));
+        didScheduleClose = true;
+        _closeWithoutUnsavedPrompt(
+          SnackBar(content: Text('Theme "${theme.name}" saved')),
+        );
       }
     } on Exception catch (e) {
       FlutterError.reportError(
@@ -478,7 +561,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted && !didScheduleClose) setState(() => _isLoading = false);
     }
   }
 }
