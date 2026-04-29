@@ -1504,6 +1504,67 @@ void main() {
     );
 
     testWidgets(
+      'system selectable anchors drags that start in terminal whitespace',
+      (tester) async {
+        await pumpScreen(tester);
+
+        const lineText = 'alpha bravo';
+        session.terminal!.write(lineText);
+        await tester.pumpAndSettle();
+
+        Offset cellCenter(CellOffset offset) {
+          final terminalViewState = tester.state<MonkeyTerminalViewState>(
+            find.byType(MonkeyTerminalView),
+          );
+          final renderTerminal = terminalViewState.renderTerminal;
+          return renderTerminal.localToGlobal(
+            renderTerminal.getOffset(offset) +
+                renderTerminal.cellSize.center(Offset.zero),
+          );
+        }
+
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
+          find.byType(MonkeyTerminalView),
+        );
+        final renderTerminal = terminalViewState.renderTerminal;
+        const whitespaceCell = CellOffset(lineText.length + 4, 0);
+        expect(
+          session.terminal!.buffer.getWordBoundary(whitespaceCell),
+          isNull,
+        );
+
+        renderTerminal
+          ..dispatchSelectionEvent(
+            SelectWordSelectionEvent(
+              globalPosition: cellCenter(whitespaceCell),
+            ),
+          )
+          ..dispatchSelectionEvent(
+            SelectionEdgeUpdateEvent.forEnd(
+              globalPosition: cellCenter(const CellOffset(0, 0)),
+              granularity: TextGranularity.word,
+            ),
+          );
+        await tester.pumpAndSettle();
+
+        expect(renderTerminal.getSelectedContent()?.plainText, lineText);
+        final terminalView = tester.widget<MonkeyTerminalView>(
+          find.byType(MonkeyTerminalView),
+        );
+        expect(terminalView.controller, isNotNull);
+        expect(
+          trimTerminalSelectionText(
+            session.terminal!.buffer.getText(
+              terminalView.controller!.selection,
+            ),
+          ),
+          lineText,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'overlay scroll stays fixed while a native selection is active',
       (tester) async {
         await pumpScreen(tester);

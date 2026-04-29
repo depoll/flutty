@@ -1790,12 +1790,20 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   SelectionResult _handleSelectableSelectWord(SelectWordSelectionEvent event) {
-    final before = _controller.selection;
-    selectWord(globalToLocal(event.globalPosition));
-    _syncSelectableSelectionFromController();
-    if (_controller.selection == before) {
+    if (_terminalSelectionContentLength <= 0) {
+      _clearSelectableTextSelection();
       return SelectionResult.none;
     }
+
+    final localPosition = globalToLocal(event.globalPosition);
+    final offsets = _wordTextOffsetsAt(localPosition);
+    if (offsets == null) {
+      final collapsedOffset = _textOffsetForLocalPosition(localPosition);
+      _applySelectableTextSelection(collapsedOffset, collapsedOffset);
+      return SelectionResult.end;
+    }
+
+    _applySelectableTextSelection(offsets.start, offsets.end);
     return SelectionResult.end;
   }
 

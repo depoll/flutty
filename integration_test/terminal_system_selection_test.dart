@@ -218,6 +218,31 @@ void main() {
     await tester.pumpAndSettle();
   }
 
+  Future<void> dragEndHandleToRow(
+    WidgetTester tester,
+    MonkeyRenderTerminal renderTerminal, {
+    required int targetRow,
+  }) async {
+    final endSelectionPoint = renderTerminal.value.endSelectionPoint!;
+    final endHandlePosition = renderTerminal.localToGlobal(
+      endSelectionPoint.localPosition,
+    );
+    final handleDragPosition =
+        endHandlePosition + Offset(0, renderTerminal.cellSize.height);
+
+    Offset cellCenter(CellOffset offset) => renderTerminal.localToGlobal(
+      renderTerminal.getOffset(offset) +
+          renderTerminal.cellSize.center(Offset.zero),
+    );
+
+    await tester.timedDragFrom(
+      handleDragPosition,
+      cellCenter(CellOffset(0, targetRow)) - handleDragPosition,
+      const Duration(milliseconds: 600),
+    );
+    await tester.pumpAndSettle();
+  }
+
   testWidgets('terminal system selection is visible with soft keyboard open', (
     tester,
   ) async {
@@ -256,6 +281,58 @@ void main() {
         harness.repaintBoundaryKey.currentContext!.findRenderObject()!
             as RenderRepaintBoundary;
     expect(await countSelectionPaintPixels(repaintBoundary), greaterThan(100));
+  });
+
+  testWidgets('terminal system selection can start from whitespace', (
+    tester,
+  ) async {
+    final harness = await pumpKeyboardSelectionHarness(tester);
+    final renderTerminal = harness.terminalViewKey.currentState!.renderTerminal;
+
+    Offset cellCenter(CellOffset offset) => renderTerminal.localToGlobal(
+      renderTerminal.getOffset(offset) +
+          renderTerminal.cellSize.center(Offset.zero),
+    );
+
+    harness.inputController.requestKeyboard();
+    final shownKeyboardInset = await waitForKeyboardInset(
+      tester,
+      visible: true,
+    );
+    expect(shownKeyboardInset, greaterThan(0));
+    await tester.pumpAndSettle();
+
+    final topVisibleRow = renderTerminal.getCellOffset(Offset.zero).y;
+    final selectedRow = topVisibleRow + 20;
+    final targetRow = topVisibleRow + 1;
+    final selectedRowText = rowLabel(selectedRow);
+    final whitespaceColumn = selectedRowText.length + 4;
+    expect(
+      harness.terminal.buffer.getWordBoundary(
+        CellOffset(whitespaceColumn, selectedRow),
+      ),
+      isNull,
+    );
+
+    final gesture = await tester.startGesture(
+      cellCenter(CellOffset(whitespaceColumn, selectedRow)),
+    );
+    await tester.pump(const Duration(milliseconds: 650));
+    await gesture.moveTo(cellCenter(CellOffset(0, selectedRow)));
+    await tester.pump(const Duration(milliseconds: 100));
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(harness.controller.selection, isNotNull);
+    expect(renderTerminal.getSelectedContent()?.plainText, selectedRowText);
+    expect(find.byType(AdaptiveTextSelectionToolbar), findsOneWidget);
+    expect(tester.view.viewInsets.bottom, greaterThan(0));
+
+    await dragEndHandleToRow(tester, renderTerminal, targetRow: targetRow);
+
+    final selectedText = renderTerminal.getSelectedContent()!.plainText;
+    expect(selectedText, contains(rowLabel(targetRow)));
+    expect(selectedText, contains(rowLabel(selectedRow)));
   });
 
   testWidgets('terminal system selection survives soft keyboard resize', (
