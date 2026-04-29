@@ -22,6 +22,7 @@ import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/wifi_network_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/premium_access.dart';
@@ -135,6 +136,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   int? _selectedKeyId;
   int? _selectedGroupId;
   int? _selectedJumpHostId;
+  List<String> _skipJumpHostOnSsids = const [];
   int? _selectedAutoConnectSnippetId;
   String? _selectedLightThemeId;
   String? _selectedDarkThemeId;
@@ -232,6 +234,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _selectedKeyId = host.keyId;
       _selectedGroupId = host.groupId;
       _selectedJumpHostId = host.jumpHostId;
+      _skipJumpHostOnSsids = decodeSkipJumpHostSsids(host.skipJumpHostOnSsids);
       _selectedAutoConnectSnippetId = host.autoConnectSnippetId;
       _selectedLightThemeId = host.terminalThemeLightId;
       _selectedDarkThemeId = host.terminalThemeDarkId;
@@ -597,6 +600,14 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                             );
                           },
                         ),
+                        if (_selectedJumpHostId != null) ...[
+                          const SizedBox(height: 16),
+                          _SkipJumpHostOnWifiSection(
+                            ssids: _skipJumpHostOnSsids,
+                            onChanged: (next) =>
+                                setState(() => _skipJumpHostOnSsids = next),
+                          ),
+                        ],
                         const SizedBox(height: 24),
                         // Terminal theme section
                         Row(
@@ -1366,6 +1377,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           keyId: drift.Value(_selectedKeyId),
           groupId: drift.Value(_selectedGroupId),
           jumpHostId: drift.Value(_selectedJumpHostId),
+          skipJumpHostOnSsids: drift.Value(
+            _selectedJumpHostId == null
+                ? null
+                : encodeSkipJumpHostSsids(_skipJumpHostOnSsids),
+          ),
           terminalThemeLightId: drift.Value(_selectedLightThemeId),
           terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
           terminalFontFamily: drift.Value(_selectedFontFamily),
@@ -1391,6 +1407,11 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
             keyId: drift.Value(_selectedKeyId),
             groupId: drift.Value(_selectedGroupId),
             jumpHostId: drift.Value(_selectedJumpHostId),
+            skipJumpHostOnSsids: drift.Value(
+              _selectedJumpHostId == null
+                  ? null
+                  : encodeSkipJumpHostSsids(_skipJumpHostOnSsids),
+            ),
             terminalThemeLightId: drift.Value(_selectedLightThemeId),
             terminalThemeDarkId: drift.Value(_selectedDarkThemeId),
             terminalFontFamily: drift.Value(_selectedFontFamily),
@@ -2583,3 +2604,173 @@ final _allSnippetsProvider = StreamProvider<List<Snippet>>((ref) {
   final repo = ref.watch(snippetRepositoryProvider);
   return repo.watchAll();
 });
+
+class _SkipJumpHostOnWifiSection extends ConsumerStatefulWidget {
+  const _SkipJumpHostOnWifiSection({
+    required this.ssids,
+    required this.onChanged,
+  });
+
+  final List<String> ssids;
+  final ValueChanged<List<String>> onChanged;
+
+  @override
+  ConsumerState<_SkipJumpHostOnWifiSection> createState() =>
+      _SkipJumpHostOnWifiSectionState();
+}
+
+class _SkipJumpHostOnWifiSectionState
+    extends ConsumerState<_SkipJumpHostOnWifiSection> {
+  bool _detecting = false;
+
+  Future<void> _addCurrentSsid() async {
+    setState(() => _detecting = true);
+    final messenger = ScaffoldMessenger.of(context);
+    try {
+      final ssid = await ref.read(wifiNetworkServiceProvider).getCurrentSsid();
+      if (!mounted) return;
+      if (ssid == null) {
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text(
+              'Could not detect current Wi-Fi network. Make sure you are '
+              'connected and that location/Wi-Fi permission is granted.',
+            ),
+          ),
+        );
+        return;
+      }
+      _addSsid(ssid);
+    } finally {
+      if (mounted) setState(() => _detecting = false);
+    }
+  }
+
+  Future<void> _promptForSsid() async {
+    final controller = TextEditingController();
+    final entered = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('Add Wi-Fi network'),
+        content: TextField(
+          controller: controller,
+          autofocus: true,
+          decoration: const InputDecoration(
+            labelText: 'SSID',
+            hintText: 'Network name',
+          ),
+          onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(),
+            child: const Text('Cancel'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(dialogContext).pop(controller.text.trim()),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (entered != null && entered.isNotEmpty) {
+      _addSsid(entered);
+    }
+  }
+
+  void _addSsid(String ssid) {
+    final trimmed = ssid.trim();
+    if (trimmed.isEmpty) return;
+    if (widget.ssids.contains(trimmed)) return;
+    widget.onChanged([...widget.ssids, trimmed]);
+  }
+
+  void _removeSsid(String ssid) {
+    widget.onChanged(widget.ssids.where((s) => s != ssid).toList());
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colorScheme = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Row(
+          children: [
+            Icon(Icons.wifi_off, size: 20, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 8),
+            Expanded(
+              child: Text(
+                'Skip jump host on Wi-Fi',
+                style: theme.textTheme.titleSmall,
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 4),
+        Text(
+          'Connect directly (no jump host) when on these Wi-Fi networks. '
+          'Applies on connect and reconnect.',
+          style: theme.textTheme.bodySmall?.copyWith(
+            color: colorScheme.onSurfaceVariant,
+          ),
+        ),
+        const SizedBox(height: 12),
+        if (widget.ssids.isEmpty)
+          Padding(
+            padding: const EdgeInsets.symmetric(vertical: 4),
+            child: Text(
+              'No networks added. The jump host will always be used.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colorScheme.onSurfaceVariant,
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          )
+        else
+          Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            children: [
+              for (final ssid in widget.ssids)
+                InputChip(
+                  key: ValueKey('skip-jump-ssid-$ssid'),
+                  label: Text(ssid),
+                  avatar: const Icon(Icons.wifi, size: 18),
+                  onDeleted: () => _removeSsid(ssid),
+                ),
+            ],
+          ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          runSpacing: 4,
+          children: [
+            if (WifiNetworkService.isSupported)
+              OutlinedButton.icon(
+                key: const Key('skip-jump-add-current-ssid'),
+                onPressed: _detecting ? null : _addCurrentSsid,
+                icon: _detecting
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.my_location, size: 18),
+                label: const Text('Add current Wi-Fi'),
+              ),
+            OutlinedButton.icon(
+              key: const Key('skip-jump-add-manual-ssid'),
+              onPressed: _promptForSsid,
+              icon: const Icon(Icons.add, size: 18),
+              label: const Text('Add manually'),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}

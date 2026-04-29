@@ -19,6 +19,7 @@ import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'ssh_exec_queue.dart';
 import 'terminal_hyperlink_tracker.dart';
+import 'wifi_network_service.dart';
 
 /// Connection state for an SSH session.
 enum SshConnectionState {
@@ -348,9 +349,11 @@ class SshService {
     this.keyRepository,
     this.knownHostsRepository,
     this.hostKeyPromptHandler,
+    WifiNetworkService? wifiNetworkService,
     SshSocketConnector? socketConnector,
     SshClientFactory? clientFactory,
-  }) : _socketConnector = socketConnector ?? _connectWithKeepAlive,
+  }) : wifiNetworkService = wifiNetworkService ?? WifiNetworkService(),
+       _socketConnector = socketConnector ?? _connectWithKeepAlive,
        _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
@@ -371,6 +374,9 @@ class SshService {
 
   /// UI callback used for TOFU and changed-key prompts.
   final HostKeyPromptHandler? hostKeyPromptHandler;
+
+  /// Service used to read the current Wi-Fi SSID for jump host bypass.
+  final WifiNetworkService wifiNetworkService;
 
   final SshSocketConnector _socketConnector;
   final SshClientFactory _clientFactory;
@@ -450,26 +456,48 @@ class SshService {
       identityKeys = await loadAutoKeys();
     }
 
-    // Get jump host config if specified
+    // Get jump host config if specified, unless the device is currently
+    // connected to a Wi-Fi network on the host's skip list (in which case
+    // the host is reachable directly).
     SshConnectionConfig? jumpHostConfig;
     if (host.jumpHostId != null) {
-      final jumpHost = await hostRepository!.getById(host.jumpHostId!);
-      if (jumpHost != null) {
-        SshKey? jumpKey;
-        List<SshKey>? jumpIdentityKeys;
-        if (jumpHost.keyId != null && keyRepository != null) {
-          jumpKey = await keyRepository!.getById(jumpHost.keyId!);
-          if (jumpKey == null && jumpHost.password == null) {
+      var skipJumpHost = false;
+      if (host.skipJumpHostOnSsids != null &&
+          host.skipJumpHostOnSsids!.isNotEmpty) {
+        final currentSsid = await wifiNetworkService.getCurrentSsid();
+        skipJumpHost = shouldSkipJumpHostForSsid(
+          currentSsid: currentSsid,
+          skipJumpHostOnSsids: host.skipJumpHostOnSsids,
+        );
+        DiagnosticsLogService.instance.info(
+          'ssh.connect',
+          'jump_host_ssid_check',
+          fields: {
+            'hostId': hostId,
+            'hasCurrentSsid': currentSsid != null,
+            'skipJumpHost': skipJumpHost,
+          },
+        );
+      }
+      if (!skipJumpHost) {
+        final jumpHost = await hostRepository!.getById(host.jumpHostId!);
+        if (jumpHost != null) {
+          SshKey? jumpKey;
+          List<SshKey>? jumpIdentityKeys;
+          if (jumpHost.keyId != null && keyRepository != null) {
+            jumpKey = await keyRepository!.getById(jumpHost.keyId!);
+            if (jumpKey == null && jumpHost.password == null) {
+              jumpIdentityKeys = await loadAutoKeys();
+            }
+          } else if (jumpHost.password == null) {
             jumpIdentityKeys = await loadAutoKeys();
           }
-        } else if (jumpHost.password == null) {
-          jumpIdentityKeys = await loadAutoKeys();
+          jumpHostConfig = SshConnectionConfig.fromHost(
+            jumpHost,
+            key: jumpKey,
+            identityKeys: jumpIdentityKeys,
+          );
         }
-        jumpHostConfig = SshConnectionConfig.fromHost(
-          jumpHost,
-          key: jumpKey,
-          identityKeys: jumpIdentityKeys,
-        );
       }
     }
 
@@ -2507,6 +2535,7 @@ final sshServiceProvider = Provider<SshService>(
     keyRepository: ref.watch(keyRepositoryProvider),
     knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
     hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
+    wifiNetworkService: ref.watch(wifiNetworkServiceProvider),
   ),
 );
 
