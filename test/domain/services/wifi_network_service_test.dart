@@ -21,7 +21,7 @@ void main() {
       expect(encodeSkipJumpHostSsids(const ['a', 'b', 'a', 'c']), 'a\nb\nc');
     });
 
-    test('strips embedded line breaks so storage stays single-line', () {
+    test('strips embedded line breaks so each entry stays single-line', () {
       expect(
         encodeSkipJumpHostSsids(const ['ho\nme', 'shop\rfloor']),
         'home\nshopfloor',

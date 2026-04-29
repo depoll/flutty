@@ -18,9 +18,9 @@ class WifiNetworkService {
 
   /// Whether SSID detection is supported on the current platform at all.
   ///
-  /// `network_info_plus` only returns SSIDs on iOS, Android, and macOS. Web
-  /// and desktop platforms return `null` rather than prompting for
-  /// unavailable permissions.
+  /// `network_info_plus` returns SSIDs on Android, iOS, and macOS. Windows,
+  /// Linux, and web are unsupported and return `null` rather than prompting
+  /// for unavailable permissions.
   static bool get isSupported {
     if (kIsWeb) return false;
     return defaultTargetPlatform == TargetPlatform.android ||
@@ -45,7 +45,7 @@ class WifiNetworkService {
       return WifiPermissionStatus.granted;
     }
     final status = await Permission.locationWhenInUse.request();
-    if (status.isGranted || status.isLimited) {
+    if (status.isGranted) {
       return WifiPermissionStatus.granted;
     }
     if (status.isPermanentlyDenied) {

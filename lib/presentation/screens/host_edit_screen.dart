@@ -2639,9 +2639,9 @@ class _SkipJumpHostOnWifiSectionState
               'network name. You can also add the SSID manually.',
             ),
             action: permission == WifiPermissionStatus.permanentlyDenied
-                ? const SnackBarAction(
+                ? SnackBarAction(
                     label: 'Settings',
-                    onPressed: openAppSettings,
+                    onPressed: () => unawaited(openAppSettings()),
                   )
                 : null,
           ),
@@ -2677,11 +2677,9 @@ class _SkipJumpHostOnWifiSectionState
         content: TextField(
           controller: controller,
           autofocus: true,
-          maxLength: 32,
           decoration: const InputDecoration(
             labelText: 'SSID',
             hintText: 'Network name',
-            counterText: '',
           ),
           onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
         ),
