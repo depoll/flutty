@@ -242,7 +242,7 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
       : ShellCompletionMode.path;
   final normalizedToken = normalizeShellCompletionToken(tokenState.token);
 
-  if (mode == ShellCompletionMode.command && normalizedToken.isEmpty) {
+  if (normalizedToken.isEmpty) {
     return null;
   }
 
@@ -428,7 +428,6 @@ bool _containsShellQuote(String token) =>
     token.contains("'") || token.contains('"');
 
 /// Removes simple backslash escapes from a shell token.
-@visibleForTesting
 String normalizeShellCompletionToken(String token) {
   final builder = StringBuffer();
   var escaped = false;
@@ -651,10 +650,14 @@ String buildShellCompletionRemoteCommand(ShellCompletionInvocation invocation) {
 export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_LIMIT=$limit; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
 case "\$FLUTTY_MODE" in
   command)
+    source_if_readable() {
+      [ -r "\$1" ] || return 0
+      . "\$1" >/dev/null 2>&1 || :
+    }
     case "\$FLUTTY_PROFILE_KIND" in
-      zsh) { . ~/.zprofile; . ~/.zshrc; } >/dev/null 2>&1 ;;
-      bash) { . ~/.bash_profile; . ~/.bash_login; . ~/.profile; . ~/.bashrc; } >/dev/null 2>&1 ;;
-      *) { . ~/.profile; } >/dev/null 2>&1 ;;
+      zsh) source_if_readable "\$HOME/.zprofile"; source_if_readable "\$HOME/.zshrc" ;;
+      bash) source_if_readable "\$HOME/.bash_profile"; source_if_readable "\$HOME/.bash_login"; source_if_readable "\$HOME/.profile"; source_if_readable "\$HOME/.bashrc" ;;
+      *) source_if_readable "\$HOME/.profile" ;;
     esac
     ;;
 esac
@@ -664,19 +667,24 @@ if [ -n "\$FLUTTY_CWD" ]; then
   cd -- "\$FLUTTY_CWD" 2>/dev/null || cd -- "\$HOME" 2>/dev/null || :
 fi
 
-emit_line() {
+can_emit() {
   flutty_emit_limit=\${FLUTTY_LIMIT:-96}
   flutty_emit_count=\${flutty_emit_count:-0}
-  [ "\$flutty_emit_count" -lt "\$flutty_emit_limit" ] 2>/dev/null || return
+  [ "\$flutty_emit_count" -lt "\$flutty_emit_limit" ] 2>/dev/null
+}
+
+emit_line() {
+  can_emit || return 1
   kind=\$1
   item=\$2
   case "\$item" in
     *'
-'*|*'	'*) return ;;
+'*|*'	'*) return 0 ;;
   esac
-  [ -n "\$item" ] || return
+  [ -n "\$item" ] || return 0
   flutty_emit_count=\$((flutty_emit_count + 1))
   printf '%s\\t%s\\n' "\$kind" "\$item"
+  can_emit
 }
 
 emit_bash_matches() {
@@ -715,17 +723,20 @@ emit_zsh_command_matches() {
 emit_command_fallback() {
   token=\$1
   for builtin in cd ls cat grep find git ssh scp sftp mkdir rm mv cp touch pwd; do
+    can_emit || return
     case "\$builtin" in
-      "\$token"*) emit_line command "\$builtin" ;;
+      "\$token"*) emit_line command "\$builtin" || return ;;
     esac
   done
   old_ifs=\$IFS
   IFS=:
   for dir in \$PATH; do
+    can_emit || break
     [ -d "\$dir" ] || continue
     for candidate in "\$dir"/"\$token"*; do
+      can_emit || break
       [ -f "\$candidate" ] && [ -x "\$candidate" ] || continue
-      emit_line command "\${candidate##*/}"
+      emit_line command "\${candidate##*/}" || break
     done
   done
   IFS=\$old_ifs
@@ -740,13 +751,14 @@ emit_path_fallback() {
   esac
   [ -d "\$search_dir" ] || return
   for candidate in "\$search_dir"/"\$base"*; do
+    can_emit || break
     [ -e "\$candidate" ] || continue
     name=\${candidate##*/}
     item="\$prefix\$name"
     if [ -d "\$candidate" ]; then
-      emit_line directory "\$item"
+      emit_line directory "\$item" || break
     elif [ "\$mode" = path ]; then
-      emit_line file "\$item"
+      emit_line file "\$item" || break
     fi
   done
 }
@@ -758,9 +770,9 @@ emit_path_matches() {
     emit_bash_matches "\$mode" "\$token" 2>/dev/null | while IFS= read -r item; do
       [ -n "\$item" ] || continue
       if [ -d "\$item" ]; then
-        emit_line directory "\$item"
+        emit_line directory "\$item" || break
       elif [ "\$mode" = path ]; then
-        emit_line file "\$item"
+        emit_line file "\$item" || break
       fi
     done
     return
@@ -772,15 +784,15 @@ case "\$FLUTTY_MODE" in
   command)
     if [ -n "\${BASH_VERSION:-}" ] && command -v compgen >/dev/null 2>&1; then
       emit_bash_matches command "\$FLUTTY_TOKEN" 2>/dev/null | while IFS= read -r item; do
-        emit_line command "\$item"
+        emit_line command "\$item" || break
       done
     elif [ -n "\${ZSH_VERSION:-}" ] && command -v whence >/dev/null 2>&1; then
       emit_zsh_command_matches "\$FLUTTY_TOKEN" 2>/dev/null | while IFS= read -r item; do
-        emit_line command "\$item"
+        emit_line command "\$item" || break
       done
     elif command -v bash >/dev/null 2>&1; then
       emit_bash_matches command "\$FLUTTY_TOKEN" 2>/dev/null | while IFS= read -r item; do
-        emit_line command "\$item"
+        emit_line command "\$item" || break
       done
     else
       emit_command_fallback "\$FLUTTY_TOKEN"

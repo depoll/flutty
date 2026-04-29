@@ -54,6 +54,20 @@ void main() {
 
       expect(invocation, isNull);
     });
+
+    test('does not request all paths after an empty argument token', () {
+      final pathInvocation = buildShellCompletionInvocation(
+        terminalText: 'tester@host ~ % git ',
+        terminalCursorOffset: 'tester@host ~ % git '.length,
+      );
+      final directoryInvocation = buildShellCompletionInvocation(
+        terminalText: 'tester@host ~ % cd ',
+        terminalCursorOffset: 'tester@host ~ % cd '.length,
+      );
+
+      expect(pathInvocation, isNull);
+      expect(directoryInvocation, isNull);
+    });
   });
 
   group('parseShellCompletionOutput', () {
@@ -139,14 +153,11 @@ void main() {
       ),
     );
     expect(command, contains(r'FLUTTY_PROFILE_KIND=$flutty_profile_kind'));
-    expect(command, contains('zsh) { . ~/.zprofile; . ~/.zshrc; }'));
+    expect(command, contains(r'source_if_readable "$HOME/.zprofile"'));
+    expect(command, contains(r'source_if_readable "$HOME/.zshrc"'));
     expect(command, contains(r'''printf '%s\n' "$item"'''));
-    expect(
-      command,
-      contains(
-        'bash) { . ~/.bash_profile; . ~/.bash_login; . ~/.profile; . ~/.bashrc; }',
-      ),
-    );
+    expect(command, contains(r'source_if_readable "$HOME/.bash_profile"'));
+    expect(command, contains(r'emit_line command "$item" || break'));
     expect(command, contains("FLUTTY_CWD='/Users/depoll/project'"));
   });
 }

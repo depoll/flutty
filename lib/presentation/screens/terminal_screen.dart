@@ -381,6 +381,44 @@ bool canTerminalOutputTriggerShellCompletion({
   return true;
 }
 
+/// Returns whether a visible shell completion suggestion still matches the
+/// current terminal command line closely enough to apply.
+@visibleForTesting
+bool shouldAcceptShellCompletionSuggestion({
+  required ShellCompletionInvocation originalInvocation,
+  required ShellCompletionInvocation? currentInvocation,
+  required ShellCompletionSuggestion suggestion,
+}) {
+  if (currentInvocation == null) {
+    return true;
+  }
+  if (currentInvocation.mode != originalInvocation.mode ||
+      currentInvocation.tokenStart != originalInvocation.tokenStart ||
+      currentInvocation.workingDirectory !=
+          originalInvocation.workingDirectory ||
+      currentInvocation.cursorOffset < suggestion.replacementStart ||
+      originalInvocation.commandLine.length < originalInvocation.tokenStart ||
+      currentInvocation.commandLine.length < currentInvocation.tokenStart) {
+    return false;
+  }
+
+  final originalPrefix = originalInvocation.commandLine.substring(
+    0,
+    originalInvocation.tokenStart,
+  );
+  final currentPrefix = currentInvocation.commandLine.substring(
+    0,
+    currentInvocation.tokenStart,
+  );
+  if (currentPrefix != originalPrefix || currentInvocation.token.isEmpty) {
+    return false;
+  }
+
+  return normalizeShellCompletionToken(
+    suggestion.replacement,
+  ).startsWith(currentInvocation.token);
+}
+
 /// Resolves the safe-area insets the tmux bar should stay within.
 @visibleForTesting
 EdgeInsets resolveTmuxBarSafeInsets(MediaQueryData mediaQuery) {
@@ -4016,7 +4054,43 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (canComplete: true, workingDirectory: workingDirectory);
     }
 
-    final tmuxCommand = _tmuxCurrentCommand;
+    TmuxPaneContext? tmuxPaneContext;
+    try {
+      tmuxPaneContext = await ref
+          .read(tmuxServiceProvider)
+          .currentPaneContext(
+            session,
+            tmuxSessionName,
+            priority: SshExecPriority.low,
+            extraFlags: _host?.tmuxExtraFlags,
+          );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.debug(
+        'shell_completion',
+        'tmux_context_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+    if (!mounted || generation != _shellCompletionGeneration) {
+      return (canComplete: false, workingDirectory: workingDirectory);
+    }
+
+    final freshWorkingDirectory = tmuxPaneContext?.currentPath?.trim();
+    final freshCommand = tmuxPaneContext?.currentCommand?.trim();
+    if (freshWorkingDirectory != null && freshWorkingDirectory.isNotEmpty) {
+      workingDirectory = freshWorkingDirectory;
+      _tmuxWorkingDirectory = freshWorkingDirectory;
+    }
+    if (freshCommand != null && freshCommand.isNotEmpty) {
+      _tmuxCurrentCommand = freshCommand;
+    }
+
+    final tmuxCommand = (freshCommand?.isNotEmpty ?? false)
+        ? freshCommand
+        : _tmuxCurrentCommand;
     if (_isUsingAltBuffer &&
         tmuxCommand != null &&
         !isShellCompletionTmuxShellCommand(tmuxCommand)) {
@@ -4098,6 +4172,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final currentInvocation = _buildCurrentShellCompletionInvocation(
       workingDirectory: invocation.workingDirectory,
     );
+    if (!shouldAcceptShellCompletionSuggestion(
+      originalInvocation: invocation,
+      currentInvocation: currentInvocation,
+      suggestion: suggestion,
+    )) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return;
+    }
+
     var deleteCount = invocation.cursorOffset - suggestion.replacementStart;
     if (currentInvocation != null &&
         currentInvocation.mode == invocation.mode &&

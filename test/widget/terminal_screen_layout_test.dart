@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/shell_completion_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 
@@ -544,6 +545,69 @@ void main() {
         isFalse,
       );
     });
+
+    test(
+      'rejects stale shell completion taps when token no longer matches',
+      () {
+        const originalInvocation = ShellCompletionInvocation(
+          commandLine: 'git c',
+          cursorOffset: 5,
+          token: 'c',
+          tokenStart: 4,
+          mode: ShellCompletionMode.path,
+          commandName: 'git',
+          workingDirectory: '/repo',
+        );
+        const suggestion = ShellCompletionSuggestion(
+          label: 'checkout',
+          replacement: 'checkout',
+          replacementStart: 4,
+          replacementEnd: 5,
+          kind: ShellCompletionSuggestionKind.file,
+        );
+
+        expect(
+          shouldAcceptShellCompletionSuggestion(
+            originalInvocation: originalInvocation,
+            currentInvocation: const ShellCompletionInvocation(
+              commandLine: 'git ch',
+              cursorOffset: 6,
+              token: 'ch',
+              tokenStart: 4,
+              mode: ShellCompletionMode.path,
+              commandName: 'git',
+              workingDirectory: '/repo',
+            ),
+            suggestion: suggestion,
+          ),
+          isTrue,
+        );
+        expect(
+          shouldAcceptShellCompletionSuggestion(
+            originalInvocation: originalInvocation,
+            currentInvocation: const ShellCompletionInvocation(
+              commandLine: 'git cx',
+              cursorOffset: 6,
+              token: 'cx',
+              tokenStart: 4,
+              mode: ShellCompletionMode.path,
+              commandName: 'git',
+              workingDirectory: '/repo',
+            ),
+            suggestion: suggestion,
+          ),
+          isFalse,
+        );
+        expect(
+          shouldAcceptShellCompletionSuggestion(
+            originalInvocation: originalInvocation,
+            currentInvocation: null,
+            suggestion: suggestion,
+          ),
+          isTrue,
+        );
+      },
+    );
   });
 
   group('tmux bar safe insets vs. keyboard toolbar', () {
