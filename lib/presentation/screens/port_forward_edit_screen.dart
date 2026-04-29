@@ -7,6 +7,18 @@ import 'package:go_router/go_router.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../widgets/unsaved_changes_guard.dart';
+
+typedef _PortForwardEditDraft = ({
+  String name,
+  String localHost,
+  String localPort,
+  String remoteHost,
+  String remotePort,
+  bool autoStart,
+  String forwardType,
+  int? selectedHostId,
+});
 
 /// Screen for adding or editing a port forward rule.
 class PortForwardEditScreen extends ConsumerStatefulWidget {
@@ -35,6 +47,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
   int? _selectedHostId;
   PortForward? _existingPortForward;
   List<Host> _hosts = [];
+  _PortForwardEditDraft? _initialDraft;
 
   @override
   void initState() {
@@ -42,6 +55,8 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
     _loadHosts();
     if (widget.portForwardId != null) {
       _loadPortForward();
+    } else {
+      _initialDraft = _currentDraft();
     }
   }
 
@@ -69,6 +84,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
         _remotePortController.text = portForward.remotePort.toString();
         _autoStart = portForward.autoStart;
         _isLoading = false;
+        _initialDraft = _currentDraft();
       });
     }
   }
@@ -130,205 +146,246 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
   Widget build(BuildContext context) {
     final isEditing = widget.portForwardId != null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(isEditing ? 'Edit Port Forward' : 'Add Port Forward'),
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Form(
-              key: _formKey,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // Name
-                  TextFormField(
-                    controller: _nameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Name',
-                      hintText: 'Web Server',
-                      prefixIcon: Icon(Icons.label),
-                    ),
-                    textInputAction: TextInputAction.next,
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please enter a name';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Host selection
-                  DropdownButtonFormField<int>(
-                    initialValue: _selectedHostId,
-                    decoration: const InputDecoration(
-                      labelText: 'Host',
-                      prefixIcon: Icon(Icons.computer),
-                    ),
-                    items: _hosts
-                        .map(
-                          (host) => DropdownMenuItem(
-                            value: host.id,
-                            child: Text(host.label),
-                          ),
-                        )
-                        .toList(),
-                    onChanged: (value) =>
-                        setState(() => _selectedHostId = value),
-                    validator: (value) {
-                      if (value == null) {
-                        return 'Please select a host';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Forward type
-                  Text(
-                    'Forward Type',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.onSurfaceVariant,
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                  SegmentedButton<String>(
-                    segments: const [
-                      ButtonSegment(
-                        value: 'local',
-                        label: Text('Local'),
-                        icon: Icon(Icons.arrow_forward),
+    return UnsavedChangesGuard(
+      hasUnsavedChanges: _hasUnsavedChanges,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(isEditing ? 'Edit Port Forward' : 'Add Port Forward'),
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Form(
+                key: _formKey,
+                onChanged: () => setState(() {}),
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    // Name
+                    TextFormField(
+                      controller: _nameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Name',
+                        hintText: 'Web Server',
+                        prefixIcon: Icon(Icons.label),
                       ),
-                      ButtonSegment(
-                        value: 'remote',
-                        label: Text('Remote'),
-                        icon: Icon(Icons.arrow_back),
-                      ),
-                    ],
-                    selected: {_forwardType},
-                    onSelectionChanged: (selected) {
-                      setState(() => _forwardType = selected.first);
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    _forwardType == 'local'
-                        ? 'Forward local port to remote host'
-                        : 'Forward remote port to local host',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.outline,
+                      textInputAction: TextInputAction.next,
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter a name';
+                        }
+                        return null;
+                      },
                     ),
-                  ),
-                  const SizedBox(height: 24),
+                    const SizedBox(height: 16),
 
-                  // Local host/port
-                  Text('Local', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: TextFormField(
-                          controller: _localHostController,
-                          decoration: const InputDecoration(
-                            labelText: 'Host',
-                            hintText: '127.0.0.1',
-                          ),
-                          textInputAction: TextInputAction.next,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Required';
-                            }
-                            return null;
-                          },
+                    // Host selection
+                    DropdownButtonFormField<int>(
+                      initialValue: _selectedHostId,
+                      decoration: const InputDecoration(
+                        labelText: 'Host',
+                        prefixIcon: Icon(Icons.computer),
+                      ),
+                      items: _hosts
+                          .map(
+                            (host) => DropdownMenuItem(
+                              value: host.id,
+                              child: Text(host.label),
+                            ),
+                          )
+                          .toList(),
+                      onChanged: (value) =>
+                          setState(() => _selectedHostId = value),
+                      validator: (value) {
+                        if (value == null) {
+                          return 'Please select a host';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Forward type
+                    Text(
+                      'Forward Type',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    SegmentedButton<String>(
+                      segments: const [
+                        ButtonSegment(
+                          value: 'local',
+                          label: Text('Local'),
+                          icon: Icon(Icons.arrow_forward),
                         ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _localPortController,
-                          decoration: const InputDecoration(
-                            labelText: 'Port',
-                            hintText: '8080',
-                          ),
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          textInputAction: TextInputAction.next,
-                          validator: _validatePort,
+                        ButtonSegment(
+                          value: 'remote',
+                          label: Text('Remote'),
+                          icon: Icon(Icons.arrow_back),
                         ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-
-                  // Remote host/port
-                  Text('Remote', style: Theme.of(context).textTheme.titleSmall),
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      Expanded(
-                        flex: 2,
-                        child: TextFormField(
-                          controller: _remoteHostController,
-                          decoration: const InputDecoration(
-                            labelText: 'Host',
-                            hintText: 'localhost',
-                          ),
-                          textInputAction: TextInputAction.next,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Required';
-                            }
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(width: 16),
-                      Expanded(
-                        child: TextFormField(
-                          controller: _remotePortController,
-                          decoration: const InputDecoration(
-                            labelText: 'Port',
-                            hintText: '80',
-                          ),
-                          keyboardType: TextInputType.number,
-                          inputFormatters: [
-                            FilteringTextInputFormatter.digitsOnly,
-                          ],
-                          textInputAction: TextInputAction.done,
-                          validator: _validatePort,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 24),
-
-                  // Auto-start toggle
-                  SwitchListTile(
-                    title: const Text('Auto-start'),
-                    subtitle: const Text(
-                      'Start forwarding when connecting to host',
+                      ],
+                      selected: {_forwardType},
+                      onSelectionChanged: (selected) {
+                        setState(() => _forwardType = selected.first);
+                      },
                     ),
-                    value: _autoStart,
-                    onChanged: (value) => setState(() => _autoStart = value),
-                  ),
-                  const SizedBox(height: 32),
-
-                  // Save button
-                  FilledButton.icon(
-                    onPressed: _savePortForward,
-                    icon: const Icon(Icons.save),
-                    label: Text(
-                      isEditing ? 'Save Changes' : 'Add Port Forward',
+                    const SizedBox(height: 8),
+                    Text(
+                      _forwardType == 'local'
+                          ? 'Forward local port to remote host'
+                          : 'Forward remote port to local host',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 24),
+
+                    // Local host/port
+                    Text(
+                      'Local',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: TextFormField(
+                            controller: _localHostController,
+                            decoration: const InputDecoration(
+                              labelText: 'Host',
+                              hintText: '127.0.0.1',
+                            ),
+                            textInputAction: TextInputAction.next,
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Required';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _localPortController,
+                            decoration: const InputDecoration(
+                              labelText: 'Port',
+                              hintText: '8080',
+                            ),
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            textInputAction: TextInputAction.next,
+                            validator: _validatePort,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Remote host/port
+                    Text(
+                      'Remote',
+                      style: Theme.of(context).textTheme.titleSmall,
+                    ),
+                    const SizedBox(height: 8),
+                    Row(
+                      children: [
+                        Expanded(
+                          flex: 2,
+                          child: TextFormField(
+                            controller: _remoteHostController,
+                            decoration: const InputDecoration(
+                              labelText: 'Host',
+                              hintText: 'localhost',
+                            ),
+                            textInputAction: TextInputAction.next,
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Required';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(width: 16),
+                        Expanded(
+                          child: TextFormField(
+                            controller: _remotePortController,
+                            decoration: const InputDecoration(
+                              labelText: 'Port',
+                              hintText: '80',
+                            ),
+                            keyboardType: TextInputType.number,
+                            inputFormatters: [
+                              FilteringTextInputFormatter.digitsOnly,
+                            ],
+                            textInputAction: TextInputAction.done,
+                            validator: _validatePort,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Auto-start toggle
+                    SwitchListTile(
+                      title: const Text('Auto-start'),
+                      subtitle: const Text(
+                        'Start forwarding when connecting to host',
+                      ),
+                      value: _autoStart,
+                      onChanged: (value) => setState(() => _autoStart = value),
+                    ),
+                    const SizedBox(height: 32),
+
+                    // Save button
+                    FilledButton.icon(
+                      onPressed: _savePortForward,
+                      icon: const Icon(Icons.save),
+                      label: Text(
+                        isEditing ? 'Save Changes' : 'Add Port Forward',
+                      ),
+                    ),
+                  ],
+                ),
               ),
-            ),
+      ),
     );
+  }
+
+  bool get _hasUnsavedChanges {
+    final initialDraft = _initialDraft;
+    return initialDraft != null && _currentDraft() != initialDraft;
+  }
+
+  _PortForwardEditDraft _currentDraft() => (
+    name: _nameController.text,
+    localHost: _localHostController.text,
+    localPort: _localPortController.text,
+    remoteHost: _remoteHostController.text,
+    remotePort: _remotePortController.text,
+    autoStart: _autoStart,
+    forwardType: _forwardType,
+    selectedHostId: _selectedHostId,
+  );
+
+  void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _initialDraft = _currentDraft();
+      _isLoading = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      messenger.showSnackBar(snackBar);
+    });
   }
 
   Future<void> _savePortForward() async {
@@ -340,6 +397,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
     }
 
     setState(() => _isLoading = true);
+    var didScheduleClose = false;
 
     try {
       final repo = ref.read(portForwardRepositoryProvider);
@@ -375,8 +433,8 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
       }
 
       if (mounted) {
-        context.pop();
-        ScaffoldMessenger.of(context).showSnackBar(
+        didScheduleClose = true;
+        _closeWithoutUnsavedPrompt(
           SnackBar(
             content: Text(
               widget.portForwardId != null
@@ -402,7 +460,7 @@ class _PortForwardEditScreenState extends ConsumerState<PortForwardEditScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted && !didScheduleClose) setState(() => _isLoading = false);
     }
   }
 }

@@ -8,6 +8,14 @@ import 'package:go_router/go_router.dart';
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
 import '../../data/repositories/snippet_repository.dart';
+import '../widgets/unsaved_changes_guard.dart';
+
+typedef _SnippetEditDraft = ({
+  String name,
+  String command,
+  String description,
+  int? selectedFolderId,
+});
 
 /// Screen for adding or editing a snippet.
 class SnippetEditScreen extends ConsumerStatefulWidget {
@@ -31,6 +39,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
   Snippet? _existingSnippet;
   int? _selectedFolderId;
   List<SnippetFolder> _folders = [];
+  _SnippetEditDraft? _initialDraft;
 
   @override
   void initState() {
@@ -39,6 +48,8 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
     unawaited(_loadFolders());
     if (widget.snippetId != null) {
       unawaited(_loadSnippet());
+    } else {
+      _initialDraft = _currentDraft();
     }
   }
 
@@ -68,6 +79,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
         _descriptionController.text = snippet.description ?? '';
         _selectedFolderId = snippet.folderId;
         _isLoading = false;
+        _initialDraft = _currentDraft();
       });
     }
   }
@@ -85,118 +97,151 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
   Widget build(BuildContext context) {
     final isEditing = widget.snippetId != null;
 
-    return Scaffold(
-      appBar: AppBar(
-        title: Text(isEditing ? 'Edit Snippet' : 'Add Snippet'),
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.help_outline),
-            onPressed: _showVariablesHelp,
-            tooltip: 'Variable syntax',
-          ),
-        ],
-      ),
-      body: _isLoading
-          ? const Center(child: CircularProgressIndicator())
-          : Form(
-              key: _formKey,
-              child: ListView(
-                padding: const EdgeInsets.all(16),
-                children: [
-                  // Name
-                  TextFormField(
-                    controller: _nameController,
-                    decoration: const InputDecoration(
-                      labelText: 'Name',
-                      hintText: 'Restart Docker',
-                      prefixIcon: Icon(Icons.label),
-                    ),
-                    textInputAction: TextInputAction.next,
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please enter a name';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Description (optional)
-                  TextFormField(
-                    controller: _descriptionController,
-                    decoration: const InputDecoration(
-                      labelText: 'Description (optional)',
-                      hintText: 'What this snippet does',
-                      prefixIcon: Icon(Icons.description),
-                    ),
-                    textInputAction: TextInputAction.next,
-                  ),
-                  const SizedBox(height: 16),
-
-                  DropdownButtonFormField<int?>(
-                    initialValue:
-                        _folders.any((folder) => folder.id == _selectedFolderId)
-                        ? _selectedFolderId
-                        : null,
-                    decoration: const InputDecoration(
-                      labelText: 'Folder (optional)',
-                      prefixIcon: Icon(Icons.folder_outlined),
-                    ),
-                    items: [
-                      const DropdownMenuItem<int?>(child: Text('No folder')),
-                      ..._folders.map(
-                        (folder) => DropdownMenuItem<int?>(
-                          value: folder.id,
-                          child: Text(folder.name),
-                        ),
-                      ),
-                    ],
-                    onChanged: (value) =>
-                        setState(() => _selectedFolderId = value),
-                  ),
-                  const SizedBox(height: 16),
-
-                  // Content
-                  TextFormField(
-                    controller: _contentController,
-                    decoration: const InputDecoration(
-                      labelText: 'Command',
-                      hintText: 'docker restart {{container}}',
-                      alignLabelWithHint: true,
-                    ),
-                    maxLines: 6,
-                    style: FluttyTheme.monoStyle.copyWith(fontSize: 14),
-                    validator: (value) {
-                      if (value == null || value.isEmpty) {
-                        return 'Please enter a command';
-                      }
-                      return null;
-                    },
-                  ),
-                  const SizedBox(height: 8),
-                  Text(
-                    'Use {{variable}} placeholders. Examples: '
-                    '{{container}}, {{branch}}, {{log_file}}.',
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: Theme.of(context).colorScheme.outline,
-                    ),
-                  ),
-                  const SizedBox(height: 24),
-
-                  // Variable preview
-                  _buildVariablePreview(),
-                  const SizedBox(height: 32),
-
-                  // Save button
-                  FilledButton.icon(
-                    onPressed: _saveSnippet,
-                    icon: const Icon(Icons.save),
-                    label: Text(isEditing ? 'Save Changes' : 'Add Snippet'),
-                  ),
-                ],
-              ),
+    return UnsavedChangesGuard(
+      hasUnsavedChanges: _hasUnsavedChanges,
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(isEditing ? 'Edit Snippet' : 'Add Snippet'),
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.help_outline),
+              onPressed: _showVariablesHelp,
+              tooltip: 'Variable syntax',
             ),
+          ],
+        ),
+        body: _isLoading
+            ? const Center(child: CircularProgressIndicator())
+            : Form(
+                key: _formKey,
+                onChanged: () => setState(() {}),
+                child: ListView(
+                  padding: const EdgeInsets.all(16),
+                  children: [
+                    // Name
+                    TextFormField(
+                      controller: _nameController,
+                      decoration: const InputDecoration(
+                        labelText: 'Name',
+                        hintText: 'Restart Docker',
+                        prefixIcon: Icon(Icons.label),
+                      ),
+                      textInputAction: TextInputAction.next,
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter a name';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Description (optional)
+                    TextFormField(
+                      controller: _descriptionController,
+                      decoration: const InputDecoration(
+                        labelText: 'Description (optional)',
+                        hintText: 'What this snippet does',
+                        prefixIcon: Icon(Icons.description),
+                      ),
+                      textInputAction: TextInputAction.next,
+                    ),
+                    const SizedBox(height: 16),
+
+                    DropdownButtonFormField<int?>(
+                      initialValue:
+                          _folders.any(
+                            (folder) => folder.id == _selectedFolderId,
+                          )
+                          ? _selectedFolderId
+                          : null,
+                      decoration: const InputDecoration(
+                        labelText: 'Folder (optional)',
+                        prefixIcon: Icon(Icons.folder_outlined),
+                      ),
+                      items: [
+                        const DropdownMenuItem<int?>(child: Text('No folder')),
+                        ..._folders.map(
+                          (folder) => DropdownMenuItem<int?>(
+                            value: folder.id,
+                            child: Text(folder.name),
+                          ),
+                        ),
+                      ],
+                      onChanged: (value) =>
+                          setState(() => _selectedFolderId = value),
+                    ),
+                    const SizedBox(height: 16),
+
+                    // Content
+                    TextFormField(
+                      controller: _contentController,
+                      decoration: const InputDecoration(
+                        labelText: 'Command',
+                        hintText: 'docker restart {{container}}',
+                        alignLabelWithHint: true,
+                      ),
+                      maxLines: 6,
+                      style: FluttyTheme.monoStyle.copyWith(fontSize: 14),
+                      validator: (value) {
+                        if (value == null || value.isEmpty) {
+                          return 'Please enter a command';
+                        }
+                        return null;
+                      },
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Use {{variable}} placeholders. Examples: '
+                      '{{container}}, {{branch}}, {{log_file}}.',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: Theme.of(context).colorScheme.outline,
+                      ),
+                    ),
+                    const SizedBox(height: 24),
+
+                    // Variable preview
+                    _buildVariablePreview(),
+                    const SizedBox(height: 32),
+
+                    // Save button
+                    FilledButton.icon(
+                      onPressed: _saveSnippet,
+                      icon: const Icon(Icons.save),
+                      label: Text(isEditing ? 'Save Changes' : 'Add Snippet'),
+                    ),
+                  ],
+                ),
+              ),
+      ),
     );
+  }
+
+  bool get _hasUnsavedChanges {
+    final initialDraft = _initialDraft;
+    return initialDraft != null && _currentDraft() != initialDraft;
+  }
+
+  _SnippetEditDraft _currentDraft() => (
+    name: _nameController.text,
+    command: _contentController.text,
+    description: _descriptionController.text,
+    selectedFolderId: _selectedFolderId,
+  );
+
+  void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _initialDraft = _currentDraft();
+      _isLoading = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      messenger.showSnackBar(snackBar);
+    });
   }
 
   Widget _buildVariablePreview() {
@@ -243,6 +288,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
     if (!_formKey.currentState!.validate()) return;
 
     setState(() => _isLoading = true);
+    var didScheduleClose = false;
 
     try {
       final repo = ref.read(snippetRepositoryProvider);
@@ -273,8 +319,8 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
       }
 
       if (mounted) {
-        context.pop();
-        ScaffoldMessenger.of(context).showSnackBar(
+        didScheduleClose = true;
+        _closeWithoutUnsavedPrompt(
           SnackBar(
             content: Text(
               widget.snippetId != null ? 'Snippet updated' : 'Snippet added',
@@ -296,7 +342,7 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
         );
       }
     } finally {
-      if (mounted) setState(() => _isLoading = false);
+      if (mounted && !didScheduleClose) setState(() => _isLoading = false);
     }
   }
 

@@ -11,7 +11,17 @@ import '../../domain/services/key_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
+import '../widgets/unsaved_changes_guard.dart';
 import 'transfer_screen.dart';
+
+typedef _GenerateKeyDraft = ({
+  String name,
+  String passphrase,
+  String keyType,
+  int rsaBits,
+});
+
+typedef _ImportKeyDraft = ({String name, String privateKey, String passphrase});
 
 /// Screen for adding or importing SSH keys.
 class KeyAddScreen extends ConsumerStatefulWidget {
@@ -28,6 +38,9 @@ class KeyAddScreen extends ConsumerStatefulWidget {
 class _KeyAddScreenState extends ConsumerState<KeyAddScreen>
     with SingleTickerProviderStateMixin {
   late TabController _tabController;
+  bool _generateHasUnsavedChanges = false;
+  bool _importHasUnsavedChanges = false;
+  bool _isLeavingWithoutPrompt = false;
 
   @override
   void initState() {
@@ -50,26 +63,78 @@ class _KeyAddScreenState extends ConsumerState<KeyAddScreen>
   }
 
   @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(
-      title: const Text('Add SSH Key'),
-      bottom: TabBar(
+  Widget build(BuildContext context) => UnsavedChangesGuard(
+    hasUnsavedChanges: _hasUnsavedChanges,
+    child: Scaffold(
+      appBar: AppBar(
+        title: const Text('Add SSH Key'),
+        bottom: TabBar(
+          controller: _tabController,
+          tabs: const [
+            Tab(text: 'Generate'),
+            Tab(text: 'Import'),
+          ],
+        ),
+      ),
+      body: TabBarView(
         controller: _tabController,
-        tabs: const [
-          Tab(text: 'Generate'),
-          Tab(text: 'Import'),
+        children: [
+          _GenerateKeyTab(
+            onSaved: _closeWithoutUnsavedPrompt,
+            onUnsavedChangesChanged: _handleGenerateUnsavedChangesChanged,
+          ),
+          _ImportKeyTab(
+            onSaved: _closeWithoutUnsavedPrompt,
+            onUnsavedChangesChanged: _handleImportUnsavedChangesChanged,
+          ),
         ],
       ),
     ),
-    body: TabBarView(
-      controller: _tabController,
-      children: const [_GenerateKeyTab(), _ImportKeyTab()],
-    ),
   );
+
+  bool get _hasUnsavedChanges =>
+      !_isLeavingWithoutPrompt &&
+      (_generateHasUnsavedChanges || _importHasUnsavedChanges);
+
+  void _handleGenerateUnsavedChangesChanged(bool hasUnsavedChanges) {
+    if (_generateHasUnsavedChanges == hasUnsavedChanges) {
+      return;
+    }
+    setState(() => _generateHasUnsavedChanges = hasUnsavedChanges);
+  }
+
+  void _handleImportUnsavedChangesChanged(bool hasUnsavedChanges) {
+    if (_importHasUnsavedChanges == hasUnsavedChanges) {
+      return;
+    }
+    setState(() => _importHasUnsavedChanges = hasUnsavedChanges);
+  }
+
+  void _closeWithoutUnsavedPrompt(SnackBar snackBar) {
+    final messenger = ScaffoldMessenger.of(context);
+    setState(() {
+      _isLeavingWithoutPrompt = true;
+      _generateHasUnsavedChanges = false;
+      _importHasUnsavedChanges = false;
+    });
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      context.pop();
+      messenger.showSnackBar(snackBar);
+    });
+  }
 }
 
 class _GenerateKeyTab extends ConsumerStatefulWidget {
-  const _GenerateKeyTab();
+  const _GenerateKeyTab({
+    required this.onSaved,
+    required this.onUnsavedChangesChanged,
+  });
+
+  final ValueChanged<SnackBar> onSaved;
+  final ValueChanged<bool> onUnsavedChangesChanged;
 
   @override
   ConsumerState<_GenerateKeyTab> createState() => _GenerateKeyTabState();
@@ -84,6 +149,13 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
   int _rsaBits = 4096;
   bool _isGenerating = false;
   bool _showPassphrase = false;
+  late final _GenerateKeyDraft _initialDraft;
+
+  @override
+  void initState() {
+    super.initState();
+    _initialDraft = _currentDraft();
+  }
 
   @override
   void dispose() {
@@ -95,6 +167,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
   @override
   Widget build(BuildContext context) => Form(
     key: _formKey,
+    onChanged: _notifyUnsavedChangesChanged,
     child: ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -135,6 +208,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
           selected: {_keyType},
           onSelectionChanged: (value) {
             setState(() => _keyType = value.first);
+            _notifyUnsavedChangesChanged();
           },
         ),
         const SizedBox(height: 16),
@@ -151,6 +225,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
             selected: {_rsaBits},
             onSelectionChanged: (value) {
               setState(() => _rsaBits = value.first);
+              _notifyUnsavedChangesChanged();
             },
           ),
           const SizedBox(height: 16),
@@ -252,8 +327,7 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
             const SnackBar(content: Text('Failed to generate key')),
           );
         } else {
-          context.pop();
-          messenger.showSnackBar(
+          widget.onSaved(
             const SnackBar(content: Text('Key generated successfully')),
           );
         }
@@ -273,13 +347,34 @@ class _GenerateKeyTabState extends ConsumerState<_GenerateKeyTab> {
       }
     } finally {
       _passphraseController.clear();
-      if (mounted) setState(() => _isGenerating = false);
+      if (mounted) {
+        _notifyUnsavedChangesChanged();
+        setState(() => _isGenerating = false);
+      }
     }
   }
+
+  bool get _hasUnsavedChanges => _currentDraft() != _initialDraft;
+
+  _GenerateKeyDraft _currentDraft() => (
+    name: _nameController.text,
+    passphrase: _passphraseController.text,
+    keyType: _keyType,
+    rsaBits: _rsaBits,
+  );
+
+  void _notifyUnsavedChangesChanged() =>
+      widget.onUnsavedChangesChanged(_hasUnsavedChanges);
 }
 
 class _ImportKeyTab extends ConsumerStatefulWidget {
-  const _ImportKeyTab();
+  const _ImportKeyTab({
+    required this.onSaved,
+    required this.onUnsavedChangesChanged,
+  });
+
+  final ValueChanged<SnackBar> onSaved;
+  final ValueChanged<bool> onUnsavedChangesChanged;
 
   @override
   ConsumerState<_ImportKeyTab> createState() => _ImportKeyTabState();
@@ -293,6 +388,13 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
   bool _isImporting = false;
   bool _showPassphrase = false;
+  late final _ImportKeyDraft _initialDraft;
+
+  @override
+  void initState() {
+    super.initState();
+    _initialDraft = _currentDraft();
+  }
 
   @override
   void dispose() {
@@ -305,6 +407,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
   @override
   Widget build(BuildContext context) => Form(
     key: _formKey,
+    onChanged: _notifyUnsavedChangesChanged,
     child: ListView(
       padding: const EdgeInsets.all(16),
       children: [
@@ -453,8 +556,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
 
       if (mounted) {
         _privateKeyController.clear();
-        context.pop();
-        ScaffoldMessenger.of(context).showSnackBar(
+        widget.onSaved(
           const SnackBar(content: Text('Key imported successfully')),
         );
       }
@@ -473,7 +575,10 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
       }
     } finally {
       _passphraseController.clear();
-      if (mounted) setState(() => _isImporting = false);
+      if (mounted) {
+        _notifyUnsavedChangesChanged();
+        setState(() => _isImporting = false);
+      }
     }
   }
 
@@ -503,6 +608,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
           ? file.name.substring(0, dotIndex)
           : file.name;
     }
+    _notifyUnsavedChangesChanged();
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('Loaded "${file.name}"')));
@@ -570,8 +676,7 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
       if (!mounted) {
         return;
       }
-      context.pop();
-      ScaffoldMessenger.of(context).showSnackBar(
+      widget.onSaved(
         SnackBar(content: Text('Imported key: ${importedKey.name}')),
       );
     } on FormatException catch (error) {
@@ -605,4 +710,15 @@ class _ImportKeyTabState extends ConsumerState<_ImportKeyTab> {
       }
     }
   }
+
+  bool get _hasUnsavedChanges => _currentDraft() != _initialDraft;
+
+  _ImportKeyDraft _currentDraft() => (
+    name: _nameController.text,
+    privateKey: _privateKeyController.text,
+    passphrase: _passphraseController.text,
+  );
+
+  void _notifyUnsavedChangesChanged() =>
+      widget.onUnsavedChangesChanged(_hasUnsavedChanges);
 }
