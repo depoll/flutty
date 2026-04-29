@@ -43,6 +43,14 @@ const _sshHostKeyFingerprint = String.fromEnvironment(
 const _tmuxSessionName = String.fromEnvironment(
   'STORE_SCREENSHOT_TMUX_SESSION',
 );
+const _themeMode = String.fromEnvironment(
+  'STORE_SCREENSHOT_THEME_MODE',
+  defaultValue: 'dark',
+);
+const _terminalThemeLightId = String.fromEnvironment(
+  'STORE_SCREENSHOT_TERMINAL_THEME_LIGHT_ID',
+  defaultValue: 'clean-white',
+);
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
   productId: 'store-screenshot-fallback',
@@ -320,6 +328,7 @@ Future<int> _seedDatabase(
       color: const Value('#00C9FF'),
       tags: const Value('agent,tmux,release'),
       notes: const Value('Local release-demo workspace for store captures.'),
+      terminalThemeLightId: const Value(_terminalThemeLightId),
       terminalThemeDarkId: const Value('velvet'),
       terminalFontFamily: const Value('monospace'),
       tmuxSessionName: const Value(_tmuxSessionName),
@@ -466,8 +475,12 @@ Future<int> _seedDatabase(
   }
 
   final settings = SettingsService(database);
-  await settings.setString(SettingKeys.themeMode, 'dark');
+  await settings.setString(SettingKeys.themeMode, _themeMode);
   await settings.setInt(SettingKeys.terminalFontSize, 13);
+  await settings.setString(
+    SettingKeys.defaultTerminalThemeLight,
+    _terminalThemeLightId,
+  );
   await settings.setString(SettingKeys.defaultTerminalThemeDark, 'velvet');
   await settings.setBool(SettingKeys.terminalPathLinks, value: false);
   return terminalHostId;

@@ -26,7 +26,6 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
-import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
@@ -37,6 +36,7 @@ import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
+import 'monkey_terminal_painter.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
@@ -1121,7 +1121,7 @@ class MonkeyRenderTerminal extends RenderBox
          status: SelectionStatus.none,
          hasContent: terminal.buffer.lines.length > 0,
        ),
-       _painter = TerminalPainter(
+       _painter = MonkeyTerminalPainter(
          theme: theme,
          textStyle: textStyle,
          textScaler: textScaler,
@@ -1278,7 +1278,7 @@ class MonkeyRenderTerminal extends RenderBox
   ({TerminalSize viewportSize, ({int width, int height}) pixelSize})?
   _pendingTerminalResize;
 
-  final TerminalPainter _painter;
+  final MonkeyTerminalPainter _painter;
 
   var _stickToBottom = true;
 
