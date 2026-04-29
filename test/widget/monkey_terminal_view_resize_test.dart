@@ -9,6 +9,7 @@ void main() {
   Widget buildTerminal({
     required Terminal terminal,
     required Size size,
+    Key? terminalKey,
     double keyboardInset = 0,
     FocusNode? focusNode,
     bool readOnly = true,
@@ -23,6 +24,7 @@ void main() {
           width: size.width,
           height: size.height,
           child: MonkeyTerminalView(
+            key: terminalKey,
             terminal,
             focusNode: focusNode,
             hardwareKeyboardOnly: true,
@@ -56,6 +58,40 @@ void main() {
     expect(event.height, greaterThan(0));
     expect(event.pixelWidth, 320);
     expect(event.pixelHeight, 240);
+  });
+
+  testWidgets('size refresh re-sends the current viewport dimensions', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+      ),
+    );
+
+    expect(resizeEvents, isNotEmpty);
+    final initialEvent = resizeEvents.last;
+    final initialCount = resizeEvents.length;
+
+    terminalKey.currentState!.refreshTerminalSize();
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(resizeEvents.last, initialEvent);
   });
 
   testWidgets('keyboard inset changes debounce before the final resize', (

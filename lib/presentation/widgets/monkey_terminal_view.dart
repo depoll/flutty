@@ -450,6 +450,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
   }
 
+  /// Re-sends the current viewport dimensions to the attached terminal.
+  void refreshTerminalSize() {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    if (renderObject is MonkeyRenderTerminal) {
+      renderObject._refreshTerminalSize();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
@@ -2084,7 +2092,7 @@ class MonkeyRenderTerminal extends RenderBox
     _onEditableRect?.call(rect, caretRect);
   }
 
-  void _updateViewportSize() {
+  void _updateViewportSize({bool force = false}) {
     final availableWidth = size.width - _padding.horizontal;
     final availableHeight = _viewportHeight;
     if (availableWidth <= _painter.cellSize.width ||
@@ -2101,9 +2109,19 @@ class MonkeyRenderTerminal extends RenderBox
       padding: _padding,
     );
 
-    if (_viewportSize != viewportSize || _viewportPixelSize != pixelSize) {
+    if (force ||
+        _viewportSize != viewportSize ||
+        _viewportPixelSize != pixelSize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
     }
+  }
+
+  void _refreshTerminalSize() {
+    if (!hasSize) {
+      markNeedsLayout();
+      return;
+    }
+    _updateViewportSize(force: true);
   }
 
   void _resizeTerminalIfNeeded({
