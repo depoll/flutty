@@ -28,17 +28,15 @@ class WifiNetworkService {
         defaultTargetPlatform == TargetPlatform.macOS;
   }
 
-  /// Whether SSID detection requires a runtime location-permission grant on
-  /// the current platform. Android requires `ACCESS_FINE_LOCATION`; iOS and
-  /// macOS only need it when the app does not hold the
-  /// `com.apple.developer.networking.wifi-info` entitlement, but requesting
-  /// it lets us recover when the entitlement is missing in development
-  /// builds, so we still ask there.
+  /// Whether SSID detection requires a runtime location-permission grant via
+  /// `permission_handler` on the current platform. Only Android and iOS have
+  /// a working `permission_handler` backend; on macOS the entitlement plus
+  /// CoreLocation handles the first-use prompt natively when
+  /// `network_info_plus` reads the SSID.
   static bool get _requiresLocationPermission =>
       isSupported &&
       (defaultTargetPlatform == TargetPlatform.android ||
-          defaultTargetPlatform == TargetPlatform.iOS ||
-          defaultTargetPlatform == TargetPlatform.macOS);
+          defaultTargetPlatform == TargetPlatform.iOS);
 
   /// Result of a permission request, surfaced to the UI so it can guide the
   /// user to Settings when the OS has permanently denied access.
@@ -102,20 +100,25 @@ final wifiNetworkServiceProvider = Provider<WifiNetworkService>(
 /// Encodes a list of SSIDs to the storage format used in the Hosts table.
 ///
 /// Newline-separated so SSIDs may legally contain commas, spaces, and most
-/// other printable characters.
+/// other printable characters. Embedded `\n`/`\r` characters (which can sneak
+/// in via paste) are stripped so they cannot corrupt the on-disk format.
 String? encodeSkipJumpHostSsids(Iterable<String> ssids) {
   final cleaned = <String>[];
   final seen = <String>{};
   for (final ssid in ssids) {
-    final trimmed = ssid.trim();
-    if (trimmed.isEmpty) continue;
-    if (seen.add(trimmed)) {
-      cleaned.add(trimmed);
+    final sanitized = _sanitizeSsidForStorage(ssid);
+    if (sanitized.isEmpty) continue;
+    if (seen.add(sanitized)) {
+      cleaned.add(sanitized);
     }
   }
   if (cleaned.isEmpty) return null;
   return cleaned.join('\n');
 }
+
+String _sanitizeSsidForStorage(String raw) =>
+    // Strip CR/LF anywhere in the value before trimming surrounding whitespace.
+    raw.replaceAll(RegExp(r'[\r\n]'), '').trim();
 
 /// Decodes the stored SSID list back into a list of unique entries.
 List<String> decodeSkipJumpHostSsids(String? stored) {

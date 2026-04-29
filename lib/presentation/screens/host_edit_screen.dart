@@ -596,12 +596,8 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                                   ),
                                 ),
                               ],
-                              onChanged: (value) => setState(() {
-                                _selectedJumpHostId = value;
-                                if (value == null) {
-                                  _skipJumpHostOnSsids = const [];
-                                }
-                              }),
+                              onChanged: (value) =>
+                                  setState(() => _selectedJumpHostId = value),
                             );
                           },
                         ),
@@ -2703,16 +2699,17 @@ class _SkipJumpHostOnWifiSectionState
       ),
     );
     controller.dispose();
+    if (!mounted) return;
     if (entered != null && entered.isNotEmpty) {
       _addSsid(entered);
     }
   }
 
   void _addSsid(String ssid) {
-    final trimmed = ssid.trim();
-    if (trimmed.isEmpty) return;
-    if (widget.ssids.contains(trimmed)) return;
-    widget.onChanged([...widget.ssids, trimmed]);
+    final sanitized = ssid.replaceAll(RegExp(r'[\r\n]'), '').trim();
+    if (sanitized.isEmpty) return;
+    if (widget.ssids.contains(sanitized)) return;
+    widget.onChanged([...widget.ssids, sanitized]);
   }
 
   void _removeSsid(String ssid) {

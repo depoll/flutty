@@ -20,6 +20,17 @@ void main() {
     test('deduplicates entries while preserving order', () {
       expect(encodeSkipJumpHostSsids(const ['a', 'b', 'a', 'c']), 'a\nb\nc');
     });
+
+    test('strips embedded line breaks so storage stays single-line', () {
+      expect(
+        encodeSkipJumpHostSsids(const ['ho\nme', 'shop\rfloor']),
+        'home\nshopfloor',
+      );
+    });
+
+    test('drops entries that become empty after stripping line breaks', () {
+      expect(encodeSkipJumpHostSsids(const ['\n\r\n', 'home']), 'home');
+    });
   });
 
   group('decodeSkipJumpHostSsids', () {
