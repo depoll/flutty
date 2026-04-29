@@ -13,6 +13,9 @@ enum ShellCompletionMode {
   /// Complete the first command word.
   command,
 
+  /// Complete a known command's subcommand from a static local catalog.
+  subcommand,
+
   /// Complete only directories.
   directory,
 
@@ -121,6 +124,11 @@ class ShellCompletionService {
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
+    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
+    if (staticSuggestions != null) {
+      return staticSuggestions;
+    }
+
     DiagnosticsLogService.instance.debug(
       'shell_completion',
       'request_start',
@@ -237,12 +245,13 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
       : normalizeShellCompletionToken(tokenState.words.first);
   final mode = tokenState.wordIndex == 0
       ? ShellCompletionMode.command
-      : commandName == 'cd'
-      ? ShellCompletionMode.directory
-      : ShellCompletionMode.path;
+      : _shellCompletionArgumentMode(
+          commandName: commandName,
+          wordIndex: tokenState.wordIndex,
+        );
   final normalizedToken = normalizeShellCompletionToken(tokenState.token);
 
-  if (normalizedToken.isEmpty) {
+  if (normalizedToken.isEmpty && mode != ShellCompletionMode.subcommand) {
     return null;
   }
 
@@ -257,6 +266,107 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
     maxSuggestions: maxSuggestions,
   );
 }
+
+ShellCompletionMode _shellCompletionArgumentMode({
+  required String? commandName,
+  required int wordIndex,
+}) {
+  if (wordIndex == 1 && _staticSubcommandsFor(commandName) != null) {
+    return ShellCompletionMode.subcommand;
+  }
+  if (commandName == 'cd') {
+    return ShellCompletionMode.directory;
+  }
+  return ShellCompletionMode.path;
+}
+
+/// Builds local static suggestions for completion modes that do not need SSH.
+///
+/// Returns `null` when no static provider owns [invocation], and an empty list
+/// when a provider exists but the current token has no matches.
+List<ShellCompletionSuggestion>? buildShellCompletionStaticSuggestions(
+  ShellCompletionInvocation invocation,
+) {
+  if (invocation.mode != ShellCompletionMode.subcommand) {
+    return null;
+  }
+
+  final commandName = _normalizeShellCompletionCommandName(
+    invocation.commandName,
+  );
+  final subcommands = _staticSubcommandsFor(commandName);
+  if (commandName == null || subcommands == null) {
+    return null;
+  }
+
+  final suggestions = <ShellCompletionSuggestion>[];
+  for (final subcommand in subcommands) {
+    if (!subcommand.startsWith(invocation.token)) {
+      continue;
+    }
+    suggestions.add(
+      ShellCompletionSuggestion(
+        label: '$commandName $subcommand',
+        replacement: escapeShellCompletionToken(subcommand),
+        replacementStart: invocation.tokenStart,
+        replacementEnd: invocation.cursorOffset,
+        kind: ShellCompletionSuggestionKind.command,
+        commitSuffix: ' ',
+      ),
+    );
+    if (suggestions.length >= invocation.maxSuggestions) {
+      break;
+    }
+  }
+
+  return suggestions;
+}
+
+List<String>? _staticSubcommandsFor(String? commandName) =>
+    _shellCompletionStaticSubcommands[_normalizeShellCompletionCommandName(
+      commandName,
+    )];
+
+String? _normalizeShellCompletionCommandName(String? commandName) {
+  var normalized = commandName?.trim();
+  if (normalized == null || normalized.isEmpty) {
+    return null;
+  }
+  normalized = normalized.split('/').last;
+  if (normalized.startsWith('-')) {
+    normalized = normalized.substring(1);
+  }
+  return normalized;
+}
+
+const _shellCompletionStaticSubcommands = <String, List<String>>{
+  'tmux': <String>[
+    'attach',
+    'attach-session',
+    'new',
+    'new-session',
+    'ls',
+    'list-sessions',
+    'new-window',
+    'split-window',
+    'kill-pane',
+    'kill-session',
+    'kill-window',
+    'switch-client',
+    'detach',
+    'detach-client',
+    'source-file',
+    'rename-session',
+    'rename-window',
+    'display-message',
+    'list-windows',
+    'list-panes',
+    'select-window',
+    'select-pane',
+    'send-keys',
+    'copy-mode',
+  ],
+};
 
 /// Resolves command text from a terminal snapshot by removing the prompt.
 @visibleForTesting

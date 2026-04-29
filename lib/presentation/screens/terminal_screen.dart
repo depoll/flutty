@@ -410,13 +410,36 @@ bool shouldAcceptShellCompletionSuggestion({
     0,
     currentInvocation.tokenStart,
   );
-  if (currentPrefix != originalPrefix || currentInvocation.token.isEmpty) {
+  if (currentPrefix != originalPrefix) {
     return false;
   }
 
   return normalizeShellCompletionToken(
     suggestion.replacement,
   ).startsWith(currentInvocation.token);
+}
+
+/// Filters visible shell completion suggestions against the current command.
+@visibleForTesting
+List<ShellCompletionSuggestion>
+filterShellCompletionSuggestionsForCurrentInput({
+  required ShellCompletionInvocation originalInvocation,
+  required ShellCompletionInvocation? currentInvocation,
+  required List<ShellCompletionSuggestion> suggestions,
+}) {
+  if (currentInvocation == null) {
+    return const <ShellCompletionSuggestion>[];
+  }
+
+  return suggestions
+      .where(
+        (suggestion) => shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: currentInvocation,
+          suggestion: suggestion,
+        ),
+      )
+      .toList(growable: false);
 }
 
 /// Resolves the safe-area insets the tmux bar should stay within.
@@ -3377,6 +3400,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastAppliedRemoteClipboardText;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
+  ShellCompletionInvocation? _shellCompletionSourceInvocation;
+  List<ShellCompletionSuggestion> _shellCompletionSourceSuggestions =
+      const <ShellCompletionSuggestion>[];
   ShellCompletionInvocation? _shellCompletionInvocation;
   List<ShellCompletionSuggestion> _shellCompletionSuggestions =
       const <ShellCompletionSuggestion>[];
@@ -3909,11 +3935,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     if (!_terminalOutputCanTriggerShellCompletion(output)) {
+      if (_filterVisibleShellCompletionsForCurrentInput()) {
+        return;
+      }
       _hideShellCompletionPopup();
       return;
     }
 
     _shellCompletionPromptPrefix ??= _terminalTextBeforeCursor();
+    if (_refreshImmediateStaticShellCompletions()) {
+      return;
+    }
+    _filterVisibleShellCompletionsForCurrentInput();
     _queueShellCompletionRefresh();
   }
 
@@ -3981,6 +4014,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
+    if (staticSuggestions != null) {
+      if (staticSuggestions.isEmpty) {
+        _hideShellCompletionPopup(resetPromptPrefix: false);
+        return;
+      }
+      _showShellCompletions(
+        invocation: invocation,
+        suggestions: staticSuggestions,
+        anchor: anchor,
+      );
+      return;
+    }
+
     if (_shellCompletionInFlightRequestKey != null) {
       _shellCompletionRefreshAfterInFlight = true;
       return;
@@ -4000,11 +4047,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _hideShellCompletionPopup(resetPromptPrefix: false);
         return;
       }
-      setState(() {
-        _shellCompletionInvocation = invocation;
-        _shellCompletionSuggestions = suggestions;
-        _shellCompletionAnchorGlobalRect = anchor;
-      });
+      _showShellCompletions(
+        invocation: invocation,
+        suggestions: suggestions,
+        anchor: anchor,
+      );
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'shell_completion',
@@ -4137,6 +4184,99 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return terminalViewState.globalCursorRect;
   }
 
+  bool _refreshImmediateStaticShellCompletions() {
+    if (_isUsingAltBuffer &&
+        _isTmuxActive &&
+        !isShellCompletionTmuxShellCommand(_tmuxCurrentCommand)) {
+      return false;
+    }
+
+    final invocation = _buildCurrentShellCompletionInvocation(
+      workingDirectory: _workingDirectoryPath,
+    );
+    if (invocation == null) {
+      return false;
+    }
+
+    final suggestions = buildShellCompletionStaticSuggestions(invocation);
+    if (suggestions == null) {
+      return false;
+    }
+
+    _shellCompletionDebounceTimer?.cancel();
+    _shellCompletionDebounceTimer = null;
+    _shellCompletionGeneration += 1;
+    _shellCompletionInFlightRequestKey = null;
+    _shellCompletionRefreshAfterInFlight = false;
+
+    if (suggestions.isEmpty) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return true;
+    }
+
+    final anchor = _resolveTerminalCursorGlobalRect();
+    if (anchor == null) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return true;
+    }
+
+    _showShellCompletions(
+      invocation: invocation,
+      suggestions: suggestions,
+      anchor: anchor,
+    );
+    return true;
+  }
+
+  bool _filterVisibleShellCompletionsForCurrentInput() {
+    final sourceInvocation =
+        _shellCompletionSourceInvocation ?? _shellCompletionInvocation;
+    if (sourceInvocation == null || _shellCompletionSuggestions.isEmpty) {
+      return false;
+    }
+
+    final sourceSuggestions = _shellCompletionSourceSuggestions.isNotEmpty
+        ? _shellCompletionSourceSuggestions
+        : _shellCompletionSuggestions;
+    final currentInvocation = _buildCurrentShellCompletionInvocation(
+      workingDirectory: sourceInvocation.workingDirectory,
+    );
+    final filteredSuggestions = filterShellCompletionSuggestionsForCurrentInput(
+      originalInvocation: sourceInvocation,
+      currentInvocation: currentInvocation,
+      suggestions: sourceSuggestions,
+    );
+
+    if (filteredSuggestions.isEmpty || currentInvocation == null) {
+      _hideShellCompletionPopup(resetPromptPrefix: false);
+      return false;
+    }
+
+    final anchor = _resolveTerminalCursorGlobalRect();
+    setState(() {
+      _shellCompletionInvocation = currentInvocation;
+      _shellCompletionSuggestions = filteredSuggestions;
+      if (anchor != null) {
+        _shellCompletionAnchorGlobalRect = anchor;
+      }
+    });
+    return true;
+  }
+
+  void _showShellCompletions({
+    required ShellCompletionInvocation invocation,
+    required List<ShellCompletionSuggestion> suggestions,
+    required Rect anchor,
+  }) {
+    setState(() {
+      _shellCompletionSourceInvocation = invocation;
+      _shellCompletionSourceSuggestions = suggestions;
+      _shellCompletionInvocation = invocation;
+      _shellCompletionSuggestions = suggestions;
+      _shellCompletionAnchorGlobalRect = anchor;
+    });
+  }
+
   void _hideShellCompletionPopup({bool resetPromptPrefix = true}) {
     _shellCompletionDebounceTimer?.cancel();
     _shellCompletionDebounceTimer = null;
@@ -4152,6 +4292,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     void clearState() {
+      _shellCompletionSourceInvocation = null;
+      _shellCompletionSourceSuggestions = const <ShellCompletionSuggestion>[];
       _shellCompletionInvocation = null;
       _shellCompletionSuggestions = const <ShellCompletionSuggestion>[];
       _shellCompletionAnchorGlobalRect = null;

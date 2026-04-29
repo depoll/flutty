@@ -608,6 +608,62 @@ void main() {
         );
       },
     );
+
+    test('accepts and filters empty-token static subcommand suggestions', () {
+      const originalInvocation = ShellCompletionInvocation(
+        commandLine: 'tmux ',
+        cursorOffset: 5,
+        token: '',
+        tokenStart: 5,
+        mode: ShellCompletionMode.subcommand,
+        commandName: 'tmux',
+        workingDirectory: '/repo',
+      );
+      const attachSuggestion = ShellCompletionSuggestion(
+        label: 'tmux attach',
+        replacement: 'attach',
+        replacementStart: 5,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.command,
+        commitSuffix: ' ',
+      );
+      const newSuggestion = ShellCompletionSuggestion(
+        label: 'tmux new',
+        replacement: 'new',
+        replacementStart: 5,
+        replacementEnd: 5,
+        kind: ShellCompletionSuggestionKind.command,
+        commitSuffix: ' ',
+      );
+
+      expect(
+        shouldAcceptShellCompletionSuggestion(
+          originalInvocation: originalInvocation,
+          currentInvocation: originalInvocation,
+          suggestion: attachSuggestion,
+        ),
+        isTrue,
+      );
+
+      final filtered = filterShellCompletionSuggestionsForCurrentInput(
+        originalInvocation: originalInvocation,
+        currentInvocation: const ShellCompletionInvocation(
+          commandLine: 'tmux a',
+          cursorOffset: 6,
+          token: 'a',
+          tokenStart: 5,
+          mode: ShellCompletionMode.subcommand,
+          commandName: 'tmux',
+          workingDirectory: '/repo',
+        ),
+        suggestions: const <ShellCompletionSuggestion>[
+          attachSuggestion,
+          newSuggestion,
+        ],
+      );
+
+      expect(filtered, [attachSuggestion]);
+    });
   });
 
   group('tmux bar safe insets vs. keyboard toolbar', () {

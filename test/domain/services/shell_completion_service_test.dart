@@ -68,6 +68,80 @@ void main() {
       expect(pathInvocation, isNull);
       expect(directoryInvocation, isNull);
     });
+
+    test('allows known static subcommands after an empty argument token', () {
+      final invocation = buildShellCompletionInvocation(
+        terminalText: 'tester@host ~ % tmux ',
+        terminalCursorOffset: 'tester@host ~ % tmux '.length,
+      );
+
+      expect(invocation, isNotNull);
+      expect(invocation!.commandLine, 'tmux ');
+      expect(invocation.commandName, 'tmux');
+      expect(invocation.token, isEmpty);
+      expect(invocation.tokenStart, 5);
+      expect(invocation.mode, ShellCompletionMode.subcommand);
+    });
+  });
+
+  group('buildShellCompletionStaticSuggestions', () {
+    test('builds tmux subcommand suggestions for an empty token', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'tmux ',
+        cursorOffset: 5,
+        token: '',
+        tokenStart: 5,
+        mode: ShellCompletionMode.subcommand,
+        commandName: 'tmux',
+        workingDirectory: '/Users/depoll',
+      );
+
+      final suggestions = buildShellCompletionStaticSuggestions(invocation);
+
+      expect(suggestions, isNotNull);
+      expect(suggestions!.take(4).map((suggestion) => suggestion.label), [
+        'tmux attach',
+        'tmux attach-session',
+        'tmux new',
+        'tmux new-session',
+      ]);
+      expect(suggestions.first.replacement, 'attach');
+      expect(suggestions.first.replacementStart, 5);
+      expect(suggestions.first.commitSuffix, ' ');
+    });
+
+    test('filters tmux subcommand suggestions as the token narrows', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'tmux a',
+        cursorOffset: 6,
+        token: 'a',
+        tokenStart: 5,
+        mode: ShellCompletionMode.subcommand,
+        commandName: 'tmux',
+        workingDirectory: '/Users/depoll',
+      );
+
+      final suggestions = buildShellCompletionStaticSuggestions(invocation);
+
+      expect(suggestions!.map((suggestion) => suggestion.label), [
+        'tmux attach',
+        'tmux attach-session',
+      ]);
+    });
+
+    test('returns null for commands without a static provider', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'git a',
+        cursorOffset: 5,
+        token: 'a',
+        tokenStart: 4,
+        mode: ShellCompletionMode.path,
+        commandName: 'git',
+        workingDirectory: '/Users/depoll',
+      );
+
+      expect(buildShellCompletionStaticSuggestions(invocation), isNull);
+    });
   });
 
   group('parseShellCompletionOutput', () {
