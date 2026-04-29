@@ -1763,7 +1763,6 @@ final _terminalStandalonePathMetadataPattern = RegExp(
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
-const _terminalInputIndicatorDuration = Duration(milliseconds: 700);
 
 typedef _TerminalPathMatch = ({
   String path,
@@ -1853,11 +1852,6 @@ double upgradeSnackBarBottomMargin(
   double keyboardToolbarHeight = 84,
   double baseSpacing = 16,
 }) => (showKeyboardToolbar ? keyboardToolbarHeight : 0) + baseSpacing;
-
-/// Resolves the transient indicator label for a terminal double-tap Tab gesture.
-@visibleForTesting
-String resolveTerminalTabGestureIndicatorLabel({required bool shiftActive}) =>
-    shiftActive ? 'Shift+Tab' : 'Tab';
 
 /// Resolves a readable display name for a picked upload file.
 @visibleForTesting
@@ -3228,7 +3222,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _terminalDoubleTapConsumedPointer;
   Offset? _lastTerminalTapPosition;
   Duration? _lastTerminalTapTimestamp;
-  bool _recentlyHandledTerminalDoubleTap = false;
   int? _pendingTerminalMouseTapPointer;
   Offset? _pendingTerminalMouseTapDownPosition;
   Duration? _pendingTerminalMouseTapDownTimestamp;
@@ -3250,7 +3243,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
-  Timer? _terminalInputIndicatorTimer;
   Timer? _promptOutputImeResetTimer;
   bool _isPollingRemoteClipboard = false;
   bool _isPushingLocalClipboard = false;
@@ -3259,7 +3251,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
-  String? _terminalInputIndicatorLabel;
 
   // Theme state
   Host? _host;
@@ -3746,44 +3737,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _queueTerminalScrollToBottom();
   }
 
-  void _handleTerminalDoubleTapDown(
-    TapDownDetails tapDetails,
-    CellOffset cellOffset,
-  ) {
-    if (_recentlyHandledTerminalDoubleTap) {
-      return;
-    }
-    _recentlyHandledTerminalDoubleTap = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _recentlyHandledTerminalDoubleTap = false;
-    });
-
-    final shiftActive = _toolbarController.isShiftActive;
-    _terminalTextInputController.suppressNextTouchKeyboardRequest();
-    _terminal.textInput(resolveTerminalTabInput(shiftActive: shiftActive));
-    _followLiveOutput();
-    _toolbarController.consumeOneShot();
-    _showTerminalInputIndicator(
-      resolveTerminalTabGestureIndicatorLabel(shiftActive: shiftActive),
-    );
-  }
-
   void _handleTerminalLinkTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
-  }
-
-  void _showTerminalInputIndicator(String label) {
-    _terminalInputIndicatorTimer?.cancel();
-    setState(() => _terminalInputIndicatorLabel = label);
-    _terminalInputIndicatorTimer = Timer(_terminalInputIndicatorDuration, () {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _terminalInputIndicatorLabel = null);
-    });
   }
 
   void _queueTerminalScrollToBottom() {
@@ -5470,7 +5428,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
     _stopSharedClipboardSync();
-    _terminalInputIndicatorTimer?.cancel();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
@@ -6309,7 +6266,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       resolveLinkTap: _resolveTerminalLinkTap,
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
-      onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       suppressLongPressDragSelection: isMobile,
       liveOutputAutoScroll: _terminalLiveOutputAutoScrollEnabled,
       useSystemSelection: isMobile,
@@ -6459,34 +6415,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var mobileTerminalView = terminalView;
 
-    final terminalInputIndicatorLabel = _terminalInputIndicatorLabel;
-    if (_isPinchZooming || terminalInputIndicatorLabel != null) {
+    if (_isPinchZooming) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          if (terminalInputIndicatorLabel != null)
-            Positioned(
-              top: 12,
-              left: 0,
-              right: 0,
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: _buildTerminalTransientIndicator(
-                  theme: theme,
-                  label: terminalInputIndicatorLabel,
-                ),
-              ),
+          Positioned(
+            top: 12,
+            right: 12,
+            child: _buildTerminalTransientIndicator(
+              theme: theme,
+              label: '${fontSize.toStringAsFixed(0)} pt',
             ),
-          if (_isPinchZooming)
-            Positioned(
-              top: 12,
-              right: 12,
-              child: _buildTerminalTransientIndicator(
-                theme: theme,
-                label: '${fontSize.toStringAsFixed(0)} pt',
-              ),
-            ),
+          ),
         ],
       );
     }
@@ -6542,8 +6483,73 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
-    final buttonItems = <ContextMenuButtonItem>[
-      ...selectableRegionState.contextMenuButtonItems,
+    var hasCopy = false;
+    final buttonItems = <ContextMenuButtonItem>[];
+    for (final item in selectableRegionState.contextMenuButtonItems) {
+      switch (item.type) {
+        case ContextMenuButtonType.copy:
+          hasCopy = true;
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_copySelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.lookUp:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_lookUpTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.searchWeb:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_searchWebForTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.share:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_shareTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.selectAll:
+        case ContextMenuButtonType.cut:
+        case ContextMenuButtonType.delete:
+          // Drop items that have no meaningful action against the
+          // terminal's xterm-managed selection.
+          continue;
+        case ContextMenuButtonType.paste:
+          // Replaced below with our terminal-aware paste handler.
+          continue;
+        default:
+          buttonItems.add(item);
+      }
+    }
+    if (!hasCopy) {
+      buttonItems.insert(
+        0,
+        ContextMenuButtonItem(
+          onPressed: () {
+            selectableRegionState.hideToolbar();
+            unawaited(_copySelection());
+          },
+          type: ContextMenuButtonType.copy,
+        ),
+      );
+    }
+    buttonItems.add(
       ContextMenuButtonItem(
         onPressed: () {
           selectableRegionState.hideToolbar();
@@ -6551,7 +6557,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
         type: ContextMenuButtonType.paste,
       ),
-    ];
+    );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
       buttonItems: buttonItems,
@@ -7583,10 +7589,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (event.position - lastTapPosition).distance <= kDoubleTapSlop;
 
     if (isDoubleTap) {
+      // Let SelectionArea handle text selection without also forwarding the
+      // second tap as terminal mouse input.
       _terminalDoubleTapConsumedPointer = event.pointer;
       _clearPendingTerminalDoubleTap();
       _clearLastTerminalTap();
-      _triggerTerminalDoubleTap(event.position, event.kind);
       return;
     }
 
@@ -7641,28 +7648,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_terminalDoubleTapConsumedPointer == event.pointer) {
       _terminalDoubleTapConsumedPointer = null;
     }
-  }
-
-  void _triggerTerminalDoubleTap(
-    Offset globalPosition,
-    PointerDeviceKind kind,
-  ) {
-    final terminalViewState = _terminalViewKey.currentState;
-    if (terminalViewState == null) {
-      return;
-    }
-
-    final localPosition = terminalViewState.renderTerminal.globalToLocal(
-      globalPosition,
-    );
-    _handleTerminalDoubleTapDown(
-      TapDownDetails(
-        kind: kind,
-        globalPosition: globalPosition,
-        localPosition: localPosition,
-      ),
-      terminalViewState.renderTerminal.getCellOffset(localPosition),
-    );
   }
 
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
@@ -8205,6 +8190,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  String? _currentTerminalSelectionText() {
+    if (_isNativeSelectionMode) {
+      final text = selectedNativeOverlayText(_nativeSelectionController.value);
+      return text.isEmpty ? null : text;
+    }
+    final selection = _terminalController.selection;
+    if (selection == null) {
+      return null;
+    }
+    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
+    return text.isEmpty ? null : text;
+  }
+
+  Future<void> _lookUpTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>('LookUp.invoke', text);
+    } on PlatformException {
+      // Platform doesn't support LookUp; ignore.
+    }
+  }
+
+  Future<void> _searchWebForTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>(
+        'SearchWeb.invoke',
+        text,
+      );
+    } on PlatformException {
+      // Platform doesn't support SearchWeb; ignore.
+    }
+  }
+
+  Future<void> _shareTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>('Share.invoke', text);
+    } on PlatformException {
+      // Platform doesn't support Share; ignore.
+    }
   }
 
   void _showClipboardMessage(String message) {
