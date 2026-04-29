@@ -1082,26 +1082,36 @@ void main() {
     );
 
     testWidgets(
-      'terminal double tap sends Tab while system selection is enabled',
+      'terminal double tap selects text without sending Tab',
       (tester) async {
         await pumpScreen(tester);
+
+        session.terminal!.write('alpha beta');
+        await tester.pumpAndSettle();
 
         expect(find.byType(SelectionArea), findsOneWidget);
         shellWrites.clear();
 
-        final terminalCenter = tester.getCenter(
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
           find.byType(MonkeyTerminalView),
         );
-        await tester.tapAt(terminalCenter);
+        final renderTerminal = terminalViewState.renderTerminal;
+        final target = renderTerminal.localToGlobal(
+          renderTerminal.getOffset(const CellOffset(2, 0)) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+
+        await tester.tapAt(target);
         await tester.pump(const Duration(milliseconds: 80));
-        await tester.tapAt(terminalCenter);
-        await tester.pump();
+        await tester.tapAt(target);
+        await tester.pumpAndSettle();
 
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(writtenShellText, '\t');
-        expect(find.text('Tab'), findsAtLeastNWidgets(1));
+        expect(writtenShellText, isNot(contains('\t')));
+        final selection = terminalViewState.renderTerminal.getSelectedContent();
+        expect(selection?.plainText, 'alpha');
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );
