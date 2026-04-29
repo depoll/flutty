@@ -3554,6 +3554,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     unawaited(_startSharedClipboardSync(targetSession));
   }
 
+  void _applyTerminalThemeToSession(
+    TerminalThemeData theme, {
+    SshSession? session,
+  }) {
+    final targetSession =
+        session ??
+        _observedSession ??
+        (_connectionId == null
+            ? null
+            : _sessionsNotifier?.getSession(_connectionId!));
+    targetSession?.terminalTheme = theme;
+  }
+
+  TerminalThemeData _resolveEffectiveTerminalTheme() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return _sessionThemeOverride ??
+        _currentTheme ??
+        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+  }
+
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
     _remoteClipboardUnsupported = false;
@@ -3865,6 +3885,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (mounted) {
       setState(() => _currentTheme = theme);
+      _applyTerminalThemeToSession(theme);
     }
   }
 
@@ -3877,6 +3898,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (themeId == null) {
       if (mounted) {
         setState(() => _sessionThemeOverride = null);
+        _applyTerminalThemeToSession(
+          _resolveEffectiveTerminalTheme(),
+          session: session,
+        );
       }
       return false;
     }
@@ -3887,6 +3912,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return false;
     }
     setState(() => _sessionThemeOverride = resolvedTheme);
+    if (resolvedTheme != null) {
+      _applyTerminalThemeToSession(resolvedTheme, session: session);
+    }
     return resolvedTheme != null;
   }
 
@@ -3987,6 +4015,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
+        _applyTerminalThemeToSession(
+          _resolveEffectiveTerminalTheme(),
+          session: session,
+        );
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
         await _applySharedClipboardSetting(
@@ -4029,6 +4061,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
       _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
+      _applyTerminalThemeToSession(
+        _resolveEffectiveTerminalTheme(),
+        session: session,
+      );
 
       _shell = await session.getShell(
         pty: SSHPtyConfig(
@@ -5274,6 +5310,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return null;
       }
 
+      _applyTerminalThemeToSession(
+        _resolveEffectiveTerminalTheme(),
+        session: session,
+      );
       shell = await session.getShell(pty: pty);
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
@@ -5607,7 +5647,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final theme = Theme.of(context);
     final connectionStates = ref.watch(activeSessionsProvider);
-    final isDark = theme.brightness == Brightness.dark;
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
@@ -5620,11 +5659,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isConnecting &&
         connectionState == SshConnectionState.disconnected;
 
-    // Use session override, or loaded theme, or fallback
-    final terminalTheme =
-        _sessionThemeOverride ??
-        _currentTheme ??
-        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+    // Use session override, or loaded theme, or fallback.
+    final terminalTheme = _resolveEffectiveTerminalTheme();
+    _applyTerminalThemeToSession(terminalTheme);
     final connectionLabel = describeTerminalConnectionState(
       connectionState,
       isConnecting: _isConnecting,
@@ -6090,6 +6127,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
       }
       setState(() => _sessionThemeOverride = theme);
+      _applyTerminalThemeToSession(theme);
 
       // Show option to save to host
       if (_host != null) {

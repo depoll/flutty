@@ -12,6 +12,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
+import '../models/terminal_theme.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
@@ -1591,6 +1592,9 @@ class SshSession {
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
 
+  /// The active terminal theme used to answer remote OSC color queries.
+  TerminalThemeData? terminalTheme;
+
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
 
@@ -2032,6 +2036,18 @@ class SshSession {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
+    final themeOscResponse = terminalTheme == null
+        ? null
+        : buildTerminalThemeOscResponse(
+            theme: terminalTheme!,
+            code: code,
+            args: args,
+          );
+    if (themeOscResponse != null) {
+      _shell?.write(utf8.encode(themeOscResponse));
+      return;
+    }
+
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
 
     if (code == '7') {

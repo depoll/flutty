@@ -227,6 +227,79 @@ void main() {
 
       expect(xtermTheme, isNotNull);
     });
+
+    test('buildTerminalThemeOscResponse answers special color queries', () {
+      const theme = TerminalThemes.cleanWhite;
+
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '10',
+          args: const ['?'],
+        ),
+        '\x1b]10;rgb:7272/7676/7979\x1b\\',
+      );
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '11',
+          args: const ['?'],
+        ),
+        '\x1b]11;rgb:ffff/ffff/ffff\x1b\\',
+      );
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '12',
+          args: const ['?'],
+        ),
+        '\x1b]12;rgb:0404/4242/8989\x1b\\',
+      );
+    });
+
+    test('buildTerminalThemeOscResponse answers ANSI palette queries', () {
+      const theme = TerminalThemes.cleanWhite;
+
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '4',
+          args: const ['0', '?', '4', '?', '232', '?'],
+        ),
+        '\x1b]4;0;rgb:0000/0000/0000\x1b\\'
+        '\x1b]4;4;rgb:0909/6969/dada\x1b\\'
+        '\x1b]4;232;rgb:0808/0808/0808\x1b\\',
+      );
+    });
+
+    test('buildTerminalThemeOscResponse ignores unsupported OSC values', () {
+      const theme = TerminalThemes.cleanWhite;
+
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '11',
+          args: const ['#000000'],
+        ),
+        isNull,
+      );
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '4',
+          args: const ['999', '?'],
+        ),
+        isNull,
+      );
+      expect(
+        buildTerminalThemeOscResponse(
+          theme: theme,
+          code: '8',
+          args: const ['id=1', 'https://example.com'],
+        ),
+        isNull,
+      );
+    });
   });
 
   group('TerminalThemes', () {
