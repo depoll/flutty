@@ -208,7 +208,6 @@ const _tmuxDetectionRetrySchedule = <Duration>[
   Duration(milliseconds: 1400),
 ];
 const _shellCompletionDebounce = Duration(milliseconds: 220);
-const _shellCompletionTmuxPathTimeout = Duration(milliseconds: 800);
 const _shellCompletionShellCommands = <String>{
   'ash',
   'bash',
@@ -593,6 +592,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.onExpandedChanged,
     this.scopeWorkingDirectory,
     this.onWindowLoadStalled,
+    this.onWindowsChanged,
     super.key,
   });
 
@@ -628,6 +628,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   final Future<void> Function(SshSession session, String sessionName)?
   onWindowLoadStalled;
+
+  /// Called when the tmux window snapshot changes.
+  final ValueChanged<List<TmuxWindow>>? onWindowsChanged;
 
   /// Best-known project working directory for AI session scoping.
   final String? scopeWorkingDirectory;
@@ -878,6 +881,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _isLoading = false;
       _pendingSelectedWindowIndex = nextPendingSelectedWindowIndex;
     });
+    widget.onWindowsChanged?.call(windows);
   }
 
   void _startPendingSelectionTimer(int windowIndex) {
@@ -3274,6 +3278,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _isTmuxBarExpanded = false;
   String? _tmuxLaunchWorkingDirectory;
   String? _tmuxWorkingDirectory;
+  String? _tmuxCurrentCommand;
   int _tmuxDetectionGeneration = 0;
   int _tmuxBarRecoveryGeneration = 0;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
@@ -3337,6 +3342,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   List<ShellCompletionSuggestion> _shellCompletionSuggestions =
       const <ShellCompletionSuggestion>[];
   Rect? _shellCompletionAnchorGlobalRect;
+  String? _shellCompletionInFlightRequestKey;
+  bool _shellCompletionRefreshAfterInFlight = false;
 
   // Theme state
   Host? _host;
@@ -3915,6 +3922,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    if (_shellCompletionInFlightRequestKey != null) {
+      _shellCompletionRefreshAfterInFlight = true;
+      return;
+    }
+    final requestKey = _shellCompletionRequestKey(session, invocation);
+    _shellCompletionInFlightRequestKey = requestKey;
     try {
       final suggestions = await ref
           .read(shellCompletionServiceProvider)
@@ -3945,8 +3958,34 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       if (mounted && generation == _shellCompletionGeneration) {
         _hideShellCompletionPopup(resetPromptPrefix: false);
       }
+    } finally {
+      final shouldRefreshAfterInFlight =
+          _shellCompletionRefreshAfterInFlight &&
+          mounted &&
+          generation != _shellCompletionGeneration &&
+          ref.read(shellCompletionsNotifierProvider);
+      _shellCompletionRefreshAfterInFlight = false;
+      if (_shellCompletionInFlightRequestKey == requestKey) {
+        _shellCompletionInFlightRequestKey = null;
+      }
+      if (shouldRefreshAfterInFlight) {
+        _queueShellCompletionRefresh();
+      }
     }
   }
+
+  String _shellCompletionRequestKey(
+    SshSession session,
+    ShellCompletionInvocation invocation,
+  ) => [
+    session.connectionId,
+    invocation.mode.name,
+    invocation.workingDirectory ?? '',
+    invocation.commandLine,
+    invocation.cursorOffset,
+    invocation.tokenStart,
+    invocation.token,
+  ].join('\u001f');
 
   Future<({bool canComplete, String? workingDirectory})>
   _resolveShellCompletionContext(SshSession session, int generation) async {
@@ -3956,55 +3995,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return (canComplete: true, workingDirectory: workingDirectory);
     }
 
-    try {
-      final paneContext = await ref
-          .read(tmuxServiceProvider)
-          .currentPaneContext(
-            session,
-            tmuxSessionName,
-            priority: SshExecPriority.low,
-          )
-          .timeout(_shellCompletionTmuxPathTimeout, onTimeout: () => null);
-      if (!mounted ||
-          generation != _shellCompletionGeneration ||
-          paneContext == null) {
-        return (
-          canComplete: !_isUsingAltBuffer,
-          workingDirectory: workingDirectory,
-        );
-      }
-      if (_isUsingAltBuffer &&
-          !isShellCompletionTmuxShellCommand(paneContext.currentCommand)) {
-        DiagnosticsLogService.instance.debug(
-          'shell_completion',
-          'tmux_non_shell_pane',
-          fields: {'connectionId': session.connectionId},
-        );
-        return (canComplete: false, workingDirectory: workingDirectory);
-      }
-
-      final tmuxPath = paneContext.currentPath?.trim();
-      if (tmuxPath != null && tmuxPath.isNotEmpty) {
-        workingDirectory = tmuxPath;
-        if (_tmuxWorkingDirectory != workingDirectory) {
-          setState(() => _tmuxWorkingDirectory = workingDirectory);
-        }
-      }
-    } on Object catch (error) {
+    final tmuxCommand = _tmuxCurrentCommand;
+    if (_isUsingAltBuffer &&
+        tmuxCommand != null &&
+        !isShellCompletionTmuxShellCommand(tmuxCommand)) {
       DiagnosticsLogService.instance.debug(
         'shell_completion',
-        'tmux_path_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
+        'tmux_non_shell_pane',
+        fields: {'connectionId': session.connectionId},
       );
-      return (
-        canComplete: !_isUsingAltBuffer,
-        workingDirectory: workingDirectory,
-      );
+      return (canComplete: false, workingDirectory: workingDirectory);
     }
 
+    final tmuxWorkingDirectory = _tmuxWorkingDirectory?.trim();
+    if (tmuxWorkingDirectory != null && tmuxWorkingDirectory.isNotEmpty) {
+      workingDirectory = tmuxWorkingDirectory;
+    }
     return (canComplete: true, workingDirectory: workingDirectory);
   }
 
@@ -4040,6 +4046,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shellCompletionDebounceTimer?.cancel();
     _shellCompletionDebounceTimer = null;
     _shellCompletionGeneration += 1;
+    _shellCompletionInFlightRequestKey = null;
+    _shellCompletionRefreshAfterInFlight = false;
     if (resetPromptPrefix) {
       _shellCompletionPromptPrefix = null;
     }
@@ -4069,14 +4077,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final currentInvocation = _buildCurrentShellCompletionInvocation(
       workingDirectory: invocation.workingDirectory,
     );
-    if (currentInvocation == null ||
-        currentInvocation.commandLine != invocation.commandLine ||
-        currentInvocation.cursorOffset != invocation.cursorOffset) {
-      _hideShellCompletionPopup(resetPromptPrefix: false);
-      return;
+    var deleteCount = invocation.cursorOffset - suggestion.replacementStart;
+    if (currentInvocation != null &&
+        currentInvocation.mode == invocation.mode &&
+        currentInvocation.tokenStart == invocation.tokenStart) {
+      deleteCount =
+          currentInvocation.cursorOffset - suggestion.replacementStart;
     }
 
-    final deleteCount = invocation.cursorOffset - suggestion.replacementStart;
     if (deleteCount < 0) {
       _hideShellCompletionPopup(resetPromptPrefix: false);
       return;
@@ -4785,6 +4793,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _tmuxSessionName = preferredSessionName;
       _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
       _tmuxWorkingDirectory = preferredWorkingDirectory;
+      _tmuxCurrentCommand = null;
     });
   }
 
@@ -4807,6 +4816,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
+    _tmuxCurrentCommand = null;
   }
 
   /// Detects whether the connected session is inside tmux.
@@ -4856,11 +4866,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxWorkingDirectory =
               preferredWorkingDirectory ??
               (shouldPreserveKnownTmuxState ? _tmuxWorkingDirectory : null);
+          _tmuxCurrentCommand = shouldPreserveKnownTmuxState
+              ? _tmuxCurrentCommand
+              : null;
         } else if (!preserveExistingTmuxState) {
           _isTmuxActive = false;
           _tmuxSessionName = null;
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
+          _tmuxCurrentCommand = null;
         }
       });
     }
@@ -4989,10 +5003,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         // Get the active window's working directory for SFTP/path resolution.
         var tmuxLaunchCwd = preferredWorkingDirectory;
         var tmuxCwd = preferredWorkingDirectory;
+        String? tmuxCurrentCommand;
         try {
           final activeWindow = windows.where((w) => w.isActive).firstOrNull;
           tmuxLaunchCwd ??= activeWindow?.currentPath;
           tmuxCwd ??= activeWindow?.currentPath;
+          tmuxCurrentCommand = activeWindow?.currentCommand;
         } on Object {
           // Non-critical — path resolution will fall back to OSC 7.
         }
@@ -5008,6 +5024,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxSessionName = sessionName;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
+          _tmuxCurrentCommand = tmuxCurrentCommand;
         });
         DiagnosticsLogService.instance.info(
           'tmux.ui',
@@ -5264,6 +5281,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       onAction: _handleTmuxAction,
       onExpandedChanged: _handleTmuxBarExpandedChanged,
       onWindowLoadStalled: _recoverTmuxWindowPanel,
+      onWindowsChanged: _handleTmuxWindowsChanged,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
         liveTerminalWorkingDirectory: _liveWorkingDirectoryPath,
         tmuxWorkingDirectory: _tmuxWorkingDirectory,
@@ -5277,6 +5295,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     setState(() => _isTmuxBarExpanded = expanded);
+  }
+
+  void _handleTmuxWindowsChanged(List<TmuxWindow> windows) {
+    if (!mounted || windows.isEmpty) {
+      return;
+    }
+    final activeWindow = windows.where((window) => window.isActive).firstOrNull;
+    final activePath = activeWindow?.currentPath?.trim();
+    final activeCommand = activeWindow?.currentCommand?.trim();
+    final nextWorkingDirectory = activePath == null || activePath.isEmpty
+        ? _tmuxWorkingDirectory
+        : activePath;
+    final nextCommand = activeCommand == null || activeCommand.isEmpty
+        ? null
+        : activeCommand;
+    if (_tmuxWorkingDirectory == nextWorkingDirectory &&
+        _tmuxCurrentCommand == nextCommand) {
+      return;
+    }
+    setState(() {
+      _tmuxWorkingDirectory = nextWorkingDirectory;
+      _tmuxCurrentCommand = nextCommand;
+    });
   }
 
   bool _collapseTmuxBarIfExpanded() {
@@ -5444,6 +5485,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
     _tmuxWorkingDirectory = null;
+    _tmuxCurrentCommand = null;
     await _reattachTmuxIfNeeded(
       session,
       sessionName,
@@ -5490,6 +5532,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       workingDirectory: resolvedWorkingDirectory,
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
+    _tmuxCurrentCommand = null;
     await _reattachTmuxIfNeeded(session, sessionName);
   }
 
@@ -5501,6 +5544,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     await ref
         .read(tmuxServiceProvider)
         .killWindow(session, sessionName, windowIndex);
+    _tmuxCurrentCommand = null;
   }
 
   Future<void> _reattachTmuxIfNeeded(

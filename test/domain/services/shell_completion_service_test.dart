@@ -135,11 +135,12 @@ void main() {
     expect(
       command,
       contains(
-        "export FLUTTY_MODE='command' FLUTTY_TOKEN='gi' FLUTTY_INCLUDE_CD_SHORTCUTS=0 FLUTTY_CWD='/Users/depoll/project';",
+        "export FLUTTY_MODE='command' FLUTTY_TOKEN='gi' FLUTTY_INCLUDE_CD_SHORTCUTS=0 FLUTTY_CWD='/Users/depoll/project' FLUTTY_LIMIT=96;",
       ),
     );
     expect(command, contains(r'FLUTTY_PROFILE_KIND=$flutty_profile_kind'));
     expect(command, contains('zsh) { . ~/.zprofile; . ~/.zshrc; }'));
+    expect(command, contains(r'''printf '%s\n' "$item"'''));
     expect(
       command,
       contains(

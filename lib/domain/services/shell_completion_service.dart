@@ -106,8 +106,8 @@ class ShellCompletionSuggestion {
 class ShellCompletionService {
   /// Creates a shell completion service.
   const ShellCompletionService({
-    this.timeout = const Duration(seconds: 3),
-    this.maxOutputChars = 24000,
+    this.timeout = const Duration(milliseconds: 1500),
+    this.maxOutputChars = 12000,
   });
 
   /// Maximum time to wait for a completion exec.
@@ -642,16 +642,21 @@ String buildShellCompletionRemoteCommand(ShellCompletionInvocation invocation) {
   final cwd = invocation.workingDirectory?.trim();
   final mode = invocation.mode.name;
   final token = invocation.token;
+  final limit = invocation.maxSuggestions * 4;
   final includeCdShortcuts =
       invocation.mode == ShellCompletionMode.command &&
       'cd'.startsWith(invocation.token);
 
   return '''
-export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')}; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
-case "\$FLUTTY_PROFILE_KIND" in
-  zsh) { . ~/.zprofile; . ~/.zshrc; } >/dev/null 2>&1 ;;
-  bash) { . ~/.bash_profile; . ~/.bash_login; . ~/.profile; . ~/.bashrc; } >/dev/null 2>&1 ;;
-  *) { . ~/.profile; } >/dev/null 2>&1 ;;
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_LIMIT=$limit; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
+case "\$FLUTTY_MODE" in
+  command)
+    case "\$FLUTTY_PROFILE_KIND" in
+      zsh) { . ~/.zprofile; . ~/.zshrc; } >/dev/null 2>&1 ;;
+      bash) { . ~/.bash_profile; . ~/.bash_login; . ~/.profile; . ~/.bashrc; } >/dev/null 2>&1 ;;
+      *) { . ~/.profile; } >/dev/null 2>&1 ;;
+    esac
+    ;;
 esac
 emulate -L sh >/dev/null 2>&1 || :
 set +f
@@ -660,6 +665,9 @@ if [ -n "\$FLUTTY_CWD" ]; then
 fi
 
 emit_line() {
+  flutty_emit_limit=\${FLUTTY_LIMIT:-96}
+  flutty_emit_count=\${flutty_emit_count:-0}
+  [ "\$flutty_emit_count" -lt "\$flutty_emit_limit" ] 2>/dev/null || return
   kind=\$1
   item=\$2
   case "\$item" in
@@ -667,6 +675,7 @@ emit_line() {
 '*|*'	'*) return ;;
   esac
   [ -n "\$item" ] || return
+  flutty_emit_count=\$((flutty_emit_count + 1))
   printf '%s\\t%s\\n' "\$kind" "\$item"
 }
 
@@ -699,7 +708,7 @@ emit_zsh_command_matches() {
       *:*) item=\${line%%:*} ;;
       *) item=\$line ;;
     esac
-    emit_line command "\$item"
+    printf '%s\\n' "\$item"
   done
 }
 
