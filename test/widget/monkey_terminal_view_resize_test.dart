@@ -147,4 +147,38 @@ void main() {
 
     expect(output, contains('\x1b[O'));
   });
+
+  testWidgets('refreshFocusReport resends focus gained when requested', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()
+      ..write('\x1b[?1004h')
+      ..onOutput = output.add;
+    final focusNode = FocusNode();
+    addTearDown(focusNode.dispose);
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        size: const Size(320, 240),
+        focusNode: focusNode,
+        readOnly: false,
+      ),
+    );
+
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport();
+
+    expect(output, ['\x1b[I']);
+
+    terminal.write('\x1b[?1004l');
+    output.clear();
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport();
+
+    expect(output, isEmpty);
+  });
 }

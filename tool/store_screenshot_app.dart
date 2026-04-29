@@ -51,6 +51,10 @@ const _terminalThemeLightId = String.fromEnvironment(
   'STORE_SCREENSHOT_TERMINAL_THEME_LIGHT_ID',
   defaultValue: 'clean-white',
 );
+const _terminalThemeDarkId = String.fromEnvironment(
+  'STORE_SCREENSHOT_TERMINAL_THEME_DARK_ID',
+  defaultValue: 'velvet',
+);
 const _fallbackOffer = MonetizationOffer(
   id: 'fallback',
   productId: 'store-screenshot-fallback',
@@ -329,7 +333,7 @@ Future<int> _seedDatabase(
       tags: const Value('agent,tmux,release'),
       notes: const Value('Local release-demo workspace for store captures.'),
       terminalThemeLightId: const Value(_terminalThemeLightId),
-      terminalThemeDarkId: const Value('velvet'),
+      terminalThemeDarkId: const Value(_terminalThemeDarkId),
       terminalFontFamily: const Value('monospace'),
       tmuxSessionName: const Value(_tmuxSessionName),
       tmuxWorkingDirectory: const Value(
@@ -481,7 +485,10 @@ Future<int> _seedDatabase(
     SettingKeys.defaultTerminalThemeLight,
     _terminalThemeLightId,
   );
-  await settings.setString(SettingKeys.defaultTerminalThemeDark, 'velvet');
+  await settings.setString(
+    SettingKeys.defaultTerminalThemeDark,
+    _terminalThemeDarkId,
+  );
   await settings.setBool(SettingKeys.terminalPathLinks, value: false);
   return terminalHostId;
 }

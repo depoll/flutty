@@ -26,6 +26,7 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
 import 'package:xterm/src/ui/selection_mode.dart';
@@ -36,7 +37,6 @@ import 'package:xterm/src/ui/terminal_theme.dart';
 import 'package:xterm/src/ui/themes.dart';
 
 import 'monkey_terminal_gesture_handler.dart';
-import 'monkey_terminal_painter.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
@@ -448,6 +448,18 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (mounted) {
       setState(() {});
     }
+  }
+
+  /// Re-sends a focus-gained report after terminal state changes.
+  ///
+  /// TUIs such as Codex re-query terminal colors after focus-gained events. The
+  /// app can use this after a theme change so those TUIs refresh cached
+  /// foreground/background colors without waiting for a real focus transition.
+  void refreshFocusReport() {
+    if (!widget.terminal.reportFocusMode) {
+      return;
+    }
+    widget.terminal.onOutput?.call(_terminalFocusInReport);
   }
 
   @override
@@ -1121,7 +1133,7 @@ class MonkeyRenderTerminal extends RenderBox
          status: SelectionStatus.none,
          hasContent: terminal.buffer.lines.length > 0,
        ),
-       _painter = MonkeyTerminalPainter(
+       _painter = TerminalPainter(
          theme: theme,
          textStyle: textStyle,
          textScaler: textScaler,
@@ -1278,7 +1290,7 @@ class MonkeyRenderTerminal extends RenderBox
   ({TerminalSize viewportSize, ({int width, int height}) pixelSize})?
   _pendingTerminalResize;
 
-  final MonkeyTerminalPainter _painter;
+  final TerminalPainter _painter;
 
   var _stickToBottom = true;
 

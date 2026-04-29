@@ -3564,7 +3564,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (_connectionId == null
             ? null
             : _sessionsNotifier?.getSession(_connectionId!));
+    final previousTheme = targetSession?.terminalTheme;
     targetSession?.terminalTheme = theme;
+    if (previousTheme != null &&
+        previousTheme.id != theme.id &&
+        targetSession?.terminal == _terminal) {
+      _terminalViewKey.currentState?.refreshFocusReport();
+    }
   }
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {

@@ -82,7 +82,8 @@ void main() {
       expect(
         buildAgentLaunchCommand(preset),
         'tmux new-session -A -s \'nightly review\' -c '
-        '"\$HOME/src/app" -x 160 -y 48 \'codex --message "hello"\'',
+        '"\$HOME/src/app" -x 160 -y 48 \'codex --message "hello"\' '
+        r'\; set-option -g focus-events on',
       );
     });
 
@@ -108,7 +109,8 @@ void main() {
         expect(
           buildAgentLaunchCommand(preset),
           'tmux new-session -A -s \'nightly review\' '
-          '-x 160 -y 48 \'gemini\'',
+          '-x 160 -y 48 \'gemini\' '
+          r'\; set-option -g focus-events on',
         );
       },
     );
@@ -122,7 +124,8 @@ void main() {
 
       expect(
         buildAgentLaunchCommand(preset),
-        "tmux new-session -A -s 'nightly review' -n 'review window' 'codex'",
+        "tmux new-session -A -s 'nightly review' -n 'review window' "
+        r"'codex' \; set-option -g focus-events on",
       );
     });
 
@@ -154,7 +157,7 @@ void main() {
 
       expect(
         buildAgentLaunchCommand(preset),
-        r"tmux new-session -A -s 'copilot' 'copilot' \; set status off",
+        r"tmux new-session -A -s 'copilot' 'copilot' \; set status off \; set-option -g focus-events on",
       );
     });
 
@@ -177,7 +180,8 @@ void main() {
       expect(
         buildAgentLaunchCommand(preset),
         "tmux new-session -A -s 'oc-session' -c "
-        '"\$HOME/work" \'opencode\'',
+        '"\$HOME/work" \'opencode\' '
+        r'\; set-option -g focus-events on',
       );
     });
 
