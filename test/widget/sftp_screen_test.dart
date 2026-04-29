@@ -152,6 +152,44 @@ void main() {
       expect(find.byIcon(Icons.close), findsOneWidget);
     });
 
+    testWidgets('close affordance warns before discarding unsaved edits', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => FilledButton(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<String>(
+                    builder: (_) => buildRemoteTextEditorScreenForTesting(
+                      fileName: 'notes.txt',
+                      controller: controller,
+                    ),
+                  ),
+                );
+              },
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open editor'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'beta');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Close editor'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Discard changes?'), findsOneWidget);
+      expect(find.text('Edit notes.txt'), findsOneWidget);
+    });
+
     testWidgets(
       'starts at line 1 when the incoming controller selection is invalid',
       (tester) async {

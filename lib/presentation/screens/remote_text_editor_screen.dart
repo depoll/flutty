@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -644,7 +645,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
             leading: IconButton(
               icon: const Icon(Icons.close),
               tooltip: 'Close editor',
-              onPressed: () => Navigator.pop(context),
+              onPressed: () => unawaited(Navigator.of(context).maybePop()),
             ),
             title: Text('Edit ${widget.fileName}'),
             actions: [

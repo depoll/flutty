@@ -44,18 +44,11 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
   @override
   void initState() {
     super.initState();
-    _contentController.addListener(_handleCommandChanged);
     unawaited(_loadFolders());
     if (widget.snippetId != null) {
       unawaited(_loadSnippet());
     } else {
       _initialDraft = _currentDraft();
-    }
-  }
-
-  void _handleCommandChanged() {
-    if (mounted) {
-      setState(() {});
     }
   }
 
@@ -86,7 +79,6 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
 
   @override
   void dispose() {
-    _contentController.removeListener(_handleCommandChanged);
     _nameController.dispose();
     _contentController.dispose();
     _descriptionController.dispose();
