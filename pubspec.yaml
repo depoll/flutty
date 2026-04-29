@@ -70,6 +70,10 @@ dependencies:
   quick_actions: ^1.1.0
   video_player: ^2.11.1
 
+  # Network / connectivity
+  network_info_plus: ^6.1.4
+  permission_handler: ^11.3.1
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
