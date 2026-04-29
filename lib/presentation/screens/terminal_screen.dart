@@ -4189,6 +4189,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       _terminalViewKey.currentState?.refreshTerminalSize();
     });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -5582,6 +5583,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   void didChangeMetrics() {
+    super.didChangeMetrics();
     _scheduleTerminalSizeRefresh();
   }
 

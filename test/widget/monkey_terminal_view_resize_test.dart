@@ -94,6 +94,98 @@ void main() {
     expect(resizeEvents.last, initialEvent);
   });
 
+  testWidgets('same-size refresh preserves terminal scroll margins', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+      ),
+    );
+
+    expect(resizeEvents, isNotEmpty);
+    final initialCount = resizeEvents.length;
+    terminal.setMargins(1, 2);
+    expect(terminal.buffer.marginTop, 1);
+    expect(terminal.buffer.marginBottom, 2);
+
+    terminalKey.currentState!.refreshTerminalSize();
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(terminal.buffer.marginTop, 1);
+    expect(terminal.buffer.marginBottom, 2);
+  });
+
+  testWidgets('pixel-only resize preserves terminal scroll margins', (
+    tester,
+  ) async {
+    final terminal = Terminal();
+    final terminalKey = GlobalKey<MonkeyTerminalViewState>();
+    final resizeEvents =
+        <({int width, int height, int pixelWidth, int pixelHeight})>[];
+    terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      resizeEvents.add((
+        width: width,
+        height: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      ));
+    };
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: const Size(320, 240),
+      ),
+    );
+
+    final renderTerminal = terminalKey.currentState!.renderTerminal;
+    final cellSize = renderTerminal.cellSize;
+    final columns = terminal.viewWidth;
+    final rows = terminal.viewHeight;
+    final nextSize = Size(
+      (columns * cellSize.width) + (cellSize.width * 0.5),
+      (rows * cellSize.height) + (cellSize.height * 0.5),
+    );
+    final initialCount = resizeEvents.length;
+
+    terminal.setMargins(1, 2);
+    expect(terminal.buffer.marginTop, 1);
+    expect(terminal.buffer.marginBottom, 2);
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        terminalKey: terminalKey,
+        size: nextSize,
+      ),
+    );
+
+    expect(resizeEvents, hasLength(initialCount + 1));
+    expect(resizeEvents.last.width, columns);
+    expect(resizeEvents.last.height, rows);
+    expect(resizeEvents.last.pixelWidth, nextSize.width.round());
+    expect(resizeEvents.last.pixelHeight, nextSize.height.round());
+    expect(terminal.buffer.marginTop, 1);
+    expect(terminal.buffer.marginBottom, 2);
+  });
+
   testWidgets('keyboard inset changes debounce before the final resize', (
     tester,
   ) async {
