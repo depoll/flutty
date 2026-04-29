@@ -2537,10 +2537,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final connectionChanged = oldWidget.connectionId != widget.connectionId;
     final preferredSessionChanged =
         oldWidget.preferredSessionName != widget.preferredSessionName;
+    final tmuxExtraFlagsChanged =
+        oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
     if (connectionChanged) {
       unawaited(_loadPreferredSessionToolName());
     }
-    if (connectionChanged || preferredSessionChanged) {
+    if (connectionChanged || preferredSessionChanged || tmuxExtraFlagsChanged) {
       _tmuxQueryGeneration++;
       _tmuxRetryTimer?.cancel();
       _tmuxRetryTimer = null;
@@ -2553,6 +2555,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         _queried = false;
         _loadingWindows = false;
         _pendingWindowReload = false;
+        if (tmuxExtraFlagsChanged) {
+          _showSessions = false;
+          _hasInitializedSessionProviders = false;
+        }
       });
       unawaited(_queryTmux());
     }

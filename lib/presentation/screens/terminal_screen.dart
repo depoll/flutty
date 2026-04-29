@@ -596,12 +596,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           CurvedAnimation(parent: _bounceController, curve: Curves.easeInOut),
         );
     unawaited(_loadPreferredLaunchTool());
-    unawaited(
-      _tmux.prefetchInstalledAgentTools(
-        widget.session,
-        extraFlags: widget.tmuxExtraFlags,
-      ),
-    );
+    unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
     _loadWindows();
     _subscribeToWindowChanges();
   }
@@ -644,12 +639,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
           }
         });
       }
-      unawaited(
-        _tmux.prefetchInstalledAgentTools(
-          widget.session,
-          extraFlags: widget.tmuxExtraFlags,
-        ),
-      );
+      unawaited(_tmux.prefetchInstalledAgentTools(widget.session));
     } else if (!(_windows?.isNotEmpty ?? false)) {
       setState(() => _isLoading = true);
     }

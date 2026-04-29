@@ -232,9 +232,8 @@ class TmuxService {
   /// Stale cached results are returned immediately while a refresh runs in
   /// the background.
   Future<Set<AgentLaunchTool>> detectInstalledAgentTools(
-    SshSession session, {
-    String? extraFlags,
-  }) async {
+    SshSession session,
+  ) async {
     final cached = _installedAgentToolsCache[session.connectionId];
     if (cached != null) {
       final age = DateTime.now().difference(cached.cachedAt);
@@ -248,19 +247,16 @@ class TmuxService {
         },
       );
       if (age >= _installedAgentToolsFreshTtl) {
-        unawaited(_refreshInstalledAgentTools(session, extraFlags: extraFlags));
+        unawaited(_refreshInstalledAgentTools(session));
       }
       return cached.tools;
     }
 
-    return _refreshInstalledAgentTools(session, extraFlags: extraFlags);
+    return _refreshInstalledAgentTools(session);
   }
 
   /// Warms the installed agent CLI cache in the background.
-  Future<void> prefetchInstalledAgentTools(
-    SshSession session, {
-    String? extraFlags,
-  }) async {
+  Future<void> prefetchInstalledAgentTools(SshSession session) async {
     final cached = _installedAgentToolsCache[session.connectionId];
     if (cached != null &&
         DateTime.now().difference(cached.cachedAt) <
@@ -276,11 +272,7 @@ class TmuxService {
       return;
     }
     try {
-      await _refreshInstalledAgentTools(
-        session,
-        priority: SshExecPriority.low,
-        extraFlags: extraFlags,
-      );
+      await _refreshInstalledAgentTools(session, priority: SshExecPriority.low);
     } on Object catch (error) {
       DiagnosticsLogService.instance.debug(
         'tmux.agent',
@@ -296,7 +288,6 @@ class TmuxService {
   Future<Set<AgentLaunchTool>> _refreshInstalledAgentTools(
     SshSession session, {
     SshExecPriority priority = SshExecPriority.normal,
-    String? extraFlags,
   }) {
     final existingRequest = _installedAgentToolRequests[session.connectionId];
     if (existingRequest != null) {
@@ -1471,18 +1462,36 @@ String? resolveTmuxClientFlagsFromExtraFlags(String? extraFlags) {
       continue;
     }
     if (token.value.length > 2) {
-      clientFlags.add(token.raw);
+      clientFlags.add(_buildReusableTmuxClientFlag(token.value));
       continue;
     }
     if (index + 1 >= tokens.length ||
         _isTmuxCommandSeparatorToken(tokens[index + 1].value)) {
       continue;
     }
-    clientFlags.add('${token.raw} ${tokens[index + 1].raw}');
+    clientFlags.add(
+      '${token.value} ${_shellQuoteReusableTmuxClientFlagValue(tokens[index + 1].value)}',
+    );
     index++;
   }
 
   return clientFlags.isEmpty ? null : clientFlags.join(' ');
+}
+
+String _buildReusableTmuxClientFlag(String tokenValue) {
+  final flag = tokenValue.substring(0, 2);
+  final value = tokenValue.substring(2);
+  return '$flag ${_shellQuoteReusableTmuxClientFlagValue(value)}';
+}
+
+String _shellQuoteReusableTmuxClientFlagValue(String value) {
+  if (value == '~') {
+    return r'"$HOME"';
+  }
+  if (value.startsWith('~/')) {
+    return r'"$HOME"' + TmuxService._shellQuote(value.substring(1));
+  }
+  return TmuxService._shellQuote(value);
 }
 
 List<_ShellToken>? _tokenizeShellFragment(String? value) {
@@ -1859,7 +1868,10 @@ class _TmuxWindowChangeObserver {
         session,
         service._wrapCommand(
           session,
-          buildTmuxControlModeAttachCommand(sessionName),
+          buildTmuxControlModeAttachCommand(
+            sessionName,
+            extraFlags: extraFlags,
+          ),
         ),
         // tmux control mode stays silent over a plain exec channel on some SSH
         // servers. Request a dedicated PTY so `%subscription-changed` events

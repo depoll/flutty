@@ -77,6 +77,7 @@ Host _buildHost({
   required int id,
   String? autoConnectCommand,
   String? tmuxSessionName,
+  String? tmuxExtraFlags,
 }) => Host(
   id: id,
   label: 'Terminal test host',
@@ -85,6 +86,7 @@ Host _buildHost({
   username: 'root',
   autoConnectCommand: autoConnectCommand,
   tmuxSessionName: tmuxSessionName,
+  tmuxExtraFlags: tmuxExtraFlags,
   isFavorite: false,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
@@ -812,6 +814,7 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'alerts';
+        const tmuxExtraFlags = '-S /tmp/alerts.sock';
         const targetWindowIndex = 3;
         final windows = <TmuxWindow>[
           const TmuxWindow(index: 1, name: 'shell', isActive: true),
@@ -828,24 +831,46 @@ void main() {
           }
           return shellChannel;
         });
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          tmuxExtraFlags: tmuxExtraFlags,
+        );
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.hasSessionOrThrow(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) async => true);
         when(
-          () => tmuxService.listWindows(session, tmuxSessionName),
+          () => tmuxService.listWindows(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) async => windows);
         when(
           () => tmuxService.selectWindow(
             session,
             tmuxSessionName,
             targetWindowIndex,
+            extraFlags: tmuxExtraFlags,
           ),
         ).thenAnswer((_) async {});
         when(
-          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+          () => tmuxService.hasForegroundClient(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) async => false);
         when(
-          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+          () => tmuxService.watchWindowChanges(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
@@ -895,11 +920,30 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            extraFlags: tmuxExtraFlags,
           ),
         ).called(1);
         verify(
-          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+          () => tmuxService.hasForegroundClient(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).called(1);
+        verify(
+          () => tmuxService.hasSessionOrThrow(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
+        ).called(1);
+        verify(
+          () => tmuxService.listWindows(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
+        ).called(greaterThanOrEqualTo(1));
         expect(find.textContaining('tmux action failed'), findsNothing);
         expect(
           find.text(

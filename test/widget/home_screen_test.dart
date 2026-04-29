@@ -145,6 +145,7 @@ Host _buildHost({
   required int sortOrder,
   String? autoConnectCommand,
   String? tmuxSessionName,
+  String? tmuxExtraFlags,
 }) => Host(
   id: id,
   label: label,
@@ -170,7 +171,7 @@ Host _buildHost({
   autoConnectRequiresConfirmation: false,
   tmuxSessionName: tmuxSessionName,
   tmuxWorkingDirectory: null,
-  tmuxExtraFlags: null,
+  tmuxExtraFlags: tmuxExtraFlags,
   sortOrder: sortOrder,
 );
 
@@ -732,6 +733,117 @@ void main() {
       expect(find.text('correct-session · 1 windows'), findsOneWidget);
     },
   );
+
+  testWidgets('refreshes tmux badge when host extra flags change', (
+    tester,
+  ) async {
+    final db = AppDatabase.forTesting(NativeDatabase.memory());
+    addTearDown(db.close);
+    final tmuxService = _MockTmuxService();
+    final sshClient = _MockSshClient();
+    final hostsController = StreamController<List<Host>>.broadcast();
+    addTearDown(hostsController.close);
+
+    final session = SshSession(
+      connectionId: 7,
+      hostId: 1,
+      client: sshClient,
+      config: const SshConnectionConfig(
+        hostname: 'alpha.example.com',
+        port: 22,
+        username: 'root',
+      ),
+    );
+    final sessionsNotifier = _MutableActiveSessionsNotifier(
+      initialConnections: [_buildActiveConnection(connectionId: 7, hostId: 1)],
+      initialSessions: [session],
+    );
+
+    const oldFlags = '-S /tmp/old.sock';
+    const newFlags = '-S /tmp/new.sock';
+    when(
+      () => tmuxService.hasSession(session, 'work', extraFlags: oldFlags),
+    ).thenAnswer((_) async => true);
+    when(
+      () =>
+          tmuxService.watchWindowChanges(session, 'work', extraFlags: oldFlags),
+    ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+    when(
+      () => tmuxService.listWindows(session, 'work', extraFlags: oldFlags),
+    ).thenAnswer(
+      (_) async => const <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'old-server', isActive: true),
+      ],
+    );
+    when(
+      () => tmuxService.hasSession(session, 'work', extraFlags: newFlags),
+    ).thenAnswer((_) async => true);
+    when(
+      () =>
+          tmuxService.watchWindowChanges(session, 'work', extraFlags: newFlags),
+    ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+    when(
+      () => tmuxService.listWindows(session, 'work', extraFlags: newFlags),
+    ).thenAnswer(
+      (_) async => const <TmuxWindow>[
+        TmuxWindow(index: 0, name: 'new-server', isActive: true),
+      ],
+    );
+
+    await tester.pumpWidget(
+      buildMobileHomeScreen(
+        db: db,
+        overrides: [
+          activeSessionsProvider.overrideWith(() => sessionsNotifier),
+          allHostsProvider.overrideWith((ref) => hostsController.stream),
+          tmuxServiceProvider.overrideWithValue(tmuxService),
+        ],
+      ),
+    );
+    await tester.pump();
+    hostsController.add([
+      _buildHost(
+        id: 1,
+        label: 'Alpha',
+        sortOrder: 0,
+        tmuxSessionName: 'work',
+        tmuxExtraFlags: oldFlags,
+      ),
+    ]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    await tester.tap(find.text('Connections').first);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('work · 1 windows'), findsOneWidget);
+    await tester.tap(find.text('work · 1 windows'));
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+    expect(find.text('old-server'), findsOneWidget);
+
+    hostsController.add([
+      _buildHost(
+        id: 1,
+        label: 'Alpha',
+        sortOrder: 0,
+        tmuxSessionName: 'work',
+        tmuxExtraFlags: newFlags,
+      ),
+    ]);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 100));
+
+    expect(find.text('new-server'), findsOneWidget);
+    expect(find.text('old-server'), findsNothing);
+    verify(
+      () => tmuxService.listWindows(session, 'work', extraFlags: oldFlags),
+    ).called(1);
+    verify(
+      () => tmuxService.listWindows(session, 'work', extraFlags: newFlags),
+    ).called(1);
+  });
 
   testWidgets('returns to Hosts when the last active connection disappears', (
     tester,
