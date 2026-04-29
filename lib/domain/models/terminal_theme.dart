@@ -3,6 +3,146 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
+/// Builds an xterm-compatible response for terminal theme OSC color queries.
+///
+/// Modern TUIs use these queries (notably `OSC 11;?`) to detect whether the
+/// terminal background is light or dark. Returning `null` means the OSC
+/// sequence is not a color query and should be handled by other OSC handlers.
+String? buildTerminalThemeOscResponse({
+  required TerminalThemeData theme,
+  required String code,
+  required List<String> args,
+}) {
+  switch (code) {
+    case '4':
+      return _buildAnsiPaletteOscResponse(theme, args);
+    case '10':
+      return _buildSingleColorOscResponse(code, theme.foreground, args);
+    case '11':
+      return _buildSingleColorOscResponse(code, theme.background, args);
+    case '12':
+      return _buildSingleColorOscResponse(code, theme.cursor, args);
+    case '17':
+      return _buildSingleColorOscResponse(code, theme.selection, args);
+    case '19':
+      return _buildSingleColorOscResponse(code, theme.foreground, args);
+    default:
+      return null;
+  }
+}
+
+String? _buildSingleColorOscResponse(
+  String code,
+  Color color,
+  List<String> args,
+) {
+  if (args.isEmpty || args.first.trim() != '?') {
+    return null;
+  }
+  return _formatOscColorResponse(code, color);
+}
+
+String? _buildAnsiPaletteOscResponse(
+  TerminalThemeData theme,
+  List<String> args,
+) {
+  final responses = <String>[];
+  for (var index = 0; index + 1 < args.length; index += 2) {
+    final colorIndex = int.tryParse(args[index].trim());
+    if (colorIndex == null || args[index + 1].trim() != '?') {
+      continue;
+    }
+    final color = _terminalPaletteColor(theme, colorIndex);
+    if (color == null) {
+      continue;
+    }
+    responses.add(
+      _formatOscColorResponse('4', color, paletteIndex: colorIndex),
+    );
+  }
+  if (responses.isEmpty) {
+    return null;
+  }
+  return responses.join();
+}
+
+Color? _terminalPaletteColor(TerminalThemeData theme, int index) {
+  switch (index) {
+    case 0:
+      return theme.black;
+    case 1:
+      return theme.red;
+    case 2:
+      return theme.green;
+    case 3:
+      return theme.yellow;
+    case 4:
+      return theme.blue;
+    case 5:
+      return theme.magenta;
+    case 6:
+      return theme.cyan;
+    case 7:
+      return theme.white;
+    case 8:
+      return theme.brightBlack;
+    case 9:
+      return theme.brightRed;
+    case 10:
+      return theme.brightGreen;
+    case 11:
+      return theme.brightYellow;
+    case 12:
+      return theme.brightBlue;
+    case 13:
+      return theme.brightMagenta;
+    case 14:
+      return theme.brightCyan;
+    case 15:
+      return theme.brightWhite;
+  }
+
+  if (index >= 16 && index < 232) {
+    final colorIndex = index - 16;
+    final red = _xtermColorCubeComponent(colorIndex ~/ 36);
+    final green = _xtermColorCubeComponent((colorIndex ~/ 6) % 6);
+    final blue = _xtermColorCubeComponent(colorIndex % 6);
+    return Color.fromARGB(0xFF, red, green, blue);
+  }
+
+  if (index >= 232 && index <= 255) {
+    final level = 8 + ((index - 232) * 10);
+    return Color.fromARGB(0xFF, level, level, level);
+  }
+
+  return null;
+}
+
+int _xtermColorCubeComponent(int value) => value == 0 ? 0 : 55 + (value * 40);
+
+String _formatOscColorResponse(String code, Color color, {int? paletteIndex}) {
+  final colorSpec = _formatOscRgbColor(color);
+  final payload = paletteIndex == null
+      ? '$code;$colorSpec'
+      : '$code;$paletteIndex;$colorSpec';
+  return '\x1b]$payload\x1b\\';
+}
+
+String _formatOscRgbColor(Color color) {
+  final value = color.toARGB32();
+  final red = (value >> 16) & 0xFF;
+  final green = (value >> 8) & 0xFF;
+  final blue = value & 0xFF;
+  return 'rgb:${_formatOscRgbComponent(red)}/'
+      '${_formatOscRgbComponent(green)}/'
+      '${_formatOscRgbComponent(blue)}';
+}
+
+String _formatOscRgbComponent(int value) {
+  final hex = value.toRadixString(16).padLeft(2, '0');
+  return '$hex$hex';
+}
+
 /// Data model for a terminal color theme.
 ///
 /// Contains all 16 ANSI colors plus special colors for cursor, selection,
