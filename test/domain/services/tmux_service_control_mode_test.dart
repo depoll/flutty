@@ -26,6 +26,56 @@ void main() {
     );
 
     test(
+      'attach command includes reusable tmux client flags when provided',
+      () {
+        expect(
+          buildTmuxControlModeAttachCommand(
+            'main',
+            extraFlags: '-x 160 -S /tmp/tmux-socket -n editor',
+          ),
+          "tmux -S '/tmp/tmux-socket' -CC attach-session -f "
+          'read-only,ignore-size,no-output,wait-exit '
+          "-t 'main'",
+        );
+      },
+    );
+
+    test('extracts only reusable client flags from tmux extra flags', () {
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags(
+          r'-x 160 -S "/tmp/tmux socket" -y 48 \; set status off',
+        ),
+        "-S '/tmp/tmux socket'",
+      );
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags('-L alerts -f ~/.tmux.conf'),
+        r"""-L 'alerts' -f "$HOME"'/.tmux.conf'""",
+      );
+      expect(resolveTmuxClientFlagsFromExtraFlags('-x 200 -n editor'), isNull);
+    });
+
+    test('shell-quotes reusable client flag values', () {
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags(r'-S "$(touch /tmp/pwn)"'),
+        r"-S '$(touch /tmp/pwn)'",
+      );
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags('-L `id` -f /tmp/>out'),
+        "-L '`id`' -f '/tmp/>out'",
+      );
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags(
+          '-S/tmp/sock;id -Lname&&id -f/tmp/sock|id',
+        ),
+        "-S '/tmp/sock;id' -L 'name&&id' -f '/tmp/sock|id'",
+      );
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags('-S /tmp/socket ; set status off'),
+        "-S '/tmp/socket'",
+      );
+    });
+
+    test(
       'subscription command watches all windows in the attached session',
       () {
         const sep = tmuxWindowFieldSeparator;
@@ -479,6 +529,38 @@ void main() {
       },
     );
 
+    test('listWindows uses only reusable client flags when provided', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(
+        stdout:
+            '1|editor|1|vim|/tmp|*|vim-title|1712930000\n'
+            '${_doneMarker()}',
+      );
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.listWindows(
+        session,
+        'main',
+        extraFlags: r'-S /tmp/socket -x 160 \; set status off',
+      );
+
+      final command =
+          verify(
+                () => client.execute(captureAny(), pty: any(named: 'pty')),
+              ).captured.single
+              as String;
+      expect(
+        command,
+        contains("tmux -u -S '/tmp/socket' list-windows -t 'main' -F "),
+      );
+      expect(command, isNot(contains('set status off')));
+    });
+
     test('listWindows coalesces duplicate in-flight reloads', () async {
       final client = _MockSshClient();
       final session = _buildSession(client);
@@ -594,6 +676,56 @@ void main() {
     );
 
     test(
+      'watchWindowChanges attaches with only reusable client flags',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.from([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final subscription = service
+            .watchWindowChanges(
+              session,
+              'main',
+              extraFlags: r'-S /tmp/socket -x 160 \; set status off',
+            )
+            .listen((_) {});
+        await untilCalled(
+          () => client.execute(
+            any(that: contains('attach-session')),
+            pty: any(named: 'pty'),
+          ),
+        );
+
+        final command =
+            verify(
+                  () => client.execute(
+                    captureAny(that: contains('attach-session')),
+                    pty: any(named: 'pty'),
+                  ),
+                ).captured.single
+                as String;
+        expect(
+          command,
+          contains(
+            "/usr/bin/tmux -u -S '/tmp/socket' -CC attach-session -f "
+            'read-only,ignore-size,no-output,wait-exit ',
+          ),
+        );
+        expect(command, isNot(contains('set status off')));
+
+        await subscription.cancel();
+      },
+    );
+
+    test(
       'selectWindow completes when stdout stays open after the done marker',
       () async {
         final client = _MockSshClient();
@@ -619,6 +751,38 @@ void main() {
           ),
         ).called(1);
         verify(execSession.close).called(1);
+      },
+    );
+
+    test(
+      'selectWindow uses only reusable client flags when provided',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
+
+        await service.selectWindow(
+          session,
+          'main',
+          2,
+          extraFlags: r'-S /tmp/socket -x 160 \; set status off',
+        );
+
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u -S '/tmp/socket' select-window -t 'main':2",
+              ),
+            ),
+            pty: any(named: 'pty'),
+          ),
+        ).called(1);
       },
     );
 
@@ -894,10 +1058,16 @@ Stream<Uint8List> _closedUtf8Stream(String value) =>
 
 void _ignoreInvocation(Invocation _) {}
 
-SSHSession _buildOpenExecSession({String stdout = '', String stderr = ''}) {
+SSHSession _buildOpenExecSession({
+  String stdout = '',
+  String stderr = '',
+  Future<void>? done,
+}) {
   final session = _MockExecSession();
+  final doneFuture = done ?? Completer<void>().future;
   when(() => session.stdout).thenAnswer((_) => _openUtf8Stream(stdout));
   when(() => session.stderr).thenAnswer((_) => _openUtf8Stream(stderr));
+  when(() => session.done).thenAnswer((_) => doneFuture);
   when(session.close).thenAnswer(_ignoreInvocation);
   return session;
 }
@@ -906,6 +1076,7 @@ SSHSession _buildClosedExecSession({String stdout = '', String stderr = ''}) {
   final session = _MockExecSession();
   when(() => session.stdout).thenAnswer((_) => _closedUtf8Stream(stdout));
   when(() => session.stderr).thenAnswer((_) => _closedUtf8Stream(stderr));
+  when(() => session.done).thenAnswer((_) => Future<void>.value());
   when(session.close).thenAnswer(_ignoreInvocation);
   return session;
 }
