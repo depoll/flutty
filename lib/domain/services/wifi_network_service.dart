@@ -18,21 +18,30 @@ class WifiNetworkService {
 
   /// Whether SSID detection is supported on the current platform at all.
   ///
-  /// `network_info_plus` returns SSIDs on Android, iOS, and macOS. Windows,
-  /// Linux, and web are unsupported and return `null` rather than prompting
-  /// for unavailable permissions.
+  /// `network_info_plus` returns SSIDs on Android, iOS, macOS, Windows
+  /// (via Win32 WLAN APIs), and Linux (via NetworkManager over D-Bus). Web
+  /// is the only unsupported target and falls through to `null`.
   static bool get isSupported {
     if (kIsWeb) return false;
     return defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS ||
-        defaultTargetPlatform == TargetPlatform.macOS;
+        defaultTargetPlatform == TargetPlatform.macOS ||
+        defaultTargetPlatform == TargetPlatform.windows ||
+        defaultTargetPlatform == TargetPlatform.linux;
   }
 
   /// Whether SSID detection requires a runtime location-permission grant via
-  /// `permission_handler` on the current platform. Only Android and iOS have
-  /// a working `permission_handler` backend; on macOS the entitlement plus
-  /// CoreLocation handles the first-use prompt natively when
-  /// `network_info_plus` reads the SSID.
+  /// `permission_handler` on the current platform.
+  ///
+  /// - **Android** requires `ACCESS_FINE_LOCATION` for `WifiManager` to
+  ///   return the actual SSID.
+  /// - **iOS** needs the location prompt to back the
+  ///   `com.apple.developer.networking.wifi-info` entitlement.
+  /// - **macOS** uses CoreLocation's first-use prompt natively, fired by
+  ///   `network_info_plus` without a `permission_handler` round-trip.
+  /// - **Windows** and **Linux** read from system services (Win32 WLAN /
+  ///   NetworkManager) that don't require a per-app grant for read-only
+  ///   SSID lookups.
   static bool get _requiresLocationPermission =>
       isSupported &&
       (defaultTargetPlatform == TargetPlatform.android ||
