@@ -40,8 +40,12 @@ const modifierChordFollowUpWindow = Duration(milliseconds: 500);
 const terminalKeyboardTapLongPressTimeout = kLongPressTimeout;
 
 /// How long iOS keeps the IME buffer intact after a trailing backspace.
+///
+/// Held iOS backspace can briefly pause between native repeat phases, so keep
+/// the buffer alive long enough that those pauses do not fall back to the slow
+/// marker-deletion path.
 @visibleForTesting
-const terminalIosBackspaceRepeatSettleDelay = Duration(milliseconds: 250);
+const terminalIosBackspaceRepeatSettleDelay = Duration(seconds: 2);
 
 /// Delay before iOS hardware keys begin app-controlled repeat.
 @visibleForTesting
