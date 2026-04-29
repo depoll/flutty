@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:monkeyssh/presentation/screens/remote_text_editor_screen.dart';
 
@@ -24,6 +25,30 @@ Widget _buildRemoteEditorWithKeyboardInset({
     ),
   ),
 );
+
+class _WideTokenController extends TextEditingController {
+  _WideTokenController({required super.text});
+
+  @override
+  TextSpan buildTextSpan({
+    required BuildContext context,
+    required bool withComposing,
+    TextStyle? style,
+  }) {
+    const plainPrefix = 'plain ';
+    final baseStyle = style ?? const TextStyle();
+    return TextSpan(
+      style: baseStyle,
+      children: [
+        TextSpan(text: text.substring(0, plainPrefix.length)),
+        TextSpan(
+          text: text.substring(plainPrefix.length),
+          style: baseStyle.copyWith(letterSpacing: 10),
+        ),
+      ],
+    );
+  }
+}
 
 void main() {
   group('currentLinePrefixAtTextOffset', () {
@@ -97,6 +122,35 @@ void main() {
         15,
       );
     });
+
+    test('measures rich text spans when resolving nowrap content width', () {
+      const plainStyle = TextStyle(fontSize: 14);
+      const line = 'plain wide wide wide';
+      final plainWidth = measureUnwrappedEditorContentWidth(
+        lines: const [line],
+        style: plainStyle,
+        textDirection: TextDirection.ltr,
+        textScaler: TextScaler.noScaling,
+        trailingSlack: 0,
+      );
+      final richWidth = measureUnwrappedEditorTextSpanContentWidth(
+        textSpan: TextSpan(
+          style: plainStyle,
+          children: [
+            const TextSpan(text: 'plain '),
+            TextSpan(
+              text: 'wide wide wide',
+              style: plainStyle.copyWith(letterSpacing: 10),
+            ),
+          ],
+        ),
+        textDirection: TextDirection.ltr,
+        textScaler: TextScaler.noScaling,
+        trailingSlack: 0,
+      );
+
+      expect(richWidth, greaterThan(plainWidth + 50));
+    });
   });
 
   group('resolveRemoteEditorCaretPosition', () {
@@ -150,6 +204,44 @@ void main() {
 
       expect(find.byTooltip('Close editor'), findsOneWidget);
       expect(find.byIcon(Icons.close), findsOneWidget);
+    });
+
+    testWidgets('close affordance warns before discarding unsaved edits', (
+      tester,
+    ) async {
+      final controller = TextEditingController(text: 'alpha');
+      addTearDown(controller.dispose);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Builder(
+            builder: (context) => FilledButton(
+              onPressed: () {
+                Navigator.of(context).push(
+                  MaterialPageRoute<String>(
+                    builder: (_) => buildRemoteTextEditorScreenForTesting(
+                      fileName: 'notes.txt',
+                      controller: controller,
+                    ),
+                  ),
+                );
+              },
+              child: const Text('Open editor'),
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.text('Open editor'));
+      await tester.pumpAndSettle();
+      await tester.enterText(find.byType(TextField), 'beta');
+      await tester.pump();
+      await tester.tap(find.byTooltip('Close editor'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Discard changes?'), findsOneWidget);
+      expect(find.text('Edit notes.txt'), findsOneWidget);
     });
 
     testWidgets(
@@ -309,6 +401,44 @@ void main() {
         expect(closedViewportRect.height, greaterThan(openViewportRect.height));
       },
     );
+
+    testWidgets('does not soft-wrap rich highlighted text when wrap is off', (
+      tester,
+    ) async {
+      final longLine = 'plain ${List<String>.filled(80, 'wide').join(' ')}';
+      final controller = _WideTokenController(text: longLine);
+
+      addTearDown(() async {
+        await tester.binding.setSurfaceSize(null);
+        controller.dispose();
+      });
+
+      await tester.binding.setSurfaceSize(const Size(420, 720));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: buildRemoteTextEditorScreenForTesting(
+            fileName: 'notes.txt',
+            controller: controller,
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final renderEditableFinder = find.byElementPredicate(
+        (element) => element.renderObject is RenderEditable,
+      );
+      final renderEditable = tester.renderObject<RenderEditable>(
+        renderEditableFinder,
+      );
+      final firstLineStart = renderEditable.getLocalRectForCaret(
+        const TextPosition(offset: 0),
+      );
+      final firstLineEnd = renderEditable.getLocalRectForCaret(
+        TextPosition(offset: longLine.length),
+      );
+
+      expect(firstLineEnd.top, closeTo(firstLineStart.top, 0.1));
+    });
 
     testWidgets('shows status details plus wrap and zoom controls', (
       tester,

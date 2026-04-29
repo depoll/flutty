@@ -1734,6 +1734,7 @@ class _ConnectionsPanel extends ConsumerWidget {
                             ),
                             connectionId: connection.connectionId,
                             preferredSessionName: preferredTmuxSessionName,
+                            tmuxExtraFlags: host?.tmuxExtraFlags,
                             onTap: () => unawaited(
                               context.push(
                                 '/terminal/${connection.hostId}'
@@ -2485,11 +2486,13 @@ class _TmuxConnectionBadge extends ConsumerStatefulWidget {
     required this.connectionId,
     required this.onTap,
     this.preferredSessionName,
+    this.tmuxExtraFlags,
     super.key,
   });
 
   final int connectionId;
   final String? preferredSessionName;
+  final String? tmuxExtraFlags;
 
   /// Called when the user taps a window chip — opens the terminal.
   final VoidCallback onTap;
@@ -2534,10 +2537,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final connectionChanged = oldWidget.connectionId != widget.connectionId;
     final preferredSessionChanged =
         oldWidget.preferredSessionName != widget.preferredSessionName;
+    final tmuxExtraFlagsChanged =
+        oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
     if (connectionChanged) {
       unawaited(_loadPreferredSessionToolName());
     }
-    if (connectionChanged || preferredSessionChanged) {
+    if (connectionChanged || preferredSessionChanged || tmuxExtraFlagsChanged) {
       _tmuxQueryGeneration++;
       _tmuxRetryTimer?.cancel();
       _tmuxRetryTimer = null;
@@ -2550,6 +2555,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
         _queried = false;
         _loadingWindows = false;
         _pendingWindowReload = false;
+        if (tmuxExtraFlagsChanged) {
+          _showSessions = false;
+          _hasInitializedSessionProviders = false;
+        }
       });
       unawaited(_queryTmux());
     }
@@ -2708,8 +2717,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final preferredSessionName = widget.preferredSessionName?.trim();
     final active =
         preferredSessionName != null && preferredSessionName.isNotEmpty
-        ? await tmux.hasSession(session, preferredSessionName)
-        : await tmux.isTmuxActive(session);
+        ? await tmux.hasSession(
+            session,
+            preferredSessionName,
+            extraFlags: widget.tmuxExtraFlags,
+          )
+        : await tmux.isTmuxActive(session, extraFlags: widget.tmuxExtraFlags);
     if (!_isCurrentTmuxQuery(queryGeneration)) {
       return;
     }
@@ -2721,7 +2734,10 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     final sessionName =
         preferredSessionName != null && preferredSessionName.isNotEmpty
         ? preferredSessionName
-        : await tmux.currentSessionName(session);
+        : await tmux.currentSessionName(
+            session,
+            extraFlags: widget.tmuxExtraFlags,
+          );
     if (!_isCurrentTmuxQuery(queryGeneration)) {
       return;
     }
@@ -2733,7 +2749,11 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     await _windowChangeSubscription?.cancel();
     final generation = ++_windowEventGeneration;
     _windowChangeSubscription = tmux
-        .watchWindowChanges(session, sessionName)
+        .watchWindowChanges(
+          session,
+          sessionName,
+          extraFlags: widget.tmuxExtraFlags,
+        )
         .listen((event) {
           if (!_isCurrentTmuxQuery(queryGeneration)) return;
           _handleWindowChangeEvent(
@@ -2804,7 +2824,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     try {
       final windows = await ref
           .read(tmuxServiceProvider)
-          .listWindows(session, sessionName);
+          .listWindows(session, sessionName, extraFlags: widget.tmuxExtraFlags);
       if (!_isCurrentTmuxQuery(queryGeneration)) {
         return;
       }
@@ -3076,7 +3096,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
     _runTmuxPreviewAction(
       ref
           .read(tmuxServiceProvider)
-          .killWindow(session, _sessionName!, windowIndex),
+          .killWindow(
+            session,
+            _sessionName!,
+            windowIndex,
+            extraFlags: widget.tmuxExtraFlags,
+          ),
     );
 
     // Optimistically remove from the list.
@@ -3094,7 +3119,12 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
       _runTmuxPreviewAction(
         ref
             .read(tmuxServiceProvider)
-            .selectWindow(session, _sessionName!, windowIndex),
+            .selectWindow(
+              session,
+              _sessionName!,
+              windowIndex,
+              extraFlags: widget.tmuxExtraFlags,
+            ),
       );
     }
     widget.onTap();
@@ -3138,6 +3168,7 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
           command: command,
           name: info.toolName,
           workingDirectory: info.workingDirectory,
+          extraFlags: widget.tmuxExtraFlags,
         )
         .then((_) => widget.onTap())
         .ignore();

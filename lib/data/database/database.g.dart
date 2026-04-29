@@ -2112,6 +2112,17 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
       'REFERENCES hosts (id)',
     ),
   );
+  static const VerificationMeta _skipJumpHostOnSsidsMeta =
+      const VerificationMeta('skipJumpHostOnSsids');
+  @override
+  late final GeneratedColumn<String> skipJumpHostOnSsids =
+      GeneratedColumn<String>(
+        'skip_jump_host_on_ssids',
+        aliasedName,
+        true,
+        type: DriftSqlType.string,
+        requiredDuringInsert: false,
+      );
   static const VerificationMeta _isFavoriteMeta = const VerificationMeta(
     'isFavorite',
   );
@@ -2318,6 +2329,7 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
     keyId,
     groupId,
     jumpHostId,
+    skipJumpHostOnSsids,
     isFavorite,
     color,
     notes,
@@ -2405,6 +2417,15 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         jumpHostId.isAcceptableOrUnknown(
           data['jump_host_id']!,
           _jumpHostIdMeta,
+        ),
+      );
+    }
+    if (data.containsKey('skip_jump_host_on_ssids')) {
+      context.handle(
+        _skipJumpHostOnSsidsMeta,
+        skipJumpHostOnSsids.isAcceptableOrUnknown(
+          data['skip_jump_host_on_ssids']!,
+          _skipJumpHostOnSsidsMeta,
         ),
       );
     }
@@ -2585,6 +2606,10 @@ class $HostsTable extends Hosts with TableInfo<$HostsTable, Host> {
         DriftSqlType.int,
         data['${effectivePrefix}jump_host_id'],
       ),
+      skipJumpHostOnSsids: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}skip_jump_host_on_ssids'],
+      ),
       isFavorite: attachedDatabase.typeMapping.read(
         DriftSqlType.bool,
         data['${effectivePrefix}is_favorite'],
@@ -2690,6 +2715,11 @@ class Host extends DataClass implements Insertable<Host> {
   /// Reference to jump host for proxy connections.
   final int? jumpHostId;
 
+  /// Newline-separated list of Wi-Fi SSIDs on which the configured jump host
+  /// should be skipped (the host is reached directly when the device is on
+  /// one of these networks).
+  final String? skipJumpHostOnSsids;
+
   /// Whether this host is marked as favorite.
   final bool isFavorite;
 
@@ -2756,6 +2786,7 @@ class Host extends DataClass implements Insertable<Host> {
     this.keyId,
     this.groupId,
     this.jumpHostId,
+    this.skipJumpHostOnSsids,
     required this.isFavorite,
     this.color,
     this.notes,
@@ -2793,6 +2824,9 @@ class Host extends DataClass implements Insertable<Host> {
     }
     if (!nullToAbsent || jumpHostId != null) {
       map['jump_host_id'] = Variable<int>(jumpHostId);
+    }
+    if (!nullToAbsent || skipJumpHostOnSsids != null) {
+      map['skip_jump_host_on_ssids'] = Variable<String>(skipJumpHostOnSsids);
     }
     map['is_favorite'] = Variable<bool>(isFavorite);
     if (!nullToAbsent || color != null) {
@@ -2859,6 +2893,9 @@ class Host extends DataClass implements Insertable<Host> {
       jumpHostId: jumpHostId == null && nullToAbsent
           ? const Value.absent()
           : Value(jumpHostId),
+      skipJumpHostOnSsids: skipJumpHostOnSsids == null && nullToAbsent
+          ? const Value.absent()
+          : Value(skipJumpHostOnSsids),
       isFavorite: Value(isFavorite),
       color: color == null && nullToAbsent
           ? const Value.absent()
@@ -2916,6 +2953,9 @@ class Host extends DataClass implements Insertable<Host> {
       keyId: serializer.fromJson<int?>(json['keyId']),
       groupId: serializer.fromJson<int?>(json['groupId']),
       jumpHostId: serializer.fromJson<int?>(json['jumpHostId']),
+      skipJumpHostOnSsids: serializer.fromJson<String?>(
+        json['skipJumpHostOnSsids'],
+      ),
       isFavorite: serializer.fromJson<bool>(json['isFavorite']),
       color: serializer.fromJson<String?>(json['color']),
       notes: serializer.fromJson<String?>(json['notes']),
@@ -2962,6 +3002,7 @@ class Host extends DataClass implements Insertable<Host> {
       'keyId': serializer.toJson<int?>(keyId),
       'groupId': serializer.toJson<int?>(groupId),
       'jumpHostId': serializer.toJson<int?>(jumpHostId),
+      'skipJumpHostOnSsids': serializer.toJson<String?>(skipJumpHostOnSsids),
       'isFavorite': serializer.toJson<bool>(isFavorite),
       'color': serializer.toJson<String?>(color),
       'notes': serializer.toJson<String?>(notes),
@@ -2994,6 +3035,7 @@ class Host extends DataClass implements Insertable<Host> {
     Value<int?> keyId = const Value.absent(),
     Value<int?> groupId = const Value.absent(),
     Value<int?> jumpHostId = const Value.absent(),
+    Value<String?> skipJumpHostOnSsids = const Value.absent(),
     bool? isFavorite,
     Value<String?> color = const Value.absent(),
     Value<String?> notes = const Value.absent(),
@@ -3021,6 +3063,9 @@ class Host extends DataClass implements Insertable<Host> {
     keyId: keyId.present ? keyId.value : this.keyId,
     groupId: groupId.present ? groupId.value : this.groupId,
     jumpHostId: jumpHostId.present ? jumpHostId.value : this.jumpHostId,
+    skipJumpHostOnSsids: skipJumpHostOnSsids.present
+        ? skipJumpHostOnSsids.value
+        : this.skipJumpHostOnSsids,
     isFavorite: isFavorite ?? this.isFavorite,
     color: color.present ? color.value : this.color,
     notes: notes.present ? notes.value : this.notes,
@@ -3071,6 +3116,9 @@ class Host extends DataClass implements Insertable<Host> {
       jumpHostId: data.jumpHostId.present
           ? data.jumpHostId.value
           : this.jumpHostId,
+      skipJumpHostOnSsids: data.skipJumpHostOnSsids.present
+          ? data.skipJumpHostOnSsids.value
+          : this.skipJumpHostOnSsids,
       isFavorite: data.isFavorite.present
           ? data.isFavorite.value
           : this.isFavorite,
@@ -3126,6 +3174,7 @@ class Host extends DataClass implements Insertable<Host> {
           ..write('keyId: $keyId, ')
           ..write('groupId: $groupId, ')
           ..write('jumpHostId: $jumpHostId, ')
+          ..write('skipJumpHostOnSsids: $skipJumpHostOnSsids, ')
           ..write('isFavorite: $isFavorite, ')
           ..write('color: $color, ')
           ..write('notes: $notes, ')
@@ -3160,6 +3209,7 @@ class Host extends DataClass implements Insertable<Host> {
     keyId,
     groupId,
     jumpHostId,
+    skipJumpHostOnSsids,
     isFavorite,
     color,
     notes,
@@ -3191,6 +3241,7 @@ class Host extends DataClass implements Insertable<Host> {
           other.keyId == this.keyId &&
           other.groupId == this.groupId &&
           other.jumpHostId == this.jumpHostId &&
+          other.skipJumpHostOnSsids == this.skipJumpHostOnSsids &&
           other.isFavorite == this.isFavorite &&
           other.color == this.color &&
           other.notes == this.notes &&
@@ -3221,6 +3272,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
   final Value<int?> keyId;
   final Value<int?> groupId;
   final Value<int?> jumpHostId;
+  final Value<String?> skipJumpHostOnSsids;
   final Value<bool> isFavorite;
   final Value<String?> color;
   final Value<String?> notes;
@@ -3248,6 +3300,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.keyId = const Value.absent(),
     this.groupId = const Value.absent(),
     this.jumpHostId = const Value.absent(),
+    this.skipJumpHostOnSsids = const Value.absent(),
     this.isFavorite = const Value.absent(),
     this.color = const Value.absent(),
     this.notes = const Value.absent(),
@@ -3276,6 +3329,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     this.keyId = const Value.absent(),
     this.groupId = const Value.absent(),
     this.jumpHostId = const Value.absent(),
+    this.skipJumpHostOnSsids = const Value.absent(),
     this.isFavorite = const Value.absent(),
     this.color = const Value.absent(),
     this.notes = const Value.absent(),
@@ -3306,6 +3360,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Expression<int>? keyId,
     Expression<int>? groupId,
     Expression<int>? jumpHostId,
+    Expression<String>? skipJumpHostOnSsids,
     Expression<bool>? isFavorite,
     Expression<String>? color,
     Expression<String>? notes,
@@ -3334,6 +3389,8 @@ class HostsCompanion extends UpdateCompanion<Host> {
       if (keyId != null) 'key_id': keyId,
       if (groupId != null) 'group_id': groupId,
       if (jumpHostId != null) 'jump_host_id': jumpHostId,
+      if (skipJumpHostOnSsids != null)
+        'skip_jump_host_on_ssids': skipJumpHostOnSsids,
       if (isFavorite != null) 'is_favorite': isFavorite,
       if (color != null) 'color': color,
       if (notes != null) 'notes': notes,
@@ -3371,6 +3428,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
     Value<int?>? keyId,
     Value<int?>? groupId,
     Value<int?>? jumpHostId,
+    Value<String?>? skipJumpHostOnSsids,
     Value<bool>? isFavorite,
     Value<String?>? color,
     Value<String?>? notes,
@@ -3399,6 +3457,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
       keyId: keyId ?? this.keyId,
       groupId: groupId ?? this.groupId,
       jumpHostId: jumpHostId ?? this.jumpHostId,
+      skipJumpHostOnSsids: skipJumpHostOnSsids ?? this.skipJumpHostOnSsids,
       isFavorite: isFavorite ?? this.isFavorite,
       color: color ?? this.color,
       notes: notes ?? this.notes,
@@ -3450,6 +3509,11 @@ class HostsCompanion extends UpdateCompanion<Host> {
     }
     if (jumpHostId.present) {
       map['jump_host_id'] = Variable<int>(jumpHostId.value);
+    }
+    if (skipJumpHostOnSsids.present) {
+      map['skip_jump_host_on_ssids'] = Variable<String>(
+        skipJumpHostOnSsids.value,
+      );
     }
     if (isFavorite.present) {
       map['is_favorite'] = Variable<bool>(isFavorite.value);
@@ -3527,6 +3591,7 @@ class HostsCompanion extends UpdateCompanion<Host> {
           ..write('keyId: $keyId, ')
           ..write('groupId: $groupId, ')
           ..write('jumpHostId: $jumpHostId, ')
+          ..write('skipJumpHostOnSsids: $skipJumpHostOnSsids, ')
           ..write('isFavorite: $isFavorite, ')
           ..write('color: $color, ')
           ..write('notes: $notes, ')
@@ -6639,6 +6704,7 @@ typedef $$HostsTableCreateCompanionBuilder =
       Value<int?> keyId,
       Value<int?> groupId,
       Value<int?> jumpHostId,
+      Value<String?> skipJumpHostOnSsids,
       Value<bool> isFavorite,
       Value<String?> color,
       Value<String?> notes,
@@ -6668,6 +6734,7 @@ typedef $$HostsTableUpdateCompanionBuilder =
       Value<int?> keyId,
       Value<int?> groupId,
       Value<int?> jumpHostId,
+      Value<String?> skipJumpHostOnSsids,
       Value<bool> isFavorite,
       Value<String?> color,
       Value<String?> notes,
@@ -6820,6 +6887,11 @@ class $$HostsTableFilterComposer extends Composer<_$AppDatabase, $HostsTable> {
 
   ColumnFilters<String> get password => $composableBuilder(
     column: $table.password,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get skipJumpHostOnSsids => $composableBuilder(
+    column: $table.skipJumpHostOnSsids,
     builder: (column) => ColumnFilters(column),
   );
 
@@ -7060,6 +7132,11 @@ class $$HostsTableOrderingComposer
     builder: (column) => ColumnOrderings(column),
   );
 
+  ColumnOrderings<String> get skipJumpHostOnSsids => $composableBuilder(
+    column: $table.skipJumpHostOnSsids,
+    builder: (column) => ColumnOrderings(column),
+  );
+
   ColumnOrderings<bool> get isFavorite => $composableBuilder(
     column: $table.isFavorite,
     builder: (column) => ColumnOrderings(column),
@@ -7260,6 +7337,11 @@ class $$HostsTableAnnotationComposer
 
   GeneratedColumn<String> get password =>
       $composableBuilder(column: $table.password, builder: (column) => column);
+
+  GeneratedColumn<String> get skipJumpHostOnSsids => $composableBuilder(
+    column: $table.skipJumpHostOnSsids,
+    builder: (column) => column,
+  );
 
   GeneratedColumn<bool> get isFavorite => $composableBuilder(
     column: $table.isFavorite,
@@ -7491,6 +7573,7 @@ class $$HostsTableTableManager
                 Value<int?> keyId = const Value.absent(),
                 Value<int?> groupId = const Value.absent(),
                 Value<int?> jumpHostId = const Value.absent(),
+                Value<String?> skipJumpHostOnSsids = const Value.absent(),
                 Value<bool> isFavorite = const Value.absent(),
                 Value<String?> color = const Value.absent(),
                 Value<String?> notes = const Value.absent(),
@@ -7519,6 +7602,7 @@ class $$HostsTableTableManager
                 keyId: keyId,
                 groupId: groupId,
                 jumpHostId: jumpHostId,
+                skipJumpHostOnSsids: skipJumpHostOnSsids,
                 isFavorite: isFavorite,
                 color: color,
                 notes: notes,
@@ -7549,6 +7633,7 @@ class $$HostsTableTableManager
                 Value<int?> keyId = const Value.absent(),
                 Value<int?> groupId = const Value.absent(),
                 Value<int?> jumpHostId = const Value.absent(),
+                Value<String?> skipJumpHostOnSsids = const Value.absent(),
                 Value<bool> isFavorite = const Value.absent(),
                 Value<String?> color = const Value.absent(),
                 Value<String?> notes = const Value.absent(),
@@ -7577,6 +7662,7 @@ class $$HostsTableTableManager
                 keyId: keyId,
                 groupId: groupId,
                 jumpHostId: jumpHostId,
+                skipJumpHostOnSsids: skipJumpHostOnSsids,
                 isFavorite: isFavorite,
                 color: color,
                 notes: notes,

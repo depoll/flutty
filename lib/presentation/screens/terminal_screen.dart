@@ -590,6 +590,7 @@ class _TmuxExpandableBar extends StatefulWidget {
     required this.ref,
     required this.onAction,
     required this.onExpandedChanged,
+    this.tmuxExtraFlags,
     this.scopeWorkingDirectory,
     this.onWindowLoadStalled,
     this.onWindowsChanged,
@@ -601,6 +602,9 @@ class _TmuxExpandableBar extends StatefulWidget {
 
   /// The tmux session name.
   final String tmuxSessionName;
+
+  /// Optional extra flags for tmux commands (e.g. custom socket path).
+  final String? tmuxExtraFlags;
 
   /// The available terminal height the bar can expand into.
   final double availableHeight;
@@ -711,7 +715,8 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     super.didUpdateWidget(oldWidget);
     final sessionChanged =
         oldWidget.session.connectionId != widget.session.connectionId ||
-        oldWidget.tmuxSessionName != widget.tmuxSessionName;
+        oldWidget.tmuxSessionName != widget.tmuxSessionName ||
+        oldWidget.tmuxExtraFlags != widget.tmuxExtraFlags;
     final recoveryChanged =
         oldWidget.recoveryGeneration != widget.recoveryGeneration;
     if (!sessionChanged && !recoveryChanged) {
@@ -788,7 +793,11 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       },
     );
     _windowChangeSubscription = _tmux
-        .watchWindowChanges(widget.session, widget.tmuxSessionName)
+        .watchWindowChanges(
+          widget.session,
+          widget.tmuxSessionName,
+          extraFlags: widget.tmuxExtraFlags,
+        )
         .listen((event) => _handleWindowChangeEvent(event, generation));
   }
 
@@ -1025,6 +1034,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       final reloadedWindows = await _tmux.listWindows(
         widget.session,
         widget.tmuxSessionName,
+        extraFlags: widget.tmuxExtraFlags,
       );
       if (!mounted) return;
       if (reloadGeneration < _windowReloadGeneration) return;
@@ -1836,7 +1846,6 @@ final _terminalStandalonePathMetadataPattern = RegExp(
 );
 const _terminalSftpPathPrefix = 'monkeyssh-sftp-path:';
 const _terminalPathVerificationTimeout = Duration(seconds: 5);
-const _terminalInputIndicatorDuration = Duration(milliseconds: 700);
 
 typedef _TerminalPathMatch = ({
   String path,
@@ -1926,11 +1935,6 @@ double upgradeSnackBarBottomMargin(
   double keyboardToolbarHeight = 84,
   double baseSpacing = 16,
 }) => (showKeyboardToolbar ? keyboardToolbarHeight : 0) + baseSpacing;
-
-/// Resolves the transient indicator label for a terminal double-tap Tab gesture.
-@visibleForTesting
-String resolveTerminalTabGestureIndicatorLabel({required bool shiftActive}) =>
-    shiftActive ? 'Shift+Tab' : 'Tab';
 
 /// Resolves a readable display name for a picked upload file.
 @visibleForTesting
@@ -3302,7 +3306,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   int? _terminalDoubleTapConsumedPointer;
   Offset? _lastTerminalTapPosition;
   Duration? _lastTerminalTapTimestamp;
-  bool _recentlyHandledTerminalDoubleTap = false;
   int? _pendingTerminalMouseTapPointer;
   Offset? _pendingTerminalMouseTapDownPosition;
   Duration? _pendingTerminalMouseTapDownTimestamp;
@@ -3325,7 +3328,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _shellCompletionsSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
-  Timer? _terminalInputIndicatorTimer;
   Timer? _promptOutputImeResetTimer;
   Timer? _shellCompletionDebounceTimer;
   bool _isPollingRemoteClipboard = false;
@@ -3335,7 +3337,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
-  String? _terminalInputIndicatorLabel;
   int _shellCompletionGeneration = 0;
   String? _shellCompletionPromptPrefix;
   ShellCompletionInvocation? _shellCompletionInvocation;
@@ -3649,6 +3650,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     unawaited(_startSharedClipboardSync(targetSession));
+  }
+
+  void _applyTerminalThemeToSession(
+    TerminalThemeData theme, {
+    SshSession? session,
+  }) {
+    final targetSession =
+        session ??
+        _observedSession ??
+        (_connectionId == null
+            ? null
+            : _sessionsNotifier?.getSession(_connectionId!));
+    targetSession?.terminalTheme = theme;
+  }
+
+  TerminalThemeData _resolveEffectiveTerminalTheme() {
+    final isDark = Theme.of(context).brightness == Brightness.dark;
+    return _sessionThemeOverride ??
+        _currentTheme ??
+        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
   }
 
   Future<void> _startSharedClipboardSync(SshSession session) async {
@@ -4102,44 +4123,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalTextInputController.clearImeBuffer();
   }
 
-  void _handleTerminalDoubleTapDown(
-    TapDownDetails tapDetails,
-    CellOffset cellOffset,
-  ) {
-    if (_recentlyHandledTerminalDoubleTap) {
-      return;
-    }
-    _recentlyHandledTerminalDoubleTap = true;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      _recentlyHandledTerminalDoubleTap = false;
-    });
-
-    final shiftActive = _toolbarController.isShiftActive;
-    _terminalTextInputController.suppressNextTouchKeyboardRequest();
-    _terminal.textInput(resolveTerminalTabInput(shiftActive: shiftActive));
-    _followLiveOutput();
-    _toolbarController.consumeOneShot();
-    _showTerminalInputIndicator(
-      resolveTerminalTabGestureIndicatorLabel(shiftActive: shiftActive),
-    );
-  }
-
   void _handleTerminalLinkTapDown(
     TapDownDetails tapDetails,
     CellOffset cellOffset,
   ) {
     _terminalTextInputController.suppressNextTouchKeyboardRequest();
-  }
-
-  void _showTerminalInputIndicator(String label) {
-    _terminalInputIndicatorTimer?.cancel();
-    setState(() => _terminalInputIndicatorLabel = label);
-    _terminalInputIndicatorTimer = Timer(_terminalInputIndicatorDuration, () {
-      if (!mounted) {
-        return;
-      }
-      setState(() => _terminalInputIndicatorLabel = null);
-    });
   }
 
   void _queueTerminalScrollToBottom() {
@@ -4253,6 +4241,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (mounted) {
       setState(() => _currentTheme = theme);
+      _applyTerminalThemeToSession(theme);
     }
   }
 
@@ -4265,6 +4254,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (themeId == null) {
       if (mounted) {
         setState(() => _sessionThemeOverride = null);
+        _applyTerminalThemeToSession(
+          _resolveEffectiveTerminalTheme(),
+          session: session,
+        );
       }
       return false;
     }
@@ -4275,6 +4268,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return false;
     }
     setState(() => _sessionThemeOverride = resolvedTheme);
+    if (resolvedTheme != null) {
+      _applyTerminalThemeToSession(resolvedTheme, session: session);
+    }
     return resolvedTheme != null;
   }
 
@@ -4376,6 +4372,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
+        _applyTerminalThemeToSession(
+          _resolveEffectiveTerminalTheme(),
+          session: session,
+        );
         _shell = await session.getShell();
         _wireTerminalCallbacks(session);
         await _applySharedClipboardSetting(
@@ -4418,6 +4418,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _isUsingAltBuffer = _terminal.isUsingAltBuffer;
       _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       _terminal.addListener(_onTerminalStateChanged);
+      _applyTerminalThemeToSession(
+        _resolveEffectiveTerminalTheme(),
+        session: session,
+      );
 
       _shell = await session.getShell(
         pty: SSHPtyConfig(
@@ -4518,6 +4522,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     };
 
     _terminal.onResize = (width, height, pixelWidth, pixelHeight) {
+      session.updateTerminalWindowMetrics(
+        columns: width,
+        rows: height,
+        pixelWidth: pixelWidth,
+        pixelHeight: pixelHeight,
+      );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
     };
   }
@@ -4898,8 +4908,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         final bool active;
         try {
           active = candidateSessionName != null
-              ? await tmux.hasSessionOrThrow(session, candidateSessionName)
-              : await tmux.isTmuxActiveOrThrow(session);
+              ? await tmux.hasSessionOrThrow(
+                  session,
+                  candidateSessionName,
+                  extraFlags: host?.tmuxExtraFlags,
+                )
+              : await tmux.isTmuxActiveOrThrow(
+                  session,
+                  extraFlags: host?.tmuxExtraFlags,
+                );
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -4944,7 +4961,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
         var sessionName = candidateSessionName;
         try {
-          sessionName ??= await tmux.currentSessionName(session);
+          sessionName ??= await tmux.currentSessionName(
+            session,
+            extraFlags: host?.tmuxExtraFlags,
+          );
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -4973,7 +4993,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
         final List<TmuxWindow> windows;
         try {
-          windows = await tmux.listWindows(session, sessionName);
+          windows = await tmux.listWindows(
+            session,
+            sessionName,
+            extraFlags: host?.tmuxExtraFlags,
+          );
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -5272,6 +5296,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       key: _tmuxBarKey,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
+      tmuxExtraFlags: _host?.tmuxExtraFlags,
       availableHeight: availableHeight,
       recoveryGeneration: _tmuxBarRecoveryGeneration,
       isProUser: isProUser,
@@ -5402,6 +5427,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ref: ref,
       session: session,
       tmuxSessionName: _tmuxSessionName!,
+      tmuxExtraFlags: _host?.tmuxExtraFlags,
       isProUser: isProUser,
       startClisInYoloMode: _startClisInYoloMode,
       scopeWorkingDirectory: resolveTmuxAiSessionScopeWorkingDirectory(
@@ -5480,7 +5506,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     await ref
         .read(tmuxServiceProvider)
-        .selectWindow(session, sessionName, windowIndex);
+        .selectWindow(
+          session,
+          sessionName,
+          windowIndex,
+          extraFlags: _host?.tmuxExtraFlags,
+        );
 
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.
@@ -5514,6 +5545,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       currentPaneWorkingDirectory = await tmux.currentPanePath(
         session,
         sessionName,
+        extraFlags: _host?.tmuxExtraFlags,
       );
     }
     if (!mounted) return;
@@ -5530,6 +5562,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       command: command,
       name: name,
       workingDirectory: resolvedWorkingDirectory,
+      extraFlags: _host?.tmuxExtraFlags,
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     _tmuxCurrentCommand = null;
@@ -5543,7 +5576,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     await ref
         .read(tmuxServiceProvider)
-        .killWindow(session, sessionName, windowIndex);
+        .killWindow(
+          session,
+          sessionName,
+          windowIndex,
+          extraFlags: _host?.tmuxExtraFlags,
+        );
     _tmuxCurrentCommand = null;
   }
 
@@ -5556,6 +5594,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final hasForegroundClient = await tmux.hasForegroundClient(
       session,
       sessionName,
+      extraFlags: _host?.tmuxExtraFlags,
     );
     if (!mounted || hasForegroundClient) {
       DiagnosticsLogService.instance.info(
@@ -5671,6 +5710,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return null;
       }
 
+      _applyTerminalThemeToSession(
+        _resolveEffectiveTerminalTheme(),
+        session: session,
+      );
       shell = await session.getShell(pty: pty);
       if (!stillOwnsSession()) {
         restorePreviousTerminalState(restoreShell: false);
@@ -5866,7 +5909,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardLocalReadSubscription.close();
     _shellCompletionsSubscription.close();
     _stopSharedClipboardSync();
-    _terminalInputIndicatorTimer?.cancel();
     _promptOutputImeResetTimer?.cancel();
     _shellCompletionDebounceTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
@@ -6008,7 +6050,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     final theme = Theme.of(context);
     final connectionStates = ref.watch(activeSessionsProvider);
-    final isDark = theme.brightness == Brightness.dark;
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
@@ -6021,11 +6062,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         !_isConnecting &&
         connectionState == SshConnectionState.disconnected;
 
-    // Use session override, or loaded theme, or fallback
-    final terminalTheme =
-        _sessionThemeOverride ??
-        _currentTheme ??
-        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+    // Use session override, or loaded theme, or fallback.
+    final terminalTheme = _resolveEffectiveTerminalTheme();
+    _applyTerminalThemeToSession(terminalTheme);
     final connectionLabel = describeTerminalConnectionState(
       connectionState,
       isConnecting: _isConnecting,
@@ -6656,6 +6695,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
       }
       setState(() => _sessionThemeOverride = theme);
+      _applyTerminalThemeToSession(theme);
 
       // Show option to save to host
       if (_host != null) {
@@ -6871,7 +6911,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       resolveLinkTap: _resolveTerminalLinkTap,
       onLinkTapDown: _handleTerminalLinkTapDown,
       onLinkTap: _handleTerminalLinkTap,
-      onDoubleTapDown: isMobile ? _handleTerminalDoubleTapDown : null,
       suppressLongPressDragSelection: isMobile,
       liveOutputAutoScroll: _terminalLiveOutputAutoScrollEnabled,
       useSystemSelection: isMobile,
@@ -7028,34 +7067,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     var mobileTerminalView = terminalView;
 
-    final terminalInputIndicatorLabel = _terminalInputIndicatorLabel;
-    if (_isPinchZooming || terminalInputIndicatorLabel != null) {
+    if (_isPinchZooming) {
       mobileTerminalView = Stack(
         fit: StackFit.expand,
         children: [
           mobileTerminalView,
-          if (terminalInputIndicatorLabel != null)
-            Positioned(
-              top: 12,
-              left: 0,
-              right: 0,
-              child: Align(
-                alignment: Alignment.topCenter,
-                child: _buildTerminalTransientIndicator(
-                  theme: theme,
-                  label: terminalInputIndicatorLabel,
-                ),
-              ),
+          Positioned(
+            top: 12,
+            right: 12,
+            child: _buildTerminalTransientIndicator(
+              theme: theme,
+              label: '${fontSize.toStringAsFixed(0)} pt',
             ),
-          if (_isPinchZooming)
-            Positioned(
-              top: 12,
-              right: 12,
-              child: _buildTerminalTransientIndicator(
-                theme: theme,
-                label: '${fontSize.toStringAsFixed(0)} pt',
-              ),
-            ),
+          ),
         ],
       );
     }
@@ -7113,8 +7137,73 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
-    final buttonItems = <ContextMenuButtonItem>[
-      ...selectableRegionState.contextMenuButtonItems,
+    var hasCopy = false;
+    final buttonItems = <ContextMenuButtonItem>[];
+    for (final item in selectableRegionState.contextMenuButtonItems) {
+      switch (item.type) {
+        case ContextMenuButtonType.copy:
+          hasCopy = true;
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_copySelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.lookUp:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_lookUpTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.searchWeb:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_searchWebForTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.share:
+          buttonItems.add(
+            item.copyWith(
+              onPressed: () {
+                selectableRegionState.hideToolbar();
+                unawaited(_shareTerminalSelection());
+              },
+            ),
+          );
+        case ContextMenuButtonType.selectAll:
+        case ContextMenuButtonType.cut:
+        case ContextMenuButtonType.delete:
+          // Drop items that have no meaningful action against the
+          // terminal's xterm-managed selection.
+          continue;
+        case ContextMenuButtonType.paste:
+          // Replaced below with our terminal-aware paste handler.
+          continue;
+        default:
+          buttonItems.add(item);
+      }
+    }
+    if (!hasCopy) {
+      buttonItems.insert(
+        0,
+        ContextMenuButtonItem(
+          onPressed: () {
+            selectableRegionState.hideToolbar();
+            unawaited(_copySelection());
+          },
+          type: ContextMenuButtonType.copy,
+        ),
+      );
+    }
+    buttonItems.add(
       ContextMenuButtonItem(
         onPressed: () {
           selectableRegionState.hideToolbar();
@@ -7122,7 +7211,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         },
         type: ContextMenuButtonType.paste,
       ),
-    ];
+    );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
       buttonItems: buttonItems,
@@ -8162,10 +8251,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (event.position - lastTapPosition).distance <= kDoubleTapSlop;
 
     if (isDoubleTap) {
+      // Let SelectionArea handle text selection without also forwarding the
+      // second tap as terminal mouse input.
       _terminalDoubleTapConsumedPointer = event.pointer;
       _clearPendingTerminalDoubleTap();
       _clearLastTerminalTap();
-      _triggerTerminalDoubleTap(event.position, event.kind);
       return;
     }
 
@@ -8220,28 +8310,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (_terminalDoubleTapConsumedPointer == event.pointer) {
       _terminalDoubleTapConsumedPointer = null;
     }
-  }
-
-  void _triggerTerminalDoubleTap(
-    Offset globalPosition,
-    PointerDeviceKind kind,
-  ) {
-    final terminalViewState = _terminalViewKey.currentState;
-    if (terminalViewState == null) {
-      return;
-    }
-
-    final localPosition = terminalViewState.renderTerminal.globalToLocal(
-      globalPosition,
-    );
-    _handleTerminalDoubleTapDown(
-      TapDownDetails(
-        kind: kind,
-        globalPosition: globalPosition,
-        localPosition: localPosition,
-      ),
-      terminalViewState.renderTerminal.getCellOffset(localPosition),
-    );
   }
 
   void _handleTerminalPathPointerDown(PointerDownEvent event) {
@@ -8784,6 +8852,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('Copied')));
+  }
+
+  String? _currentTerminalSelectionText() {
+    if (_isNativeSelectionMode) {
+      final text = selectedNativeOverlayText(_nativeSelectionController.value);
+      return text.isEmpty ? null : text;
+    }
+    final selection = _terminalController.selection;
+    if (selection == null) {
+      return null;
+    }
+    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
+    return text.isEmpty ? null : text;
+  }
+
+  Future<void> _lookUpTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>('LookUp.invoke', text);
+    } on PlatformException {
+      // Platform doesn't support LookUp; ignore.
+    }
+  }
+
+  Future<void> _searchWebForTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>(
+        'SearchWeb.invoke',
+        text,
+      );
+    } on PlatformException {
+      // Platform doesn't support SearchWeb; ignore.
+    }
+  }
+
+  Future<void> _shareTerminalSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      return;
+    }
+    try {
+      await SystemChannels.platform.invokeMethod<void>('Share.invoke', text);
+    } on PlatformException {
+      // Platform doesn't support Share; ignore.
+    }
   }
 
   void _showClipboardMessage(String message) {

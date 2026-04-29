@@ -77,6 +77,7 @@ Host _buildHost({
   required int id,
   String? autoConnectCommand,
   String? tmuxSessionName,
+  String? tmuxExtraFlags,
 }) => Host(
   id: id,
   label: 'Terminal test host',
@@ -85,6 +86,7 @@ Host _buildHost({
   username: 'root',
   autoConnectCommand: autoConnectCommand,
   tmuxSessionName: tmuxSessionName,
+  tmuxExtraFlags: tmuxExtraFlags,
   isFavorite: false,
   createdAt: DateTime(2026),
   updatedAt: DateTime(2026),
@@ -856,6 +858,7 @@ void main() {
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'alerts';
+        const tmuxExtraFlags = '-S /tmp/alerts.sock';
         const targetWindowIndex = 3;
         final windows = <TmuxWindow>[
           const TmuxWindow(index: 1, name: 'shell', isActive: true),
@@ -872,24 +875,46 @@ void main() {
           }
           return shellChannel;
         });
+        host = _buildHost(
+          id: host.id,
+          tmuxSessionName: tmuxSessionName,
+          tmuxExtraFlags: tmuxExtraFlags,
+        );
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.hasSessionOrThrow(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) async => true);
         when(
-          () => tmuxService.listWindows(session, tmuxSessionName),
+          () => tmuxService.listWindows(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) async => windows);
         when(
           () => tmuxService.selectWindow(
             session,
             tmuxSessionName,
             targetWindowIndex,
+            extraFlags: tmuxExtraFlags,
           ),
         ).thenAnswer((_) async {});
         when(
-          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+          () => tmuxService.hasForegroundClient(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) async => false);
         when(
-          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+          () => tmuxService.watchWindowChanges(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
@@ -939,11 +964,30 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            extraFlags: tmuxExtraFlags,
           ),
         ).called(1);
         verify(
-          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+          () => tmuxService.hasForegroundClient(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
         ).called(1);
+        verify(
+          () => tmuxService.hasSessionOrThrow(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
+        ).called(1);
+        verify(
+          () => tmuxService.listWindows(
+            session,
+            tmuxSessionName,
+            extraFlags: tmuxExtraFlags,
+          ),
+        ).called(greaterThanOrEqualTo(1));
         expect(find.textContaining('tmux action failed'), findsNothing);
         expect(
           find.text(
@@ -1126,26 +1170,36 @@ void main() {
     );
 
     testWidgets(
-      'terminal double tap sends Tab while system selection is enabled',
+      'terminal double tap selects text without sending Tab',
       (tester) async {
         await pumpScreen(tester);
+
+        session.terminal!.write('alpha beta');
+        await tester.pumpAndSettle();
 
         expect(find.byType(SelectionArea), findsOneWidget);
         shellWrites.clear();
 
-        final terminalCenter = tester.getCenter(
+        final terminalViewState = tester.state<MonkeyTerminalViewState>(
           find.byType(MonkeyTerminalView),
         );
-        await tester.tapAt(terminalCenter);
+        final renderTerminal = terminalViewState.renderTerminal;
+        final target = renderTerminal.localToGlobal(
+          renderTerminal.getOffset(const CellOffset(2, 0)) +
+              renderTerminal.cellSize.center(Offset.zero),
+        );
+
+        await tester.tapAt(target);
         await tester.pump(const Duration(milliseconds: 80));
-        await tester.tapAt(terminalCenter);
-        await tester.pump();
+        await tester.tapAt(target);
+        await tester.pumpAndSettle();
 
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(writtenShellText, '\t');
-        expect(find.text('Tab'), findsAtLeastNWidgets(1));
+        expect(writtenShellText, isNot(contains('\t')));
+        final selection = terminalViewState.renderTerminal.getSelectedContent();
+        expect(selection?.plainText, 'alpha');
       },
       variant: TargetPlatformVariant.only(TargetPlatform.android),
     );

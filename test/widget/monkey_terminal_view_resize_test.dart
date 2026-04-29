@@ -10,6 +10,8 @@ void main() {
     required Terminal terminal,
     required Size size,
     double keyboardInset = 0,
+    FocusNode? focusNode,
+    bool readOnly = true,
   }) => MaterialApp(
     home: MediaQuery(
       data: MediaQueryData(
@@ -22,8 +24,9 @@ void main() {
           height: size.height,
           child: MonkeyTerminalView(
             terminal,
+            focusNode: focusNode,
             hardwareKeyboardOnly: true,
-            readOnly: true,
+            readOnly: readOnly,
           ),
         ),
       ),
@@ -113,5 +116,35 @@ void main() {
     expect(resizeEvents.last.height, initialEvent.height);
     expect(resizeEvents.last.pixelWidth, initialEvent.pixelWidth);
     expect(resizeEvents.last.pixelHeight, initialEvent.pixelHeight);
+  });
+
+  testWidgets('emits focus reports when focus reporting mode is enabled', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()
+      ..write('\x1b[?1004h')
+      ..onOutput = output.add;
+    final focusNode = FocusNode();
+    addTearDown(focusNode.dispose);
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        size: const Size(320, 240),
+        focusNode: focusNode,
+        readOnly: false,
+      ),
+    );
+
+    focusNode.requestFocus();
+    await tester.pump();
+
+    expect(output, contains('\x1b[I'));
+
+    focusNode.unfocus();
+    await tester.pump();
+
+    expect(output, contains('\x1b[O'));
   });
 }

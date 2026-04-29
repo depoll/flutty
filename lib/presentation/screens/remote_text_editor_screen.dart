@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -5,6 +6,7 @@ import 'package:flutter/material.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../widgets/terminal_pinch_zoom_gesture_handler.dart';
 import '../widgets/terminal_text_style.dart';
+import '../widgets/unsaved_changes_guard.dart';
 
 const _unwrappedEditorTrailingSlack = 24.0;
 const _minRemoteEditorFontSize = 8.0;
@@ -109,6 +111,37 @@ double measureUnwrappedEditorContentWidth({
   return hasVisibleText ? maxWidth + trailingSlack : 0;
 }
 
+/// Measures rich editor text exactly as [EditableText] lays it out.
+@visibleForTesting
+double measureUnwrappedEditorTextSpanContentWidth({
+  required InlineSpan textSpan,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+  double trailingSlack = _unwrappedEditorTrailingSlack,
+}) => _measureLaidOutUnwrappedEditorContentWidth(
+  _layoutUnwrappedEditorTextSpan(
+    textSpan: textSpan,
+    textDirection: textDirection,
+    textScaler: textScaler,
+  ),
+  trailingSlack,
+);
+
+TextPainter _layoutUnwrappedEditorTextSpan({
+  required InlineSpan textSpan,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+}) => TextPainter(
+  text: textSpan,
+  textDirection: textDirection,
+  textScaler: textScaler,
+)..layout();
+
+double _measureLaidOutUnwrappedEditorContentWidth(
+  TextPainter painter,
+  double trailingSlack,
+) => painter.width > 0 ? painter.width + trailingSlack : 0;
+
 /// Returns the current line prefix that appears before the text offset.
 @visibleForTesting
 String currentLinePrefixAtTextOffset(String text, int textOffset) {
@@ -151,6 +184,68 @@ double resolveUnwrappedEditorSelectionScrollOffset({
     trailingSlack: 0,
     measureLineWidth: measureLineWidth,
   );
+  final viewportEnd = currentOffset + viewportWidth;
+  final caretLeadingEdge = caretOffset > trailingSlack
+      ? caretOffset - trailingSlack
+      : 0.0;
+  final caretTrailingEdge = caretOffset + trailingSlack;
+
+  if (caretLeadingEdge < currentOffset) {
+    return caretLeadingEdge;
+  }
+  if (caretTrailingEdge > viewportEnd) {
+    return caretTrailingEdge - viewportWidth;
+  }
+  return currentOffset;
+}
+
+/// Resolves the horizontal scroll offset for rich unwrapped editor text.
+@visibleForTesting
+double resolveUnwrappedEditorTextSpanSelectionScrollOffset({
+  required InlineSpan textSpan,
+  required TextSelection selection,
+  required TextDirection textDirection,
+  required TextScaler textScaler,
+  required double viewportWidth,
+  double currentOffset = 0,
+  double trailingSlack = _unwrappedEditorTrailingSlack,
+}) {
+  if (!selection.isValid || viewportWidth <= 0) {
+    return currentOffset;
+  }
+
+  final plainText = textSpan.toPlainText(includeSemanticsLabels: false);
+  final painter = _layoutUnwrappedEditorTextSpan(
+    textSpan: textSpan,
+    textDirection: textDirection,
+    textScaler: textScaler,
+  );
+  return _resolveUnwrappedEditorTextPainterSelectionScrollOffset(
+    painter: painter,
+    selection: selection,
+    textLength: plainText.length,
+    viewportWidth: viewportWidth,
+    currentOffset: currentOffset,
+    trailingSlack: trailingSlack,
+  );
+}
+
+double _resolveUnwrappedEditorTextPainterSelectionScrollOffset({
+  required TextPainter painter,
+  required TextSelection selection,
+  required int textLength,
+  required double viewportWidth,
+  required double currentOffset,
+  required double trailingSlack,
+}) {
+  final selectionOffset = selection.extentOffset < 0
+      ? 0
+      : selection.extentOffset > textLength
+      ? textLength
+      : selection.extentOffset;
+  final caretOffset = painter
+      .getOffsetForCaret(TextPosition(offset: selectionOffset), Rect.zero)
+      .dx;
   final viewportEnd = currentOffset + viewportWidth;
   final caretLeadingEdge = caretOffset > trailingSlack
       ? caretOffset - trailingSlack
@@ -282,10 +377,12 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   ({int line, int column}) _cachedCaretPosition = (line: 1, column: 1);
   String? _cachedMeasuredWidthText;
   double? _cachedMeasuredWidth;
+  TextPainter? _cachedMeasuredTextPainter;
   TextDirection? _cachedMeasuredWidthTextDirection;
   double? _cachedMeasuredWidthTextScale;
   String? _cachedMeasuredWidthFontFamily;
   double? _cachedMeasuredWidthFontSize;
+  late String _initialText;
 
   @override
   void initState() {
@@ -296,6 +393,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
         widget.horizontalScrollController ?? ScrollController();
     _ownsHorizontalScrollController = widget.horizontalScrollController == null;
     _ensureInitialSelectionIsVisibleFromStart(widget.controller);
+    _initialText = widget.controller.text;
     widget.controller.addListener(_handleControllerChanged);
     _editorScrollController.addListener(_syncLineNumberScrollOffset);
     _refreshCachedMetrics();
@@ -313,11 +411,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     if (oldWidget.controller != widget.controller) {
       oldWidget.controller.removeListener(_handleControllerChanged);
       _ensureInitialSelectionIsVisibleFromStart(widget.controller);
+      _initialText = widget.controller.text;
       widget.controller.addListener(_handleControllerChanged);
       _cachedText = null;
       _cachedSelection = null;
       _cachedMeasuredWidthText = null;
       _cachedMeasuredWidth = null;
+      _cachedMeasuredTextPainter = null;
       _refreshCachedMetrics();
       _scheduleSelectionVisibilityUpdate();
     }
@@ -365,6 +465,8 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
 
   ({int line, int column}) get _caretPosition => _cachedCaretPosition;
 
+  bool get _hasUnsavedChanges => widget.controller.text != _initialText;
+
   void _refreshCachedMetrics() {
     final text = widget.controller.text;
     final selection = widget.controller.selection;
@@ -401,6 +503,17 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     _refreshCachedMetrics();
     setState(() {});
     _scheduleSelectionVisibilityUpdate();
+  }
+
+  void _closeWithSavedText() {
+    final savedText = widget.controller.text;
+    setState(() => _initialText = savedText);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+      Navigator.of(context).pop(savedText);
+    });
   }
 
   void _syncLineNumberScrollOffset() {
@@ -440,15 +553,19 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       Theme.of(context),
       widget.terminalTheme,
     );
-    final targetOffset = resolveUnwrappedEditorSelectionScrollOffset(
-      text: widget.controller.text,
-      selection: widget.controller.selection,
-      style: editorStyle,
-      textDirection: Directionality.of(context),
-      textScaler: MediaQuery.textScalerOf(context),
-      viewportWidth: _editorViewportWidth,
-      currentOffset: _horizontalScrollController.offset,
+    final measuredTextPainter = _layoutUnwrappedContentTextPainter(
+      context,
+      editorStyle,
     );
+    final targetOffset =
+        _resolveUnwrappedEditorTextPainterSelectionScrollOffset(
+          painter: measuredTextPainter,
+          selection: widget.controller.selection,
+          textLength: widget.controller.text.length,
+          viewportWidth: _editorViewportWidth,
+          currentOffset: _horizontalScrollController.offset,
+          trailingSlack: _unwrappedEditorTrailingSlack,
+        );
     final clampedOffset = targetOffset.clamp(
       0.0,
       _horizontalScrollController.position.maxScrollExtent,
@@ -540,6 +657,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
     ).copyWith(color: colors.foreground, height: 1.35);
   }
 
+  InlineSpan _buildMeasuredTextSpan(BuildContext context, TextStyle style) =>
+      widget.controller.buildTextSpan(
+        context: context,
+        style: style,
+        withComposing: false,
+      );
+
   double _measureLineHeight(BuildContext context, TextStyle style) {
     final painter = TextPainter(
       text: TextSpan(text: '0', style: style),
@@ -563,34 +687,46 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
         _remoteEditorGutterRightPadding;
   }
 
-  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
+  TextPainter _layoutUnwrappedContentTextPainter(
+    BuildContext context,
+    TextStyle style,
+  ) {
     final text = widget.controller.text;
     final textDirection = Directionality.of(context);
     final textScaler = MediaQuery.textScalerOf(context);
     final textScale = textScaler.scale(1);
 
-    if (_cachedMeasuredWidth != null &&
+    if (_cachedMeasuredTextPainter != null &&
+        _cachedMeasuredWidth != null &&
         identical(_cachedMeasuredWidthText, text) &&
         _cachedMeasuredWidthTextDirection == textDirection &&
         _cachedMeasuredWidthTextScale == textScale &&
         _cachedMeasuredWidthFontFamily == style.fontFamily &&
         _cachedMeasuredWidthFontSize == style.fontSize) {
-      return _cachedMeasuredWidth!;
+      return _cachedMeasuredTextPainter!;
     }
 
-    final measuredWidth = measureUnwrappedEditorContentWidth(
-      lines: text.split('\n'),
-      style: style,
+    final painter = _layoutUnwrappedEditorTextSpan(
+      textSpan: _buildMeasuredTextSpan(context, style),
       textDirection: textDirection,
       textScaler: textScaler,
     );
     _cachedMeasuredWidthText = text;
-    _cachedMeasuredWidth = measuredWidth;
+    _cachedMeasuredWidth = _measureLaidOutUnwrappedEditorContentWidth(
+      painter,
+      _unwrappedEditorTrailingSlack,
+    );
+    _cachedMeasuredTextPainter = painter;
     _cachedMeasuredWidthTextDirection = textDirection;
     _cachedMeasuredWidthTextScale = textScale;
     _cachedMeasuredWidthFontFamily = style.fontFamily;
     _cachedMeasuredWidthFontSize = style.fontSize;
-    return measuredWidth;
+    return painter;
+  }
+
+  double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
+    _layoutUnwrappedContentTextPainter(context, style);
+    return _cachedMeasuredWidth!;
   }
 
   @override
@@ -619,199 +755,201 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
           foregroundColor: colors.foreground,
         ),
       ),
-      child: Scaffold(
-        backgroundColor: colors.background,
-        appBar: AppBar(
-          leading: IconButton(
-            icon: const Icon(Icons.close),
-            tooltip: 'Close editor',
-            onPressed: () => Navigator.pop(context),
+      child: UnsavedChangesGuard(
+        hasUnsavedChanges: _hasUnsavedChanges,
+        child: Scaffold(
+          backgroundColor: colors.background,
+          appBar: AppBar(
+            leading: IconButton(
+              icon: const Icon(Icons.close),
+              tooltip: 'Close editor',
+              onPressed: () => unawaited(Navigator.of(context).maybePop()),
+            ),
+            title: Text('Edit ${widget.fileName}'),
+            actions: [
+              if (_showDesktopZoomButtons(theme.platform))
+                IconButton(
+                  onPressed: _fontSize <= _minRemoteEditorFontSize
+                      ? null
+                      : () => _changeFontSize(-_remoteEditorFontStep),
+                  icon: const Icon(Icons.zoom_out),
+                  tooltip: 'Zoom out',
+                ),
+              IconButton(
+                onPressed: () {
+                  setState(() {
+                    _wrapLines = !_wrapLines;
+                  });
+                  if (!_wrapLines) {
+                    _scheduleSelectionVisibilityUpdate();
+                  }
+                },
+                icon: Icon(_wrapLines ? Icons.wrap_text : Icons.segment),
+                tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
+              ),
+              if (_showDesktopZoomButtons(theme.platform))
+                IconButton(
+                  onPressed: _fontSize >= _maxRemoteEditorFontSize
+                      ? null
+                      : () => _changeFontSize(_remoteEditorFontStep),
+                  icon: const Icon(Icons.zoom_in),
+                  tooltip: 'Zoom in',
+                ),
+              TextButton(
+                onPressed: _closeWithSavedText,
+                child: const Text('Save'),
+              ),
+            ],
           ),
-          title: Text('Edit ${widget.fileName}'),
-          actions: [
-            if (_showDesktopZoomButtons(theme.platform))
-              IconButton(
-                onPressed: _fontSize <= _minRemoteEditorFontSize
-                    ? null
-                    : () => _changeFontSize(-_remoteEditorFontStep),
-                icon: const Icon(Icons.zoom_out),
-                tooltip: 'Zoom out',
-              ),
-            IconButton(
-              onPressed: () {
-                setState(() {
-                  _wrapLines = !_wrapLines;
-                });
-                if (!_wrapLines) {
-                  _scheduleSelectionVisibilityUpdate();
-                }
-              },
-              icon: Icon(_wrapLines ? Icons.wrap_text : Icons.segment),
-              tooltip: _wrapLines ? 'Disable line wrap' : 'Enable line wrap',
-            ),
-            if (_showDesktopZoomButtons(theme.platform))
-              IconButton(
-                onPressed: _fontSize >= _maxRemoteEditorFontSize
-                    ? null
-                    : () => _changeFontSize(_remoteEditorFontStep),
-                icon: const Icon(Icons.zoom_in),
-                tooltip: 'Zoom in',
-              ),
-            TextButton(
-              onPressed: () => Navigator.pop(context, widget.controller.text),
-              child: const Text('Save'),
-            ),
-          ],
-        ),
-        body: Padding(
-          padding: const EdgeInsets.all(12),
-          child: SizedBox.expand(
-            child: ClipRect(
-              key: _remoteTextEditorSurfaceKey,
-              child: ColoredBox(
-                color: colors.background,
-                child: Column(
-                  children: [
-                    Expanded(
-                      child: LayoutBuilder(
-                        builder: (context, constraints) {
-                          final gutterWidth = _wrapLines
-                              ? 0.0
-                              : _resolveGutterWidth(context, editorTextStyle);
-                          final viewportWidth =
-                              constraints.maxWidth > gutterWidth
-                              ? constraints.maxWidth - gutterWidth
-                              : 0.0;
-                          _updateEditorViewportWidth(viewportWidth);
+          body: Padding(
+            padding: const EdgeInsets.all(12),
+            child: SizedBox.expand(
+              child: ClipRect(
+                key: _remoteTextEditorSurfaceKey,
+                child: ColoredBox(
+                  color: colors.background,
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: LayoutBuilder(
+                          builder: (context, constraints) {
+                            final gutterWidth = _wrapLines
+                                ? 0.0
+                                : _resolveGutterWidth(context, editorTextStyle);
+                            final viewportWidth =
+                                constraints.maxWidth > gutterWidth
+                                ? constraints.maxWidth - gutterWidth
+                                : 0.0;
+                            _updateEditorViewportWidth(viewportWidth);
 
-                          final editor = TextField(
-                            controller: widget.controller,
-                            focusNode: _editorFocusNode,
-                            expands: true,
-                            maxLines: null,
-                            keyboardType: TextInputType.multiline,
-                            textAlignVertical: TextAlignVertical.top,
-                            style: editorTextStyle,
-                            scrollController: _editorScrollController,
-                            scrollPhysics: const ClampingScrollPhysics(),
-                            strutStyle: StrutStyle.fromTextStyle(
-                              editorTextStyle,
-                              forceStrutHeight: true,
-                            ),
-                            decoration: null,
-                          );
+                            final editor = TextField(
+                              controller: widget.controller,
+                              focusNode: _editorFocusNode,
+                              expands: true,
+                              maxLines: null,
+                              keyboardType: TextInputType.multiline,
+                              textAlignVertical: TextAlignVertical.top,
+                              style: editorTextStyle,
+                              scrollController: _editorScrollController,
+                              scrollPhysics: const ClampingScrollPhysics(),
+                              strutStyle: StrutStyle.fromTextStyle(
+                                editorTextStyle,
+                                forceStrutHeight: true,
+                              ),
+                              decoration: null,
+                            );
 
-                          final editorPane = _wrapLines
-                              ? SizedBox(
-                                  width: viewportWidth,
-                                  height: constraints.maxHeight,
-                                  child: editor,
-                                )
-                              : _buildNowrapEditorPane(
-                                  context,
-                                  constraints.maxHeight,
-                                  viewportWidth,
-                                  editorTextStyle,
-                                  editor,
-                                );
+                            final editorPane = _wrapLines
+                                ? SizedBox(
+                                    width: viewportWidth,
+                                    height: constraints.maxHeight,
+                                    child: editor,
+                                  )
+                                : _buildNowrapEditorPane(
+                                    context,
+                                    constraints.maxHeight,
+                                    viewportWidth,
+                                    editorTextStyle,
+                                    editor,
+                                  );
 
-                          return Padding(
-                            padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
-                            child: TerminalPinchZoomGestureHandler(
-                              onPinchStart: _handleEditorScaleStart,
-                              onPinchUpdate: _handleEditorScaleUpdate,
-                              onPinchEnd: _handleEditorScaleEnd,
-                              child: Transform.scale(
-                                key: _remoteTextEditorContentTransformKey,
-                                alignment: Alignment.topLeft,
-                                scale: editorVisualScale,
-                                child: Row(
-                                  children: [
-                                    if (!_wrapLines)
-                                      Container(
-                                        width: gutterWidth,
-                                        height: constraints.maxHeight,
-                                        padding: const EdgeInsets.only(
-                                          left: _remoteEditorGutterLeftPadding,
-                                          right:
-                                              _remoteEditorGutterRightPadding,
-                                        ),
-                                        color: colors.gutterBackground,
-                                        child: IgnorePointer(
-                                          child: ListView.builder(
-                                            controller:
-                                                _lineNumberScrollController,
-                                            physics:
-                                                const NeverScrollableScrollPhysics(),
-                                            itemCount: _lineCount,
-                                            itemExtent: lineHeight,
-                                            itemBuilder: (context, index) =>
-                                                Align(
-                                                  alignment:
-                                                      Alignment.centerRight,
-                                                  child: Text(
-                                                    '${index + 1}',
-                                                    style: editorTextStyle
-                                                        .copyWith(
-                                                          color: colors
-                                                              .gutterForeground,
-                                                        ),
-                                                    strutStyle:
-                                                        StrutStyle.fromTextStyle(
-                                                          editorTextStyle,
-                                                          forceStrutHeight:
-                                                              true,
-                                                        ),
-                                                  ),
+                            return Padding(
+                              padding: const EdgeInsets.fromLTRB(12, 12, 12, 0),
+                              child: TerminalPinchZoomGestureHandler(
+                                onPinchStart: _handleEditorScaleStart,
+                                onPinchUpdate: _handleEditorScaleUpdate,
+                                onPinchEnd: _handleEditorScaleEnd,
+                                child: Transform.scale(
+                                  key: _remoteTextEditorContentTransformKey,
+                                  alignment: Alignment.topLeft,
+                                  scale: editorVisualScale,
+                                  child: Row(
+                                    children: [
+                                      if (!_wrapLines)
+                                        Container(
+                                          width: gutterWidth,
+                                          height: constraints.maxHeight,
+                                          padding: const EdgeInsets.only(
+                                            left:
+                                                _remoteEditorGutterLeftPadding,
+                                            right:
+                                                _remoteEditorGutterRightPadding,
+                                          ),
+                                          color: colors.gutterBackground,
+                                          child: IgnorePointer(
+                                            child: ListView.builder(
+                                              controller:
+                                                  _lineNumberScrollController,
+                                              physics:
+                                                  const NeverScrollableScrollPhysics(),
+                                              itemCount: _lineCount,
+                                              itemExtent: lineHeight,
+                                              itemBuilder: (context, index) => Align(
+                                                alignment:
+                                                    Alignment.centerRight,
+                                                child: Text(
+                                                  '${index + 1}',
+                                                  style: editorTextStyle
+                                                      .copyWith(
+                                                        color: colors
+                                                            .gutterForeground,
+                                                      ),
+                                                  strutStyle:
+                                                      StrutStyle.fromTextStyle(
+                                                        editorTextStyle,
+                                                        forceStrutHeight: true,
+                                                      ),
                                                 ),
+                                              ),
+                                            ),
                                           ),
                                         ),
-                                      ),
-                                    Expanded(child: editorPane),
-                                  ],
+                                      Expanded(child: editorPane),
+                                    ],
+                                  ),
                                 ),
                               ),
-                            ),
-                          );
-                        },
+                            );
+                          },
+                        ),
                       ),
-                    ),
-                    Container(
-                      key: _remoteTextEditorStatusKey,
-                      width: double.infinity,
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 12,
+                      Container(
+                        key: _remoteTextEditorStatusKey,
+                        width: double.infinity,
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 12,
+                        ),
+                        color: colors.statusBackground,
+                        child: Wrap(
+                          alignment: WrapAlignment.spaceBetween,
+                          runSpacing: 8,
+                          spacing: 16,
+                          children: [
+                            Text(
+                              'Line ${caretPosition.line}, Column ${caretPosition.column}',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colors.statusForeground,
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(
+                              _wrapLines ? 'Wrap on' : 'Wrap off',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colors.statusForeground,
+                              ),
+                            ),
+                            Text(
+                              '${displayedFontSize.toStringAsFixed(0)} pt',
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: colors.statusForeground,
+                              ),
+                            ),
+                          ],
+                        ),
                       ),
-                      color: colors.statusBackground,
-                      child: Wrap(
-                        alignment: WrapAlignment.spaceBetween,
-                        runSpacing: 8,
-                        spacing: 16,
-                        children: [
-                          Text(
-                            'Line ${caretPosition.line}, Column ${caretPosition.column}',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colors.statusForeground,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                          Text(
-                            _wrapLines ? 'Wrap on' : 'Wrap off',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colors.statusForeground,
-                            ),
-                          ),
-                          Text(
-                            '${displayedFontSize.toStringAsFixed(0)} pt',
-                            style: theme.textTheme.bodySmall?.copyWith(
-                              color: colors.statusForeground,
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),

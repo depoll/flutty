@@ -21,6 +21,7 @@ import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
+import 'package:monkeyssh/domain/services/wifi_network_service.dart';
 import 'package:xterm/xterm.dart';
 
 const _backgroundSshChannel = MethodChannel(
@@ -31,6 +32,7 @@ class _CapturingSshService extends SshService {
   _CapturingSshService({
     required super.hostRepository,
     required super.keyRepository,
+    super.wifiNetworkService,
   });
 
   SshConnectionConfig? capturedConfig;
@@ -44,6 +46,15 @@ class _CapturingSshService extends SshService {
     capturedConfig = config;
     return const SshConnectionResult(success: false, error: 'stubbed');
   }
+}
+
+class _StubWifiNetworkService extends WifiNetworkService {
+  _StubWifiNetworkService(this.ssid);
+
+  final String? ssid;
+
+  @override
+  Future<String?> getCurrentSsid() async => ssid;
 }
 
 class _CountingKeyRepository extends KeyRepository {
@@ -278,6 +289,52 @@ void main() {
         expect(exitState.lastExitCode, 17);
       },
     );
+
+    test('answers terminal window and cell size reports', () {
+      final result = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[14tmiddle\x1b[16tafter',
+        pendingInput: '',
+        metrics: const (
+          columns: 80,
+          rows: 24,
+          pixelWidth: 960,
+          pixelHeight: 480,
+        ),
+      );
+
+      expect(result.response, '\x1b[4;480;960t\x1b[6;20;12t');
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split terminal size report queries across chunks', () {
+      final first = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[1',
+        pendingInput: '',
+        metrics: const (
+          columns: 80,
+          rows: 24,
+          pixelWidth: 960,
+          pixelHeight: 480,
+        ),
+      );
+
+      expect(first.response, isNull);
+      expect(first.pendingInput, '\x1b[1');
+
+      final second = buildTerminalWindowControlQueryResponses(
+        input: '6tafter',
+        pendingInput: first.pendingInput,
+        metrics: const (
+          columns: 80,
+          rows: 24,
+          pixelWidth: 960,
+          pixelHeight: 480,
+        ),
+      );
+
+      expect(second.response, '\x1b[6;20;12t');
+      expect(second.pendingInput, isEmpty);
+    });
   });
 
   group('host key capture', () {
@@ -1961,6 +2018,115 @@ void main() {
         () => (sshService.sessions as Map)[1] = 'test',
         throwsA(isA<Error>()),
       );
+    });
+  });
+
+  group('connectToHost SSID-based jump host bypass', () {
+    Future<int> seedHostWithJump(
+      AppDatabase db, {
+      String? skipJumpHostOnSsids,
+    }) async {
+      final jumpHostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Bastion',
+              hostname: 'bastion.example.com',
+              username: 'bastion',
+            ),
+          );
+      return db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Target',
+              hostname: 'target.example.com',
+              username: 'target',
+              jumpHostId: Value(jumpHostId),
+              skipJumpHostOnSsids: Value(skipJumpHostOnSsids),
+            ),
+          );
+    }
+
+    test('uses jump host when no SSIDs are configured', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final keyRepo = KeyRepository(db, encryption);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+        wifiNetworkService: _StubWifiNetworkService('home'),
+      );
+
+      final hostId = await seedHostWithJump(db);
+      await service.connectToHost(hostId);
+
+      expect(service.capturedConfig?.jumpHost, isNotNull);
+    });
+
+    test('uses jump host when current SSID is not in skip list', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final keyRepo = KeyRepository(db, encryption);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+        wifiNetworkService: _StubWifiNetworkService('cafe'),
+      );
+
+      final hostId = await seedHostWithJump(
+        db,
+        skipJumpHostOnSsids: 'home\noffice',
+      );
+      await service.connectToHost(hostId);
+
+      expect(service.capturedConfig?.jumpHost, isNotNull);
+      expect(service.capturedConfig?.hostname, 'target.example.com');
+    });
+
+    test('skips jump host when current SSID is in skip list', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final keyRepo = KeyRepository(db, encryption);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+        wifiNetworkService: _StubWifiNetworkService('home'),
+      );
+
+      final hostId = await seedHostWithJump(
+        db,
+        skipJumpHostOnSsids: 'home\noffice',
+      );
+      await service.connectToHost(hostId);
+
+      expect(service.capturedConfig, isNotNull);
+      expect(service.capturedConfig!.jumpHost, isNull);
+      expect(service.capturedConfig!.hostname, 'target.example.com');
+    });
+
+    test('uses jump host when SSID detection returns null', () async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+      final encryption = SecretEncryptionService.forTesting();
+      final hostRepo = HostRepository(db, encryption);
+      final keyRepo = KeyRepository(db, encryption);
+      final service = _CapturingSshService(
+        hostRepository: hostRepo,
+        keyRepository: keyRepo,
+        wifiNetworkService: _StubWifiNetworkService(null),
+      );
+
+      final hostId = await seedHostWithJump(db, skipJumpHostOnSsids: 'home');
+      await service.connectToHost(hostId);
+
+      expect(service.capturedConfig?.jumpHost, isNotNull);
     });
   });
 }

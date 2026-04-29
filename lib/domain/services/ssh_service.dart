@@ -12,6 +12,7 @@ import '../../data/database/database.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../data/repositories/known_hosts_repository.dart';
+import '../models/terminal_theme.dart';
 import 'background_ssh_service.dart';
 import 'clipboard_sharing_service.dart';
 import 'diagnostics_log_service.dart';
@@ -19,6 +20,90 @@ import 'host_key_prompt_handler_provider.dart';
 import 'host_key_verification.dart';
 import 'ssh_exec_queue.dart';
 import 'terminal_hyperlink_tracker.dart';
+import 'wifi_network_service.dart';
+
+/// Current terminal dimensions used to answer terminal size queries.
+typedef TerminalWindowMetrics = ({
+  int columns,
+  int rows,
+  int pixelWidth,
+  int pixelHeight,
+});
+
+/// Builds responses for terminal window/cell size reports in shell output.
+///
+/// [pendingInput] should be the pending suffix returned by the previous call,
+/// so split CSI sequences can be recognized across UTF-8 stream chunks.
+({String? response, String pendingInput})
+buildTerminalWindowControlQueryResponses({
+  required String input,
+  required String pendingInput,
+  required TerminalWindowMetrics? metrics,
+}) {
+  final combinedInput = pendingInput + input;
+  final responses = StringBuffer();
+
+  for (final match in _terminalWindowQueryPattern.allMatches(combinedInput)) {
+    final params = match.group(1) ?? '';
+    final primaryParam = params.split(';').first;
+    final response = _buildTerminalWindowQueryResponse(primaryParam, metrics);
+    if (response != null) {
+      responses.write(response);
+    }
+  }
+
+  final response = responses.isEmpty ? null : responses.toString();
+  return (
+    response: response,
+    pendingInput: _terminalWindowQueryPendingSuffix(combinedInput),
+  );
+}
+
+final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalWindowQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?]*)$');
+
+String? _buildTerminalWindowQueryResponse(
+  String primaryParam,
+  TerminalWindowMetrics? metrics,
+) {
+  if (!_hasValidTerminalWindowMetrics(metrics)) {
+    return null;
+  }
+
+  final validMetrics = metrics!;
+  switch (primaryParam) {
+    case '14':
+      return '\x1b[4;${validMetrics.pixelHeight};${validMetrics.pixelWidth}t';
+    case '16':
+      final cellWidth = (validMetrics.pixelWidth / validMetrics.columns)
+          .round();
+      final cellHeight = (validMetrics.pixelHeight / validMetrics.rows).round();
+      if (cellWidth < 1 || cellHeight < 1) {
+        return null;
+      }
+      return '\x1b[6;$cellHeight;${cellWidth}t';
+    default:
+      return null;
+  }
+}
+
+bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
+    metrics != null &&
+    metrics.columns > 0 &&
+    metrics.rows > 0 &&
+    metrics.pixelWidth > 0 &&
+    metrics.pixelHeight > 0;
+
+String _terminalWindowQueryPendingSuffix(String input) {
+  final start = input.length > 16 ? input.length - 16 : 0;
+  for (var index = start; index < input.length; index += 1) {
+    final suffix = input.substring(index);
+    if (_terminalWindowQueryPrefixPattern.hasMatch(suffix)) {
+      return suffix;
+    }
+  }
+  return '';
+}
 
 /// Connection state for an SSH session.
 enum SshConnectionState {
@@ -348,9 +433,11 @@ class SshService {
     this.keyRepository,
     this.knownHostsRepository,
     this.hostKeyPromptHandler,
+    WifiNetworkService? wifiNetworkService,
     SshSocketConnector? socketConnector,
     SshClientFactory? clientFactory,
-  }) : _socketConnector = socketConnector ?? _connectWithKeepAlive,
+  }) : wifiNetworkService = wifiNetworkService ?? WifiNetworkService(),
+       _socketConnector = socketConnector ?? _connectWithKeepAlive,
        _clientFactory = clientFactory ?? _defaultClientFactory;
 
   /// Number of key identities to try per SSH authentication attempt.
@@ -371,6 +458,9 @@ class SshService {
 
   /// UI callback used for TOFU and changed-key prompts.
   final HostKeyPromptHandler? hostKeyPromptHandler;
+
+  /// Service used to read the current Wi-Fi SSID for jump host bypass.
+  final WifiNetworkService wifiNetworkService;
 
   final SshSocketConnector _socketConnector;
   final SshClientFactory _clientFactory;
@@ -450,26 +540,48 @@ class SshService {
       identityKeys = await loadAutoKeys();
     }
 
-    // Get jump host config if specified
+    // Get jump host config if specified, unless the device is currently
+    // connected to a Wi-Fi network on the host's skip list (in which case
+    // the host is reachable directly).
     SshConnectionConfig? jumpHostConfig;
     if (host.jumpHostId != null) {
-      final jumpHost = await hostRepository!.getById(host.jumpHostId!);
-      if (jumpHost != null) {
-        SshKey? jumpKey;
-        List<SshKey>? jumpIdentityKeys;
-        if (jumpHost.keyId != null && keyRepository != null) {
-          jumpKey = await keyRepository!.getById(jumpHost.keyId!);
-          if (jumpKey == null && jumpHost.password == null) {
+      var skipJumpHost = false;
+      if (host.skipJumpHostOnSsids != null &&
+          host.skipJumpHostOnSsids!.isNotEmpty) {
+        final currentSsid = await wifiNetworkService.getCurrentSsid();
+        skipJumpHost = shouldSkipJumpHostForSsid(
+          currentSsid: currentSsid,
+          skipJumpHostOnSsids: host.skipJumpHostOnSsids,
+        );
+        DiagnosticsLogService.instance.info(
+          'ssh.connect',
+          'jump_host_ssid_check',
+          fields: {
+            'hostId': hostId,
+            'hasCurrentSsid': currentSsid != null,
+            'skipJumpHost': skipJumpHost,
+          },
+        );
+      }
+      if (!skipJumpHost) {
+        final jumpHost = await hostRepository!.getById(host.jumpHostId!);
+        if (jumpHost != null) {
+          SshKey? jumpKey;
+          List<SshKey>? jumpIdentityKeys;
+          if (jumpHost.keyId != null && keyRepository != null) {
+            jumpKey = await keyRepository!.getById(jumpHost.keyId!);
+            if (jumpKey == null && jumpHost.password == null) {
+              jumpIdentityKeys = await loadAutoKeys();
+            }
+          } else if (jumpHost.password == null) {
             jumpIdentityKeys = await loadAutoKeys();
           }
-        } else if (jumpHost.password == null) {
-          jumpIdentityKeys = await loadAutoKeys();
+          jumpHostConfig = SshConnectionConfig.fromHost(
+            jumpHost,
+            key: jumpKey,
+            identityKeys: jumpIdentityKeys,
+          );
         }
-        jumpHostConfig = SshConnectionConfig.fromHost(
-          jumpHost,
-          key: jumpKey,
-          identityKeys: jumpIdentityKeys,
-        );
       }
     }
 
@@ -1559,9 +1671,14 @@ class SshSession {
   int _shellStderrCharCount = 0;
   int _shellStdinWriteCount = 0;
   int _shellStdinCharCount = 0;
+  TerminalWindowMetrics? _terminalWindowMetrics;
+  String _terminalWindowQueryPendingInput = '';
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
+
+  /// The active terminal theme used to answer remote OSC color queries.
+  TerminalThemeData? terminalTheme;
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
@@ -1595,6 +1712,21 @@ class SshSession {
 
   /// The latest command exit code emitted through shell integration.
   int? get lastExitCode => _lastExitCode;
+
+  /// Records visible terminal dimensions used to answer size report queries.
+  void updateTerminalWindowMetrics({
+    required int columns,
+    required int rows,
+    required int pixelWidth,
+    required int pixelHeight,
+  }) {
+    _terminalWindowMetrics = (
+      columns: columns,
+      rows: rows,
+      pixelWidth: pixelWidth,
+      pixelHeight: pixelHeight,
+    );
+  }
 
   /// Adds a listener for terminal preview and preview-adjacent metadata changes.
   void addPreviewListener(VoidCallback listener) {
@@ -1757,6 +1889,8 @@ class SshSession {
     _workingDirectory = null;
     _shellStatus = null;
     _lastExitCode = null;
+    _terminalWindowMetrics = null;
+    _terminalWindowQueryPendingInput = '';
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
@@ -1784,6 +1918,7 @@ class SshSession {
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
+            _respondToTerminalWindowControlQueries(data);
             terminal.write(data);
             _scheduleTerminalPreviewRefresh();
             final stdoutController = _shellStdoutController;
@@ -1939,6 +2074,22 @@ class SshSession {
     _shellStdinCharCount = 0;
   }
 
+  void _respondToTerminalWindowControlQueries(String data) {
+    final result = buildTerminalWindowControlQueryResponses(
+      input: data,
+      pendingInput: _terminalWindowQueryPendingInput,
+      metrics: _terminalWindowMetrics,
+    );
+    _terminalWindowQueryPendingInput = result.pendingInput;
+
+    final response = result.response;
+    if (response == null) {
+      return;
+    }
+
+    _shell?.write(utf8.encode(response));
+  }
+
   void _scheduleTerminalPreviewRefresh() {
     if (_previewRefreshTimer?.isActive ?? false) {
       return;
@@ -2004,7 +2155,22 @@ class SshSession {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
+    final themeOscResponse = terminalTheme == null
+        ? null
+        : buildTerminalThemeOscResponse(
+            theme: terminalTheme!,
+            code: code,
+            args: args,
+          );
+    if (themeOscResponse != null) {
+      _shell?.write(utf8.encode(themeOscResponse));
+      return;
+    }
+
     terminalHyperlinkTracker.handlePrivateOsc(code, args);
+    if (code == '8') {
+      return;
+    }
 
     if (code == '7') {
       final nextWorkingDirectory = parseTerminalWorkingDirectoryUri(args);
@@ -2051,7 +2217,22 @@ class SshSession {
         },
       );
       _notifyMetadataChanged();
+      return;
     }
+
+    _logUnhandledPrivateOsc(code, args);
+  }
+
+  void _logUnhandledPrivateOsc(String code, List<String> args) {
+    DiagnosticsLogService.instance.debug(
+      'terminal.osc',
+      'unhandled',
+      fields: {
+        'connectionId': connectionId,
+        'oscCode': int.tryParse(code) ?? -1,
+        'argCount': args.length,
+      },
+    );
   }
 
   void _handleOsc52(List<String> args) {
@@ -2507,6 +2688,7 @@ final sshServiceProvider = Provider<SshService>(
     keyRepository: ref.watch(keyRepositoryProvider),
     knownHostsRepository: ref.watch(knownHostsRepositoryProvider),
     hostKeyPromptHandler: ref.watch(hostKeyPromptHandlerProvider),
+    wifiNetworkService: ref.watch(wifiNetworkServiceProvider),
   ),
 );
 

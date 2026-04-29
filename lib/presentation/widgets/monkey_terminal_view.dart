@@ -148,6 +148,8 @@ double resolveTerminalHorizontalFillScale({
 /// How long to wait for keyboard inset animations to settle before resizing.
 @visibleForTesting
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
+const _terminalFocusInReport = '\x1b[I';
+const _terminalFocusOutReport = '\x1b[O';
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
@@ -1297,14 +1299,25 @@ class MonkeyRenderTerminal extends RenderBox
   bool _selectionGeometryNotificationScheduled = false;
   final Set<VoidCallback> _selectionListeners = <VoidCallback>{};
 
+  int _lastKnownLineCount = -1;
+
   void _onScroll() {
     _stickToBottom = _scrollOffset >= _maxScrollExtent;
-    markNeedsLayout();
-    _updateSelectionGeometry(deferNotification: true);
-    _notifyEditableRect();
+    markNeedsPaint();
+    if (_hasSelectableTextSelection) {
+      _updateSelectionGeometry(deferNotification: true);
+    }
+    if (_onEditableRect != null) {
+      _notifyEditableRect();
+    }
   }
 
   void _onFocusChange() {
+    if (_terminal.reportFocusMode) {
+      _terminal.onOutput?.call(
+        _focusNode.hasFocus ? _terminalFocusInReport : _terminalFocusOutReport,
+      );
+    }
     markNeedsPaint();
   }
 
@@ -1314,8 +1327,16 @@ class MonkeyRenderTerminal extends RenderBox
     } else {
       _syncSelectableSelectionFromController();
     }
-    markNeedsLayout();
-    _notifyEditableRect();
+    final lineCount = _terminal.buffer.lines.length;
+    if (lineCount != _lastKnownLineCount) {
+      _lastKnownLineCount = lineCount;
+      markNeedsLayout();
+    } else {
+      markNeedsPaint();
+    }
+    if (_onEditableRect != null) {
+      _notifyEditableRect();
+    }
   }
 
   void _onControllerUpdate() {

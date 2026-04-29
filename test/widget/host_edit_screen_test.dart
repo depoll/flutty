@@ -328,6 +328,41 @@ void main() {
       },
     );
 
+    testWidgets('warns before leaving with unsaved host changes', (
+      tester,
+    ) async {
+      await _pumpHostCreateScreen(tester);
+
+      await tester.enterText(
+        find.byKey(const Key('host-label-field')),
+        'Unsaved Host',
+      );
+      await tester.pump();
+      await tester.pageBack();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.text('Discard changes?'), findsOneWidget);
+
+      await tester.tap(find.text('Keep editing'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      expect(find.byType(HostEditScreen), findsOneWidget);
+
+      await tester.pageBack();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.tap(find.text('Discard'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+      await tester.pump(const Duration(seconds: 2));
+
+      expect(find.byType(HostEditScreen), findsNothing);
+    });
+
     testWidgets('scrolls to missing tmux session when saving tmux startup', (
       tester,
     ) async {
