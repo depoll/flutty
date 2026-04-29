@@ -25,16 +25,33 @@ void main() {
       },
     );
 
-    test('attach command includes extraFlags when provided', () {
+    test(
+      'attach command includes reusable tmux client flags when provided',
+      () {
+        expect(
+          buildTmuxControlModeAttachCommand(
+            'main',
+            extraFlags: '-x 160 -S /tmp/tmux-socket -n editor',
+          ),
+          'tmux -S /tmp/tmux-socket -CC attach-session -f '
+          'read-only,ignore-size,no-output,wait-exit '
+          "-t 'main'",
+        );
+      },
+    );
+
+    test('extracts only reusable client flags from tmux extra flags', () {
       expect(
-        buildTmuxControlModeAttachCommand(
-          'main',
-          extraFlags: '-S /tmp/tmux-socket',
+        resolveTmuxClientFlagsFromExtraFlags(
+          r'-x 160 -S "/tmp/tmux socket" -y 48 \; set status off',
         ),
-        'tmux -S /tmp/tmux-socket -CC attach-session -f '
-        'read-only,ignore-size,no-output,wait-exit '
-        "-t 'main'",
+        '-S "/tmp/tmux socket"',
       );
+      expect(
+        resolveTmuxClientFlagsFromExtraFlags('-L alerts -f ~/.tmux.conf'),
+        '-L alerts -f ~/.tmux.conf',
+      );
+      expect(resolveTmuxClientFlagsFromExtraFlags('-x 200 -n editor'), isNull);
     });
 
     test(
@@ -634,32 +651,37 @@ void main() {
       },
     );
 
-    test('selectWindow uses extraFlags when provided', () async {
-      final client = _MockSshClient();
-      final session = _buildSession(client);
-      const service = TmuxService();
-      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+    test(
+      'selectWindow uses only reusable client flags when provided',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client);
+        const service = TmuxService();
+        final execSession = _buildOpenExecSession(stdout: _doneMarker());
 
-      when(
-        () => client.execute(any(), pty: any(named: 'pty')),
-      ).thenAnswer((_) async => execSession);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSession);
 
-      await service.selectWindow(
-        session,
-        'main',
-        2,
-        extraFlags: '-S /tmp/socket',
-      );
+        await service.selectWindow(
+          session,
+          'main',
+          2,
+          extraFlags: r'-S /tmp/socket -x 160 \; set status off',
+        );
 
-      verify(
-        () => client.execute(
-          any(
-            that: contains("tmux -u -S /tmp/socket select-window -t 'main':2"),
+        verify(
+          () => client.execute(
+            any(
+              that: contains(
+                "tmux -u -S /tmp/socket select-window -t 'main':2",
+              ),
+            ),
+            pty: any(named: 'pty'),
           ),
-          pty: any(named: 'pty'),
-        ),
-      ).called(1);
-    });
+        ).called(1);
+      },
+    );
 
     test(
       'killWindow waits for the done marker so failures can surface',
