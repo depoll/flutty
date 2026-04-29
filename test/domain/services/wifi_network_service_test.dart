@@ -40,6 +40,20 @@ void main() {
     test('drops entries that contain only invisible characters', () {
       expect(encodeSkipJumpHostSsids(const ['​‎﻿', 'home']), 'home');
     });
+
+    test('drops entries built only from variation selectors', () {
+      // U+FE0F is a variation selector — invisible on its own.
+      expect(encodeSkipJumpHostSsids(const ['️️️', 'home']), 'home');
+    });
+
+    test('drops entries built only from combining marks', () {
+      // U+034F combining grapheme joiner — invisible alone, no Letter/Number.
+      expect(encodeSkipJumpHostSsids(const ['͏͏', 'home']), 'home');
+    });
+
+    test('preserves emoji SSIDs (Symbol category)', () {
+      expect(encodeSkipJumpHostSsids(const ['🏠']), '🏠');
+    });
   });
 
   group('decodeSkipJumpHostSsids', () {

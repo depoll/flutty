@@ -94,27 +94,38 @@ class WifiNetworkService {
 
 /// Removes characters that render as nothing — ASCII control codes (0x00–0x1F,
 /// 0x7F), C1 control codes (0x80–0x9F), zero-width and bidi format characters
-/// (Unicode general category Cf in the BMP), and the Unicode replacement
+/// (Unicode general category Cf in the BMP), variation selectors (FE00–FE0F),
+/// the Mongolian vowel separator, the BOM, and the Unicode replacement
 /// character. SSIDs containing only such characters would otherwise produce
 /// blank chips in the editor and unmatchable storage values.
 String _stripInvisibleCharacters(String value) {
   final buffer = StringBuffer();
   for (final rune in value.runes) {
     if (rune <= 0x1F || (rune >= 0x7F && rune <= 0x9F)) continue;
-    // Cf characters (zero-width, bidi marks, joiners) plus the
-    // U+FEFF byte order mark and the U+FFFD replacement character.
     if (rune == 0x00AD ||
+        rune == 0x034F ||
+        (rune >= 0x180B && rune <= 0x180E) ||
         (rune >= 0x200B && rune <= 0x200F) ||
         (rune >= 0x2028 && rune <= 0x202F) ||
         (rune >= 0x2060 && rune <= 0x206F) ||
+        (rune >= 0xFE00 && rune <= 0xFE0F) ||
         rune == 0xFEFF ||
-        rune == 0xFFFD) {
+        rune == 0xFFFD ||
+        (rune >= 0xE0000 && rune <= 0xE007F) ||
+        (rune >= 0xE0100 && rune <= 0xE01EF)) {
       continue;
     }
     buffer.writeCharCode(rune);
   }
-  return buffer.toString();
+  final stripped = buffer.toString();
+  // Final guard: require at least one Letter / Number / Punctuation / Symbol
+  // rune. If everything left is whitespace or combining marks the chip would
+  // still render blank, so treat the whole value as empty.
+  if (!_visibleContent.hasMatch(stripped)) return '';
+  return stripped;
 }
+
+final RegExp _visibleContent = RegExp(r'[\p{L}\p{N}\p{P}\p{S}]', unicode: true);
 
 /// Provider for [WifiNetworkService].
 final wifiNetworkServiceProvider = Provider<WifiNetworkService>(
