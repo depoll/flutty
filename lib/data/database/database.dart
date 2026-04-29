@@ -39,6 +39,11 @@ class Hosts extends Table {
   /// Reference to jump host for proxy connections.
   IntColumn get jumpHostId => integer().nullable().references(Hosts, #id)();
 
+  /// Newline-separated list of Wi-Fi SSIDs on which the configured jump host
+  /// should be skipped (the host is reached directly when the device is on
+  /// one of these networks).
+  TextColumn get skipJumpHostOnSsids => text().nullable()();
+
   /// Whether this host is marked as favorite.
   BoolColumn get isFavorite => boolean().withDefault(const Constant(false))();
 
@@ -315,7 +320,7 @@ class AppDatabase extends _$AppDatabase {
   final AppleDatabaseFilePolicyApplier _appleDatabaseFilePolicyApplier;
 
   @override
-  int get schemaVersion => 7;
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration => MigrationStrategy(
@@ -374,6 +379,12 @@ class AppDatabase extends _$AppDatabase {
         }
         if (!hostColumnNames.contains(hosts.tmuxExtraFlags.$name)) {
           await m.addColumn(hosts, hosts.tmuxExtraFlags);
+        }
+      }
+      if (from < 8) {
+        final hostColumnNames = await _readColumnNames('hosts');
+        if (!hostColumnNames.contains(hosts.skipJumpHostOnSsids.$name)) {
+          await m.addColumn(hosts, hosts.skipJumpHostOnSsids);
         }
       }
     },

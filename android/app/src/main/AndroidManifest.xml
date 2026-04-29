@@ -5,6 +5,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC"/>
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS"/>
+    <!-- Reading the current Wi-Fi SSID for the per-host "skip jump host on
+         Wi-Fi" feature. ACCESS_FINE_LOCATION is required by Android 10+
+         before WifiManager will return the actual SSID. -->
+    <uses-permission android:name="android.permission.ACCESS_WIFI_STATE"/>
+    <uses-permission android:name="android.permission.ACCESS_FINE_LOCATION"/>
     <application
         android:label="@string/app_name"
         android:name=".MonkeySshApplication"

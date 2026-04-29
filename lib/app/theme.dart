@@ -295,6 +295,9 @@ abstract final class FluttyTheme {
         labelStyle: GoogleFonts.inter(
           fontSize: 13,
           fontWeight: FontWeight.w500,
+          // Material 3 InputChip leaves the label transparent if labelStyle
+          // is supplied without a color, so pin one here.
+          color: isDark ? _textPrimary : Colors.black87,
         ),
         side: BorderSide(color: isDark ? _borderDark : _borderLight),
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),

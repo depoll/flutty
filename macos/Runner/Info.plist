@@ -24,6 +24,10 @@
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
+	<key>NSLocationWhenInUseUsageDescription</key>
+	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
+	<key>NSLocationUsageDescription</key>
+	<string>$(PRODUCT_NAME) reads the current Wi-Fi network name to decide whether to bypass a host's jump host on trusted networks.</string>
 	<key>NSMainNibFile</key>
 	<string>MainMenu</string>
 	<key>CFBundleDocumentTypes</key>
