@@ -11,6 +11,7 @@ import 'package:local_auth/local_auth.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/auth_service.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
@@ -187,7 +188,7 @@ class StaticTerminalThemeSettingsNotifier
     extends TerminalThemeSettingsNotifier {
   @override
   TerminalThemeSettings build() => const TerminalThemeSettings(
-    lightThemeId: 'github-light',
-    darkThemeId: 'dracula',
+    lightThemeId: TerminalThemes.defaultLightThemeId,
+    darkThemeId: TerminalThemes.defaultDarkThemeId,
   );
 }

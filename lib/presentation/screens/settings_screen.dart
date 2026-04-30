@@ -17,6 +17,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
@@ -606,9 +607,20 @@ class _TerminalSection extends ConsumerWidget {
     );
     final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
+    final availableThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
 
-    final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
-    final darkTheme = TerminalThemes.getById(themeSettings.darkThemeId);
+    final lightTheme = TerminalThemes.resolveById(
+      brightness: Brightness.light,
+      themeId: themeSettings.lightThemeId,
+      additionalThemes: availableThemes,
+    );
+    final darkTheme = TerminalThemes.resolveById(
+      brightness: Brightness.dark,
+      themeId: themeSettings.darkThemeId,
+      additionalThemes: availableThemes,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -620,13 +632,13 @@ class _TerminalSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Light Mode Theme'),
-          subtitle: Text(lightTheme?.name ?? 'Default'),
+          subtitle: Text(lightTheme.name),
           onTap: () => _showThemePicker(context, ref, isLight: true),
         ),
         ListTile(
           leading: const Icon(Icons.palette),
           title: const Text('Dark Mode Theme'),
-          subtitle: Text(darkTheme?.name ?? 'Default'),
+          subtitle: Text(darkTheme.name),
           onTap: () => _showThemePicker(context, ref, isLight: false),
         ),
         ListTile(
@@ -1482,7 +1494,9 @@ class _ImportExportSection extends ConsumerWidget {
         ..invalidate(bellSoundNotifierProvider)
         ..invalidate(sharedClipboardNotifierProvider)
         ..invalidate(sharedClipboardProvider)
-        ..invalidate(terminalThemeSettingsProvider);
+        ..invalidate(terminalThemeSettingsProvider)
+        ..invalidate(allTerminalThemesProvider)
+        ..invalidate(customTerminalThemesProvider);
       invalidateImportedEntityProviders(ref.invalidate);
 
       if (!context.mounted) {

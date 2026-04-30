@@ -57,10 +57,14 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   Widget build(BuildContext context) {
     final themesAsync = ref.watch(allTerminalThemesProvider);
     final colorScheme = Theme.of(context).colorScheme;
+    final availableThemes = themesAsync.asData?.value ?? TerminalThemes.all;
 
     // Get the currently selected theme for the preview
     final currentTheme = widget.selectedThemeId != null
-        ? TerminalThemes.getById(widget.selectedThemeId!)
+        ? TerminalThemes.getById(
+            widget.selectedThemeId!,
+            additionalThemes: availableThemes,
+          )
         : null;
 
     return NestedScrollView(

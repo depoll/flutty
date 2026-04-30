@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database/database.dart';
 import '../data/repositories/host_repository.dart';
+import '../domain/models/terminal_themes.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/background_ssh_service.dart';
 import '../domain/services/home_screen_shortcut_service.dart';
@@ -12,6 +13,7 @@ import '../domain/services/local_notification_service.dart';
 import '../domain/services/monetization_service.dart';
 import '../domain/services/settings_service.dart';
 import '../domain/services/ssh_service.dart';
+import '../domain/services/terminal_theme_service.dart';
 import 'app_lifecycle_coordinator.dart';
 import 'app_metadata.dart';
 import 'auth_lifecycle_controller.dart';
@@ -27,14 +29,34 @@ class FluttyApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeNotifierProvider);
+    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
+    final lightTerminalTheme = TerminalThemes.resolveById(
+      brightness: Brightness.light,
+      themeId: terminalThemeSettings.lightThemeId,
+      additionalThemes: terminalThemes,
+    );
+    final darkTerminalTheme = TerminalThemes.resolveById(
+      brightness: Brightness.dark,
+      themeId: terminalThemeSettings.darkThemeId,
+      additionalThemes: terminalThemes,
+    );
     final appName = ref.watch(appDisplayNameProvider);
 
     return _BackgroundLifecycleBridge(
       child: MaterialApp.router(
         title: appName,
         debugShowCheckedModeBanner: false,
-        theme: FluttyTheme.light,
-        darkTheme: FluttyTheme.dark,
+        theme: FluttyTheme.fromTerminalTheme(
+          lightTerminalTheme,
+          brightness: Brightness.light,
+        ),
+        darkTheme: FluttyTheme.fromTerminalTheme(
+          darkTerminalTheme,
+          brightness: Brightness.dark,
+        ),
         themeMode: themeMode,
         routerConfig: router,
       ),

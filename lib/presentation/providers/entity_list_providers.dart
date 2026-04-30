@@ -6,6 +6,7 @@ import '../../data/repositories/group_repository.dart';
 import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/key_repository.dart';
 import '../../domain/services/settings_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
 
 /// Shared stream of all saved hosts for presentation screens.
 final allHostsProvider = StreamProvider<List<Host>>((ref) {
@@ -44,5 +45,7 @@ void invalidateSyncedDataProviders(ProviderInvalidator invalidate) {
   invalidate(cursorStyleNotifierProvider);
   invalidate(bellSoundNotifierProvider);
   invalidate(terminalThemeSettingsProvider);
+  invalidate(allTerminalThemesProvider);
+  invalidate(customTerminalThemesProvider);
   invalidateImportedEntityProviders(invalidate);
 }

@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
+import '../models/terminal_themes.dart';
 
 /// Keys for app settings.
 abstract final class SettingKeys {
@@ -583,8 +584,8 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return const TerminalThemeSettings(
-      lightThemeId: 'github-light',
-      darkThemeId: 'dracula',
+      lightThemeId: TerminalThemes.defaultLightThemeId,
+      darkThemeId: TerminalThemes.defaultDarkThemeId,
     );
   }
 
@@ -597,8 +598,8 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     );
     if (_disposed) return;
     state = TerminalThemeSettings(
-      lightThemeId: light ?? 'github-light',
-      darkThemeId: dark ?? 'dracula',
+      lightThemeId: light ?? TerminalThemes.defaultLightThemeId,
+      darkThemeId: dark ?? TerminalThemes.defaultDarkThemeId,
     );
   }
 
