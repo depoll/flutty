@@ -260,7 +260,7 @@ class TerminalThemesApplyToAppNotifier extends Notifier<bool> {
     _disposed = false;
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
-    return false;
+    return true;
   }
 
   Future<void> _init() async {
@@ -749,14 +749,15 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     final defaultThemeId = TerminalThemes.defaultThemeIdForBrightness(
       brightness,
     );
-    if (themeId == null ||
-        themeId.isEmpty ||
-        _legacyDefaultTerminalThemeIds.contains(themeId)) {
+    if (themeId == null || themeId.isEmpty) {
       return defaultThemeId;
     }
     if (TerminalThemes.getById(themeId) != null ||
         customThemeIds.contains(themeId)) {
       return themeId;
+    }
+    if (_legacyDefaultTerminalThemeIds.contains(themeId)) {
+      return defaultThemeId;
     }
     return defaultThemeId;
   }

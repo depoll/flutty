@@ -249,6 +249,13 @@ void main() {
     });
 
     group('terminalThemesApplyToAppNotifierProvider', () {
+      test('starts enabled by default', () {
+        expect(
+          container.read(terminalThemesApplyToAppNotifierProvider),
+          isTrue,
+        );
+      });
+
       test('persists disabled state', () async {
         final notifier = container.read(
           terminalThemesApplyToAppNotifierProvider.notifier,
@@ -432,6 +439,51 @@ void main() {
         expect(
           await settings.getString(SettingKeys.defaultTerminalThemeLight),
           customTheme.id,
+        );
+      });
+
+      test('keeps custom theme ids that match legacy defaults', () async {
+        final settings = container.read(settingsServiceProvider);
+        final customLightTheme = TerminalThemes.cleanWhite.copyWith(
+          id: 'github-light',
+          name: 'Custom GitHub Light',
+          isCustom: true,
+        );
+        final customDarkTheme = TerminalThemes.midnightPurple.copyWith(
+          id: 'dracula',
+          name: 'Custom Dracula',
+          isCustom: true,
+        );
+        await settings.setString(
+          SettingKeys.customTerminalThemes,
+          jsonEncode([customLightTheme.toJson(), customDarkTheme.toJson()]),
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          customLightTheme.id,
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeDark,
+          customDarkTheme.id,
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        final state = await _waitForTerminalThemeSettings(
+          container,
+          (settings) =>
+              settings.lightThemeId == customLightTheme.id &&
+              settings.darkThemeId == customDarkTheme.id,
+        );
+
+        expect(state.lightThemeId, customLightTheme.id);
+        expect(state.darkThemeId, customDarkTheme.id);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          customLightTheme.id,
+        );
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeDark),
+          customDarkTheme.id,
         );
       });
 
