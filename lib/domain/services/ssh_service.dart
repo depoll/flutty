@@ -30,6 +30,17 @@ typedef TerminalWindowMetrics = ({
   int pixelHeight,
 });
 
+/// Terminal mode state used to answer DECRQM mode-status queries.
+typedef TerminalControlModeState = ({
+  bool reportFocusMode,
+  bool bracketedPasteMode,
+  bool isUsingAltBuffer,
+  bool mouseTrackingMode,
+  bool mouseDragTrackingMode,
+  bool mouseMoveTrackingMode,
+  bool sgrMouseReportMode,
+});
+
 /// Builds responses for terminal window/cell size and theme reports in shell
 /// output.
 ///
@@ -40,6 +51,7 @@ buildTerminalWindowControlQueryResponses({
   required String input,
   required String pendingInput,
   required TerminalWindowMetrics? metrics,
+  TerminalControlModeState? modeState,
   TerminalThemeData? theme,
 }) {
   final combinedInput = pendingInput + input;
@@ -51,6 +63,22 @@ buildTerminalWindowControlQueryResponses({
     final response = _buildTerminalWindowQueryResponse(primaryParam, metrics);
     if (response != null) {
       responses.write(response);
+    }
+  }
+
+  for (final match in _terminalModeReportQueryPattern.allMatches(
+    combinedInput,
+  )) {
+    final params = match.group(1)?.split(';') ?? const <String>[];
+    for (final param in params) {
+      final mode = int.tryParse(param);
+      if (mode == null) {
+        continue;
+      }
+      final response = _buildTerminalModeReportResponse(mode, modeState);
+      if (response != null) {
+        responses.write(response);
+      }
     }
   }
 
@@ -66,8 +94,9 @@ buildTerminalWindowControlQueryResponses({
 }
 
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
-final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?]*)$');
+final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -93,6 +122,64 @@ String? _buildTerminalWindowQueryResponse(
       return null;
   }
 }
+
+String? _buildTerminalModeReportResponse(
+  int mode,
+  TerminalControlModeState? modeState,
+) {
+  if (modeState == null) {
+    return switch (mode) {
+      1016 ||
+      2026 ||
+      2027 ||
+      2031 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+      _ => null,
+    };
+  }
+
+  return switch (mode) {
+    1000 => _formatTerminalModeReport(
+      mode,
+      modeState.mouseTrackingMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1002 => _formatTerminalModeReport(
+      mode,
+      modeState.mouseDragTrackingMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1003 => _formatTerminalModeReport(
+      mode,
+      modeState.mouseMoveTrackingMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1004 => _formatTerminalModeReport(
+      mode,
+      modeState.reportFocusMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1006 => _formatTerminalModeReport(
+      mode,
+      modeState.sgrMouseReportMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1049 => _formatTerminalModeReport(
+      mode,
+      modeState.isUsingAltBuffer ? _terminalModeSet : _terminalModeReset,
+    ),
+    2004 => _formatTerminalModeReport(
+      mode,
+      modeState.bracketedPasteMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1016 ||
+    2026 ||
+    2027 ||
+    2031 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+    _ => null,
+  };
+}
+
+const _terminalModeNotRecognized = 0;
+const _terminalModeSet = 1;
+const _terminalModeReset = 2;
+
+String _formatTerminalModeReport(int mode, int status) =>
+    '\x1b[?$mode;$status\$y';
 
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics != null &&
@@ -1925,8 +2012,8 @@ class SshSession {
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
-            _respondToTerminalWindowControlQueries(data);
             terminal.write(data);
+            _respondToTerminalWindowControlQueries(data, terminal);
             _scheduleTerminalPreviewRefresh();
             final stdoutController = _shellStdoutController;
             if (identical(_shell, shell) &&
@@ -2081,11 +2168,12 @@ class SshSession {
     _shellStdinCharCount = 0;
   }
 
-  void _respondToTerminalWindowControlQueries(String data) {
+  void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
     final result = buildTerminalWindowControlQueryResponses(
       input: data,
       pendingInput: _terminalWindowQueryPendingInput,
       metrics: _terminalWindowMetrics,
+      modeState: _terminalModeState(terminal),
       theme: terminalTheme,
     );
     _terminalWindowQueryPendingInput = result.pendingInput;
@@ -2097,6 +2185,16 @@ class SshSession {
 
     _shell?.write(utf8.encode(response));
   }
+
+  TerminalControlModeState _terminalModeState(Terminal terminal) => (
+    reportFocusMode: terminal.reportFocusMode,
+    bracketedPasteMode: terminal.bracketedPasteMode,
+    isUsingAltBuffer: terminal.isUsingAltBuffer,
+    mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
+    mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,
+    mouseMoveTrackingMode: terminal.mouseMode == MouseMode.upDownScrollMove,
+    sgrMouseReportMode: terminal.mouseReportMode == MouseReportMode.sgr,
+  );
 
   void _scheduleTerminalPreviewRefresh() {
     if (_previewRefreshTimer?.isActive ?? false) {

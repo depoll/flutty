@@ -359,6 +359,72 @@ void main() {
       expect(light.pendingInput, isEmpty);
     });
 
+    test('answers DEC private mode report queries', () {
+      final result = buildTerminalWindowControlQueryResponses(
+        input:
+            'before\x1b[?1004\$p\x1b[?2004\$p\x1b[?1006\$p'
+            '\x1b[?2026\$pafter',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: true,
+        ),
+      );
+
+      expect(
+        result.response,
+        '\x1b[?1004;1\$y'
+        '\x1b[?2004;2\$y'
+        '\x1b[?1006;1\$y'
+        '\x1b[?2026;0\$y',
+      );
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split DEC private mode report queries across chunks', () {
+      final first = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?1004\$',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(first.response, isNull);
+      expect(first.pendingInput, '\x1b[?1004\$');
+
+      final second = buildTerminalWindowControlQueryResponses(
+        input: 'pafter',
+        pendingInput: first.pendingInput,
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(second.response, '\x1b[?1004;1\$y');
+      expect(second.pendingInput, isEmpty);
+    });
+
     test(
       'preserves split terminal theme mode report queries across chunks',
       () {
