@@ -316,6 +316,26 @@ void main() {
       expect(find.byType(SwitchListTile), findsWidgets);
     });
 
+    testWidgets('displays terminal wake lock toggle', (tester) async {
+      final db = AppDatabase.forTesting(NativeDatabase.memory());
+      addTearDown(db.close);
+
+      await _pumpSettingsScreen(tester, db: db);
+
+      await tester.scrollUntilVisible(
+        find.text('Keep screen awake'),
+        200,
+        scrollable: find.byType(Scrollable).first,
+      );
+      await tester.pumpAndSettle();
+
+      expect(find.text('Keep screen awake'), findsOneWidget);
+      expect(
+        find.text('Hold a wake lock while a terminal is active'),
+        findsOneWidget,
+      );
+    });
+
     testWidgets('displays terminal path link toggles', (tester) async {
       final db = AppDatabase.forTesting(NativeDatabase.memory());
       addTearDown(db.close);

@@ -615,6 +615,7 @@ class _TerminalSection extends ConsumerWidget {
     final fontFamily = ref.watch(fontFamilyNotifierProvider);
     final cursorStyle = ref.watch(cursorStyleNotifierProvider);
     final bellSound = ref.watch(bellSoundNotifierProvider);
+    final terminalWakeLock = ref.watch(terminalWakeLockNotifierProvider);
     final terminalPathLinks = ref.watch(terminalPathLinksNotifierProvider);
     final terminalPathLinkUnderlines = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
@@ -686,6 +687,19 @@ class _TerminalSection extends ConsumerWidget {
             ref
                 .read(bellSoundNotifierProvider.notifier)
                 .setEnabled(enabled: value);
+          },
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.screen_lock_portrait_outlined),
+          title: const Text('Keep screen awake'),
+          subtitle: const Text('Hold a wake lock while a terminal is active'),
+          value: terminalWakeLock,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(terminalWakeLockNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
           },
         ),
         SwitchListTile(
