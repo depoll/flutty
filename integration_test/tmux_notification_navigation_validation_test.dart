@@ -8,13 +8,16 @@ import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:go_router/go_router.dart';
 import 'package:integration_test/integration_test.dart';
 import 'package:mocktail/mocktail.dart';
+import 'package:monkeyssh/app/notification_navigation.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
+import 'package:monkeyssh/domain/services/local_notification_service.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
@@ -227,4 +230,64 @@ void main() {
       ).called(1);
     },
   );
+
+  testWidgets('notification route keeps the connections back stack on device', (
+    tester,
+  ) async {
+    final terminalLocations = <String>[];
+    final router = GoRouter(
+      initialLocation: '/settings',
+      routes: [
+        GoRoute(
+          path: '/',
+          builder: (context, state) => Scaffold(
+            body: Text('home:${state.uri.queryParameters['tab'] ?? 'hosts'}'),
+          ),
+        ),
+        GoRoute(
+          path: '/settings',
+          builder: (context, state) => const Scaffold(body: Text('settings')),
+        ),
+        GoRoute(
+          path: '/terminal/:hostId',
+          builder: (context, state) {
+            terminalLocations.add(state.uri.toString());
+            return Scaffold(
+              body: Text('terminal:${state.pathParameters['hostId']}'),
+            );
+          },
+        ),
+      ],
+    );
+    addTearDown(router.dispose);
+
+    await tester.pumpWidget(MaterialApp.router(routerConfig: router));
+    await tester.pumpAndSettle();
+
+    openTmuxAlertNotificationStack(
+      router: router,
+      payload: const TmuxAlertNotificationPayload(
+        hostId: 12,
+        connectionId: 34,
+        tmuxSessionName: 'work',
+        windowIndex: 5,
+        windowId: '@9',
+      ),
+      notificationTapId: 'tap-1',
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('terminal:12'), findsOneWidget);
+    expect(router.canPop(), isTrue);
+    expect(
+      terminalLocations.single,
+      '/terminal/12?connectionId=34&tmuxSession=work&tmuxWindow=5&tmuxWindowId=%409&notificationTap=tap-1',
+    );
+
+    router.pop();
+    await tester.pumpAndSettle();
+
+    expect(find.text('home:connections'), findsOneWidget);
+    expect(find.text('settings'), findsNothing);
+  });
 }

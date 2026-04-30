@@ -43,10 +43,28 @@ const _redactStoreScreenshotIdentities = bool.fromEnvironment(
   'STORE_SCREENSHOT_REDACT_IDENTITIES',
 );
 
+/// Top-level sections available on the home screen.
+enum HomeScreenTab {
+  /// Saved host definitions.
+  hosts,
+
+  /// Active SSH connections.
+  connections,
+
+  /// SSH key management.
+  keys,
+
+  /// Snippet management.
+  snippets,
+}
+
 /// The main home screen - Termius-style sidebar layout.
 class HomeScreen extends ConsumerStatefulWidget {
   /// Creates a new [HomeScreen].
-  const HomeScreen({super.key});
+  const HomeScreen({super.key, this.initialTab = HomeScreenTab.hosts});
+
+  /// The tab selected when the home screen route is opened.
+  final HomeScreenTab initialTab;
 
   @override
   ConsumerState<HomeScreen> createState() => _HomeScreenState();
@@ -54,7 +72,7 @@ class HomeScreen extends ConsumerStatefulWidget {
 
 class _HomeScreenState extends ConsumerState<HomeScreen>
     with WidgetsBindingObserver {
-  int _selectedIndex = 0;
+  late int _selectedIndex;
 
   /// Switches to the Connections tab so the user lands there when
   /// returning from the terminal.
@@ -82,6 +100,7 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
   @override
   void initState() {
     super.initState();
+    _selectedIndex = widget.initialTab.index;
     WidgetsBinding.instance.addObserver(this);
     final transferIntentService = ref.read(transferIntentServiceProvider);
     _incomingTransferSubscription = transferIntentService.incomingPayloads
@@ -103,6 +122,14 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
         unawaited(_checkIncomingTransferPayload());
       }
     });
+  }
+
+  @override
+  void didUpdateWidget(covariant HomeScreen oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialTab != widget.initialTab) {
+      _selectedIndex = widget.initialTab.index;
+    }
   }
 
   @override

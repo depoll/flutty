@@ -41,7 +41,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/',
         name: Routes.home,
-        builder: (context, state) => const HomeScreen(),
+        builder: (context, state) => HomeScreen(
+          initialTab: _homeScreenTabFromRoute(state.uri.queryParameters['tab']),
+        ),
       ),
       GoRoute(
         path: '/lock',
@@ -219,6 +221,11 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
+  'connections' => HomeScreenTab.connections,
+  _ => HomeScreenTab.hosts,
+};
 
 /// Computes the route redirect for the given authentication state.
 String? redirectForAuthState({
