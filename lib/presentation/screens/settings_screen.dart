@@ -9,6 +9,7 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/background_ssh_service.dart';
@@ -17,6 +18,7 @@ import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/settings_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/premium_access.dart';
 import '../widgets/premium_badge.dart';
@@ -606,9 +608,18 @@ class _TerminalSection extends ConsumerWidget {
     );
     final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
 
-    final lightTheme = TerminalThemes.getById(themeSettings.lightThemeId);
-    final darkTheme = TerminalThemes.getById(themeSettings.darkThemeId);
+    final lightTheme = _findTerminalTheme(
+      terminalThemes,
+      themeSettings.lightThemeId,
+    );
+    final darkTheme = _findTerminalTheme(
+      terminalThemes,
+      themeSettings.darkThemeId,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -788,6 +799,18 @@ class _TerminalSection extends ConsumerWidget {
     'Oxygen Mono' => 'Oxygen Mono',
     _ => family,
   };
+
+  TerminalThemeData? _findTerminalTheme(
+    Iterable<TerminalThemeData> themes,
+    String id,
+  ) {
+    for (final theme in themes) {
+      if (theme.id == id) {
+        return theme;
+      }
+    }
+    return TerminalThemes.getById(id);
+  }
 
   /// Gets a TextStyle for the given font family using Google Fonts.
   TextStyle _getFontStyle(String family, {double fontSize = 16}) =>

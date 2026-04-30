@@ -54,7 +54,9 @@ class TerminalThemeService {
       }
     }
 
-    return isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite;
+    return isDark
+        ? TerminalThemes.defaultDarkTheme
+        : TerminalThemes.defaultLightTheme;
   }
 
   /// Gets a theme by ID (checks built-in themes first, then custom).

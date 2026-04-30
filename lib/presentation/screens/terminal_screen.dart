@@ -3650,7 +3650,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final isDark = Theme.of(context).brightness == Brightness.dark;
     return _sessionThemeOverride ??
         _currentTheme ??
-        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+        (isDark
+            ? TerminalThemes.defaultDarkTheme
+            : TerminalThemes.defaultLightTheme);
   }
 
   Future<void> _startSharedClipboardSync(SshSession session) async {
@@ -6594,7 +6596,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (isMobile) {
       terminalView = TextSelectionTheme(
         data: TextSelectionTheme.of(context).copyWith(
-          selectionColor: terminalTheme.selection,
+          selectionColor: terminalTheme.readableSelection,
           selectionHandleColor: terminalTheme.cursor,
         ),
         child: terminalView,

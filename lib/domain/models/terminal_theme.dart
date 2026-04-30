@@ -31,7 +31,7 @@ String? buildTerminalThemeOscResponse({
     case '12':
       return _buildSingleColorOscResponse(code, theme.cursor, args);
     case '17':
-      return _buildSingleColorOscResponse(code, theme.selection, args);
+      return _buildSingleColorOscResponse(code, theme.readableSelection, args);
     case '19':
       return _buildSingleColorOscResponse(code, theme.foreground, args);
     default:
@@ -150,6 +150,20 @@ String _formatOscRgbComponent(int value) {
   final hex = value.toRadixString(16).padLeft(2, '0');
   return '$hex$hex';
 }
+
+const _minimumSelectionBackgroundContrast = 1.04;
+const _minimumSelectionTextContrast = 3.5;
+const _selectionAlphaCandidates = <int>[
+  0x66,
+  0x5C,
+  0x52,
+  0x48,
+  0x40,
+  0x36,
+  0x2E,
+  0x26,
+  0x1E,
+];
 
 /// Data model for a terminal color theme.
 ///
@@ -313,10 +327,17 @@ class TerminalThemeData {
   /// Foreground color for search hits.
   final Color? searchHitForeground;
 
+  /// Selection highlight adjusted for this app's single selected-text color.
+  Color get readableSelection => normalizeTerminalSelectionColor(
+    foreground: foreground,
+    background: background,
+    selection: selection,
+  );
+
   /// Converts this theme data to xterm's [TerminalTheme].
   TerminalTheme toXtermTheme() => TerminalTheme(
     cursor: cursor,
-    selection: selection,
+    selection: readableSelection,
     foreground: foreground,
     background: background,
     black: black,
@@ -447,4 +468,63 @@ class TerminalThemeData {
 
   @override
   int get hashCode => id.hashCode;
+}
+
+/// Adjusts an iTerm-style selection color for readable selected text.
+Color normalizeTerminalSelectionColor({
+  required Color foreground,
+  required Color background,
+  required Color selection,
+}) {
+  if (_isUsableSelection(
+    foreground: foreground,
+    background: background,
+    selection: selection,
+  )) {
+    return selection;
+  }
+
+  for (final alpha in _selectionAlphaCandidates) {
+    final candidate = selection.withAlpha(alpha);
+    if (_isUsableSelection(
+      foreground: foreground,
+      background: background,
+      selection: candidate,
+    )) {
+      return candidate;
+    }
+  }
+
+  for (final alpha in _selectionAlphaCandidates) {
+    final candidate = foreground.withAlpha(alpha);
+    if (_isUsableSelection(
+      foreground: foreground,
+      background: background,
+      selection: candidate,
+    )) {
+      return candidate;
+    }
+  }
+
+  return selection.withAlpha(_selectionAlphaCandidates.last);
+}
+
+bool _isUsableSelection({
+  required Color foreground,
+  required Color background,
+  required Color selection,
+}) {
+  final compositedSelection = Color.alphaBlend(selection, background);
+  return _contrastRatio(foreground, compositedSelection) >=
+          _minimumSelectionTextContrast &&
+      _contrastRatio(compositedSelection, background) >=
+          _minimumSelectionBackgroundContrast;
+}
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = luminanceA > luminanceB ? luminanceA : luminanceB;
+  final darkest = luminanceA > luminanceB ? luminanceB : luminanceA;
+  return (brightest + 0.05) / (darkest + 0.05);
 }

@@ -92,8 +92,7 @@ class _ThemeEditorScreenState extends ConsumerState<ThemeEditorScreen> {
   }
 
   void _initializeFromDefaults() {
-    // Start with Midnight Purple as base
-    const base = TerminalThemes.midnightPurple;
+    const base = TerminalThemes.defaultDarkTheme;
     _foreground = base.foreground;
     _background = base.background;
     _cursor = base.cursor;

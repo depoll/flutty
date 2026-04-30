@@ -342,7 +342,7 @@ void main() {
         input: 'before\x1b[?996nafter',
         pendingInput: '',
         metrics: null,
-        theme: monkey_themes.TerminalThemes.midnightPurple,
+        theme: monkey_themes.TerminalThemes.defaultDarkTheme,
       );
 
       expect(dark.response, '\x1b[?997;1n');
@@ -352,7 +352,7 @@ void main() {
         input: 'before\x1b[?996nafter',
         pendingInput: '',
         metrics: null,
-        theme: monkey_themes.TerminalThemes.cleanWhite,
+        theme: monkey_themes.TerminalThemes.defaultLightTheme,
       );
 
       expect(light.response, '\x1b[?997;2n');
@@ -366,7 +366,7 @@ void main() {
           input: 'before\x1b[?99',
           pendingInput: '',
           metrics: null,
-          theme: monkey_themes.TerminalThemes.cleanWhite,
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
         );
 
         expect(first.response, isNull);
@@ -376,7 +376,7 @@ void main() {
           input: '6nafter',
           pendingInput: first.pendingInput,
           metrics: null,
-          theme: monkey_themes.TerminalThemes.cleanWhite,
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
         );
 
         expect(second.response, '\x1b[?997;2n');

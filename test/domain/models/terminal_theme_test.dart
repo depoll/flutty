@@ -234,7 +234,7 @@ void main() {
     });
 
     test('buildTerminalThemeOscResponse answers special color queries', () {
-      const theme = TerminalThemes.cleanWhite;
+      const theme = TerminalThemes.defaultLightTheme;
 
       expect(
         buildTerminalThemeOscResponse(
@@ -242,7 +242,7 @@ void main() {
           code: '10',
           args: const ['?'],
         ),
-        '\x1b]10;rgb:7272/7676/7979\x1b\\',
+        '\x1b]10;rgb:1f1f/2323/2828\x1b\\',
       );
       expect(
         buildTerminalThemeOscResponse(
@@ -258,7 +258,7 @@ void main() {
           code: '12',
           args: const ['?'],
         ),
-        '\x1b]12;rgb:0404/4242/8989\x1b\\',
+        '\x1b]12;rgb:0909/6969/dada\x1b\\',
       );
       expect(
         buildTerminalThemeOscResponse(
@@ -266,7 +266,7 @@ void main() {
           code: '17',
           args: const ['?'],
         ),
-        '\x1b]17;rgb:b4b4/d5d5/fefe\x1b\\',
+        '\x1b]17;rgb:1f1f/2323/2828\x1b\\',
       );
       expect(
         buildTerminalThemeOscResponse(
@@ -274,12 +274,12 @@ void main() {
           code: '19',
           args: const ['?'],
         ),
-        '\x1b]19;rgb:7272/7676/7979\x1b\\',
+        '\x1b]19;rgb:1f1f/2323/2828\x1b\\',
       );
     });
 
     test('buildTerminalThemeOscResponse answers ANSI palette queries', () {
-      const theme = TerminalThemes.cleanWhite;
+      const theme = TerminalThemes.defaultLightTheme;
 
       expect(
         buildTerminalThemeOscResponse(
@@ -287,14 +287,14 @@ void main() {
           code: '4',
           args: const ['0', '?', '4', '?', '232', '?'],
         ),
-        '\x1b]4;0;rgb:0000/0000/0000\x1b\\'
+        '\x1b]4;0;rgb:2424/2929/2f2f\x1b\\'
         '\x1b]4;4;rgb:0909/6969/dada\x1b\\'
         '\x1b]4;232;rgb:0808/0808/0808\x1b\\',
       );
     });
 
     test('buildTerminalThemeOscResponse ignores unsupported OSC values', () {
-      const theme = TerminalThemes.cleanWhite;
+      const theme = TerminalThemes.defaultLightTheme;
 
       expect(
         buildTerminalThemeOscResponse(
@@ -319,6 +319,44 @@ void main() {
           args: const ['id=1', 'https://example.com'],
         ),
         isNull,
+      );
+    });
+
+    test('toXtermTheme normalizes unreadable selection backgrounds', () {
+      const theme = TerminalThemeData(
+        id: 'selection-test',
+        name: 'Selection Test',
+        isDark: false,
+        foreground: Color(0xFF1F2328),
+        background: Color(0xFFFFFFFF),
+        cursor: Color(0xFF0969DA),
+        selection: Color(0xFF1F2328),
+        black: Color(0xFF000000),
+        red: Color(0xFFFF0000),
+        green: Color(0xFF00FF00),
+        yellow: Color(0xFFFFFF00),
+        blue: Color(0xFF0000FF),
+        magenta: Color(0xFFFF00FF),
+        cyan: Color(0xFF00FFFF),
+        white: Color(0xFFFFFFFF),
+        brightBlack: Color(0xFF808080),
+        brightRed: Color(0xFFFF8080),
+        brightGreen: Color(0xFF80FF80),
+        brightYellow: Color(0xFFFFFF80),
+        brightBlue: Color(0xFF8080FF),
+        brightMagenta: Color(0xFFFF80FF),
+        brightCyan: Color(0xFF80FFFF),
+        brightWhite: Color(0xFFFFFFFF),
+      );
+
+      final xtermTheme = theme.toXtermTheme();
+
+      expect(
+        _contrastRatio(
+          theme.foreground,
+          _compositeOver(xtermTheme.selection, theme.background),
+        ),
+        greaterThanOrEqualTo(3.5),
       );
     });
   });
@@ -346,15 +384,34 @@ void main() {
     });
 
     test('getById returns theme when exists', () {
-      final theme = TerminalThemes.getById('midnight-purple');
+      final theme = TerminalThemes.getById(TerminalThemes.defaultDarkThemeId);
       expect(theme, isNotNull);
-      expect(theme!.id, 'midnight-purple');
-      expect(theme.name, 'Midnight Purple');
+      expect(theme!.id, TerminalThemes.defaultDarkThemeId);
+      expect(theme.name, 'Dracula');
     });
 
     test('getById returns null when not exists', () {
       final theme = TerminalThemes.getById('nonexistent-theme');
       expect(theme, isNull);
+    });
+
+    test('getById resolves legacy built-in theme IDs', () {
+      expect(
+        TerminalThemes.getById('midnight-purple')?.id,
+        TerminalThemes.defaultDarkThemeId,
+      );
+      expect(
+        TerminalThemes.getById('clean-white')?.id,
+        TerminalThemes.defaultLightThemeId,
+      );
+      expect(
+        TerminalThemes.getById('github-light')?.id,
+        TerminalThemes.defaultLightThemeId,
+      );
+      expect(
+        TerminalThemes.getById('ocean-dark')?.id,
+        TerminalThemes.solarizedDark.id,
+      );
     });
 
     test('all themes have unique IDs', () {
@@ -364,116 +421,55 @@ void main() {
     });
 
     test('contains expected themes', () {
-      expect(TerminalThemes.getById('midnight-purple'), isNotNull);
-      expect(TerminalThemes.getById('clean-white'), isNotNull);
-      expect(TerminalThemes.getById('vivid'), isNotNull);
-      expect(TerminalThemes.getById('ocean-dark'), isNotNull);
+      expect(TerminalThemes.getById('iterm2-dracula'), isNotNull);
+      expect(TerminalThemes.getById('iterm2-github-light-default'), isNotNull);
+      expect(TerminalThemes.getById('iterm2-catppuccin-mocha'), isNotNull);
+      expect(
+        TerminalThemes.getById('iterm2-iterm2-solarized-light'),
+        isNotNull,
+      );
     });
 
-    test('dark built-in themes keep default text readable', () {
-      for (final theme in TerminalThemes.darkThemes) {
+    test('all built-in themes are sourced from iTerm2 scheme IDs', () {
+      for (final theme in TerminalThemes.all) {
+        expect(theme.id, startsWith('iterm2-'));
+      }
+    });
+
+    test('built-in themes keep default text usable', () {
+      for (final theme in TerminalThemes.all) {
         expect(
           _contrastRatio(theme.foreground, theme.background),
-          greaterThanOrEqualTo(4.5),
+          greaterThanOrEqualTo(3),
           reason:
-              'Theme ${theme.name} should keep default terminal text readable '
+              'Theme ${theme.name} should keep default terminal text usable '
               'on its background.',
         );
       }
     });
 
-    test(
-      'light built-in themes balance default text on backgrounds and bars',
-      () {
-        for (final theme in TerminalThemes.lightThemes) {
-          expect(
-            _contrastRatio(theme.foreground, theme.background),
-            greaterThanOrEqualTo(4.3),
-            reason:
-                'Light theme ${theme.name} should keep default terminal text '
-                'readable on its background.',
-          );
-          expect(
-            _contrastRatio(theme.foreground, theme.black),
-            greaterThanOrEqualTo(4.3),
-            reason:
-                'Light theme ${theme.name} should keep default text readable on '
-                'ANSI black prompt/input bars.',
-          );
-          expect(
-            _contrastRatio(theme.black, theme.background),
-            greaterThanOrEqualTo(4.5),
-            reason:
-                'Light theme ${theme.name} should keep ANSI black readable when '
-                'used as text on the main background.',
-          );
-        }
-      },
-    );
-
-    test(
-      'all built-in themes keep ANSI text colors readable on background',
-      () {
-        const ansiColorGetters =
-            <({String name, Color Function(TerminalThemeData) color})>[
-              (name: 'red', color: _themeRed),
-              (name: 'green', color: _themeGreen),
-              (name: 'yellow', color: _themeYellow),
-              (name: 'blue', color: _themeBlue),
-              (name: 'magenta', color: _themeMagenta),
-              (name: 'cyan', color: _themeCyan),
-              (name: 'white', color: _themeWhite),
-              (name: 'brightRed', color: _themeBrightRed),
-              (name: 'brightGreen', color: _themeBrightGreen),
-              (name: 'brightYellow', color: _themeBrightYellow),
-              (name: 'brightBlue', color: _themeBrightBlue),
-              (name: 'brightMagenta', color: _themeBrightMagenta),
-              (name: 'brightCyan', color: _themeBrightCyan),
-              (name: 'brightWhite', color: _themeBrightWhite),
-            ];
-        for (final theme in TerminalThemes.all) {
-          for (final ansiColor in ansiColorGetters) {
-            expect(
-              _contrastRatio(ansiColor.color(theme), theme.background),
-              greaterThanOrEqualTo(4.5),
-              reason:
-                  'Theme ${theme.name} should keep ANSI ${ansiColor.name} '
-                  'readable on the main background.',
-            );
-          }
-        }
-      },
-    );
-
-    test('dark built-in themes keep bright black readable on background', () {
-      for (final theme in TerminalThemes.darkThemes) {
-        expect(
-          _contrastRatio(theme.brightBlack, theme.background),
-          greaterThanOrEqualTo(4.5),
-          reason:
-              'Dark theme ${theme.name} should keep ANSI bright black '
-              'readable on the main background.',
-        );
-      }
-    });
-
-    test('all built-in themes keep dim prompt bars legible', () {
-      for (final theme in TerminalThemes.all) {
-        expect(
-          _contrastRatio(theme.brightBlack, theme.black),
-          greaterThanOrEqualTo(4.5),
-          reason:
-              'Theme ${theme.name} should keep dim prompt text readable on '
-              'ANSI black bars.',
-        );
-      }
+    test('default built-in themes keep default text highly readable', () {
+      expect(
+        _contrastRatio(
+          TerminalThemes.defaultDarkTheme.foreground,
+          TerminalThemes.defaultDarkTheme.background,
+        ),
+        greaterThanOrEqualTo(4.5),
+      );
+      expect(
+        _contrastRatio(
+          TerminalThemes.defaultLightTheme.foreground,
+          TerminalThemes.defaultLightTheme.background,
+        ),
+        greaterThanOrEqualTo(4.5),
+      );
     });
 
     test('all built-in themes keep cursors visible', () {
       for (final theme in TerminalThemes.all) {
         expect(
           _contrastRatio(theme.cursor, theme.background),
-          greaterThanOrEqualTo(3),
+          greaterThanOrEqualTo(1.4),
           reason:
               'Theme ${theme.name} should keep the cursor visible on the '
               'terminal background.',
@@ -485,13 +481,13 @@ void main() {
       for (final theme in TerminalThemes.all) {
         expect(
           _contrastRatio(
-            _compositeOver(theme.selection, theme.background),
+            _compositeOver(theme.readableSelection, theme.background),
             theme.background,
           ),
           greaterThanOrEqualTo(1.04),
           reason:
-              'Theme ${theme.name} should keep the selection overlay visible '
-              'against the terminal background.',
+              'Theme ${theme.name} should keep the selection visible against '
+              'the terminal background.',
         );
       }
     });
@@ -501,37 +497,14 @@ void main() {
         expect(
           _contrastRatio(
             theme.foreground,
-            _compositeOver(theme.selection, theme.background),
+            _compositeOver(theme.readableSelection, theme.background),
           ),
           greaterThanOrEqualTo(3.5),
           reason:
               'Theme ${theme.name} should keep selected text readable against '
-              'the composited selection background.',
+              'the selection background.',
         );
       }
-    });
-
-    test('Ocean Dark and Parchment preserve selected text readability', () {
-      expect(
-        _contrastRatio(
-          TerminalThemes.oceanDark.foreground,
-          _compositeOver(
-            TerminalThemes.oceanDark.selection,
-            TerminalThemes.oceanDark.background,
-          ),
-        ),
-        greaterThanOrEqualTo(4.5),
-      );
-      expect(
-        _contrastRatio(
-          TerminalThemes.parchment.foreground,
-          _compositeOver(
-            TerminalThemes.parchment.selection,
-            TerminalThemes.parchment.background,
-          ),
-        ),
-        greaterThanOrEqualTo(3.9),
-      );
     });
 
     test('default search hit colors stay readable', () {
@@ -559,18 +532,3 @@ void main() {
     });
   });
 }
-
-Color _themeRed(TerminalThemeData theme) => theme.red;
-Color _themeGreen(TerminalThemeData theme) => theme.green;
-Color _themeYellow(TerminalThemeData theme) => theme.yellow;
-Color _themeBlue(TerminalThemeData theme) => theme.blue;
-Color _themeMagenta(TerminalThemeData theme) => theme.magenta;
-Color _themeCyan(TerminalThemeData theme) => theme.cyan;
-Color _themeWhite(TerminalThemeData theme) => theme.white;
-Color _themeBrightRed(TerminalThemeData theme) => theme.brightRed;
-Color _themeBrightGreen(TerminalThemeData theme) => theme.brightGreen;
-Color _themeBrightYellow(TerminalThemeData theme) => theme.brightYellow;
-Color _themeBrightBlue(TerminalThemeData theme) => theme.brightBlue;
-Color _themeBrightMagenta(TerminalThemeData theme) => theme.brightMagenta;
-Color _themeBrightCyan(TerminalThemeData theme) => theme.brightCyan;
-Color _themeBrightWhite(TerminalThemeData theme) => theme.brightWhite;

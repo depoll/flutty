@@ -100,11 +100,11 @@ void _expectOverlaySelectionTheme(WidgetTester tester, Finder overlayField) {
   final data = tester.widget<TextSelectionTheme>(selectionTheme).data;
   expect(
     data.selectionColor,
-    app_terminal_themes.TerminalThemes.cleanWhite.selection,
+    app_terminal_themes.TerminalThemes.defaultLightTheme.readableSelection,
   );
   expect(
     data.selectionHandleColor,
-    app_terminal_themes.TerminalThemes.cleanWhite.cursor,
+    app_terminal_themes.TerminalThemes.defaultLightTheme.cursor,
   );
 }
 

@@ -1054,7 +1054,7 @@ _RemoteEditorColors _resolveEditorColors(
     background: surfaceBase,
     foreground: terminalTheme.foreground,
     cursor: terminalTheme.cursor,
-    selection: terminalTheme.selection,
+    selection: terminalTheme.readableSelection,
     gutterBackground: gutterBackground,
     gutterForeground: terminalTheme.foreground.withAlpha(170),
     statusBackground: statusBackground,

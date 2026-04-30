@@ -341,8 +341,10 @@ void main() {
   });
 
   test('grayscale palette backgrounds follow the active theme surface', () {
-    final darkTheme = monkey_themes.TerminalThemes.oceanDark.toXtermTheme();
-    final lightTheme = monkey_themes.TerminalThemes.cleanWhite.toXtermTheme();
+    final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .toXtermTheme();
+    final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
+        .toXtermTheme();
 
     final staleLightInputBackground =
         resolveMonkeyTerminalPaletteBackgroundColor(darkTheme, 255);
@@ -375,21 +377,21 @@ void main() {
   });
 
   test('faint terminal text remains dim when contrast allows it', () {
-    const slateTheme = monkey_themes.TerminalThemes.slate;
+    const theme = monkey_themes.TerminalThemes.atomOneDark;
     final defaultFaint = Color.alphaBlend(
-      slateTheme.foreground.withAlpha(128),
-      slateTheme.background,
+      theme.foreground.withAlpha(128),
+      theme.background,
     );
     final readableFaint = resolveMonkeyTerminalFaintForegroundColor(
-      foreground: slateTheme.foreground,
-      background: slateTheme.background,
+      foreground: theme.foreground,
+      background: theme.background,
     );
 
-    expect(_contrastRatio(defaultFaint, slateTheme.background), lessThan(4.5));
+    expect(_contrastRatio(defaultFaint, theme.background), lessThan(4.5));
     expect(
-      _contrastRatio(readableFaint, slateTheme.background),
+      _contrastRatio(readableFaint, theme.background),
       greaterThanOrEqualTo(4.5),
     );
-    expect(readableFaint, isNot(slateTheme.foreground));
+    expect(readableFaint, isNot(theme.foreground));
   });
 }

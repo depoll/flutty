@@ -22,7 +22,9 @@ TerminalThemeData resolveConnectionPreviewTheme({
 
   return themeLookup[preferredThemeId] ??
       TerminalThemes.getById(preferredThemeId) ??
-      (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+      (isDark
+          ? TerminalThemes.defaultDarkTheme
+          : TerminalThemes.defaultLightTheme);
 }
 
 /// Fallback status text for a connection preview with no terminal output yet.

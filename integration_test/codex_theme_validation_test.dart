@@ -194,18 +194,18 @@ void main() {
     terminal = _terminalFromView(tester);
     final darkContrast = _minimumTokenContrast(
       terminal,
-      monkey_themes.TerminalThemes.oceanDark,
+      monkey_themes.TerminalThemes.defaultDarkTheme,
       darkToken,
     );
     final darkSurface = _composerSurfaceForToken(
       terminal,
-      monkey_themes.TerminalThemes.oceanDark,
+      monkey_themes.TerminalThemes.defaultDarkTheme,
       darkToken,
     );
     expect(darkContrast, greaterThanOrEqualTo(4.5));
     expect(darkSurface.sampledCells, greaterThan(darkToken.length));
     expect(darkSurface.background.computeLuminance(), lessThan(0.45));
-    await binding.takeScreenshot('codex-ocean-dark-readable');
+    await binding.takeScreenshot('codex-default-dark-readable');
 
     await _switchThemeMode(tester, themeMode, ThemeMode.light);
     terminal = _terminalFromView(tester);
@@ -220,18 +220,18 @@ void main() {
     terminal = _terminalFromView(tester);
     final lightContrast = _minimumTokenContrast(
       terminal,
-      monkey_themes.TerminalThemes.cleanWhite,
+      monkey_themes.TerminalThemes.defaultLightTheme,
       lightToken,
     );
     final lightSurface = _composerSurfaceForToken(
       terminal,
-      monkey_themes.TerminalThemes.cleanWhite,
+      monkey_themes.TerminalThemes.defaultLightTheme,
       lightToken,
     );
     expect(lightContrast, greaterThanOrEqualTo(4.5));
     expect(lightSurface.sampledCells, greaterThan(lightToken.length));
     expect(lightSurface.background.computeLuminance(), greaterThan(0.55));
-    await binding.takeScreenshot('codex-clean-white-readable');
+    await binding.takeScreenshot('codex-default-light-readable');
   });
 }
 
