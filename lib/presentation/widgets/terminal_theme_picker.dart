@@ -1,6 +1,7 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/iterm_color_scheme.dart';
 import '../../domain/models/terminal_theme.dart';
@@ -10,7 +11,9 @@ import '../../domain/services/terminal_theme_service.dart';
 import 'theme_preview_card.dart';
 
 const _liveThemeSearchMinLength = 2;
-const _liveThemePreviewLimit = 24;
+const _liveThemeSearchDebounce = Duration(milliseconds: 350);
+const _liveThemeResultLimit = 24;
+const _liveThemePreviewLimit = 4;
 
 /// A reusable widget for selecting terminal themes.
 ///
@@ -37,12 +40,15 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 
 class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   String _searchQuery = '';
+  String _liveSearchQuery = '';
   String? _importingSchemeId;
   _ThemeFilter _filter = _ThemeFilter.all;
   final TextEditingController _searchController = TextEditingController();
+  Timer? _liveSearchDebounceTimer;
 
   @override
   void dispose() {
+    _liveSearchDebounceTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -52,9 +58,14 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final themesAsync = ref.watch(allTerminalThemesProvider);
     final colorScheme = Theme.of(context).colorScheme;
     final availableThemes = themesAsync.asData?.value ?? TerminalThemes.all;
-    final liveSearchQuery = _searchQuery.trim();
-    final liveResultsAsync = liveSearchQuery.length >= _liveThemeSearchMinLength
-        ? ref.watch(itermColorSchemeSearchProvider(liveSearchQuery))
+    final liveSearchText = _searchQuery.trim();
+    final isLiveSearchPending =
+        liveSearchText.length >= _liveThemeSearchMinLength &&
+        liveSearchText != _liveSearchQuery;
+    final liveResultsAsync =
+        _liveSearchQuery.length >= _liveThemeSearchMinLength &&
+            !isLiveSearchPending
+        ? ref.watch(itermColorSchemeSearchProvider(_liveSearchQuery))
         : null;
 
     // Get the currently selected theme for the preview
@@ -98,15 +109,12 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
                     suffixIcon: _searchQuery.isNotEmpty
                         ? IconButton(
                             icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                            },
+                            onPressed: _clearSearch,
                           )
                         : null,
                     isDense: true,
                   ),
-                  onChanged: (value) => setState(() => _searchQuery = value),
+                  onChanged: _handleSearchChanged,
                 ),
                 const SizedBox(height: 12),
                 // Filter chips
@@ -142,7 +150,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             const Center(child: Text('Could not load terminal themes.')),
         data: (themes) {
           final filtered = _filterThemes(themes);
-          if (filtered.isEmpty && liveSearchQuery.isEmpty) {
+          if (filtered.isEmpty && liveSearchText.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -166,10 +174,40 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             filtered,
             installedThemes: themes,
             liveResultsAsync: liveResultsAsync,
+            isLiveSearchPending: isLiveSearchPending,
           );
         },
       ),
     );
+  }
+
+  void _clearSearch() {
+    _liveSearchDebounceTimer?.cancel();
+    _searchController.clear();
+    setState(() {
+      _searchQuery = '';
+      _liveSearchQuery = '';
+    });
+  }
+
+  void _handleSearchChanged(String value) {
+    _liveSearchDebounceTimer?.cancel();
+    final query = value.trim();
+    setState(() {
+      _searchQuery = value;
+      if (query.length < _liveThemeSearchMinLength) {
+        _liveSearchQuery = '';
+      }
+    });
+    if (query.length < _liveThemeSearchMinLength || query == _liveSearchQuery) {
+      return;
+    }
+    _liveSearchDebounceTimer = Timer(_liveThemeSearchDebounce, () {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _liveSearchQuery = query);
+    });
   }
 
   List<TerminalThemeData> _filterThemes(List<TerminalThemeData> themes) {
@@ -197,6 +235,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     List<TerminalThemeData> themes, {
     required List<TerminalThemeData> installedThemes,
     required AsyncValue<List<ItermColorSchemeMetadata>>? liveResultsAsync,
+    required bool isLiveSearchPending,
   }) {
     // Separate custom themes
     final builtInThemes = themes.where((t) => !t.isCustom).toList();
@@ -241,6 +280,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         ..._buildLiveRepositorySection(
           installedThemeIds: installedThemeIds,
           liveResultsAsync: liveResultsAsync,
+          isLiveSearchPending: isLiveSearchPending,
         ),
         const SizedBox(height: 24),
       ],
@@ -250,6 +290,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   List<Widget> _buildLiveRepositorySection({
     required Set<String> installedThemeIds,
     required AsyncValue<List<ItermColorSchemeMetadata>>? liveResultsAsync,
+    required bool isLiveSearchPending,
   }) {
     final query = _searchQuery.trim();
     if (query.isEmpty) {
@@ -269,7 +310,13 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     return [
       const SizedBox(height: 8),
       const _SectionHeader(title: 'iTerm2ColorSchemes.com'),
-      if (liveResultsAsync == null)
+      if (isLiveSearchPending)
+        const _LiveThemeMessage(
+          icon: Icons.sync,
+          message: 'Searching live repository...',
+          isLoading: true,
+        )
+      else if (liveResultsAsync == null)
         const _LiveThemeMessage(
           icon: Icons.search,
           message: 'Type at least 2 characters to search the live repository.',
@@ -442,7 +489,13 @@ class _LiveThemePreviewGrid extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final visibleSchemes = schemes
+        .take(_liveThemeResultLimit)
+        .toList(growable: false);
+    final previewSchemes = visibleSchemes
         .take(_liveThemePreviewLimit)
+        .toList(growable: false);
+    final compactSchemes = visibleSchemes
+        .skip(_liveThemePreviewLimit)
         .toList(growable: false);
     final screenWidth = MediaQuery.of(context).size.width;
     final crossAxisCount = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
@@ -459,9 +512,9 @@ class _LiveThemePreviewGrid extends StatelessWidget {
             crossAxisSpacing: 12,
             childAspectRatio: 0.9,
           ),
-          itemCount: visibleSchemes.length,
+          itemCount: previewSchemes.length,
           itemBuilder: (context, index) {
-            final scheme = visibleSchemes[index];
+            final scheme = previewSchemes[index];
             return _LiveThemePreviewCard(
               scheme: scheme,
               isImporting: importingSchemeId == scheme.id,
@@ -470,18 +523,92 @@ class _LiveThemePreviewGrid extends StatelessWidget {
             );
           },
         ),
+        if (compactSchemes.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          _LiveThemeCompactList(
+            schemes: compactSchemes,
+            importingSchemeId: importingSchemeId,
+            onSchemeSelected: onSchemeSelected,
+          ),
+        ],
         if (schemes.length > visibleSchemes.length) ...[
           const SizedBox(height: 12),
           _LiveThemeMessage(
             icon: Icons.manage_search,
             message:
-                'Showing the first ${visibleSchemes.length} live previews. '
+                'Showing the first ${visibleSchemes.length} live matches. '
                 'Refine your search to narrow the results.',
+          ),
+        ],
+        if (compactSchemes.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          const _LiveThemeMessage(
+            icon: Icons.speed_outlined,
+            message:
+                'Previews are loaded for the first few matches only. Refine '
+                'your search to preview a specific theme before importing.',
           ),
         ],
       ],
     );
   }
+}
+
+class _LiveThemeCompactList extends StatelessWidget {
+  const _LiveThemeCompactList({
+    required this.schemes,
+    required this.importingSchemeId,
+    required this.onSchemeSelected,
+  });
+
+  final List<ItermColorSchemeMetadata> schemes;
+  final String? importingSchemeId;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemeSelected;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    margin: EdgeInsets.zero,
+    child: Column(
+      children: [
+        for (final scheme in schemes)
+          _LiveThemeCompactTile(
+            scheme: scheme,
+            isImporting: importingSchemeId == scheme.id,
+            isBusy: importingSchemeId != null,
+            onTap: () => onSchemeSelected(scheme),
+          ),
+      ],
+    ),
+  );
+}
+
+class _LiveThemeCompactTile extends StatelessWidget {
+  const _LiveThemeCompactTile({
+    required this.scheme,
+    required this.isImporting,
+    required this.isBusy,
+    required this.onTap,
+  });
+
+  final ItermColorSchemeMetadata scheme;
+  final bool isImporting;
+  final bool isBusy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: isImporting
+        ? const SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.download_outlined),
+    title: Text(scheme.name),
+    subtitle: const Text('Import from iTerm2ColorSchemes.com'),
+    trailing: const Icon(Icons.chevron_right),
+    enabled: !isBusy || isImporting,
+    onTap: isBusy ? null : onTap,
+  );
 }
 
 class _LiveThemePreviewCard extends ConsumerWidget {
@@ -826,7 +953,8 @@ class _CurrentSelectionPreview extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   r'$ _',
-                  style: GoogleFonts.jetBrainsMono(
+                  style: TextStyle(
+                    fontFamily: 'JetBrains Mono',
                     fontSize: 8,
                     color: theme.foreground,
                   ),

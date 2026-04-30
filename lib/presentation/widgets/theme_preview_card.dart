@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_theme.dart';
 
@@ -34,7 +33,10 @@ class ThemePreviewCard extends StatelessWidget {
   final VoidCallback? onLongPress;
 
   TextStyle _getPreviewFontStyle({double fontSize = 8, Color? color}) {
-    final baseStyle = GoogleFonts.jetBrainsMono(fontSize: fontSize);
+    final baseStyle = TextStyle(
+      fontFamily: 'JetBrains Mono',
+      fontSize: fontSize,
+    );
     return color != null ? baseStyle.copyWith(color: color) : baseStyle;
   }
 
