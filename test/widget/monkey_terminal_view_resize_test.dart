@@ -385,6 +385,34 @@ void main() {
     expect(staleDarkInputBackground.computeLuminance(), greaterThan(0.55));
   });
 
+  test('grayscale palette foregrounds follow the active theme text color', () {
+    final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .toXtermTheme();
+    final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
+        .toXtermTheme();
+
+    final darkMutedText = resolveMonkeyTerminalPaletteForegroundColor(
+      darkTheme,
+      244,
+    );
+    final lightMutedText = resolveMonkeyTerminalPaletteForegroundColor(
+      lightTheme,
+      244,
+    );
+
+    expect(darkMutedText, isNot(const Color(0xFF808080)));
+    expect(lightMutedText, isNot(const Color(0xFF808080)));
+    expect(darkMutedText, isNot(lightMutedText));
+    expect(
+      _contrastRatio(darkMutedText, darkTheme.background),
+      greaterThan(2.5),
+    );
+    expect(
+      _contrastRatio(lightMutedText, lightTheme.background),
+      greaterThan(2.5),
+    );
+  });
+
   test('faint terminal text preserves each theme base readability', () {
     for (final theme in monkey_themes.TerminalThemes.all) {
       final faintForeground = resolveMonkeyTerminalFaintForegroundColor(

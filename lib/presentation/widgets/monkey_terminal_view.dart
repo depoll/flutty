@@ -88,10 +88,45 @@ Color resolveMonkeyTerminalPaletteBackgroundColor(
   );
 }
 
+/// Resolves 256-color palette foregrounds against the active terminal theme.
+///
+/// CLI tools often use xterm grayscale palette indexes for muted log text. A
+/// fixed grayscale foreground stays gray after switching to a colored terminal
+/// theme, so grayscale foregrounds are treated as theme-relative opacity levels.
+@visibleForTesting
+Color resolveMonkeyTerminalPaletteForegroundColor(
+  TerminalTheme theme,
+  int colorIndex,
+) {
+  if (colorIndex < _xtermGrayscalePaletteStart ||
+      colorIndex > _xtermGrayscalePaletteEnd) {
+    return PaletteBuilder(theme).paletteColor(colorIndex);
+  }
+
+  final scale =
+      (colorIndex - _xtermGrayscalePaletteStart) /
+      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
+  final isLightBackground = theme.background.computeLuminance() > 0.5;
+  final opacity = isLightBackground
+      ? lerpDouble(0.92, 0.35, scale)!
+      : lerpDouble(0.28, 0.92, scale)!;
+  return Color.alphaBlend(
+    theme.foreground.withAlpha((opacity * 255).round()),
+    theme.background,
+  );
+}
+
 List<Color> _buildThemeAwareBackgroundPalette(TerminalTheme theme) =>
     List<Color>.generate(
       256,
       (index) => resolveMonkeyTerminalPaletteBackgroundColor(theme, index),
+      growable: false,
+    );
+
+List<Color> _buildThemeAwareForegroundPalette(TerminalTheme theme) =>
+    List<Color>.generate(
+      256,
+      (index) => resolveMonkeyTerminalPaletteForegroundColor(theme, index),
       growable: false,
     );
 
@@ -1235,9 +1270,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
     required super.theme,
     required super.textStyle,
     required super.textScaler,
-  }) : _backgroundPalette = _buildThemeAwareBackgroundPalette(theme);
+  }) : _backgroundPalette = _buildThemeAwareBackgroundPalette(theme),
+       _foregroundPalette = _buildThemeAwareForegroundPalette(theme);
 
   List<Color> _backgroundPalette;
+  List<Color> _foregroundPalette;
   final _paragraphCache = ParagraphCache(10240);
 
   @override
@@ -1265,6 +1302,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
     super.theme = value;
     _backgroundPalette = _buildThemeAwareBackgroundPalette(value);
+    _foregroundPalette = _buildThemeAwareForegroundPalette(value);
     _paragraphCache.clear();
   }
 
@@ -1322,6 +1360,23 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
 
     canvas.drawParagraph(paragraph, offset);
+  }
+
+  @override
+  Color resolveForegroundColor(int cellColor) {
+    final colorType = cellColor & CellColor.typeMask;
+    final colorValue = cellColor & CellColor.valueMask;
+
+    switch (colorType) {
+      case CellColor.normal:
+        return theme.foreground;
+      case CellColor.named:
+      case CellColor.palette:
+        return _foregroundPalette[colorValue];
+      case CellColor.rgb:
+      default:
+        return Color(colorValue | 0xFF000000);
+    }
   }
 
   @override

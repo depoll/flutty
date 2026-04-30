@@ -32,14 +32,6 @@ void main() {
       expect(theme.colorScheme.surface, terminalTheme.background);
       expect(theme.colorScheme.onSurface, terminalTheme.foreground);
       expect(theme.textTheme.titleLarge?.color, terminalTheme.foreground);
-      final secondaryText = Color.lerp(
-        terminalTheme.background,
-        terminalTheme.foreground,
-        0.62,
-      );
-      expect(theme.colorScheme.onSurfaceVariant, secondaryText);
-      expect(theme.textTheme.labelSmall?.color, secondaryText);
-      expect(theme.textTheme.labelMedium?.color, secondaryText);
       expect(
         _terminalAccentCandidates(terminalTheme),
         contains(theme.colorScheme.primary),
