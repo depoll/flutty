@@ -70,11 +70,6 @@ on:
         type: boolean
         default: true
         description: 'Whether to derive and upload a universal Android APK artifact from the preview AAB when deploy-android-to == none'
-      upload-android-to-internal-app-sharing:
-        required: false
-        type: boolean
-        default: false
-        description: 'Whether to upload the Android preview APK to Play Internal App Sharing'
       build-ios-unsigned-ipa:
         required: false
         type: boolean
@@ -172,9 +167,6 @@ on:
       apk-artifact-id:
         description: 'Artifact ID of the uploaded APK'
         value: ${{ jobs.build-android.outputs.apk-artifact-id }}
-      android-internal-app-sharing-url:
-        description: 'Google Play Internal App Sharing URL for the uploaded Android preview'
-        value: ${{ jobs.build-android.outputs.internal-app-sharing-url }}
       android-source-sha:
         description: 'Git SHA used for Android build checkout'
         value: ${{ jobs.build-android.outputs.source-sha }}
@@ -204,7 +196,6 @@ jobs:
       FLUTTY_DIAGNOSTICS_ENABLED: ${{ inputs.enable-diagnostics || inputs.pr-number != '' }}
     outputs:
       apk-artifact-id: ${{ steps.upload-apk.outputs.artifact-id }}
-      internal-app-sharing-url: ${{ steps.upload-internal-app-sharing.outputs.url }}
       source-sha: ${{ steps.resolved-source-sha.outputs.value }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
@@ -352,7 +343,7 @@ jobs:
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
       - name: Build debug AAB for preview artifacts
-        if: (inputs.upload-android-to-internal-app-sharing || inputs.build-android-apk) && inputs.deploy-android-to == 'none' && !inputs.build-android-unsigned-aab
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none' && !inputs.build-android-unsigned-aab
         run: |
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
@@ -366,7 +357,7 @@ jobs:
 
       - name: Prepare AAB for preview install artifacts
         id: preview-aab
-        if: (inputs.upload-android-to-internal-app-sharing || inputs.build-android-apk) && inputs.deploy-android-to == 'none'
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
         run: |
           set -euo pipefail
 
@@ -553,7 +544,7 @@ jobs:
           SCRIPT
 
       - name: Validate Play Store service account
-        if: (inputs.deploy-android-to != 'none' && inputs.run-android-deploy) || inputs.upload-android-to-internal-app-sharing
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
         run: |
@@ -563,31 +554,11 @@ jobs:
           fi
 
       - name: Setup Ruby for Play deployment
-        if: (inputs.deploy-android-to != 'none' && inputs.run-android-deploy) || inputs.upload-android-to-internal-app-sharing
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
         uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
         with:
           ruby-version: '3.3'
           bundler-cache: true
-
-      - name: Upload Android Internal App Sharing artifact
-        id: upload-internal-app-sharing
-        if: inputs.upload-android-to-internal-app-sharing && inputs.deploy-android-to == 'none'
-        env:
-          PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
-          INTERNAL_APP_SHARING_URL_FILE: ${{ runner.temp }}/android-internal-app-sharing-url.txt
-          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
-        run: |
-          cd android
-          PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
-          AAB_PATH="${{ steps.preview-aab.outputs.path }}"
-          bundle exec fastlane internal_app_sharing package_name:"$PACKAGE_NAME" aab_path:"$AAB_PATH"
-
-          INTERNAL_APP_SHARING_URL="$(tr -d '\r\n' < "$INTERNAL_APP_SHARING_URL_FILE")"
-          if [ -z "$INTERNAL_APP_SHARING_URL" ]; then
-            echo "::error title=Missing Internal App Sharing URL::Fastlane completed without writing an Internal App Sharing URL."
-            exit 1
-          fi
-          echo "url=$INTERNAL_APP_SHARING_URL" >> "$GITHUB_OUTPUT"
 
       - name: Refresh Play Store icon metadata
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy && inputs.sync-metadata

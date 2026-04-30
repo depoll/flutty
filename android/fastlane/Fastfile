@@ -170,6 +170,11 @@ platform :android do
   desc 'Upload flavor APK/AAB to Play Store Internal App Sharing'
   lane :internal_app_sharing do |options|
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh.private'
+    allowed_packages = METADATA_DIRS.keys.sort.join(', ')
+    unless METADATA_DIRS.key?(package)
+      UI.user_error!("Unsupported package_name '#{package}'. Expected one of: #{allowed_packages}")
+    end
+
     apk_path = options[:apk_path] || options[:apk]
     aab_path = options[:aab_path] || options[:aab]
     output_file = ENV['INTERNAL_APP_SHARING_URL_FILE']
