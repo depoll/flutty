@@ -16,6 +16,7 @@ import 'package:go_router/go_router.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/routes.dart';
@@ -3295,6 +3296,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _terminalPathVerificationHomeDirectory;
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
+  late final ProviderSubscription<bool> _terminalWakeLockSubscription;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
   Timer? _promptOutputImeResetTimer;
@@ -3308,6 +3310,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _recentLocalClipboardText;
   DateTime? _recentLocalClipboardAt;
   bool _isTerminalSizeRefreshQueued = false;
+  bool _terminalWakeLockSetting = false;
+  bool _terminalWakeLockTarget = false;
+  bool _isTerminalWakeLockHeld = false;
+  Future<void> _terminalWakeLockWriteChain = Future<void>.value();
 
   // Theme state
   Host? _host;
@@ -3481,6 +3487,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           allowLocalClipboardRead: next,
         ),
       ),
+    );
+    _terminalWakeLockSetting = ref.read(terminalWakeLockNotifierProvider);
+    _terminalWakeLockSubscription = ref.listenManual<bool>(
+      terminalWakeLockNotifierProvider,
+      (previous, next) {
+        _terminalWakeLockSetting = next;
+        _syncTerminalWakeLock();
+      },
     );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
@@ -4070,6 +4084,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isConnecting = false;
         _error = 'Session not found';
       });
+      _syncTerminalWakeLock(SshConnectionState.disconnected);
       return;
     }
 
@@ -4120,6 +4135,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
         });
+        _syncTerminalWakeLock(SshConnectionState.connected);
         _scheduleTerminalSizeRefresh();
         _restoreTerminalFocus();
 
@@ -4182,6 +4198,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;
       });
+      _syncTerminalWakeLock(SshConnectionState.connected);
       _scheduleTerminalSizeRefresh();
       _restoreTerminalFocus();
       _primeTmuxStateFromHost();
@@ -4277,6 +4294,73 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _terminalViewKey.currentState?.refreshTerminalSize();
     });
     WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  SshConnectionState _readCurrentConnectionState() {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return SshConnectionState.disconnected;
+    }
+    return ref.read(activeSessionsProvider)[connectionId] ??
+        SshConnectionState.disconnected;
+  }
+
+  void _syncTerminalWakeLock([SshConnectionState? connectionState]) {
+    final shouldHold =
+        _terminalWakeLockSetting &&
+        !_wasBackgrounded &&
+        _connectionId != null &&
+        _shell != null &&
+        _error == null &&
+        (connectionState ?? _readCurrentConnectionState()) ==
+            SshConnectionState.connected;
+    unawaited(_setTerminalWakeLockHeld(held: shouldHold));
+  }
+
+  Future<void> _setTerminalWakeLockHeld({required bool held}) async {
+    if (_terminalWakeLockTarget == held && _isTerminalWakeLockHeld == held) {
+      return;
+    }
+    _terminalWakeLockTarget = held;
+    final nextWrite = _terminalWakeLockWriteChain.then((_) async {
+      final target = _terminalWakeLockTarget;
+      if (_isTerminalWakeLockHeld == target) {
+        return;
+      }
+
+      try {
+        await WakelockPlus.toggle(enable: target);
+        _isTerminalWakeLockHeld = target;
+      } on MissingPluginException catch (error, stackTrace) {
+        _reportTerminalWakeLockError(error, stackTrace, held: target);
+      } on PlatformException catch (error, stackTrace) {
+        _reportTerminalWakeLockError(error, stackTrace, held: target);
+      }
+    });
+    _terminalWakeLockWriteChain = nextWrite;
+    await nextWrite;
+  }
+
+  void _reportTerminalWakeLockError(
+    Object error,
+    StackTrace stackTrace, {
+    required bool held,
+  }) {
+    DiagnosticsLogService.instance.error(
+      'terminal',
+      'wake_lock_failed',
+      fields: {'enabled': held, 'errorType': error.runtimeType},
+    );
+    FlutterError.reportError(
+      FlutterErrorDetails(
+        exception: error,
+        stack: stackTrace,
+        library: 'terminal',
+        context: ErrorDescription(
+          'while ${held ? 'enabling' : 'disabling'} the terminal wake lock',
+        ),
+      ),
+    );
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -5491,12 +5575,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     final connectionId = _connectionId;
     if (connectionId == null) {
+      _syncTerminalWakeLock(SshConnectionState.disconnected);
       return;
     }
 
     final previousState =
         previous?[connectionId] ?? SshConnectionState.disconnected;
     final nextState = next[connectionId] ?? SshConnectionState.disconnected;
+    _syncTerminalWakeLock(nextState);
     if (previousState == nextState ||
         nextState != SshConnectionState.disconnected) {
       return;
@@ -5527,6 +5613,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _shell = null;
     unawaited(_doneSubscription?.cancel());
     _doneSubscription = null;
+    _syncTerminalWakeLock(SshConnectionState.disconnected);
     if (!mounted) {
       if (connectionId != null) {
         unawaited(
@@ -5566,6 +5653,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _disconnect() async {
     final connectionId = _connectionId;
     _connectionId = null;
+    _syncTerminalWakeLock(SshConnectionState.disconnected);
     await _doneSubscription?.cancel();
     _doneSubscription = null;
     _shell = null;
@@ -5596,6 +5684,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final previousConnectionId = _connectionId;
     _connectionId = null;
+    _syncTerminalWakeLock(SshConnectionState.disconnected);
     _connectionLostWhileBackgrounded = false;
     try {
       await _doneSubscription?.cancel();
@@ -5621,6 +5710,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     WidgetsBinding.instance.removeObserver(this);
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
+    _terminalWakeLockSubscription.close();
+    unawaited(_setTerminalWakeLockHeld(held: false));
     _stopSharedClipboardSync();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
@@ -5653,8 +5744,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         state == AppLifecycleState.inactive) {
       _wasBackgrounded = true;
       _stopSharedClipboardSync();
+      _syncTerminalWakeLock();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
+      _syncTerminalWakeLock();
       _scheduleTerminalSizeRefresh();
       final session = _observedSession;
       if (session != null && session.clipboardSharingEnabled) {
