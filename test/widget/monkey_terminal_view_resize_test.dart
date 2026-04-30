@@ -2,8 +2,17 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart';
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = luminanceA > luminanceB ? luminanceA : luminanceB;
+  final darkest = luminanceA > luminanceB ? luminanceB : luminanceA;
+  return (brightest + 0.05) / (darkest + 0.05);
+}
 
 void main() {
   Widget buildTerminal({
@@ -201,5 +210,26 @@ void main() {
     }
 
     expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
+  });
+
+  test('grayscale palette backgrounds follow the active theme surface', () {
+    final darkTheme = monkey_themes.TerminalThemes.oceanDark.toXtermTheme();
+    final lightTheme = monkey_themes.TerminalThemes.cleanWhite.toXtermTheme();
+
+    final staleLightInputBackground =
+        resolveMonkeyTerminalPaletteBackgroundColor(darkTheme, 255);
+    final staleDarkInputBackground =
+        resolveMonkeyTerminalPaletteBackgroundColor(lightTheme, 235);
+
+    expect(staleLightInputBackground, isNot(const Color(0xFFEEEEEE)));
+    expect(staleDarkInputBackground, isNot(const Color(0xFF262626)));
+    expect(
+      _contrastRatio(darkTheme.foreground, staleLightInputBackground),
+      greaterThanOrEqualTo(4.5),
+    );
+    expect(
+      _contrastRatio(lightTheme.foreground, staleDarkInputBackground),
+      greaterThanOrEqualTo(4.5),
+    );
   });
 }

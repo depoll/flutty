@@ -13,6 +13,7 @@ import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
@@ -27,6 +28,7 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/palette_builder.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
@@ -41,6 +43,46 @@ import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
+
+const _xtermGrayscalePaletteStart = 232;
+const _xtermGrayscalePaletteEnd = 255;
+
+/// Resolves 256-color palette backgrounds against the active terminal theme.
+///
+/// Some TUIs, including Codex, derive subtle input surfaces from the terminal
+/// default background but emit them as xterm grayscale palette indexes. Keeping
+/// those background indexes fixed makes the surface stale after a theme switch,
+/// so background grayscale entries are treated as theme-relative surfaces.
+@visibleForTesting
+Color resolveMonkeyTerminalPaletteBackgroundColor(
+  TerminalTheme theme,
+  int colorIndex,
+) {
+  if (colorIndex < _xtermGrayscalePaletteStart ||
+      colorIndex > _xtermGrayscalePaletteEnd) {
+    return PaletteBuilder(theme).paletteColor(colorIndex);
+  }
+
+  final scale =
+      (colorIndex - _xtermGrayscalePaletteStart) /
+      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
+  final isLightBackground = theme.background.computeLuminance() > 0.5;
+  final overlay = isLightBackground ? Colors.black : Colors.white;
+  final opacity = isLightBackground
+      ? lerpDouble(0.10, 0.02, scale)!
+      : lerpDouble(0.04, 0.20, scale)!;
+  return Color.alphaBlend(
+    overlay.withAlpha((opacity * 255).round()),
+    theme.background,
+  );
+}
+
+List<Color> _buildThemeAwareBackgroundPalette(TerminalTheme theme) =>
+    List<Color>.generate(
+      256,
+      (index) => resolveMonkeyTerminalPaletteBackgroundColor(theme, index),
+      growable: false,
+    );
 
 /// Terminal render padding.
 ///
@@ -1104,6 +1146,42 @@ class _TerminalView extends LeafRenderObjectWidget {
   }
 }
 
+class MonkeyTerminalPainter extends TerminalPainter {
+  MonkeyTerminalPainter({
+    required super.theme,
+    required super.textStyle,
+    required super.textScaler,
+  }) : _backgroundPalette = _buildThemeAwareBackgroundPalette(theme);
+
+  List<Color> _backgroundPalette;
+
+  @override
+  set theme(TerminalTheme value) {
+    if (value == theme) {
+      return;
+    }
+    super.theme = value;
+    _backgroundPalette = _buildThemeAwareBackgroundPalette(value);
+  }
+
+  @override
+  Color resolveBackgroundColor(int cellColor) {
+    final colorType = cellColor & CellColor.typeMask;
+    final colorValue = cellColor & CellColor.valueMask;
+
+    switch (colorType) {
+      case CellColor.normal:
+        return theme.background;
+      case CellColor.named:
+      case CellColor.palette:
+        return _backgroundPalette[colorValue];
+      case CellColor.rgb:
+      default:
+        return Color(colorValue | 0xFF000000);
+    }
+  }
+}
+
 class MonkeyRenderTerminal extends RenderBox
     with RelayoutWhenSystemFontsChangeMixin, Selectable, SelectionRegistrant {
   MonkeyRenderTerminal({
@@ -1141,7 +1219,7 @@ class MonkeyRenderTerminal extends RenderBox
          status: SelectionStatus.none,
          hasContent: terminal.buffer.lines.length > 0,
        ),
-       _painter = TerminalPainter(
+       _painter = MonkeyTerminalPainter(
          theme: theme,
          textStyle: textStyle,
          textScaler: textScaler,

@@ -144,52 +144,74 @@ void main() {
     await _pumpUntilConnected(tester);
     await _pumpUntilFound(tester, find.byType(MonkeyTerminalView));
 
-    final terminal = _terminalFromView(tester);
+    var terminal = _terminalFromView(tester);
     await _waitForTerminalText(
       tester,
-      terminal,
+      () => _terminalFromView(tester),
       'Codex',
       description: 'Timed out waiting for Codex to render in tmux',
       timeout: const Duration(seconds: 90),
     );
     await _pumpUntil(
       tester,
-      () => terminal.reportFocusMode,
+      () => _terminalFromView(tester).reportFocusMode,
       description: 'Codex/tmux did not request terminal focus reports',
     );
 
+    final tokenSuffix = DateTime.now().millisecondsSinceEpoch
+        .remainder(46656)
+        .toRadixString(36);
+
     await _switchThemeMode(tester, themeMode, ThemeMode.dark);
-    const darkToken = 'dark-visible-token';
+    terminal = _terminalFromView(tester);
+    final darkToken = 'd$tokenSuffix';
     terminal.textInput(darkToken);
     await _waitForTerminalText(
       tester,
-      terminal,
+      () => _terminalFromView(tester),
       darkToken,
       description: 'Timed out waiting for dark-theme Codex input token',
     );
+    terminal = _terminalFromView(tester);
     final darkContrast = _minimumTokenContrast(
       terminal,
       monkey_themes.TerminalThemes.oceanDark,
       darkToken,
     );
+    final darkSurface = _composerSurfaceForToken(
+      terminal,
+      monkey_themes.TerminalThemes.oceanDark,
+      darkToken,
+    );
     expect(darkContrast, greaterThanOrEqualTo(4.5));
+    expect(darkSurface.sampledCells, greaterThan(darkToken.length));
+    expect(darkSurface.background.computeLuminance(), lessThan(0.45));
     await binding.takeScreenshot('codex-ocean-dark-readable');
 
     await _switchThemeMode(tester, themeMode, ThemeMode.light);
-    const lightToken = '-light-visible-token';
+    terminal = _terminalFromView(tester);
+    final lightToken = '-l$tokenSuffix';
     terminal.textInput(lightToken);
     await _waitForTerminalText(
       tester,
-      terminal,
+      () => _terminalFromView(tester),
       lightToken,
       description: 'Timed out waiting for light-theme Codex input token',
     );
+    terminal = _terminalFromView(tester);
     final lightContrast = _minimumTokenContrast(
       terminal,
       monkey_themes.TerminalThemes.cleanWhite,
       lightToken,
     );
+    final lightSurface = _composerSurfaceForToken(
+      terminal,
+      monkey_themes.TerminalThemes.cleanWhite,
+      lightToken,
+    );
     expect(lightContrast, greaterThanOrEqualTo(4.5));
+    expect(lightSurface.sampledCells, greaterThan(lightToken.length));
+    expect(lightSurface.background.computeLuminance(), greaterThan(0.55));
     await binding.takeScreenshot('codex-clean-white-readable');
   });
 }
@@ -249,15 +271,15 @@ Future<void> _pumpUntil(
 
 Future<void> _waitForTerminalText(
   WidgetTester tester,
-  Terminal terminal,
+  Terminal Function() terminal,
   String expected, {
   required String description,
   Duration timeout = const Duration(seconds: 20),
 }) async {
   await _pumpUntil(
     tester,
-    () => _terminalBufferText(terminal).contains(expected),
-    description: '$description\n${_terminalBufferText(terminal)}',
+    () => _terminalBufferText(terminal()).contains(expected),
+    description: '$description\n${_terminalBufferText(terminal())}',
     timeout: timeout,
   );
 }
@@ -306,6 +328,48 @@ double _minimumTokenContrast(
   fail('Could not find token "$token" in terminal buffer.');
 }
 
+({Color background, int sampledCells}) _composerSurfaceForToken(
+  Terminal terminal,
+  TerminalThemeData theme,
+  String token,
+) {
+  final xtermTheme = theme.toXtermTheme();
+  final palette = PaletteBuilder(xtermTheme).build();
+  final cell = CellData.empty();
+
+  for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
+    final line = terminal.buffer.lines[row];
+    final text = line.getText(0, terminal.buffer.viewWidth);
+    final startColumn = text.indexOf(token);
+    if (startColumn == -1) {
+      continue;
+    }
+
+    line.getCellData(startColumn, cell);
+    final tokenSurfaceColor = _effectiveBackgroundCellColor(cell);
+    final background = _effectiveCellColors(
+      cell,
+      xtermTheme,
+      palette,
+    ).background;
+    var sampledCells = 0;
+
+    for (var column = 0; column < terminal.buffer.viewWidth; column += 1) {
+      line.getCellData(column, cell);
+      if (_effectiveBackgroundCellColor(cell) == tokenSurfaceColor) {
+        sampledCells += 1;
+      }
+    }
+
+    return (background: background, sampledCells: sampledCells);
+  }
+
+  fail('Could not find token "$token" in terminal buffer.');
+}
+
+int _effectiveBackgroundCellColor(CellData cell) =>
+    (cell.flags & CellFlags.inverse) == 0 ? cell.background : cell.foreground;
+
 ({Color foreground, Color background}) _effectiveCellColors(
   CellData cell,
   TerminalTheme xtermTheme,
@@ -352,7 +416,8 @@ Color _resolveBackgroundColor(
   final colorValue = cellColor & CellColor.valueMask;
   return switch (colorType) {
     CellColor.normal => xtermTheme.background,
-    CellColor.named || CellColor.palette => palette[colorValue],
+    CellColor.named || CellColor.palette =>
+      resolveMonkeyTerminalPaletteBackgroundColor(xtermTheme, colorValue),
     _ => Color.fromARGB(
       0xFF,
       (colorValue >> 16) & 0xFF,
