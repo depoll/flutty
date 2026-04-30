@@ -321,6 +321,7 @@ String buildAgentLaunchCommand(
       ...tmuxExtraFlags.map(_quoteTmuxFlagToken),
       _quoteShellArgument(baseCommand),
       if (preset.tmuxDisableStatusBar) tmuxDisableStatusBarCommand,
+      tmuxEnableFocusEventsCommand,
     ];
     return commandParts.join(' ');
   }

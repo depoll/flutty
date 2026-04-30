@@ -2,8 +2,17 @@
 
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/xterm.dart';
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = luminanceA > luminanceB ? luminanceA : luminanceB;
+  final darkest = luminanceA > luminanceB ? luminanceB : luminanceA;
+  return (brightest + 0.05) / (darkest + 0.05);
+}
 
 void main() {
   Widget buildTerminal({
@@ -274,5 +283,113 @@ void main() {
     await tester.pump();
 
     expect(output, contains('\x1b[O'));
+  });
+
+  testWidgets('refreshFocusReport resends focus gained when requested', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()
+      ..write('\x1b[?1004h')
+      ..onOutput = output.add;
+    final focusNode = FocusNode();
+    addTearDown(focusNode.dispose);
+
+    await tester.pumpWidget(
+      buildTerminal(
+        terminal: terminal,
+        size: const Size(320, 240),
+        focusNode: focusNode,
+        readOnly: false,
+      ),
+    );
+
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport();
+
+    expect(output, ['\x1b[I']);
+
+    terminal.write('\x1b[?1004l');
+    output.clear();
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport();
+
+    expect(output, isEmpty);
+  });
+
+  testWidgets('refreshThemeModeReport sends xterm theme mode report', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()..onOutput = output.add;
+
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    final terminalViewState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+
+    for (final isDark in [true, false]) {
+      terminalViewState.refreshThemeModeReport(isDark: isDark);
+    }
+
+    expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
+  });
+
+  test('grayscale palette backgrounds follow the active theme surface', () {
+    final darkTheme = monkey_themes.TerminalThemes.oceanDark.toXtermTheme();
+    final lightTheme = monkey_themes.TerminalThemes.cleanWhite.toXtermTheme();
+
+    final staleLightInputBackground =
+        resolveMonkeyTerminalPaletteBackgroundColor(darkTheme, 255);
+    final staleDarkInputBackground =
+        resolveMonkeyTerminalPaletteBackgroundColor(lightTheme, 235);
+
+    expect(staleLightInputBackground, isNot(const Color(0xFFEEEEEE)));
+    expect(staleDarkInputBackground, isNot(const Color(0xFF262626)));
+    expect(staleLightInputBackground.computeLuminance(), lessThan(0.45));
+    expect(staleDarkInputBackground.computeLuminance(), greaterThan(0.55));
+  });
+
+  test('faint terminal text preserves each theme base readability', () {
+    for (final theme in monkey_themes.TerminalThemes.all) {
+      final faintForeground = resolveMonkeyTerminalFaintForegroundColor(
+        foreground: theme.foreground,
+        background: theme.background,
+      );
+      final baseContrast = _contrastRatio(theme.foreground, theme.background);
+      final expectedContrast = baseContrast >= 4.5 ? 4.5 : baseContrast;
+
+      expect(
+        _contrastRatio(faintForeground, theme.background),
+        greaterThanOrEqualTo(expectedContrast),
+        reason:
+            'Theme ${theme.name} should not let SGR 2 faint text fall below '
+            'the base foreground contrast that its palette provides.',
+      );
+    }
+  });
+
+  test('faint terminal text remains dim when contrast allows it', () {
+    const slateTheme = monkey_themes.TerminalThemes.slate;
+    final defaultFaint = Color.alphaBlend(
+      slateTheme.foreground.withAlpha(128),
+      slateTheme.background,
+    );
+    final readableFaint = resolveMonkeyTerminalFaintForegroundColor(
+      foreground: slateTheme.foreground,
+      background: slateTheme.background,
+    );
+
+    expect(_contrastRatio(defaultFaint, slateTheme.background), lessThan(4.5));
+    expect(
+      _contrastRatio(readableFaint, slateTheme.background),
+      greaterThanOrEqualTo(4.5),
+    );
+    expect(readableFaint, isNot(slateTheme.foreground));
   });
 }

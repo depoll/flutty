@@ -452,6 +452,7 @@ const _maxVerifiedTerminalPathCacheEntries = 128;
 const _terminalPathTouchHorizontalPadding = 10.0;
 const _terminalPathTouchVerticalPadding = 8.0;
 const _terminalSelectionNearbySearchColumns = 4;
+const _recentLocalClipboardProtection = Duration(seconds: 5);
 const _maxTerminalFilePathVerificationCandidates = 12;
 const _terminalFilePathVerificationExtensions = <String>[
   'properties',
@@ -3020,6 +3021,49 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   return buttonItems;
 }
 
+/// Builds a menu callback that lets the action read selection before hiding.
+@visibleForTesting
+VoidCallback buildTerminalSelectionContextMenuAction({
+  required VoidCallback action,
+  required VoidCallback hideToolbar,
+}) => () {
+  try {
+    action();
+  } finally {
+    hideToolbar();
+  }
+};
+
+/// Whether a polled remote clipboard value should replace the local clipboard.
+@visibleForTesting
+bool shouldApplyRemoteClipboardTextToLocal({
+  required String? remoteText,
+  required String? lastObservedRemoteText,
+  required String? lastObservedLocalText,
+  required String? lastAppliedRemoteText,
+  required String? recentLocalClipboardText,
+  required DateTime? recentLocalClipboardAt,
+  required DateTime now,
+  Duration recentLocalClipboardProtection = _recentLocalClipboardProtection,
+}) {
+  if (remoteText == null || remoteText.isEmpty) {
+    return false;
+  }
+  if (remoteText == lastObservedRemoteText ||
+      remoteText == lastObservedLocalText ||
+      remoteText == lastAppliedRemoteText) {
+    return false;
+  }
+  if (recentLocalClipboardText != null && recentLocalClipboardAt != null) {
+    final isProtectedRecentLocalWrite =
+        now.difference(recentLocalClipboardAt) < recentLocalClipboardProtection;
+    if (remoteText == recentLocalClipboardText || isProtectedRecentLocalWrite) {
+      return false;
+    }
+  }
+  return true;
+}
+
 /// Whether terminal tap links should be resolved for the current overlay state.
 @visibleForTesting
 bool shouldResolveTerminalTapLinks({
@@ -3261,6 +3305,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
+  String? _recentLocalClipboardText;
+  DateTime? _recentLocalClipboardAt;
   bool _isTerminalSizeRefreshQueued = false;
 
   // Theme state
@@ -3271,6 +3317,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalThemeData? _sessionThemeOverride;
   final Object _terminalAppThemeOverrideOwner = Object();
   late final TerminalAppThemeOverrideNotifier _terminalAppThemeOverrideNotifier;
+  int _terminalThemeRefreshGeneration = 0;
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3570,7 +3617,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (_connectionId == null
             ? null
             : _sessionsNotifier?.getSession(_connectionId!));
+    final previousTheme = targetSession?.terminalTheme;
     targetSession?.terminalTheme = theme;
+    if (previousTheme != null &&
+        previousTheme.id != theme.id &&
+        targetSession?.terminal == _terminal) {
+      _refreshTerminalThemeForTui(theme, targetSession!);
+    }
+  }
+
+  void _refreshTerminalThemeForTui(
+    TerminalThemeData theme,
+    SshSession session,
+  ) {
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final terminalViewState = _terminalViewKey.currentState;
+    if (_isTmuxActive) {
+      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 150), () {
+          if (!mounted ||
+              refreshGeneration != _terminalThemeRefreshGeneration ||
+              session.terminal != _terminal ||
+              session.terminalTheme?.id != theme.id) {
+            return;
+          }
+          _terminalViewKey.currentState?.refreshFocusReport();
+        }),
+      );
+      return;
+    }
+
+    terminalViewState?.refreshFocusReport();
   }
 
   void _syncAppThemeOverrideFromSession(SshSession session) {
@@ -3703,20 +3781,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isPollingRemoteClipboard = true;
     try {
       final remoteText = await _readRemoteClipboardText(session);
-      if (remoteText == null ||
-          remoteText == _lastObservedRemoteClipboardText ||
-          remoteText == _lastObservedLocalClipboardText ||
-          remoteText == _lastAppliedRemoteClipboardText) {
+      if (!shouldApplyRemoteClipboardTextToLocal(
+        remoteText: remoteText,
+        lastObservedRemoteText: _lastObservedRemoteClipboardText,
+        lastObservedLocalText: _lastObservedLocalClipboardText,
+        lastAppliedRemoteText: _lastAppliedRemoteClipboardText,
+        recentLocalClipboardText: _recentLocalClipboardText,
+        recentLocalClipboardAt: _recentLocalClipboardAt,
+        now: DateTime.now(),
+      )) {
         if (remoteText != null) {
           _lastObservedRemoteClipboardText = remoteText;
         }
         return;
       }
 
-      await Clipboard.setData(ClipboardData(text: remoteText));
-      _lastObservedRemoteClipboardText = remoteText;
-      _lastObservedLocalClipboardText = remoteText;
-      _lastAppliedLocalClipboardText = remoteText;
+      final remoteClipboardText = remoteText;
+      if (remoteClipboardText == null) {
+        return;
+      }
+      await Clipboard.setData(ClipboardData(text: remoteClipboardText));
+      _lastObservedRemoteClipboardText = remoteClipboardText;
+      _lastObservedLocalClipboardText = remoteClipboardText;
+      _lastAppliedLocalClipboardText = remoteClipboardText;
     } on PlatformException {
       return;
     } finally {
@@ -3887,7 +3974,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _loadTheme() async {
     if (!mounted) return;
 
-    final brightness = MediaQuery.of(context).platformBrightness;
+    final brightness = Theme.of(context).brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??
@@ -6622,6 +6709,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     BuildContext _,
     SelectableRegionState selectableRegionState,
   ) {
+    final selectionText = _currentTerminalSelectionText();
     var hasCopy = false;
     final buttonItems = <ContextMenuButtonItem>[];
     for (final item in selectableRegionState.contextMenuButtonItems) {
@@ -6630,37 +6718,67 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           hasCopy = true;
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_copySelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () {
+                  final text = selectionText;
+                  if (text == null) {
+                    return;
+                  }
+                  unawaited(
+                    _copySelectionText(
+                      text,
+                      clearTerminalSelection: true,
+                      restoreFocus: true,
+                    ),
+                  );
+                },
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.lookUp:
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_lookUpTerminalSelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () {
+                  final text = selectionText;
+                  if (text == null) {
+                    return;
+                  }
+                  unawaited(_lookUpTerminalSelectionText(text));
+                },
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.searchWeb:
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_searchWebForTerminalSelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () {
+                  final text = selectionText;
+                  if (text == null) {
+                    return;
+                  }
+                  unawaited(_searchWebForTerminalSelectionText(text));
+                },
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.share:
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_shareTerminalSelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () {
+                  final text = selectionText;
+                  if (text == null) {
+                    return;
+                  }
+                  unawaited(_shareTerminalSelectionText(text));
+                },
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.selectAll:
@@ -6680,10 +6798,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       buttonItems.insert(
         0,
         ContextMenuButtonItem(
-          onPressed: () {
-            selectableRegionState.hideToolbar();
-            unawaited(_copySelection());
-          },
+          onPressed: buildTerminalSelectionContextMenuAction(
+            action: () {
+              final text = selectionText;
+              if (text == null) {
+                return;
+              }
+              unawaited(
+                _copySelectionText(
+                  text,
+                  clearTerminalSelection: true,
+                  restoreFocus: true,
+                ),
+              );
+            },
+            hideToolbar: selectableRegionState.hideToolbar,
+          ),
           type: ContextMenuButtonType.copy,
         ),
       );
@@ -8293,35 +8423,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   Future<void> _copySelection() async {
-    if (_isNativeSelectionMode) {
-      final text = selectedNativeOverlayText(_nativeSelectionController.value);
-      if (text.isEmpty) {
-        return;
-      }
-
-      await Clipboard.setData(ClipboardData(text: text));
-      if (!mounted) {
-        return;
-      }
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('Copied')));
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
       return;
     }
 
-    final selection = _terminalController.selection;
-    if (selection == null) {
-      return;
-    }
-    final text = trimTerminalSelectionText(_terminal.buffer.getText(selection));
+    await _copySelectionText(
+      text,
+      clearTerminalSelection: !_isNativeSelectionMode,
+      restoreFocus: !_isNativeSelectionMode,
+    );
+  }
+
+  Future<void> _copySelectionText(
+    String text, {
+    required bool clearTerminalSelection,
+    required bool restoreFocus,
+  }) async {
     if (text.isEmpty) {
-      _restoreTerminalFocus();
+      if (restoreFocus) {
+        _restoreTerminalFocus();
+      }
       return;
     }
 
-    await Clipboard.setData(ClipboardData(text: text));
-    _terminalController.clearSelection();
-    _restoreTerminalFocus();
+    await _writeLocalClipboardText(text);
+    if (clearTerminalSelection) {
+      _terminalController.clearSelection();
+    }
+    if (restoreFocus) {
+      _restoreTerminalFocus();
+    }
 
     if (!mounted) {
       return;
@@ -8344,11 +8476,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return text.isEmpty ? null : text;
   }
 
-  Future<void> _lookUpTerminalSelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
+  Future<void> _lookUpTerminalSelectionText(String text) async {
     try {
       await SystemChannels.platform.invokeMethod<void>('LookUp.invoke', text);
     } on PlatformException {
@@ -8356,11 +8484,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _searchWebForTerminalSelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
+  Future<void> _searchWebForTerminalSelectionText(String text) async {
     try {
       await SystemChannels.platform.invokeMethod<void>(
         'SearchWeb.invoke',
@@ -8371,16 +8495,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  Future<void> _shareTerminalSelection() async {
-    final text = _currentTerminalSelectionText();
-    if (text == null) {
-      return;
-    }
+  Future<void> _shareTerminalSelectionText(String text) async {
     try {
       await SystemChannels.platform.invokeMethod<void>('Share.invoke', text);
     } on PlatformException {
       // Platform doesn't support Share; ignore.
     }
+  }
+
+  Future<void> _writeLocalClipboardText(String text) async {
+    _recentLocalClipboardText = text;
+    _recentLocalClipboardAt = DateTime.now();
+    await Clipboard.setData(ClipboardData(text: text));
   }
 
   void _showClipboardMessage(String message) {
@@ -8399,7 +8525,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    await Clipboard.setData(ClipboardData(text: path));
+    await _writeLocalClipboardText(path);
     _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
 
     if (!mounted) {

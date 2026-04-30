@@ -17,6 +17,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/data/repositories/key_repository.dart';
 import 'package:monkeyssh/data/repositories/known_hosts_repository.dart';
 import 'package:monkeyssh/data/security/secret_encryption_service.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/background_ssh_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/ssh_exec_queue.dart';
@@ -335,6 +336,53 @@ void main() {
       expect(second.response, '\x1b[6;20;12t');
       expect(second.pendingInput, isEmpty);
     });
+
+    test('answers terminal theme mode report queries', () {
+      final dark = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?996nafter',
+        pendingInput: '',
+        metrics: null,
+        theme: monkey_themes.TerminalThemes.midnightPurple,
+      );
+
+      expect(dark.response, '\x1b[?997;1n');
+      expect(dark.pendingInput, isEmpty);
+
+      final light = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?996nafter',
+        pendingInput: '',
+        metrics: null,
+        theme: monkey_themes.TerminalThemes.cleanWhite,
+      );
+
+      expect(light.response, '\x1b[?997;2n');
+      expect(light.pendingInput, isEmpty);
+    });
+
+    test(
+      'preserves split terminal theme mode report queries across chunks',
+      () {
+        final first = buildTerminalWindowControlQueryResponses(
+          input: 'before\x1b[?99',
+          pendingInput: '',
+          metrics: null,
+          theme: monkey_themes.TerminalThemes.cleanWhite,
+        );
+
+        expect(first.response, isNull);
+        expect(first.pendingInput, '\x1b[?99');
+
+        final second = buildTerminalWindowControlQueryResponses(
+          input: '6nafter',
+          pendingInput: first.pendingInput,
+          metrics: null,
+          theme: monkey_themes.TerminalThemes.cleanWhite,
+        );
+
+        expect(second.response, '\x1b[?997;2n');
+        expect(second.pendingInput, isEmpty);
+      },
+    );
   });
 
   group('host key capture', () {

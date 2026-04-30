@@ -18,6 +18,11 @@ Color _compositeOver(Color foreground, Color background) =>
 
 void main() {
   group('TerminalThemeData', () {
+    test('builds xterm theme mode reports for tmux refreshes', () {
+      expect(buildTerminalThemeModeReport(isDark: true), '\x1b[?997;1n');
+      expect(buildTerminalThemeModeReport(isDark: false), '\x1b[?997;2n');
+    });
+
     test('creates with required fields', () {
       const theme = TerminalThemeData(
         id: 'test-id',

@@ -3,6 +3,14 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:xterm/xterm.dart';
 
+/// Builds an xterm/tmux theme-mode report for the current terminal theme.
+///
+/// tmux uses this private DSR response to notice when the outer terminal
+/// switches between dark and light themes. After receiving it, tmux re-queries
+/// OSC 10/11 so panes that ask tmux for default colors don't keep stale values.
+String buildTerminalThemeModeReport({required bool isDark}) =>
+    isDark ? '\x1b[?997;1n' : '\x1b[?997;2n';
+
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///
 /// Modern TUIs use these queries (notably `OSC 11;?`) to detect whether the

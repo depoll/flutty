@@ -836,6 +836,9 @@ String? _windowContextLabelFromPath(String? value) {
 /// tmux command fragment that disables tmux's built-in status bar.
 const tmuxDisableStatusBarCommand = r'\; set status off';
 
+/// tmux command fragment that lets focus-aware TUIs receive focus events.
+const tmuxEnableFocusEventsCommand = r'\; set-option -g focus-events on';
+
 /// Builds a `tmux new-session` command from structured configuration.
 ///
 /// Always uses `-A` (attach-or-create) so reconnecting reuses the session.
@@ -851,6 +854,7 @@ String buildTmuxCommand({
       "-c '${workingDirectory.trim().replaceAll("'", "'\"'\"'")}'",
     // Extra flags are intentionally raw user input; never populate from imports.
     if (extraFlags != null && extraFlags.trim().isNotEmpty) extraFlags.trim(),
+    tmuxEnableFocusEventsCommand,
   ];
   return parts.join(' ');
 }
