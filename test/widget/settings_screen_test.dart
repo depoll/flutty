@@ -244,6 +244,7 @@ void main() {
 
       expect(find.text('Theme'), findsOneWidget);
       expect(find.text('System default'), findsOneWidget);
+      expect(find.text('Use terminal themes for app'), findsOneWidget);
     });
 
     testWidgets('displays font size option', (tester) async {
@@ -893,6 +894,9 @@ void main() {
             authServiceProvider.overrideWithValue(FakeAuthService()),
             authStateProvider.overrideWith(MockAuthStateNotifier.new),
             themeModeNotifierProvider.overrideWith(StaticThemeModeNotifier.new),
+            terminalThemesApplyToAppNotifierProvider.overrideWith(
+              StaticTerminalThemesApplyToAppNotifier.new,
+            ),
             fontSizeNotifierProvider.overrideWith(StaticFontSizeNotifier.new),
             fontFamilyNotifierProvider.overrideWith(
               StaticFontFamilyNotifier.new,
