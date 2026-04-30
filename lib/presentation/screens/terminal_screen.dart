@@ -588,6 +588,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
   final Set<String> _seenAlertWindowKeys = <String>{};
+  final Map<String, int> _seenAlertWindowIndexesByKey = <String, int>{};
   late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
@@ -606,6 +607,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   int _windowRetryAttempts = 0;
   int _consecutiveEmptyWindowReloads = 0;
   bool _windowReloadRecoveryRequested = false;
+  late LocalNotificationService _localNotifications;
 
   TmuxService get _tmux => widget.ref.read(tmuxServiceProvider);
 
@@ -620,6 +622,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   @override
   void initState() {
     super.initState();
+    _localNotifications = widget.ref.read(localNotificationServiceProvider);
     _expanded = widget.initiallyExpanded;
     _bounceController = AnimationController(
       vsync: this,
@@ -784,7 +787,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     if (newAlerts.isNotEmpty) {
       unawaited(_bounceController.forward(from: 0));
       for (final w in newAlerts) {
-        _seenAlertWindowKeys.add(_tmuxAlertWindowKey(w));
+        final windowKey = _tmuxAlertWindowKey(w);
+        _seenAlertWindowKeys.add(windowKey);
+        _seenAlertWindowIndexesByKey[windowKey] = w.index;
         _sendAlertNotification(w, windows);
       }
     }
@@ -807,8 +812,9 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
         )
         .toList(growable: false);
     for (final windowKey in clearedAlerts) {
-      _seenAlertWindowKeys.remove(windowKey);
       _clearAlertNotification(windowKey);
+      _seenAlertWindowKeys.remove(windowKey);
+      _seenAlertWindowIndexesByKey.remove(windowKey);
     }
 
     final nextPendingSelectedWindowIndex =
@@ -1119,8 +1125,70 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       ) &
       0x7fffffff;
 
+  int _legacyTmuxAlertNotificationId(
+    SshSession session,
+    String tmuxSessionName,
+    int windowIndex,
+  ) =>
+      Object.hash(
+        session.hostId,
+        session.connectionId,
+        tmuxSessionName,
+        windowIndex,
+      ) &
+      0x7fffffff;
+
+  Set<int> _tmuxAlertIndexNotificationIds(
+    SshSession session,
+    String tmuxSessionName,
+    int windowIndex,
+  ) => {
+    _legacyTmuxAlertNotificationId(session, tmuxSessionName, windowIndex),
+    _tmuxAlertNotificationId(
+      session,
+      tmuxSessionName,
+      _tmuxAlertIndexWindowKey(windowIndex),
+    ),
+  };
+
+  Set<int> _tmuxAlertNotificationIdsForWindowKey(
+    SshSession session,
+    String tmuxSessionName,
+    String windowKey,
+  ) {
+    final notificationIds = <int>{};
+    if (isValidTmuxWindowId(windowKey)) {
+      notificationIds.add(
+        _tmuxAlertNotificationId(session, tmuxSessionName, windowKey),
+      );
+    }
+    final legacyWindowIndex = _tmuxAlertLegacyWindowIndex(windowKey);
+    if (legacyWindowIndex != null) {
+      notificationIds.addAll(
+        _tmuxAlertIndexNotificationIds(
+          session,
+          tmuxSessionName,
+          legacyWindowIndex,
+        ),
+      );
+    }
+    return notificationIds;
+  }
+
+  int? _tmuxAlertLegacyWindowIndex(String windowKey) {
+    const legacyPrefix = 'index:';
+    if (windowKey.startsWith(legacyPrefix)) {
+      return int.tryParse(windowKey.substring(legacyPrefix.length));
+    }
+    return _seenAlertWindowIndexesByKey[windowKey];
+  }
+
+  String _tmuxAlertIndexWindowKey(int windowIndex) => 'index:$windowIndex';
+
   String _tmuxAlertWindowKey(TmuxWindow window) =>
-      window.id ?? 'index:${window.index}';
+      window.id != null && isValidTmuxWindowId(window.id!)
+      ? window.id!
+      : _tmuxAlertIndexWindowKey(window.index);
 
   void _sendAlertNotification(TmuxWindow window, List<TmuxWindow> windows) {
     final content = resolveTmuxAlertNotificationContent(
@@ -1128,41 +1196,50 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       window: window,
       windows: windows,
     );
-    unawaited(HapticFeedback.mediumImpact());
-    unawaited(
-      widget.ref
-          .read(localNotificationServiceProvider)
-          .showTmuxAlert(
-            notificationId: _tmuxAlertNotificationId(
-              widget.session,
-              widget.tmuxSessionName,
-              _tmuxAlertWindowKey(window),
-            ),
-            title: content.title,
-            body: content.body,
-            payload: TmuxAlertNotificationPayload(
-              hostId: widget.session.hostId,
-              connectionId: widget.session.connectionId,
-              tmuxSessionName: widget.tmuxSessionName,
-              windowIndex: window.index,
-              windowId: window.id,
-            ),
-          ),
+    final windowId = window.id;
+    final stableWindowId = windowId != null && isValidTmuxWindowId(windowId)
+        ? windowId
+        : null;
+    final session = widget.session;
+    final tmuxSessionName = widget.tmuxSessionName;
+    final windowIndex = window.index;
+    final notificationId = stableWindowId != null
+        ? _tmuxAlertNotificationId(session, tmuxSessionName, stableWindowId)
+        : _legacyTmuxAlertNotificationId(session, tmuxSessionName, windowIndex);
+    final obsoleteNotificationIds = _tmuxAlertIndexNotificationIds(
+      session,
+      tmuxSessionName,
+      windowIndex,
+    )..remove(notificationId);
+    final payload = TmuxAlertNotificationPayload(
+      hostId: session.hostId,
+      connectionId: session.connectionId,
+      tmuxSessionName: tmuxSessionName,
+      windowIndex: windowIndex,
+      windowId: stableWindowId,
     );
+    unawaited(HapticFeedback.mediumImpact());
+    unawaited(() async {
+      for (final obsoleteNotificationId in obsoleteNotificationIds) {
+        await _localNotifications.clearTmuxAlert(obsoleteNotificationId);
+      }
+      await _localNotifications.showTmuxAlert(
+        notificationId: notificationId,
+        title: content.title,
+        body: content.body,
+        payload: payload,
+      );
+    }());
   }
 
   void _clearAlertNotification(String windowKey) {
-    unawaited(
-      widget.ref
-          .read(localNotificationServiceProvider)
-          .clearTmuxAlert(
-            _tmuxAlertNotificationId(
-              widget.session,
-              widget.tmuxSessionName,
-              windowKey,
-            ),
-          ),
-    );
+    for (final notificationId in _tmuxAlertNotificationIdsForWindowKey(
+      widget.session,
+      widget.tmuxSessionName,
+      windowKey,
+    )) {
+      unawaited(_localNotifications.clearTmuxAlert(notificationId));
+    }
   }
 
   void _clearAlertNotificationFor(
@@ -1170,13 +1247,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     String tmuxSessionName,
     String windowKey,
   ) {
-    unawaited(
-      widget.ref
-          .read(localNotificationServiceProvider)
-          .clearTmuxAlert(
-            _tmuxAlertNotificationId(session, tmuxSessionName, windowKey),
-          ),
-    );
+    for (final notificationId in _tmuxAlertNotificationIdsForWindowKey(
+      session,
+      tmuxSessionName,
+      windowKey,
+    )) {
+      unawaited(_localNotifications.clearTmuxAlert(notificationId));
+    }
   }
 
   void _clearSeenAlertNotifications(
@@ -1187,6 +1264,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
       _clearAlertNotificationFor(session, tmuxSessionName, windowKey);
     }
     _seenAlertWindowKeys.clear();
+    _seenAlertWindowIndexesByKey.clear();
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
