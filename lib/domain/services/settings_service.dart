@@ -34,6 +34,9 @@ abstract final class SettingKeys {
   /// Terminal bell sound enabled.
   static const bellSound = 'bell_sound';
 
+  /// Keep the device awake while a terminal is active.
+  static const terminalWakeLock = 'terminal_wake_lock';
+
   /// Enable tapping terminal file paths to open SFTP.
   static const terminalPathLinks = 'terminal_path_links';
 
@@ -473,6 +476,39 @@ class BellSoundNotifier extends Notifier<bool> {
 final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
+
+/// Notifier for terminal wake lock with write capability.
+class TerminalWakeLockNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return false;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(SettingKeys.terminalWakeLock);
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set terminal wake lock enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.terminalWakeLock, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal wake lock with write capability.
+final terminalWakeLockNotifierProvider =
+    NotifierProvider<TerminalWakeLockNotifier, bool>(
+      TerminalWakeLockNotifier.new,
+    );
 
 /// Notifier for terminal file path links with write capability.
 class TerminalPathLinksNotifier extends Notifier<bool> {

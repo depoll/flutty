@@ -73,6 +73,7 @@ dependencies:
   # Network / connectivity
   network_info_plus: ^6.1.4
   permission_handler: ^11.3.1
+  wakelock_plus: '>=1.4.0 <1.5.0'
 
 dev_dependencies:
   flutter_test:
@@ -88,6 +89,7 @@ dev_dependencies:
   
   # Testing
   mocktail: ^1.0.4
+  wakelock_plus_platform_interface: '>=1.4.0 <1.5.0'
   integration_test:
     sdk: flutter
   
