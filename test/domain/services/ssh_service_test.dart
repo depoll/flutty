@@ -291,6 +291,52 @@ void main() {
       },
     );
 
+    test('unwraps complete tmux passthrough sequences', () {
+      final result = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
+        pendingInput: '',
+      );
+
+      expect(result.output, 'before\x1b]11;?\x07after');
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split tmux passthrough sequences across chunks', () {
+      final first = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1bPtmux;\x1b');
+
+      final second = unwrapTerminalTmuxPassthroughSequences(
+        input: '\x1b[?1004\$p\x1b\\after',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[?1004\$pafter');
+      expect(second.pendingInput, isEmpty);
+    });
+
+    test('preserves split tmux passthrough sequence starts', () {
+      final first = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtm',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1bPtm');
+
+      final second = unwrapTerminalTmuxPassthroughSequences(
+        input: 'ux;\x1b\x1b[14t\x1b\\after',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[14tafter');
+      expect(second.pendingInput, isEmpty);
+    });
+
     test('answers terminal window and cell size reports', () {
       final result = buildTerminalWindowControlQueryResponses(
         input: 'before\x1b[14tmiddle\x1b[16tafter',

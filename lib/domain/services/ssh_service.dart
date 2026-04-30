@@ -41,6 +41,65 @@ typedef TerminalControlModeState = ({
   bool sgrMouseReportMode,
 });
 
+/// Unwraps tmux DCS passthrough sequences from shell output.
+///
+/// Apps running inside tmux wrap terminal queries as
+/// `DCS tmux; <escaped sequence> ST`. The inner ESC bytes are doubled by tmux;
+/// this returns a stream that xterm can parse normally while preserving split
+/// passthrough sequences across chunks.
+({String output, String pendingInput}) unwrapTerminalTmuxPassthroughSequences({
+  required String input,
+  required String pendingInput,
+}) {
+  final combinedInput = pendingInput + input;
+  final output = StringBuffer();
+  var cursor = 0;
+
+  while (cursor < combinedInput.length) {
+    final startIndex = combinedInput.indexOf(
+      _terminalTmuxPassthroughStart,
+      cursor,
+    );
+    if (startIndex == -1) {
+      output.write(combinedInput.substring(cursor));
+      final outputValue = output.toString();
+      final pendingSuffix = _terminalTmuxPassthroughPendingSuffix(outputValue);
+      if (pendingSuffix.isEmpty) {
+        return (output: outputValue, pendingInput: '');
+      }
+      return (
+        output: outputValue.substring(
+          0,
+          outputValue.length - pendingSuffix.length,
+        ),
+        pendingInput: pendingSuffix,
+      );
+    }
+
+    output.write(combinedInput.substring(cursor, startIndex));
+    final payloadStart = startIndex + _terminalTmuxPassthroughStart.length;
+    final endIndex = combinedInput.indexOf(
+      _terminalStringTerminator,
+      payloadStart,
+    );
+    if (endIndex == -1) {
+      return (
+        output: output.toString(),
+        pendingInput: combinedInput.substring(startIndex),
+      );
+    }
+
+    output.write(
+      combinedInput
+          .substring(payloadStart, endIndex)
+          .replaceAll(_escapedTerminalEscape, _terminalEscape),
+    );
+    cursor = endIndex + _terminalStringTerminator.length;
+  }
+
+  return (output: output.toString(), pendingInput: '');
+}
+
 /// Builds responses for terminal window/cell size and theme reports in shell
 /// output.
 ///
@@ -178,8 +237,27 @@ const _terminalModeNotRecognized = 0;
 const _terminalModeSet = 1;
 const _terminalModeReset = 2;
 
+const _terminalEscape = '\x1b';
+const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
+const _terminalStringTerminator = '$_terminalEscape\\';
+const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
+
 String _formatTerminalModeReport(int mode, int status) =>
     '\x1b[?$mode;$status\$y';
+
+String _terminalTmuxPassthroughPendingSuffix(String input) {
+  final maxSuffixLength =
+      input.length < _terminalTmuxPassthroughStart.length - 1
+      ? input.length
+      : _terminalTmuxPassthroughStart.length - 1;
+  for (var length = maxSuffixLength; length > 0; length -= 1) {
+    final suffix = input.substring(input.length - length);
+    if (_terminalTmuxPassthroughStart.startsWith(suffix)) {
+      return suffix;
+    }
+  }
+  return '';
+}
 
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics != null &&
@@ -1767,6 +1845,7 @@ class SshSession {
   int _shellStdinCharCount = 0;
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
+  String _terminalTmuxPassthroughPendingInput = '';
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
@@ -1985,6 +2064,7 @@ class SshSession {
     _lastExitCode = null;
     _terminalWindowMetrics = null;
     _terminalWindowQueryPendingInput = '';
+    _terminalTmuxPassthroughPendingInput = '';
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
@@ -2012,8 +2092,11 @@ class SshSession {
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
-            terminal.write(data);
-            _respondToTerminalWindowControlQueries(data, terminal);
+            final terminalData = _unwrapTerminalTmuxPassthrough(data);
+            if (terminalData.isNotEmpty) {
+              terminal.write(terminalData);
+              _respondToTerminalWindowControlQueries(terminalData, terminal);
+            }
             _scheduleTerminalPreviewRefresh();
             final stdoutController = _shellStdoutController;
             if (identical(_shell, shell) &&
@@ -2184,6 +2267,15 @@ class SshSession {
     }
 
     _shell?.write(utf8.encode(response));
+  }
+
+  String _unwrapTerminalTmuxPassthrough(String data) {
+    final result = unwrapTerminalTmuxPassthroughSequences(
+      input: data,
+      pendingInput: _terminalTmuxPassthroughPendingInput,
+    );
+    _terminalTmuxPassthroughPendingInput = result.pendingInput;
+    return result.output;
   }
 
   TerminalControlModeState _terminalModeState(Terminal terminal) => (
