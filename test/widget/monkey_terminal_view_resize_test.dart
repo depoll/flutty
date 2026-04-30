@@ -181,4 +181,25 @@ void main() {
 
     expect(output, isEmpty);
   });
+
+  testWidgets('refreshThemeModeReport sends xterm theme mode report', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()..onOutput = output.add;
+
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    final terminalViewState = tester.state<MonkeyTerminalViewState>(
+      find.byType(MonkeyTerminalView),
+    );
+
+    for (final isDark in [true, false]) {
+      terminalViewState.refreshThemeModeReport(isDark: isDark);
+    }
+
+    expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
+  });
 }

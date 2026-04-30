@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
@@ -460,6 +461,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       return;
     }
     widget.terminal.onOutput?.call(_terminalFocusInReport);
+  }
+
+  /// Reports the current terminal theme mode to focus-aware terminal muxers.
+  void refreshThemeModeReport({required bool isDark}) {
+    widget.terminal.onOutput?.call(
+      buildTerminalThemeModeReport(isDark: isDark),
+    );
   }
 
   @override

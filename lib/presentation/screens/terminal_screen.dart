@@ -3268,6 +3268,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
+  int _terminalThemeRefreshGeneration = 0;
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3569,8 +3570,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (previousTheme != null &&
         previousTheme.id != theme.id &&
         targetSession?.terminal == _terminal) {
-      _terminalViewKey.currentState?.refreshFocusReport();
+      _refreshTerminalThemeForTui(theme, targetSession!);
     }
+  }
+
+  void _refreshTerminalThemeForTui(
+    TerminalThemeData theme,
+    SshSession session,
+  ) {
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final terminalViewState = _terminalViewKey.currentState;
+    if (_isTmuxActive) {
+      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 150), () {
+          if (!mounted ||
+              refreshGeneration != _terminalThemeRefreshGeneration ||
+              session.terminal != _terminal ||
+              session.terminalTheme?.id != theme.id) {
+            return;
+          }
+          _terminalViewKey.currentState?.refreshFocusReport();
+        }),
+      );
+      return;
+    }
+
+    terminalViewState?.refreshFocusReport();
   }
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {
