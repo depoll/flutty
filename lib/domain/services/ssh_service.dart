@@ -30,7 +30,8 @@ typedef TerminalWindowMetrics = ({
   int pixelHeight,
 });
 
-/// Builds responses for terminal window/cell size reports in shell output.
+/// Builds responses for terminal window/cell size and theme reports in shell
+/// output.
 ///
 /// [pendingInput] should be the pending suffix returned by the previous call,
 /// so split CSI sequences can be recognized across UTF-8 stream chunks.
@@ -39,6 +40,7 @@ buildTerminalWindowControlQueryResponses({
   required String input,
   required String pendingInput,
   required TerminalWindowMetrics? metrics,
+  TerminalThemeData? theme,
 }) {
   final combinedInput = pendingInput + input;
   final responses = StringBuffer();
@@ -52,15 +54,20 @@ buildTerminalWindowControlQueryResponses({
     }
   }
 
+  if (theme != null && _terminalThemeModeQueryPattern.hasMatch(combinedInput)) {
+    responses.write(buildTerminalThemeModeReport(isDark: theme.isDark));
+  }
+
   final response = responses.isEmpty ? null : responses.toString();
   return (
     response: response,
-    pendingInput: _terminalWindowQueryPendingSuffix(combinedInput),
+    pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
   );
 }
 
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
-final _terminalWindowQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?]*)$');
+final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
+final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?]*)$');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -94,11 +101,11 @@ bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
     metrics.pixelWidth > 0 &&
     metrics.pixelHeight > 0;
 
-String _terminalWindowQueryPendingSuffix(String input) {
+String _terminalControlQueryPendingSuffix(String input) {
   final start = input.length > 16 ? input.length - 16 : 0;
   for (var index = start; index < input.length; index += 1) {
     final suffix = input.substring(index);
-    if (_terminalWindowQueryPrefixPattern.hasMatch(suffix)) {
+    if (_terminalControlQueryPrefixPattern.hasMatch(suffix)) {
       return suffix;
     }
   }
@@ -2079,6 +2086,7 @@ class SshSession {
       input: data,
       pendingInput: _terminalWindowQueryPendingInput,
       metrics: _terminalWindowMetrics,
+      theme: terminalTheme,
     );
     _terminalWindowQueryPendingInput = result.pendingInput;
 

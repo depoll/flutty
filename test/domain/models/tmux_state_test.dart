@@ -683,28 +683,28 @@ void main() {
     test('builds basic command', () {
       expect(
         buildTmuxCommand(sessionName: 'dev'),
-        "tmux new-session -A -s 'dev'",
+        r"tmux new-session -A -s 'dev' \; set-option -g focus-events on",
       );
     });
 
     test('includes working directory', () {
       expect(
         buildTmuxCommand(sessionName: 'dev', workingDirectory: '/home/user'),
-        "tmux new-session -A -s 'dev' -c '/home/user'",
+        r"tmux new-session -A -s 'dev' -c '/home/user' \; set-option -g focus-events on",
       );
     });
 
     test('includes extra flags', () {
       expect(
         buildTmuxCommand(sessionName: 'dev', extraFlags: '-x 200 -y 50'),
-        "tmux new-session -A -s 'dev' -x 200 -y 50",
+        r"tmux new-session -A -s 'dev' -x 200 -y 50 \; set-option -g focus-events on",
       );
     });
 
     test('supports tmux commands in extra flags', () {
       expect(
         buildTmuxCommand(sessionName: 'dev', extraFlags: r'\; set status off'),
-        r"tmux new-session -A -s 'dev' \; set status off",
+        r"tmux new-session -A -s 'dev' \; set status off \; set-option -g focus-events on",
       );
     });
 
@@ -715,7 +715,7 @@ void main() {
           workingDirectory: '/tmp',
           extraFlags: '-n editor',
         ),
-        "tmux new-session -A -s 'dev' -c '/tmp' -n editor",
+        r"tmux new-session -A -s 'dev' -c '/tmp' -n editor \; set-option -g focus-events on",
       );
     });
   });

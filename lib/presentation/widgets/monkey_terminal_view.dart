@@ -12,10 +12,13 @@ import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
 import 'package:flutter/scheduler.dart';
 import 'package:flutter/services.dart';
+import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:xterm/src/core/buffer/cell_offset.dart';
+import 'package:xterm/src/core/buffer/cell_flags.dart';
 import 'package:xterm/src/core/buffer/range.dart';
 import 'package:xterm/src/core/buffer/range_line.dart';
 import 'package:xterm/src/core/buffer/segment.dart';
+import 'package:xterm/src/core/cell.dart';
 import 'package:xterm/src/core/input/keys.dart';
 import 'package:xterm/src/core/mouse/button.dart';
 import 'package:xterm/src/core/mouse/button_state.dart';
@@ -26,6 +29,8 @@ import 'package:xterm/src/ui/custom_text_edit.dart';
 import 'package:xterm/src/ui/input_map.dart';
 import 'package:xterm/src/ui/keyboard_listener.dart';
 import 'package:xterm/src/ui/keyboard_visibility.dart';
+import 'package:xterm/src/ui/palette_builder.dart';
+import 'package:xterm/src/ui/paragraph_cache.dart';
 import 'package:xterm/src/ui/painter.dart';
 import 'package:xterm/src/ui/pointer_input.dart';
 import 'package:xterm/src/ui/render.dart';
@@ -40,6 +45,96 @@ import 'monkey_terminal_gesture_handler.dart';
 import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
+
+const _xtermGrayscalePaletteStart = 232;
+const _xtermGrayscalePaletteEnd = 255;
+const _minimumFaintTextContrast = 4.5;
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = math.max(luminanceA, luminanceB);
+  final darkest = math.min(luminanceA, luminanceB);
+  return (brightest + 0.05) / (darkest + 0.05);
+}
+
+/// Resolves 256-color palette backgrounds against the active terminal theme.
+///
+/// Some TUIs, including Codex, derive subtle input surfaces from the terminal
+/// default background but emit them as xterm grayscale palette indexes. Keeping
+/// those background indexes fixed makes the surface stale after a theme switch,
+/// so background grayscale entries are treated as theme-relative surfaces.
+@visibleForTesting
+Color resolveMonkeyTerminalPaletteBackgroundColor(
+  TerminalTheme theme,
+  int colorIndex,
+) {
+  if (colorIndex < _xtermGrayscalePaletteStart ||
+      colorIndex > _xtermGrayscalePaletteEnd) {
+    return PaletteBuilder(theme).paletteColor(colorIndex);
+  }
+
+  final scale =
+      (colorIndex - _xtermGrayscalePaletteStart) /
+      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
+  final isLightBackground = theme.background.computeLuminance() > 0.5;
+  final overlay = isLightBackground ? Colors.black : Colors.white;
+  final opacity = isLightBackground
+      ? lerpDouble(0.10, 0.02, scale)!
+      : lerpDouble(0.04, 0.20, scale)!;
+  return Color.alphaBlend(
+    overlay.withAlpha((opacity * 255).round()),
+    theme.background,
+  );
+}
+
+List<Color> _buildThemeAwareBackgroundPalette(TerminalTheme theme) =>
+    List<Color>.generate(
+      256,
+      (index) => resolveMonkeyTerminalPaletteBackgroundColor(theme, index),
+      growable: false,
+    );
+
+/// Resolves SGR 2 faint text while preserving readable contrast.
+///
+/// xterm paints faint text at 50% opacity, which drops many dark-theme
+/// secondary labels below WCAG AA contrast. Keep 50% when it is readable, then
+/// raise only as much as needed for the active foreground/background pair.
+@visibleForTesting
+Color resolveMonkeyTerminalFaintForegroundColor({
+  required Color foreground,
+  required Color background,
+  double minimumContrast = _minimumFaintTextContrast,
+}) {
+  Color blendWithAlpha(double alpha) =>
+      Color.alphaBlend(foreground.withAlpha((alpha * 255).round()), background);
+
+  final defaultFaint = blendWithAlpha(0.5);
+  if (_contrastRatio(defaultFaint, background) >= minimumContrast) {
+    return defaultFaint;
+  }
+
+  if (_contrastRatio(foreground, background) < minimumContrast) {
+    return foreground;
+  }
+
+  var low = 0.5;
+  var high = 1.0;
+  for (var iteration = 0; iteration < 12; iteration += 1) {
+    final mid = (low + high) / 2;
+    final candidate = blendWithAlpha(mid);
+    if (_contrastRatio(candidate, background) >= minimumContrast) {
+      high = mid;
+    } else {
+      low = mid;
+    }
+  }
+
+  final readableFaint = blendWithAlpha(high);
+  return _contrastRatio(readableFaint, background) >= minimumContrast
+      ? readableFaint
+      : foreground;
+}
 
 /// Terminal render padding.
 ///
@@ -448,6 +543,25 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (mounted) {
       setState(() {});
     }
+  }
+
+  /// Re-sends a focus-gained report after terminal state changes.
+  ///
+  /// TUIs such as Codex re-query terminal colors after focus-gained events. The
+  /// app can use this after a theme change so those TUIs refresh cached
+  /// foreground/background colors without waiting for a real focus transition.
+  void refreshFocusReport() {
+    if (!widget.terminal.reportFocusMode) {
+      return;
+    }
+    widget.terminal.onOutput?.call(_terminalFocusInReport);
+  }
+
+  /// Reports the current terminal theme mode to focus-aware terminal muxers.
+  void refreshThemeModeReport({required bool isDark}) {
+    widget.terminal.onOutput?.call(
+      buildTerminalThemeModeReport(isDark: isDark),
+    );
   }
 
   /// Re-sends the current viewport dimensions to the attached terminal.
@@ -1092,6 +1206,118 @@ class _TerminalView extends LeafRenderObjectWidget {
   }
 }
 
+class MonkeyTerminalPainter extends TerminalPainter {
+  MonkeyTerminalPainter({
+    required super.theme,
+    required super.textStyle,
+    required super.textScaler,
+  }) : _backgroundPalette = _buildThemeAwareBackgroundPalette(theme);
+
+  List<Color> _backgroundPalette;
+  final _paragraphCache = ParagraphCache(10240);
+
+  @override
+  set textStyle(TerminalStyle value) {
+    if (value == textStyle) {
+      return;
+    }
+    super.textStyle = value;
+    _paragraphCache.clear();
+  }
+
+  @override
+  set textScaler(TextScaler value) {
+    if (value == textScaler) {
+      return;
+    }
+    super.textScaler = value;
+    _paragraphCache.clear();
+  }
+
+  @override
+  set theme(TerminalTheme value) {
+    if (value == theme) {
+      return;
+    }
+    super.theme = value;
+    _backgroundPalette = _buildThemeAwareBackgroundPalette(value);
+    _paragraphCache.clear();
+  }
+
+  @override
+  void clearFontCache() {
+    super.clearFontCache();
+    _paragraphCache.clear();
+  }
+
+  @override
+  void paintCellForeground(Canvas canvas, Offset offset, CellData cellData) {
+    final charCode = cellData.content & CellContent.codepointMask;
+    if (charCode == 0) {
+      return;
+    }
+
+    final cacheKey = cellData.getHash() ^ textScaler.hashCode;
+    var paragraph = _paragraphCache.getLayoutFromCache(cacheKey);
+
+    if (paragraph == null) {
+      final cellFlags = cellData.flags;
+      final inverse = cellFlags & CellFlags.inverse != 0;
+      var color = inverse
+          ? resolveBackgroundColor(cellData.background)
+          : resolveForegroundColor(cellData.foreground);
+
+      if (cellFlags & CellFlags.faint != 0) {
+        final background = inverse
+            ? resolveForegroundColor(cellData.foreground)
+            : resolveBackgroundColor(cellData.background);
+        color = resolveMonkeyTerminalFaintForegroundColor(
+          foreground: color,
+          background: background,
+        );
+      }
+
+      final style = textStyle.toTextStyle(
+        color: color,
+        bold: cellFlags & CellFlags.bold != 0,
+        italic: cellFlags & CellFlags.italic != 0,
+        underline: cellFlags & CellFlags.underline != 0,
+      );
+
+      var char = String.fromCharCode(charCode);
+      if (cellFlags & CellFlags.underline != 0 && charCode == 0x20) {
+        char = String.fromCharCode(0xA0);
+      }
+
+      paragraph = _paragraphCache.performAndCacheLayout(
+        char,
+        style,
+        textScaler,
+        cacheKey,
+      );
+    }
+
+    canvas.drawParagraph(paragraph, offset);
+  }
+
+  @override
+  Color resolveBackgroundColor(int cellColor) {
+    final colorType = cellColor & CellColor.typeMask;
+    final colorValue = cellColor & CellColor.valueMask;
+
+    switch (colorType) {
+      case CellColor.normal:
+        return theme.background;
+      case CellColor.named:
+      case CellColor.palette:
+        return _backgroundPalette[colorValue];
+      case CellColor.rgb:
+      default:
+        return Color(colorValue | 0xFF000000);
+    }
+  }
+}
+
 class MonkeyRenderTerminal extends RenderBox
     with RelayoutWhenSystemFontsChangeMixin, Selectable, SelectionRegistrant {
   MonkeyRenderTerminal({
@@ -1129,7 +1355,7 @@ class MonkeyRenderTerminal extends RenderBox
          status: SelectionStatus.none,
          hasContent: terminal.buffer.lines.length > 0,
        ),
-       _painter = TerminalPainter(
+       _painter = MonkeyTerminalPainter(
          theme: theme,
          textStyle: textStyle,
          textScaler: textScaler,

@@ -3315,6 +3315,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
+  int _terminalThemeRefreshGeneration = 0;
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3611,7 +3612,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (_connectionId == null
             ? null
             : _sessionsNotifier?.getSession(_connectionId!));
+    final previousTheme = targetSession?.terminalTheme;
     targetSession?.terminalTheme = theme;
+    if (previousTheme != null &&
+        previousTheme.id != theme.id &&
+        targetSession?.terminal == _terminal) {
+      _refreshTerminalThemeForTui(theme, targetSession!);
+    }
+  }
+
+  void _refreshTerminalThemeForTui(
+    TerminalThemeData theme,
+    SshSession session,
+  ) {
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final terminalViewState = _terminalViewKey.currentState;
+    if (_isTmuxActive) {
+      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+      unawaited(
+        Future<void>.delayed(const Duration(milliseconds: 150), () {
+          if (!mounted ||
+              refreshGeneration != _terminalThemeRefreshGeneration ||
+              session.terminal != _terminal ||
+              session.terminalTheme?.id != theme.id) {
+            return;
+          }
+          _terminalViewKey.currentState?.refreshFocusReport();
+        }),
+      );
+      return;
+    }
+
+    terminalViewState?.refreshFocusReport();
   }
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {
@@ -3926,7 +3958,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _loadTheme() async {
     if (!mounted) return;
 
-    final brightness = MediaQuery.of(context).platformBrightness;
+    final brightness = Theme.of(context).brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??
