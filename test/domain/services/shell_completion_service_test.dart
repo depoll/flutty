@@ -55,21 +55,35 @@ void main() {
       expect(invocation, isNull);
     });
 
-    test('does not request all paths after an empty argument token', () {
-      final pathInvocation = buildShellCompletionInvocation(
-        terminalText: 'tester@host ~ % git ',
-        terminalCursorOffset: 'tester@host ~ % git '.length,
-      );
+    test(
+      'requests dynamic argument completions after an empty argument token',
+      () {
+        final argumentInvocation = buildShellCompletionInvocation(
+          terminalText: 'tester@host ~ % git ',
+          terminalCursorOffset: 'tester@host ~ % git '.length,
+        );
+
+        expect(argumentInvocation, isNotNull);
+        expect(argumentInvocation!.commandLine, 'git ');
+        expect(argumentInvocation.commandName, 'git');
+        expect(argumentInvocation.token, isEmpty);
+        expect(argumentInvocation.tokenStart, 4);
+        expect(argumentInvocation.mode, ShellCompletionMode.argument);
+        expect(argumentInvocation.words, ['git']);
+        expect(argumentInvocation.wordIndex, 1);
+      },
+    );
+
+    test('does not request all directories after an empty cd token', () {
       final directoryInvocation = buildShellCompletionInvocation(
         terminalText: 'tester@host ~ % cd ',
         terminalCursorOffset: 'tester@host ~ % cd '.length,
       );
 
-      expect(pathInvocation, isNull);
       expect(directoryInvocation, isNull);
     });
 
-    test('allows known static subcommands after an empty argument token', () {
+    test('allows known fallback subcommands after an empty argument token', () {
       final invocation = buildShellCompletionInvocation(
         terminalText: 'tester@host ~ % tmux ',
         terminalCursorOffset: 'tester@host ~ % tmux '.length,
@@ -80,7 +94,9 @@ void main() {
       expect(invocation.commandName, 'tmux');
       expect(invocation.token, isEmpty);
       expect(invocation.tokenStart, 5);
-      expect(invocation.mode, ShellCompletionMode.subcommand);
+      expect(invocation.mode, ShellCompletionMode.argument);
+      expect(invocation.words, ['tmux']);
+      expect(invocation.wordIndex, 1);
     });
   });
 
@@ -91,8 +107,10 @@ void main() {
         cursorOffset: 5,
         token: '',
         tokenStart: 5,
-        mode: ShellCompletionMode.subcommand,
+        mode: ShellCompletionMode.argument,
         commandName: 'tmux',
+        words: ['tmux'],
+        wordIndex: 1,
         workingDirectory: '/Users/depoll',
       );
 
@@ -116,8 +134,10 @@ void main() {
         cursorOffset: 6,
         token: 'a',
         tokenStart: 5,
-        mode: ShellCompletionMode.subcommand,
+        mode: ShellCompletionMode.argument,
         commandName: 'tmux',
+        words: ['tmux', 'a'],
+        wordIndex: 1,
         workingDirectory: '/Users/depoll',
       );
 
@@ -135,8 +155,10 @@ void main() {
         cursorOffset: 5,
         token: 'a',
         tokenStart: 4,
-        mode: ShellCompletionMode.path,
+        mode: ShellCompletionMode.argument,
         commandName: 'git',
+        words: ['git', 'a'],
+        wordIndex: 1,
         workingDirectory: '/Users/depoll',
       );
 
@@ -198,6 +220,30 @@ void main() {
       expect(suggestions.single.replacementStart, 3);
       expect(suggestions.single.replacementEnd, 6);
     });
+
+    test('labels dynamic argument suggestions with the command context', () {
+      const invocation = ShellCompletionInvocation(
+        commandLine: 'tmux a',
+        cursorOffset: 6,
+        token: 'a',
+        tokenStart: 5,
+        mode: ShellCompletionMode.argument,
+        commandName: 'tmux',
+        words: ['tmux', 'a'],
+        wordIndex: 1,
+        workingDirectory: '/Users/depoll',
+      );
+
+      final suggestions = parseShellCompletionOutput(
+        'argument\tattach',
+        invocation,
+      );
+
+      expect(suggestions.single.label, 'tmux attach');
+      expect(suggestions.single.replacement, 'attach');
+      expect(suggestions.single.replacementStart, 5);
+      expect(suggestions.single.commitSuffix, ' ');
+    });
   });
 
   test('escapeShellCompletionToken escapes shell metacharacters', () {
@@ -220,15 +266,21 @@ void main() {
     final command = buildShellCompletionRemoteCommand(invocation);
 
     expect(command, contains(r'flutty_shell=${SHELL:-}'));
-    expect(
-      command,
-      contains(
-        "export FLUTTY_MODE='command' FLUTTY_TOKEN='gi' FLUTTY_INCLUDE_CD_SHORTCUTS=0 FLUTTY_CWD='/Users/depoll/project' FLUTTY_LIMIT=96;",
-      ),
-    );
+    expect(command, contains("export FLUTTY_MODE='command' FLUTTY_TOKEN='gi'"));
+    expect(command, contains("FLUTTY_COMMAND_LINE='gi'"));
+    expect(command, contains('FLUTTY_CURSOR_OFFSET=2'));
+    expect(command, contains('FLUTTY_WORD_INDEX=0'));
+    expect(command, contains('FLUTTY_COMP_WORDS_ASSIGNMENT='));
+    expect(command, contains('FLUTTY_INCLUDE_CD_SHORTCUTS=0'));
+    expect(command, contains("FLUTTY_CWD='/Users/depoll/project'"));
+    expect(command, contains('FLUTTY_LIMIT=96'));
     expect(command, contains(r'FLUTTY_PROFILE_KIND=$flutty_profile_kind'));
     expect(command, contains(r'source_if_readable "$HOME/.zprofile"'));
     expect(command, contains(r'source_if_readable "$HOME/.zshrc"'));
+    expect(command, contains('source_if_readable /etc/bash_completion'));
+    expect(command, contains(r'eval "$FLUTTY_COMP_WORDS_ASSIGNMENT"'));
+    expect(command, contains(r'_completion_loader "$cmd"'));
+    expect(command, contains('emit_dynamic_argument_matches'));
     expect(command, contains(r'''printf '%s\n' "$item"'''));
     expect(command, contains(r'source_if_readable "$HOME/.bash_profile"'));
     expect(command, contains(r'emit_line command "$item" || break'));

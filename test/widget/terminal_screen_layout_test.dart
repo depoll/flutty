@@ -554,7 +554,7 @@ void main() {
           cursorOffset: 5,
           token: 'c',
           tokenStart: 4,
-          mode: ShellCompletionMode.path,
+          mode: ShellCompletionMode.argument,
           commandName: 'git',
           workingDirectory: '/repo',
         );
@@ -574,7 +574,7 @@ void main() {
               cursorOffset: 6,
               token: 'ch',
               tokenStart: 4,
-              mode: ShellCompletionMode.path,
+              mode: ShellCompletionMode.argument,
               commandName: 'git',
               workingDirectory: '/repo',
             ),
@@ -590,7 +590,7 @@ void main() {
               cursorOffset: 6,
               token: 'cx',
               tokenStart: 4,
-              mode: ShellCompletionMode.path,
+              mode: ShellCompletionMode.argument,
               commandName: 'git',
               workingDirectory: '/repo',
             ),
@@ -609,13 +609,13 @@ void main() {
       },
     );
 
-    test('accepts and filters empty-token static subcommand suggestions', () {
+    test('accepts and filters empty-token argument suggestions', () {
       const originalInvocation = ShellCompletionInvocation(
         commandLine: 'tmux ',
         cursorOffset: 5,
         token: '',
         tokenStart: 5,
-        mode: ShellCompletionMode.subcommand,
+        mode: ShellCompletionMode.argument,
         commandName: 'tmux',
         workingDirectory: '/repo',
       );
@@ -652,7 +652,7 @@ void main() {
           cursorOffset: 6,
           token: 'a',
           tokenStart: 5,
-          mode: ShellCompletionMode.subcommand,
+          mode: ShellCompletionMode.argument,
           commandName: 'tmux',
           workingDirectory: '/repo',
         ),

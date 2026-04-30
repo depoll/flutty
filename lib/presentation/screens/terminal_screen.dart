@@ -3943,9 +3943,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     _shellCompletionPromptPrefix ??= _terminalTextBeforeCursor();
-    if (_refreshImmediateStaticShellCompletions()) {
-      return;
-    }
     _filterVisibleShellCompletionsForCurrentInput();
     _queueShellCompletionRefresh();
   }
@@ -4011,20 +4008,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final anchor = _resolveTerminalCursorGlobalRect();
     if (invocation == null || anchor == null) {
       _hideShellCompletionPopup(resetPromptPrefix: false);
-      return;
-    }
-
-    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
-    if (staticSuggestions != null) {
-      if (staticSuggestions.isEmpty) {
-        _hideShellCompletionPopup(resetPromptPrefix: false);
-        return;
-      }
-      _showShellCompletions(
-        invocation: invocation,
-        suggestions: staticSuggestions,
-        anchor: anchor,
-      );
       return;
     }
 
@@ -4182,50 +4165,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return null;
     }
     return terminalViewState.globalCursorRect;
-  }
-
-  bool _refreshImmediateStaticShellCompletions() {
-    if (_isUsingAltBuffer &&
-        _isTmuxActive &&
-        !isShellCompletionTmuxShellCommand(_tmuxCurrentCommand)) {
-      return false;
-    }
-
-    final invocation = _buildCurrentShellCompletionInvocation(
-      workingDirectory: _workingDirectoryPath,
-    );
-    if (invocation == null) {
-      return false;
-    }
-
-    final suggestions = buildShellCompletionStaticSuggestions(invocation);
-    if (suggestions == null) {
-      return false;
-    }
-
-    _shellCompletionDebounceTimer?.cancel();
-    _shellCompletionDebounceTimer = null;
-    _shellCompletionGeneration += 1;
-    _shellCompletionInFlightRequestKey = null;
-    _shellCompletionRefreshAfterInFlight = false;
-
-    if (suggestions.isEmpty) {
-      _hideShellCompletionPopup(resetPromptPrefix: false);
-      return true;
-    }
-
-    final anchor = _resolveTerminalCursorGlobalRect();
-    if (anchor == null) {
-      _hideShellCompletionPopup(resetPromptPrefix: false);
-      return true;
-    }
-
-    _showShellCompletions(
-      invocation: invocation,
-      suggestions: suggestions,
-      anchor: anchor,
-    );
-    return true;
   }
 
   bool _filterVisibleShellCompletionsForCurrentInput() {

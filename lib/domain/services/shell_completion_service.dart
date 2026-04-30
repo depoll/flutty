@@ -13,8 +13,8 @@ enum ShellCompletionMode {
   /// Complete the first command word.
   command,
 
-  /// Complete a known command's subcommand from a static local catalog.
-  subcommand,
+  /// Complete a command argument through installed shell completions.
+  argument,
 
   /// Complete only directories.
   directory,
@@ -46,6 +46,8 @@ class ShellCompletionInvocation {
     required this.mode,
     required this.workingDirectory,
     this.commandName,
+    this.words = const <String>[],
+    this.wordIndex = 0,
     this.maxSuggestions = 24,
   });
 
@@ -66,6 +68,12 @@ class ShellCompletionInvocation {
 
   /// Parsed command name, when the cursor is in an argument.
   final String? commandName;
+
+  /// Parsed shell words before or at the cursor.
+  final List<String> words;
+
+  /// Index of [token] in [words], or the next word after trailing whitespace.
+  final int wordIndex;
 
   /// Remote working directory to run completion lookups from.
   final String? workingDirectory;
@@ -124,11 +132,6 @@ class ShellCompletionService {
     SshSession session,
     ShellCompletionInvocation invocation,
   ) async {
-    final staticSuggestions = buildShellCompletionStaticSuggestions(invocation);
-    if (staticSuggestions != null) {
-      return staticSuggestions;
-    }
-
     DiagnosticsLogService.instance.debug(
       'shell_completion',
       'request_start',
@@ -142,11 +145,25 @@ class ShellCompletionService {
     );
 
     final startedAt = DateTime.now();
-    final output = await session.runQueuedExec(
-      () => _runCompletionCommand(session, invocation),
-      priority: SshExecPriority.low,
-    );
+    final output = await session
+        .runQueuedExec(
+          () => _runCompletionCommand(session, invocation),
+          priority: SshExecPriority.low,
+        )
+        .onError<Object>((error, stackTrace) {
+          final fallbackSuggestions = buildShellCompletionStaticSuggestions(
+            invocation,
+          );
+          if (fallbackSuggestions != null) {
+            return '';
+          }
+          Error.throwWithStackTrace(error, stackTrace);
+        });
     final suggestions = parseShellCompletionOutput(output, invocation);
+    final fallbackSuggestions = suggestions.isEmpty
+        ? buildShellCompletionStaticSuggestions(invocation)
+        : null;
+    final resolvedSuggestions = fallbackSuggestions ?? suggestions;
     DiagnosticsLogService.instance.debug(
       'shell_completion',
       'request_complete',
@@ -154,10 +171,10 @@ class ShellCompletionService {
         'connectionId': session.connectionId,
         'mode': invocation.mode.name,
         'durationMs': DateTime.now().difference(startedAt).inMilliseconds,
-        'suggestionCount': suggestions.length,
+        'suggestionCount': resolvedSuggestions.length,
       },
     );
-    return suggestions;
+    return resolvedSuggestions;
   }
 
   Future<String> _runCompletionCommand(
@@ -251,9 +268,13 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
         );
   final normalizedToken = normalizeShellCompletionToken(tokenState.token);
 
-  if (normalizedToken.isEmpty && mode != ShellCompletionMode.subcommand) {
+  if (normalizedToken.isEmpty && mode != ShellCompletionMode.argument) {
     return null;
   }
+
+  final normalizedWords = tokenState.words
+      .map(normalizeShellCompletionToken)
+      .toList(growable: false);
 
   return ShellCompletionInvocation(
     commandLine: commandLine,
@@ -262,6 +283,8 @@ ShellCompletionInvocation? buildShellCompletionInvocation({
     tokenStart: tokenState.tokenStart,
     mode: mode,
     commandName: commandName,
+    words: normalizedWords,
+    wordIndex: tokenState.wordIndex,
     workingDirectory: workingDirectory,
     maxSuggestions: maxSuggestions,
   );
@@ -271,13 +294,10 @@ ShellCompletionMode _shellCompletionArgumentMode({
   required String? commandName,
   required int wordIndex,
 }) {
-  if (wordIndex == 1 && _staticSubcommandsFor(commandName) != null) {
-    return ShellCompletionMode.subcommand;
-  }
   if (commandName == 'cd') {
     return ShellCompletionMode.directory;
   }
-  return ShellCompletionMode.path;
+  return ShellCompletionMode.argument;
 }
 
 /// Builds local static suggestions for completion modes that do not need SSH.
@@ -287,7 +307,8 @@ ShellCompletionMode _shellCompletionArgumentMode({
 List<ShellCompletionSuggestion>? buildShellCompletionStaticSuggestions(
   ShellCompletionInvocation invocation,
 ) {
-  if (invocation.mode != ShellCompletionMode.subcommand) {
+  if (invocation.mode != ShellCompletionMode.argument ||
+      invocation.wordIndex != 1) {
     return null;
   }
 
@@ -614,6 +635,7 @@ ShellCompletionSuggestion? _suggestionFromRemoteValue({
 }) {
   final kind = switch (rawKind) {
     'command' => ShellCompletionSuggestionKind.command,
+    'argument' => ShellCompletionSuggestionKind.command,
     'directory' || 'cd_directory' => ShellCompletionSuggestionKind.directory,
     'file' => ShellCompletionSuggestionKind.file,
     _ => null,
@@ -633,6 +655,20 @@ ShellCompletionSuggestion? _suggestionFromRemoteValue({
       replacementStart: 0,
       replacementEnd: invocation.cursorOffset,
       kind: ShellCompletionSuggestionKind.directory,
+    );
+  }
+
+  if (rawKind == 'argument') {
+    final commandName = _normalizeShellCompletionCommandName(
+      invocation.commandName,
+    );
+    return ShellCompletionSuggestion(
+      label: commandName == null ? value : '$commandName $value',
+      replacement: escapedValue,
+      replacementStart: invocation.tokenStart,
+      replacementEnd: invocation.cursorOffset,
+      kind: kind,
+      commitSuffix: ' ',
     );
   }
 
@@ -752,14 +788,17 @@ String buildShellCompletionRemoteCommand(ShellCompletionInvocation invocation) {
   final mode = invocation.mode.name;
   final token = invocation.token;
   final limit = invocation.maxSuggestions * 4;
+  final commandName =
+      _normalizeShellCompletionCommandName(invocation.commandName) ?? '';
+  final compWordsAssignment = _bashCompWordsAssignment(invocation);
   final includeCdShortcuts =
       invocation.mode == ShellCompletionMode.command &&
       'cd'.startsWith(invocation.token);
 
   return '''
-export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_LIMIT=$limit; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
+export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8; export FLUTTY_MODE=${_shellQuote(mode)} FLUTTY_TOKEN=${_shellQuote(token)} FLUTTY_COMMAND_NAME=${_shellQuote(commandName)} FLUTTY_COMMAND_LINE=${_shellQuote(invocation.commandLine)} FLUTTY_CURSOR_OFFSET=${invocation.cursorOffset} FLUTTY_WORD_INDEX=${invocation.wordIndex} FLUTTY_COMP_WORDS_ASSIGNMENT=${_shellQuote(compWordsAssignment)} FLUTTY_INCLUDE_CD_SHORTCUTS=${includeCdShortcuts ? '1' : '0'} FLUTTY_CWD=${_shellQuote(cwd ?? '')} FLUTTY_LIMIT=$limit; flutty_shell=\${SHELL:-}; flutty_shell_name=\${flutty_shell##*/}; case "\$flutty_shell_name" in bash|zsh|ksh|sh) flutty_runner=\$flutty_shell; flutty_profile_kind=\$flutty_shell_name;; *) flutty_runner=sh; flutty_profile_kind=sh;; esac; [ -n "\$flutty_runner" ] || flutty_runner=sh; FLUTTY_PROFILE_KIND=\$flutty_profile_kind "\$flutty_runner" -s <<'__FLUTTY_COMPLETION__'
 case "\$FLUTTY_MODE" in
-  command)
+  command|argument)
     source_if_readable() {
       [ -r "\$1" ] || return 0
       . "\$1" >/dev/null 2>&1 || :
@@ -890,6 +929,106 @@ emit_path_matches() {
   emit_path_fallback "\$mode" "\$token"
 }
 
+emit_bash_programmable_argument_matches() {
+  command -v bash >/dev/null 2>&1 || return 1
+  bash --noprofile --norc -s <<'__FLUTTY_BASH_COMPLETION__'
+source_if_readable() {
+  [ -r "\$1" ] || return 0
+  . "\$1" >/dev/null 2>&1 || :
+}
+
+source_if_readable "\$HOME/.bash_profile"
+source_if_readable "\$HOME/.bash_login"
+source_if_readable "\$HOME/.profile"
+source_if_readable "\$HOME/.bashrc"
+source_if_readable /etc/bash_completion
+source_if_readable /usr/share/bash-completion/bash_completion
+source_if_readable /opt/homebrew/etc/profile.d/bash_completion.sh
+source_if_readable /usr/local/etc/profile.d/bash_completion.sh
+source_if_readable /opt/local/etc/profile.d/bash_completion.sh
+
+eval "\$FLUTTY_COMP_WORDS_ASSIGNMENT" 2>/dev/null || exit 1
+COMP_LINE=\${FLUTTY_COMMAND_LINE:-}
+COMP_POINT=\${FLUTTY_CURSOR_OFFSET:-0}
+COMP_TYPE=9
+COMP_KEY=9
+COMP_CWORD=\${FLUTTY_WORD_INDEX:-0}
+cur=\${COMP_WORDS[\$COMP_CWORD]:-}
+prev=
+if [ "\$COMP_CWORD" -gt 0 ] 2>/dev/null; then
+  prev=\${COMP_WORDS[\$((COMP_CWORD - 1))]:-}
+fi
+cmd=\${FLUTTY_COMMAND_NAME:-\${COMP_WORDS[0]:-}}
+[ -n "\$cmd" ] || exit 1
+
+if ! complete -p "\$cmd" >/dev/null 2>&1; then
+  if declare -F _completion_loader >/dev/null 2>&1; then
+    _completion_loader "\$cmd" >/dev/null 2>&1 || :
+  fi
+fi
+spec=\$(complete -p "\$cmd" 2>/dev/null || complete -p -D 2>/dev/null) ||
+  exit 1
+
+set -f
+eval "set -- \$spec" 2>/dev/null || exit 1
+comp_function=
+comp_command=
+comp_words=
+comp_action=
+while [ "\$#" -gt 0 ]; do
+  case "\$1" in
+    -F)
+      shift
+      comp_function=\${1:-}
+      ;;
+    -C)
+      shift
+      comp_command=\${1:-}
+      ;;
+    -W)
+      shift
+      comp_words=\${1:-}
+      ;;
+    -A)
+      shift
+      comp_action=\${1:-}
+      ;;
+  esac
+  shift || break
+done
+
+if [ -n "\$comp_function" ] && declare -F "\$comp_function" >/dev/null 2>&1; then
+  COMPREPLY=()
+  "\$comp_function" "\$cmd" "\$cur" "\$prev" >/dev/null 2>&1 || :
+  [ "\${#COMPREPLY[@]}" -gt 0 ] || exit 1
+  printf '%s\n' "\${COMPREPLY[@]}"
+elif [ -n "\$comp_command" ] && command -v "\$comp_command" >/dev/null 2>&1; then
+  "\$comp_command" "\$cmd" "\$cur" "\$prev" 2>/dev/null
+elif [ -n "\$comp_words" ]; then
+  compgen -W "\$comp_words" -- "\$cur"
+elif [ -n "\$comp_action" ]; then
+  compgen -A "\$comp_action" -- "\$cur"
+else
+  exit 1
+fi
+__FLUTTY_BASH_COMPLETION__
+}
+
+emit_dynamic_argument_matches() {
+  dynamic_output=\$(emit_bash_programmable_argument_matches 2>/dev/null)
+  [ -n "\$dynamic_output" ] || return 1
+  printf '%s\\n' "\$dynamic_output" | while IFS= read -r item; do
+    [ -n "\$item" ] || continue
+    if [ -d "\$item" ]; then
+      emit_line directory "\$item" || break
+    elif [ -e "\$item" ]; then
+      emit_line file "\$item" || break
+    else
+      emit_line argument "\$item" || break
+    fi
+  done
+}
+
 case "\$FLUTTY_MODE" in
   command)
     if [ -n "\${BASH_VERSION:-}" ] && command -v compgen >/dev/null 2>&1; then
@@ -912,6 +1051,11 @@ case "\$FLUTTY_MODE" in
       emit_path_matches directory ''
     fi
     ;;
+  argument)
+    if ! emit_dynamic_argument_matches && [ -n "\$FLUTTY_TOKEN" ]; then
+      emit_path_matches path "\$FLUTTY_TOKEN"
+    fi
+    ;;
   directory)
     emit_path_matches directory "\$FLUTTY_TOKEN"
     ;;
@@ -921,6 +1065,19 @@ case "\$FLUTTY_MODE" in
 esac
 __FLUTTY_COMPLETION__
 ''';
+}
+
+String _bashCompWordsAssignment(ShellCompletionInvocation invocation) {
+  final words = invocation.words.isEmpty && invocation.commandName != null
+      ? <String>[normalizeShellCompletionToken(invocation.commandName!)]
+      : invocation.words.toList(growable: true);
+  while (words.length <= invocation.wordIndex) {
+    words.add('');
+  }
+  if (invocation.wordIndex >= 0 && invocation.wordIndex < words.length) {
+    words[invocation.wordIndex] = invocation.token;
+  }
+  return 'COMP_WORDS=(${words.map(_shellQuote).join(' ')})';
 }
 
 String _shellQuote(String value) => "'${value.replaceAll("'", r"'\''")}'";
