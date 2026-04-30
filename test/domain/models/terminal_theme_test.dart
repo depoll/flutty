@@ -352,6 +352,21 @@ void main() {
       expect(theme.name, 'Midnight Purple');
     });
 
+    test('getById returns additional themes', () {
+      final customTheme = TerminalThemes.midnightPurple.copyWith(
+        id: 'custom-theme',
+        name: 'Custom Theme',
+        isCustom: true,
+      );
+
+      final theme = TerminalThemes.getById(
+        'custom-theme',
+        additionalThemes: [customTheme],
+      );
+
+      expect(theme, customTheme);
+    });
+
     test('getById returns null when not exists', () {
       final theme = TerminalThemes.getById('nonexistent-theme');
       expect(theme, isNull);
@@ -368,6 +383,31 @@ void main() {
       expect(TerminalThemes.getById('clean-white'), isNotNull);
       expect(TerminalThemes.getById('vivid'), isNotNull);
       expect(TerminalThemes.getById('ocean-dark'), isNotNull);
+    });
+
+    test('defaultThemeForBrightness returns built-in defaults', () {
+      expect(
+        TerminalThemes.defaultThemeForBrightness(Brightness.dark),
+        TerminalThemes.midnightPurple,
+      );
+      expect(
+        TerminalThemes.defaultThemeForBrightness(Brightness.light),
+        TerminalThemes.cleanWhite,
+      );
+    });
+
+    test('resolveById falls back by brightness when the id is unavailable', () {
+      expect(
+        TerminalThemes.resolveById(
+          brightness: Brightness.dark,
+          themeId: 'missing-theme',
+        ),
+        TerminalThemes.midnightPurple,
+      );
+      expect(
+        TerminalThemes.resolveById(brightness: Brightness.light, themeId: null),
+        TerminalThemes.cleanWhite,
+      );
     });
 
     test('dark built-in themes keep default text readable', () {

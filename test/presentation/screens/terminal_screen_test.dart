@@ -12,7 +12,6 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:go_router/go_router.dart';
 import 'package:mocktail/mocktail.dart';
-
 import 'package:monkeyssh/app/routes.dart';
 import 'package:monkeyssh/data/database/database.dart';
 import 'package:monkeyssh/data/repositories/host_repository.dart';
@@ -29,6 +28,8 @@ import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:monkeyssh/presentation/widgets/terminal_text_input_handler.dart';
+import 'package:wakelock_plus/wakelock_plus.dart';
+import 'package:wakelock_plus_platform_interface/wakelock_plus_platform_interface.dart';
 import 'package:xterm/xterm.dart';
 
 const _deleteDetectionMarker = '\u200B\u200B';
@@ -44,6 +45,20 @@ class _MockMonetizationService extends Mock implements MonetizationService {}
 class _MockSftpClient extends Mock implements SftpClient {}
 
 class _MockTmuxService extends Mock implements TmuxService {}
+
+class _FakeWakelockPlusPlatform extends WakelockPlusPlatformInterface {
+  final toggleCalls = <bool>[];
+  bool _enabled = false;
+
+  @override
+  Future<void> toggle({required bool enable}) async {
+    _enabled = enable;
+    toggleCalls.add(enable);
+  }
+
+  @override
+  Future<bool> get enabled async => _enabled;
+}
 
 class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   _TestActiveSessionsNotifier(this.session);
@@ -510,6 +525,8 @@ void main() {
     late Completer<void> shellDoneCompleter;
     late StreamController<Uint8List> shellStdoutController;
     late List<List<int>> shellWrites;
+    late WakelockPlusPlatformInterface originalWakelockPlatform;
+    late _FakeWakelockPlusPlatform wakelockPlatform;
 
     setUp(() {
       db = AppDatabase.forTesting(NativeDatabase.memory());
@@ -521,6 +538,9 @@ void main() {
       shellDoneCompleter = Completer<void>();
       shellStdoutController = StreamController<Uint8List>.broadcast();
       shellWrites = <List<int>>[];
+      originalWakelockPlatform = wakelockPlusPlatformInstance;
+      wakelockPlatform = _FakeWakelockPlusPlatform();
+      wakelockPlusPlatformInstance = wakelockPlatform;
 
       when(
         () => monetizationService.currentState,
@@ -566,6 +586,7 @@ void main() {
     });
 
     tearDown(() async {
+      wakelockPlusPlatformInstance = originalWakelockPlatform;
       await shellStdoutController.close();
       await db.close();
     });
@@ -597,6 +618,24 @@ void main() {
       await tester.pump();
       await tester.pump();
     }
+
+    testWidgets('holds wake lock while an opted-in terminal is active', (
+      tester,
+    ) async {
+      await SettingsService(
+        db,
+      ).setBool(SettingKeys.terminalWakeLock, value: true);
+
+      await pumpScreen(tester);
+      await tester.pump();
+
+      expect(wakelockPlatform.toggleCalls, contains(true));
+
+      await tester.pumpWidget(const SizedBox.shrink());
+      await tester.pump();
+
+      expect(wakelockPlatform.toggleCalls.last, false);
+    });
 
     Future<void> pumpTmuxScreen(
       WidgetTester tester,

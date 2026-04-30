@@ -4,11 +4,16 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
+import '../models/terminal_theme.dart';
+import '../models/terminal_themes.dart';
 
 /// Keys for app settings.
 abstract final class SettingKeys {
   /// Theme mode: 'system', 'light', 'dark'.
   static const themeMode = 'theme_mode';
+
+  /// Whether terminal themes also style app chrome.
+  static const terminalThemesApplyToApp = 'terminal_themes_apply_to_app';
 
   /// Terminal font family.
   static const terminalFont = 'terminal_font';
@@ -33,6 +38,9 @@ abstract final class SettingKeys {
 
   /// Terminal bell sound enabled.
   static const bellSound = 'bell_sound';
+
+  /// Keep the device awake while a terminal is active.
+  static const terminalWakeLock = 'terminal_wake_lock';
 
   /// Enable tapping terminal file paths to open SFTP.
   static const terminalPathLinks = 'terminal_path_links';
@@ -231,6 +239,55 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
 /// Provider for theme mode with write capability.
 final themeModeNotifierProvider =
     NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
+
+/// Provider for terminal themes applying to app chrome.
+final terminalThemesApplyToAppProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(
+    SettingKeys.terminalThemesApplyToApp,
+    defaultValue: true,
+  );
+});
+
+/// Notifier for terminal themes applying to app chrome.
+class TerminalThemesApplyToAppNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalThemesApplyToApp,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set whether terminal themes also style app chrome.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(
+      SettingKeys.terminalThemesApplyToApp,
+      value: enabled,
+    );
+    state = enabled;
+    ref.invalidate(terminalThemesApplyToAppProvider);
+  }
+}
+
+/// Provider for terminal themes applying to app chrome with write capability.
+final terminalThemesApplyToAppNotifierProvider =
+    NotifierProvider<TerminalThemesApplyToAppNotifier, bool>(
+      TerminalThemesApplyToAppNotifier.new,
+    );
 
 /// Provider for font size setting.
 final fontSizeProvider = FutureProvider<double>((ref) async {
@@ -474,6 +531,39 @@ final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
   BellSoundNotifier.new,
 );
 
+/// Notifier for terminal wake lock with write capability.
+class TerminalWakeLockNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return false;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(SettingKeys.terminalWakeLock);
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set terminal wake lock enabled.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(SettingKeys.terminalWakeLock, value: enabled);
+    state = enabled;
+  }
+}
+
+/// Provider for terminal wake lock with write capability.
+final terminalWakeLockNotifierProvider =
+    NotifierProvider<TerminalWakeLockNotifier, bool>(
+      TerminalWakeLockNotifier.new,
+    );
+
 /// Notifier for terminal file path links with write capability.
 class TerminalPathLinksNotifier extends Notifier<bool> {
   late SettingsService _settings;
@@ -573,6 +663,8 @@ class TerminalThemeSettings {
 
 /// Notifier for terminal theme settings.
 class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
+  static const _legacyDefaultTerminalThemeIds = {'github-light', 'dracula'};
+
   late SettingsService _settings;
   bool _disposed = false;
 
@@ -583,8 +675,8 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     ref.onDispose(() => _disposed = true);
     Future.microtask(_init);
     return const TerminalThemeSettings(
-      lightThemeId: 'github-light',
-      darkThemeId: 'dracula',
+      lightThemeId: TerminalThemes.defaultLightThemeId,
+      darkThemeId: TerminalThemes.defaultDarkThemeId,
     );
   }
 
@@ -595,11 +687,89 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     final dark = await _settings.getString(
       SettingKeys.defaultTerminalThemeDark,
     );
+    final customThemeIds = await _getCustomTerminalThemeIds();
+    final lightThemeId = _normalizeThemeId(
+      light,
+      brightness: Brightness.light,
+      customThemeIds: customThemeIds,
+    );
+    final darkThemeId = _normalizeThemeId(
+      dark,
+      brightness: Brightness.dark,
+      customThemeIds: customThemeIds,
+    );
+    if (_disposed) return;
+    await _persistNormalizedThemeId(
+      key: SettingKeys.defaultTerminalThemeLight,
+      storedThemeId: light,
+      normalizedThemeId: lightThemeId,
+    );
+    await _persistNormalizedThemeId(
+      key: SettingKeys.defaultTerminalThemeDark,
+      storedThemeId: dark,
+      normalizedThemeId: darkThemeId,
+    );
     if (_disposed) return;
     state = TerminalThemeSettings(
-      lightThemeId: light ?? 'github-light',
-      darkThemeId: dark ?? 'dracula',
+      lightThemeId: lightThemeId,
+      darkThemeId: darkThemeId,
     );
+  }
+
+  Future<Set<String>> _getCustomTerminalThemeIds() async {
+    final json = await _settings.getString(SettingKeys.customTerminalThemes);
+    if (json == null || json.isEmpty) {
+      return const {};
+    }
+
+    try {
+      final decoded = jsonDecode(json);
+      if (decoded is! List) {
+        return const {};
+      }
+
+      final themeIds = <String>{};
+      for (final item in decoded) {
+        final theme = TerminalThemeData.tryFromJson(item);
+        if (theme != null) {
+          themeIds.add(theme.id);
+        }
+      }
+      return themeIds;
+    } on FormatException {
+      return const {};
+    }
+  }
+
+  String _normalizeThemeId(
+    String? themeId, {
+    required Brightness brightness,
+    required Set<String> customThemeIds,
+  }) {
+    final defaultThemeId = TerminalThemes.defaultThemeIdForBrightness(
+      brightness,
+    );
+    if (themeId == null || themeId.isEmpty) {
+      return defaultThemeId;
+    }
+    if (TerminalThemes.getById(themeId) != null ||
+        customThemeIds.contains(themeId)) {
+      return themeId;
+    }
+    if (_legacyDefaultTerminalThemeIds.contains(themeId)) {
+      return defaultThemeId;
+    }
+    return defaultThemeId;
+  }
+
+  Future<void> _persistNormalizedThemeId({
+    required String key,
+    required String? storedThemeId,
+    required String normalizedThemeId,
+  }) async {
+    if (storedThemeId != null && storedThemeId != normalizedThemeId) {
+      await _settings.setString(key, normalizedThemeId);
+    }
   }
 
   /// Set the light mode theme.

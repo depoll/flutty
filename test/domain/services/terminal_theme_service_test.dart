@@ -1,5 +1,7 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -109,6 +111,41 @@ void main() {
       test('returns empty list initially', () async {
         final themes = await themeService.getCustomThemes();
         expect(themes, isEmpty);
+      });
+
+      test(
+        'returns empty list when stored custom themes are not a list',
+        () async {
+          await settingsService.setString(
+            SettingKeys.customTerminalThemes,
+            jsonEncode({'themes': <String>[]}),
+          );
+
+          final themes = await themeService.getCustomThemes();
+
+          expect(themes, isEmpty);
+        },
+      );
+
+      test('skips malformed custom theme entries', () async {
+        final theme = TerminalThemes.midnightPurple.copyWith(
+          id: 'custom-with-malformed-neighbors',
+          name: 'Custom With Malformed Neighbors',
+          isCustom: true,
+        );
+        await settingsService.setString(
+          SettingKeys.customTerminalThemes,
+          jsonEncode([
+            42,
+            {'id': 'incomplete-theme'},
+            theme.toJson(),
+          ]),
+        );
+
+        final themes = await themeService.getCustomThemes();
+
+        expect(themes, hasLength(1));
+        expect(themes.single.id, theme.id);
       });
     });
 
