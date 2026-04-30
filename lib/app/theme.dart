@@ -132,6 +132,7 @@ abstract final class FluttyTheme {
       onError: onError,
       surface: surface,
       onSurface: textPrimary,
+      onSurfaceVariant: textSecondary,
       surfaceContainerHighest: card,
       outline: border,
       outlineVariant: border.withAlpha(isDark ? 128 : 180),
@@ -143,6 +144,22 @@ abstract final class FluttyTheme {
         : ThemeData.light().textTheme;
 
     final textTheme = _interTextTheme(baseTextTheme).copyWith(
+      displayLarge: _inter(
+        fontSize: 57,
+        fontWeight: FontWeight.w400,
+        color: textPrimary,
+        letterSpacing: -0.25,
+      ),
+      displayMedium: _inter(
+        fontSize: 45,
+        fontWeight: FontWeight.w400,
+        color: textPrimary,
+      ),
+      displaySmall: _inter(
+        fontSize: 36,
+        fontWeight: FontWeight.w400,
+        color: textPrimary,
+      ),
       // Headings with more weight
       headlineLarge: _inter(
         fontSize: 32,
@@ -171,6 +188,11 @@ abstract final class FluttyTheme {
         fontWeight: FontWeight.w500,
         color: textPrimary,
       ),
+      titleSmall: _inter(
+        fontSize: 14,
+        fontWeight: FontWeight.w500,
+        color: textPrimary,
+      ),
       bodyLarge: _inter(
         fontSize: 16,
         fontWeight: FontWeight.w400,
@@ -190,6 +212,16 @@ abstract final class FluttyTheme {
         fontSize: 14,
         fontWeight: FontWeight.w600,
         color: textPrimary,
+      ),
+      labelMedium: _inter(
+        fontSize: 12,
+        fontWeight: FontWeight.w500,
+        color: textSecondary,
+      ),
+      labelSmall: _inter(
+        fontSize: 11,
+        fontWeight: FontWeight.w500,
+        color: textSecondary,
       ),
     );
 
