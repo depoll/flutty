@@ -41,7 +41,9 @@ final routerProvider = Provider<GoRouter>((ref) {
       GoRoute(
         path: '/',
         name: Routes.home,
-        builder: (context, state) => const HomeScreen(),
+        builder: (context, state) => HomeScreen(
+          initialTab: _homeScreenTabFromRoute(state.uri.queryParameters['tab']),
+        ),
       ),
       GoRoute(
         path: '/lock',
@@ -66,6 +68,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           final initialTmuxWindowIndex = int.tryParse(
             state.uri.queryParameters['tmuxWindow'] ?? '',
           );
+          final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
@@ -76,6 +79,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                 connectionId,
                 initialTmuxSessionName,
                 initialTmuxWindowIndex,
+                initialTmuxWindowId,
                 state.uri.queryParameters['notificationTap'],
               ),
             ),
@@ -83,6 +87,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             connectionId: connectionId,
             initialTmuxSessionName: initialTmuxSessionName,
             initialTmuxWindowIndex: initialTmuxWindowIndex,
+            initialTmuxWindowId: initialTmuxWindowId,
             initialTmuxWindowRequiresVisibleSession:
                 state.uri.queryParameters['notificationTap'] != null,
             initiallyExpandTmuxWindows:
@@ -216,6 +221,11 @@ final routerProvider = Provider<GoRouter>((ref) {
     ],
   );
 });
+
+HomeScreenTab _homeScreenTabFromRoute(String? tab) => switch (tab) {
+  'connections' => HomeScreenTab.connections,
+  _ => HomeScreenTab.hosts,
+};
 
 /// Computes the route redirect for the given authentication state.
 String? redirectForAuthState({

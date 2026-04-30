@@ -18,6 +18,7 @@ import '../domain/services/terminal_theme_service.dart';
 import 'app_lifecycle_coordinator.dart';
 import 'app_metadata.dart';
 import 'auth_lifecycle_controller.dart';
+import 'notification_navigation.dart';
 import 'router.dart';
 import 'theme.dart';
 
@@ -220,13 +221,11 @@ class _BackgroundLifecycleBridgeState
         return;
       }
       _pendingTmuxAlertNavigation = null;
-      final targetUri = Uri.parse(buildTmuxAlertTerminalLocation(payload));
-      final queryParameters = Map<String, String>.from(
-        targetUri.queryParameters,
-      )..['notificationTap'] = '${DateTime.now().microsecondsSinceEpoch}';
-      ref
-          .read(routerProvider)
-          .go(targetUri.replace(queryParameters: queryParameters).toString());
+      openTmuxAlertNotificationStack(
+        router: ref.read(routerProvider),
+        payload: payload,
+        notificationTapId: '${DateTime.now().microsecondsSinceEpoch}',
+      );
     });
     WidgetsBinding.instance.ensureVisualUpdate();
   }

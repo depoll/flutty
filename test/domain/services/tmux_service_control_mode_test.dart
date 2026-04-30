@@ -87,7 +87,8 @@ void main() {
           '#{pane_current_command}$sep#{pane_current_path}$sep'
           '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
           '#{pane_start_command}$sep'
-          "#{@flutty_agent_tool}'",
+          '#{@flutty_agent_tool}$sep'
+          "#{window_id}'",
         );
       },
     );
@@ -201,6 +202,7 @@ void main() {
           '100',
           'bash',
           '',
+          '@4',
         ].join(sep);
         final execSession = _buildOpenExecSession(
           stdout: '$windowLine\n${_doneMarker()}',
@@ -224,6 +226,7 @@ void main() {
         expect(initial, hasLength(1));
         expect(cached, initial);
         expect(cached.single.name, 'shell');
+        expect(cached.single.id, '@4');
         verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
       },
     );
@@ -245,6 +248,7 @@ void main() {
         '1712930000',
         'sleep 30',
         'gemini',
+        '@12',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '${r'%subscription-changed flutty-1-42 $1 @1 1 %1 : '}$snapshotValue',
@@ -259,6 +263,7 @@ void main() {
       expect(snapshot.window.paneTitle, 'custom-title');
       expect(snapshot.window.paneStartCommand, 'sleep 30');
       expect(snapshot.window.agentTool, AgentLaunchTool.geminiCli);
+      expect(snapshot.window.id, '@12');
     });
 
     test('normalizes the wrapped first control-mode line', () {
@@ -273,6 +278,7 @@ void main() {
         '1712930000',
         'sleep 30',
         '',
+        '@3',
       ].join(sep);
       final event = parseTmuxWindowChangeEventFromControlLine(
         '\u001bP1000p'
@@ -284,6 +290,7 @@ void main() {
       expect(event, isA<TmuxWindowSnapshotEvent>());
       final snapshot = event! as TmuxWindowSnapshotEvent;
       expect(snapshot.window.displayTitle, 'wrapped-title');
+      expect(snapshot.window.id, '@3');
     });
 
     test('returns null for other subscriptions', () {
@@ -785,6 +792,26 @@ void main() {
         ).called(1);
       },
     );
+
+    test('selectWindow targets stable window IDs when provided', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client);
+      const service = TmuxService();
+      final execSession = _buildOpenExecSession(stdout: _doneMarker());
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSession);
+
+      await service.selectWindow(session, 'main', 2, windowId: '@12');
+
+      verify(
+        () => client.execute(
+          any(that: contains("tmux -u select-window -t '@12'")),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+    });
 
     test(
       'killWindow waits for the done marker so failures can surface',
