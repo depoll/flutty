@@ -16,7 +16,6 @@ import 'package:go_router/go_router.dart';
 import 'package:pasteboard/pasteboard.dart';
 import 'package:path/path.dart' as path;
 import 'package:url_launcher/url_launcher.dart';
-import 'package:wakelock_plus/wakelock_plus.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 import '../../app/routes.dart';
@@ -43,6 +42,7 @@ import '../../domain/services/ssh_exec_queue.dart';
 import '../../domain/services/ssh_service.dart';
 import '../../domain/services/terminal_hyperlink_tracker.dart';
 import '../../domain/services/terminal_theme_service.dart';
+import '../../domain/services/terminal_wake_lock_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
@@ -3297,6 +3297,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   late final ProviderSubscription<bool> _terminalWakeLockSubscription;
+  late final TerminalWakeLockService _terminalWakeLockService;
+  late final int _terminalWakeLockOwnerId;
   Timer? _localClipboardSyncTimer;
   Timer? _remoteClipboardSyncTimer;
   Timer? _promptOutputImeResetTimer;
@@ -3311,9 +3313,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   DateTime? _recentLocalClipboardAt;
   bool _isTerminalSizeRefreshQueued = false;
   bool _terminalWakeLockSetting = false;
-  bool _terminalWakeLockTarget = false;
-  bool _isTerminalWakeLockHeld = false;
-  Future<void> _terminalWakeLockWriteChain = Future<void>.value();
 
   // Theme state
   Host? _host;
@@ -3488,6 +3487,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
       ),
     );
+    _terminalWakeLockService = ref.read(terminalWakeLockServiceProvider);
+    _terminalWakeLockOwnerId = _terminalWakeLockService.createOwner();
     _terminalWakeLockSetting = ref.read(terminalWakeLockNotifierProvider);
     _terminalWakeLockSubscription = ref.listenManual<bool>(
       terminalWakeLockNotifierProvider,
@@ -4314,51 +4315,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _error == null &&
         (connectionState ?? _readCurrentConnectionState()) ==
             SshConnectionState.connected;
-    unawaited(_setTerminalWakeLockHeld(held: shouldHold));
-  }
-
-  Future<void> _setTerminalWakeLockHeld({required bool held}) async {
-    if (_terminalWakeLockTarget == held && _isTerminalWakeLockHeld == held) {
-      return;
-    }
-    _terminalWakeLockTarget = held;
-    final nextWrite = _terminalWakeLockWriteChain.then((_) async {
-      final target = _terminalWakeLockTarget;
-      if (_isTerminalWakeLockHeld == target) {
-        return;
-      }
-
-      try {
-        await WakelockPlus.toggle(enable: target);
-        _isTerminalWakeLockHeld = target;
-      } on MissingPluginException catch (error, stackTrace) {
-        _reportTerminalWakeLockError(error, stackTrace, held: target);
-      } on PlatformException catch (error, stackTrace) {
-        _reportTerminalWakeLockError(error, stackTrace, held: target);
-      }
-    });
-    _terminalWakeLockWriteChain = nextWrite;
-    await nextWrite;
-  }
-
-  void _reportTerminalWakeLockError(
-    Object error,
-    StackTrace stackTrace, {
-    required bool held,
-  }) {
-    DiagnosticsLogService.instance.error(
-      'terminal',
-      'wake_lock_failed',
-      fields: {'enabled': held, 'errorType': error.runtimeType},
-    );
-    FlutterError.reportError(
-      FlutterErrorDetails(
-        exception: error,
-        stack: stackTrace,
-        library: 'terminal',
-        context: ErrorDescription(
-          'while ${held ? 'enabling' : 'disabling'} the terminal wake lock',
-        ),
+    unawaited(
+      _terminalWakeLockService.setOwnerActive(
+        _terminalWakeLockOwnerId,
+        active: shouldHold,
       ),
     );
   }
@@ -5711,7 +5671,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
     _terminalWakeLockSubscription.close();
-    unawaited(_setTerminalWakeLockHeld(held: false));
+    unawaited(_terminalWakeLockService.releaseOwner(_terminalWakeLockOwnerId));
     _stopSharedClipboardSync();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
