@@ -1,0 +1,246 @@
+name: PR Preview Internal App Sharing
+
+on:
+  workflow_run:
+    workflows: [PR Preview]
+    types: [completed]
+
+permissions:
+  actions: read
+  contents: read
+  issues: write
+  pull-requests: read
+
+jobs:
+  upload-android:
+    name: Upload Android Internal App Sharing
+    if: github.event.workflow_run.event == 'pull_request' && github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Resolve preview artifacts
+        id: preview
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflowRun = context.payload.workflow_run;
+            const pullRequestSummary = workflowRun.pull_requests?.[0];
+
+            if (!pullRequestSummary) {
+              core.notice(`Workflow run ${workflowRun.id} is not associated with a pull request.`);
+              core.setOutput('should-upload', 'false');
+              return;
+            }
+
+            const {data: pullRequest} = await github.rest.pulls.get({
+              owner,
+              repo,
+              pull_number: pullRequestSummary.number,
+            });
+
+            if (pullRequest.head.repo?.full_name !== `${owner}/${repo}`) {
+              core.notice(
+                `Skipping Internal App Sharing upload for fork PR #${pullRequest.number}.`,
+              );
+              core.setOutput('should-upload', 'false');
+              return;
+            }
+
+            if (pullRequest.head.sha !== workflowRun.head_sha) {
+              core.notice(
+                `Skipping stale workflow run ${workflowRun.id}; PR #${pullRequest.number} now points at ${pullRequest.head.sha}.`,
+              );
+              core.setOutput('should-upload', 'false');
+              return;
+            }
+
+            const artifacts = await github.paginate(github.rest.actions.listWorkflowRunArtifacts, {
+              owner,
+              repo,
+              run_id: workflowRun.id,
+              per_page: 100,
+            });
+            const aabArtifact = artifacts.find((artifact) =>
+              !artifact.expired && artifact.name.startsWith('android-unsigned-private-'),
+            );
+            const apkArtifact = artifacts.find((artifact) =>
+              !artifact.expired && artifact.name.startsWith('android-apk-private-'),
+            );
+
+            if (!aabArtifact) {
+              core.setFailed(
+                `No reusable Android AAB artifact was found on workflow run ${workflowRun.id}.`,
+              );
+              return;
+            }
+
+            core.setOutput('should-upload', 'true');
+            core.setOutput('pull-number', String(pullRequest.number));
+            core.setOutput('aab-artifact-name', aabArtifact.name);
+            core.setOutput('apk-artifact-id', apkArtifact ? String(apkArtifact.id) : '');
+            core.setOutput('preview-run-id', String(workflowRun.id));
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6
+        if: steps.preview.outputs.should-upload == 'true'
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.repository.default_branch }}
+
+      - uses: actions/setup-java@be666c2fcd27ec809703dec50e508c2fdc7f6654 # v5
+        if: steps.preview.outputs.should-upload == 'true'
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - uses: ruby/setup-ruby@c4e5b1316158f92e3d49443a9d58b31d25ac0f8f # v1.306.0
+        if: steps.preview.outputs.should-upload == 'true'
+        with:
+          ruby-version: '3.3'
+          bundler-cache: true
+
+      - name: Download preview AAB artifact
+        if: steps.preview.outputs.should-upload == 'true'
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          github-token: ${{ github.token }}
+          run-id: ${{ steps.preview.outputs.preview-run-id }}
+          name: ${{ steps.preview.outputs.aab-artifact-name }}
+          path: preview-aab
+
+      - name: Sign preview AAB for Internal App Sharing
+        id: signed-aab
+        if: steps.preview.outputs.should-upload == 'true'
+        run: |
+          set -euo pipefail
+
+          AAB_PATH="$(find preview-aab -maxdepth 1 -name '*.aab' -print -quit)"
+          if [ -z "$AAB_PATH" ]; then
+            echo "::error title=Missing preview AAB::The downloaded preview artifact did not contain an AAB."
+            exit 1
+          fi
+
+          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+          if [ ! -f "$DEBUG_KEYSTORE" ]; then
+            mkdir -p "$HOME/.android"
+            keytool -genkeypair \
+              -keystore "$DEBUG_KEYSTORE" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          SIGNED_AAB_PATH="$RUNNER_TEMP/$(basename "$AAB_PATH" .aab)-ias-signed.aab"
+          jarsigner \
+            -sigalg SHA256withRSA \
+            -digestalg SHA-256 \
+            -keystore "$DEBUG_KEYSTORE" \
+            -storepass android \
+            -keypass android \
+            -signedjar "$SIGNED_AAB_PATH" \
+            "$AAB_PATH" \
+            androiddebugkey
+          jarsigner -verify "$SIGNED_AAB_PATH"
+
+          echo "path=$SIGNED_AAB_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Upload Android Internal App Sharing artifact
+        id: upload-internal-app-sharing
+        if: steps.preview.outputs.should-upload == 'true'
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+          INTERNAL_APP_SHARING_URL_FILE: ${{ runner.temp }}/android-internal-app-sharing-url.txt
+          BUNDLE_GEMFILE: ${{ github.workspace }}/Gemfile
+        run: |
+          set -euo pipefail
+
+          if [ -z "$PLAY_STORE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error title=Missing Play Store service account::PLAY_STORE_SERVICE_ACCOUNT_JSON is required for Android Play uploads."
+            exit 1
+          fi
+
+          cd android
+          bundle exec fastlane internal_app_sharing \
+            package_name:xyz.depollsoft.monkeyssh.private \
+            aab_path:"${{ steps.signed-aab.outputs.path }}"
+
+          if [ ! -f "$INTERNAL_APP_SHARING_URL_FILE" ]; then
+            echo "::error title=Missing Internal App Sharing URL file::Fastlane completed without creating the Internal App Sharing URL file."
+            exit 1
+          fi
+
+          INTERNAL_APP_SHARING_URL="$(tr -d '\r\n' < "$INTERNAL_APP_SHARING_URL_FILE")"
+          if [ -z "$INTERNAL_APP_SHARING_URL" ]; then
+            echo "::error title=Missing Internal App Sharing URL::Fastlane completed without writing an Internal App Sharing URL."
+            exit 1
+          fi
+
+          echo "url=$INTERNAL_APP_SHARING_URL" >> "$GITHUB_OUTPUT"
+
+      - name: Add Internal App Sharing link to PR comment
+        if: steps.preview.outputs.should-upload == 'true' && steps.upload-internal-app-sharing.outputs.url != ''
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INTERNAL_APP_SHARING_URL: ${{ steps.upload-internal-app-sharing.outputs.url }}
+          PREVIEW_RUN_ID: ${{ steps.preview.outputs.preview-run-id }}
+          PULL_NUMBER: ${{ steps.preview.outputs.pull-number }}
+          APK_ARTIFACT_ID: ${{ steps.preview.outputs.apk-artifact-id }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const pullNumber = Number(process.env.PULL_NUMBER);
+            const previewRunId = process.env.PREVIEW_RUN_ID;
+            const internalAppSharingUrl = process.env.INTERNAL_APP_SHARING_URL;
+            const apkArtifactId = process.env.APK_ARTIFACT_ID;
+            const comments = await github.paginate(github.rest.issues.listComments, {
+              owner,
+              repo,
+              issue_number: pullNumber,
+              per_page: 100,
+            });
+            const stickyMarker = '<!-- Sticky Pull Request Commentpreview-build -->';
+            const runMarker = `<!-- preview-build-run-id:${previewRunId} -->`;
+            const targets = comments.filter((comment) =>
+              comment.body?.includes(stickyMarker) && comment.body.includes(runMarker),
+            );
+
+            if (targets.length === 0) {
+              core.warning(
+                `No preview build comment for workflow run ${previewRunId} was found on PR #${pullNumber}.`,
+              );
+              return;
+            }
+
+            const links = [
+              `[Install via Internal App Sharing](${internalAppSharingUrl})`,
+            ];
+            if (apkArtifactId) {
+              links.push(
+                `[Download APK artifact](https://github.com/${owner}/${repo}/actions/runs/${previewRunId}/artifacts/${apkArtifactId})`,
+              );
+            }
+
+            const androidStatusRow = '| **Android Status** | ✅ Built |';
+            const androidInstallRow = `| 🤖 **Android** | ${links.join('<br>')} |`;
+
+            for (const comment of targets) {
+              let body = comment.body;
+              body = body.replace(/^\| \*\*Android Status\*\* \|.*\|$/m, androidStatusRow);
+              body = body.replace(/^\| 🤖 \*\*Android\*\* \|.*\|$/m, androidInstallRow);
+
+              if (body === comment.body) {
+                continue;
+              }
+
+              await github.rest.issues.updateComment({
+                owner,
+                repo,
+                comment_id: comment.id,
+                body,
+              });
+            }
