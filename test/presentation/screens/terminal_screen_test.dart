@@ -176,6 +176,85 @@ void main() {
 
       expect(didPaste, isTrue);
     });
+
+    test('runs terminal selection menu action before hiding toolbar', () {
+      String? selectedText = 'alpha';
+      String? copiedText;
+
+      final onPressed = buildTerminalSelectionContextMenuAction(
+        action: () => copiedText = selectedText,
+        hideToolbar: () => selectedText = null,
+      );
+
+      onPressed();
+
+      expect(copiedText, 'alpha');
+      expect(selectedText, isNull);
+    });
+
+    test('hides terminal selection toolbar when action throws', () {
+      var didHideToolbar = false;
+
+      final onPressed = buildTerminalSelectionContextMenuAction(
+        action: () => throw StateError('copy failed'),
+        hideToolbar: () => didHideToolbar = true,
+      );
+
+      expect(onPressed, throwsStateError);
+      expect(didHideToolbar, isTrue);
+    });
+
+    test('does not apply empty remote clipboard text locally', () {
+      expect(
+        shouldApplyRemoteClipboardTextToLocal(
+          remoteText: '',
+          lastObservedRemoteText: null,
+          lastObservedLocalText: 'alpha',
+          lastAppliedRemoteText: null,
+          recentLocalClipboardText: null,
+          recentLocalClipboardAt: null,
+          now: DateTime(2026),
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not overwrite a recent local clipboard write', () {
+      final now = DateTime(2026);
+
+      expect(
+        shouldApplyRemoteClipboardTextToLocal(
+          remoteText: 'stale remote',
+          lastObservedRemoteText: 'older remote',
+          lastObservedLocalText: 'older local',
+          lastAppliedRemoteText: null,
+          recentLocalClipboardText: 'fresh local',
+          recentLocalClipboardAt: now.subtract(const Duration(seconds: 1)),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'applies changed non-empty remote clipboard after local protection',
+      () {
+        final now = DateTime(2026);
+
+        expect(
+          shouldApplyRemoteClipboardTextToLocal(
+            remoteText: 'fresh remote',
+            lastObservedRemoteText: 'older remote',
+            lastObservedLocalText: 'older local',
+            lastAppliedRemoteText: null,
+            recentLocalClipboardText: 'local',
+            recentLocalClipboardAt: now.subtract(const Duration(seconds: 10)),
+            now: now,
+          ),
+          isTrue,
+        );
+      },
+    );
   });
 
   group('MonkeyTerminalView system selection geometry', () {
