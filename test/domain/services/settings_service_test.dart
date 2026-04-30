@@ -266,6 +266,10 @@ void main() {
               .getBool(SettingKeys.terminalThemesApplyToApp),
           isFalse,
         );
+        expect(
+          await container.read(terminalThemesApplyToAppProvider.future),
+          isFalse,
+        );
       });
     });
 
@@ -392,6 +396,14 @@ void main() {
 
         expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
         expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          TerminalThemes.defaultLightThemeId,
+        );
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeDark),
+          TerminalThemes.defaultDarkThemeId,
+        );
       });
 
       test('keeps saved custom theme ids', () async {

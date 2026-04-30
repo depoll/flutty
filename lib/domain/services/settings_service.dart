@@ -304,6 +304,7 @@ class TerminalThemesApplyToAppNotifier extends Notifier<bool> {
       value: enabled,
     );
     state = enabled;
+    ref.invalidate(terminalThemesApplyToAppProvider);
   }
 }
 
