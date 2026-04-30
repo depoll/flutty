@@ -203,6 +203,58 @@ void main() {
       expect(onPressed, throwsStateError);
       expect(didHideToolbar, isTrue);
     });
+
+    test('does not apply empty remote clipboard text locally', () {
+      expect(
+        shouldApplyRemoteClipboardTextToLocal(
+          remoteText: '',
+          lastObservedRemoteText: null,
+          lastObservedLocalText: 'alpha',
+          lastAppliedRemoteText: null,
+          recentLocalClipboardText: null,
+          recentLocalClipboardAt: null,
+          now: DateTime(2026),
+        ),
+        isFalse,
+      );
+    });
+
+    test('does not overwrite a recent local clipboard write', () {
+      final now = DateTime(2026);
+
+      expect(
+        shouldApplyRemoteClipboardTextToLocal(
+          remoteText: 'stale remote',
+          lastObservedRemoteText: 'older remote',
+          lastObservedLocalText: 'older local',
+          lastAppliedRemoteText: null,
+          recentLocalClipboardText: 'fresh local',
+          recentLocalClipboardAt: now.subtract(const Duration(seconds: 1)),
+          now: now,
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'applies changed non-empty remote clipboard after local protection',
+      () {
+        final now = DateTime(2026);
+
+        expect(
+          shouldApplyRemoteClipboardTextToLocal(
+            remoteText: 'fresh remote',
+            lastObservedRemoteText: 'older remote',
+            lastObservedLocalText: 'older local',
+            lastAppliedRemoteText: null,
+            recentLocalClipboardText: 'local',
+            recentLocalClipboardAt: now.subtract(const Duration(seconds: 10)),
+            now: now,
+          ),
+          isTrue,
+        );
+      },
+    );
   });
 
   group('MonkeyTerminalView system selection geometry', () {
