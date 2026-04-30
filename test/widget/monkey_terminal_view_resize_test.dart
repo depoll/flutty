@@ -360,4 +360,40 @@ void main() {
       greaterThanOrEqualTo(4.5),
     );
   });
+
+  test('faint terminal text stays readable on every built-in theme', () {
+    for (final theme in monkey_themes.TerminalThemes.all) {
+      final faintForeground = resolveMonkeyTerminalFaintForegroundColor(
+        foreground: theme.foreground,
+        background: theme.background,
+      );
+
+      expect(
+        _contrastRatio(faintForeground, theme.background),
+        greaterThanOrEqualTo(4.5),
+        reason:
+            'Theme ${theme.name} should keep SGR 2 faint terminal text '
+            'readable on its background.',
+      );
+    }
+  });
+
+  test('faint terminal text remains dim when contrast allows it', () {
+    const slateTheme = monkey_themes.TerminalThemes.slate;
+    final defaultFaint = Color.alphaBlend(
+      slateTheme.foreground.withAlpha(128),
+      slateTheme.background,
+    );
+    final readableFaint = resolveMonkeyTerminalFaintForegroundColor(
+      foreground: slateTheme.foreground,
+      background: slateTheme.background,
+    );
+
+    expect(_contrastRatio(defaultFaint, slateTheme.background), lessThan(4.5));
+    expect(
+      _contrastRatio(readableFaint, slateTheme.background),
+      greaterThanOrEqualTo(4.5),
+    );
+    expect(readableFaint, isNot(slateTheme.foreground));
+  });
 }
