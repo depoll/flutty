@@ -65,6 +65,11 @@ on:
         type: boolean
         default: false
         description: 'Whether to build an unsigned Android release bundle artifact'
+      build-android-apk:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to derive and upload a universal Android APK artifact from the preview AAB when deploy-android-to == none'
       build-ios-unsigned-ipa:
         required: false
         type: boolean
@@ -337,10 +342,10 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
-      - name: Build debug APK
-        if: inputs.deploy-android-to == 'none'
+      - name: Build debug AAB for preview artifacts
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none' && !inputs.build-android-unsigned-aab
         run: |
-          flutter build apk \
+          flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
             --debug \
             --no-tree-shake-icons \
@@ -349,6 +354,81 @@ jobs:
             --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+
+      - name: Prepare AAB for preview install artifacts
+        id: preview-aab
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
+        run: |
+          set -euo pipefail
+
+          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+          if [ ! -f "$DEBUG_KEYSTORE" ]; then
+            mkdir -p "$HOME/.android"
+            keytool -genkeypair \
+              -keystore "$DEBUG_KEYSTORE" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          if [ "${{ inputs.build-android-unsigned-aab }}" = "true" ]; then
+            UNSIGNED_AAB_PATH="build/app/outputs/bundle/${{ inputs.flavor }}Release/app-${{ inputs.flavor }}-release.aab"
+            PREVIEW_AAB_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-release-preview-signed.aab"
+            jarsigner \
+              -sigalg SHA256withRSA \
+              -digestalg SHA-256 \
+              -keystore "$DEBUG_KEYSTORE" \
+              -storepass android \
+              -keypass android \
+              -signedjar "$PREVIEW_AAB_PATH" \
+              "$UNSIGNED_AAB_PATH" \
+              androiddebugkey
+            jarsigner -verify "$PREVIEW_AAB_PATH"
+          else
+            PREVIEW_AAB_PATH="$GITHUB_WORKSPACE/build/app/outputs/bundle/${{ inputs.flavor }}Debug/app-${{ inputs.flavor }}-debug.aab"
+          fi
+
+          echo "path=$PREVIEW_AAB_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Generate APK artifact from preview AAB
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
+        env:
+          BUNDLETOOL_VERSION: '1.18.3'
+        run: |
+          set -euo pipefail
+
+          BUNDLETOOL_JAR="$RUNNER_TEMP/bundletool.jar"
+          AAB_PATH="${{ steps.preview-aab.outputs.path }}"
+          APKS_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview.apks"
+          APK_DIR="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview-apks"
+          APK_PATH="build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-preview.apk"
+          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "$BUNDLETOOL_JAR" \
+            "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+
+          java -jar "$BUNDLETOOL_JAR" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$APKS_PATH" \
+            --mode=universal \
+            --ks="$DEBUG_KEYSTORE" \
+            --ks-pass=pass:android \
+            --ks-key-alias=androiddebugkey \
+            --key-pass=pass:android \
+            --overwrite
+
+          rm -rf "$APK_DIR"
+          mkdir -p "$APK_DIR" "$(dirname "$APK_PATH")"
+          unzip -q "$APKS_PATH" universal.apk -d "$APK_DIR"
+          mv "$APK_DIR/universal.apk" "$APK_PATH"
 
       - name: Download reusable AAB artifact
         if: inputs.android-reuse-aab-artifact-name != ''
@@ -410,11 +490,11 @@ jobs:
 
       - name: Upload APK artifact
         id: upload-apk
-        if: inputs.deploy-android-to == 'none'
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk
+          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-preview.apk
 
       - name: Fetch PR commits
         if: inputs.pr-number != ''
@@ -462,6 +542,16 @@ jobs:
           except Exception as e:
               print(f'Warning: failed to fetch PR commits: {e}', file=sys.stderr)
           SCRIPT
+
+      - name: Validate Play Store service account
+        if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
+        env:
+          PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
+        run: |
+          if [ -z "$PLAY_STORE_SERVICE_ACCOUNT_JSON" ]; then
+            echo "::error title=Missing Play Store service account::PLAY_STORE_SERVICE_ACCOUNT_JSON is required for Android Play uploads."
+            exit 1
+          fi
 
       - name: Setup Ruby for Play deployment
         if: inputs.deploy-android-to != 'none' && inputs.run-android-deploy
