@@ -13,6 +13,7 @@ class ThemePreviewCard extends StatelessWidget {
     required this.theme,
     required this.isSelected,
     required this.onTap,
+    this.trailingIcon,
     this.onLongPress,
     super.key,
   });
@@ -25,6 +26,9 @@ class ThemePreviewCard extends StatelessWidget {
 
   /// Called when the card is tapped.
   final VoidCallback onTap;
+
+  /// Optional trailing icon shown in the card footer.
+  final IconData? trailingIcon;
 
   /// Called when the card is long-pressed (for custom themes).
   final VoidCallback? onLongPress;
@@ -101,9 +105,9 @@ class ThemePreviewCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    if (theme.isCustom)
+                    if (trailingIcon != null || theme.isCustom)
                       Icon(
-                        Icons.edit,
+                        trailingIcon ?? Icons.download_done_outlined,
                         size: 12,
                         color: colorScheme.onSurfaceVariant,
                       ),

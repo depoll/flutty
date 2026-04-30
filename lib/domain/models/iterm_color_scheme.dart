@@ -56,4 +56,16 @@ class ItermColorSchemeMetadata {
       ...path.split('/'),
     ],
   );
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is ItermColorSchemeMetadata &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          name == other.name &&
+          path == other.path;
+
+  @override
+  int get hashCode => Object.hash(id, name, path);
 }

@@ -32,6 +32,8 @@ class ItermColorSchemeService {
   final http.Client _client;
   List<ItermColorSchemeMetadata>? _cachedSchemes;
   Future<List<ItermColorSchemeMetadata>>? _pendingSchemes;
+  final _cachedThemes = <String, TerminalThemeData>{};
+  final _pendingThemes = <String, Future<TerminalThemeData>>{};
 
   /// Lists all live `.itermcolors` schemes from the upstream repository.
   Future<List<ItermColorSchemeMetadata>> listSchemes({
@@ -141,6 +143,31 @@ class ItermColorSchemeService {
 
   /// Downloads and parses a live iTerm2 color scheme.
   Future<TerminalThemeData> loadTheme(ItermColorSchemeMetadata scheme) async {
+    final cachedTheme = _cachedThemes[scheme.path];
+    if (cachedTheme != null) {
+      return cachedTheme;
+    }
+
+    final pendingTheme = _pendingThemes[scheme.path];
+    if (pendingTheme != null) {
+      final theme = await pendingTheme;
+      return theme;
+    }
+
+    final pendingThemeLoad = _fetchTheme(scheme);
+    _pendingThemes[scheme.path] = pendingThemeLoad;
+    try {
+      final theme = await pendingThemeLoad;
+      _cachedThemes[scheme.path] = theme;
+      return theme;
+    } finally {
+      if (identical(_pendingThemes[scheme.path], pendingThemeLoad)) {
+        final _ = _pendingThemes.remove(scheme.path);
+      }
+    }
+  }
+
+  Future<TerminalThemeData> _fetchTheme(ItermColorSchemeMetadata scheme) async {
     final http.Response response;
     try {
       response = await _client.get(scheme.rawUri);
@@ -294,4 +321,11 @@ final itermColorSchemeSearchProvider = FutureProvider.autoDispose
     .family<List<ItermColorSchemeMetadata>, String>((ref, query) {
       final service = ref.watch(itermColorSchemeServiceProvider);
       return service.searchSchemes(query);
+    });
+
+/// Provider for a live iTerm2 scheme preview.
+final itermColorSchemeThemeProvider = FutureProvider.autoDispose
+    .family<TerminalThemeData, ItermColorSchemeMetadata>((ref, scheme) {
+      final service = ref.watch(itermColorSchemeServiceProvider);
+      return service.loadTheme(scheme);
     });

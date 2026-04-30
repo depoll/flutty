@@ -86,6 +86,36 @@ void main() {
       expect(theme.background, const Color(0xFF000000));
     });
 
+    test(
+      'loadTheme shares in-flight raw downloads and caches previews',
+      () async {
+        final scheme = ItermColorSchemeMetadata.fromPath(
+          'schemes/Test Dark.itermcolors',
+        );
+        var requestCount = 0;
+        final responseCompleter = Completer<http.Response>();
+        final service = ItermColorSchemeService(
+          client: MockClient((request) {
+            requestCount += 1;
+            return responseCompleter.future;
+          }),
+        );
+        addTearDown(service.dispose);
+
+        final first = service.loadTheme(scheme);
+        final second = service.loadTheme(scheme);
+        await Future<void>.delayed(Duration.zero);
+        responseCompleter.complete(http.Response(_themePlist(), 200));
+
+        final results = await Future.wait([first, second]);
+        final cached = await service.loadTheme(scheme);
+
+        expect(requestCount, 1);
+        expect(identical(results.first, results.last), isTrue);
+        expect(identical(results.first, cached), isTrue);
+      },
+    );
+
     test('listSchemes shares one cold in-flight GitHub request', () async {
       var requestCount = 0;
       final responseCompleter = Completer<http.Response>();

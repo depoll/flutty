@@ -32,10 +32,4 @@ abstract final class Routes {
 
   /// Upgrade route.
   static const upgrade = 'upgrade';
-
-  /// Theme editor route.
-  static const themeEditor = 'theme-editor';
-
-  /// Theme editor route for new theme.
-  static const themeEditorNew = 'theme-editor-new';
 }
