@@ -1,10 +1,13 @@
 // ignore_for_file: public_member_api_docs
 
+import 'dart:convert';
+
 import 'package:drift/native.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 
 void main() {
@@ -287,9 +290,126 @@ void main() {
       });
     });
 
-    // Note: NotifierProvider tests (themeModeNotifierProvider, fontSizeNotifierProvider,
-    // terminalThemeSettingsProvider, etc.) are skipped because they have async _init()
-    // methods that can race with test teardown and cause "database closed" errors.
+    group('terminalThemeSettingsProvider', () {
+      test('normalizes legacy default theme ids', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          'github-light',
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeDark,
+          'dracula',
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        await _waitForStoredTerminalThemeIds(
+          settings,
+          lightThemeId: TerminalThemes.defaultLightThemeId,
+          darkThemeId: TerminalThemes.defaultDarkThemeId,
+        );
+        final state = container.read(terminalThemeSettingsProvider);
+
+        expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
+        expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          TerminalThemes.defaultLightThemeId,
+        );
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeDark),
+          TerminalThemes.defaultDarkThemeId,
+        );
+      });
+
+      test('normalizes unknown saved theme ids', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          'missing-light-theme',
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeDark,
+          'missing-dark-theme',
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        await _waitForStoredTerminalThemeIds(
+          settings,
+          lightThemeId: TerminalThemes.defaultLightThemeId,
+          darkThemeId: TerminalThemes.defaultDarkThemeId,
+        );
+        final state = container.read(terminalThemeSettingsProvider);
+
+        expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
+        expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
+      });
+
+      test('keeps saved custom theme ids', () async {
+        final settings = container.read(settingsServiceProvider);
+        final customTheme = TerminalThemes.cleanWhite.copyWith(
+          id: 'custom-light-theme',
+          name: 'Custom Light Theme',
+          isCustom: true,
+        );
+        await settings.setString(
+          SettingKeys.customTerminalThemes,
+          jsonEncode([customTheme.toJson()]),
+        );
+        await settings.setString(
+          SettingKeys.defaultTerminalThemeLight,
+          customTheme.id,
+        );
+
+        container.read(terminalThemeSettingsProvider);
+        final state = await _waitForTerminalThemeSettings(
+          container,
+          (settings) => settings.lightThemeId == customTheme.id,
+        );
+
+        expect(state.lightThemeId, customTheme.id);
+        expect(
+          await settings.getString(SettingKeys.defaultTerminalThemeLight),
+          customTheme.id,
+        );
+      });
+    });
+
+    // Note: most NotifierProvider tests (themeModeNotifierProvider,
+    // fontSizeNotifierProvider, etc.) are skipped because they have async _init()
+    // methods that can race with test teardown and cause "database closed"
+    // errors.
     // The FutureProvider tests above provide coverage for the provider initialization.
   });
+}
+
+Future<TerminalThemeSettings> _waitForTerminalThemeSettings(
+  ProviderContainer container,
+  bool Function(TerminalThemeSettings settings) matches,
+) async {
+  for (var attempt = 0; attempt < 20; attempt += 1) {
+    final settings = container.read(terminalThemeSettingsProvider);
+    if (matches(settings)) {
+      return settings;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  return container.read(terminalThemeSettingsProvider);
+}
+
+Future<void> _waitForStoredTerminalThemeIds(
+  SettingsService settings, {
+  required String lightThemeId,
+  required String darkThemeId,
+}) async {
+  for (var attempt = 0; attempt < 20; attempt += 1) {
+    final light = await settings.getString(
+      SettingKeys.defaultTerminalThemeLight,
+    );
+    final dark = await settings.getString(SettingKeys.defaultTerminalThemeDark);
+    if (light == lightThemeId && dark == darkThemeId) {
+      return;
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
 }

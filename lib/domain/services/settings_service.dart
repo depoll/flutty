@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
+import '../models/terminal_theme.dart';
 import '../models/terminal_themes.dart';
 
 /// Keys for app settings.
@@ -574,6 +575,8 @@ class TerminalThemeSettings {
 
 /// Notifier for terminal theme settings.
 class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
+  static const _legacyDefaultTerminalThemeIds = {'github-light', 'dracula'};
+
   late SettingsService _settings;
   bool _disposed = false;
 
@@ -596,11 +599,82 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     final dark = await _settings.getString(
       SettingKeys.defaultTerminalThemeDark,
     );
+    final customThemeIds = await _getCustomTerminalThemeIds();
+    final lightThemeId = _normalizeThemeId(
+      light,
+      brightness: Brightness.light,
+      customThemeIds: customThemeIds,
+    );
+    final darkThemeId = _normalizeThemeId(
+      dark,
+      brightness: Brightness.dark,
+      customThemeIds: customThemeIds,
+    );
+    if (_disposed) return;
+    await _persistNormalizedThemeId(
+      key: SettingKeys.defaultTerminalThemeLight,
+      storedThemeId: light,
+      normalizedThemeId: lightThemeId,
+    );
+    await _persistNormalizedThemeId(
+      key: SettingKeys.defaultTerminalThemeDark,
+      storedThemeId: dark,
+      normalizedThemeId: darkThemeId,
+    );
     if (_disposed) return;
     state = TerminalThemeSettings(
-      lightThemeId: light ?? TerminalThemes.defaultLightThemeId,
-      darkThemeId: dark ?? TerminalThemes.defaultDarkThemeId,
+      lightThemeId: lightThemeId,
+      darkThemeId: darkThemeId,
     );
+  }
+
+  Future<Set<String>> _getCustomTerminalThemeIds() async {
+    final json = await _settings.getString(SettingKeys.customTerminalThemes);
+    if (json == null || json.isEmpty) {
+      return const {};
+    }
+
+    try {
+      final list = jsonDecode(json) as List<dynamic>;
+      return list
+          .map(
+            (item) =>
+                TerminalThemeData.fromJson(item as Map<String, dynamic>).id,
+          )
+          .toSet();
+    } on FormatException {
+      return const {};
+    }
+  }
+
+  String _normalizeThemeId(
+    String? themeId, {
+    required Brightness brightness,
+    required Set<String> customThemeIds,
+  }) {
+    final defaultThemeId = TerminalThemes.defaultThemeIdForBrightness(
+      brightness,
+    );
+    if (themeId == null ||
+        themeId.isEmpty ||
+        _legacyDefaultTerminalThemeIds.contains(themeId)) {
+      return defaultThemeId;
+    }
+    if (TerminalThemes.getById(themeId) != null ||
+        customThemeIds.contains(themeId)) {
+      return themeId;
+    }
+    return defaultThemeId;
+  }
+
+  Future<void> _persistNormalizedThemeId({
+    required String key,
+    required String? storedThemeId,
+    required String normalizedThemeId,
+  }) async {
+    if (storedThemeId != null && storedThemeId != normalizedThemeId) {
+      await _settings.setString(key, normalizedThemeId);
+    }
   }
 
   /// Set the light mode theme.
