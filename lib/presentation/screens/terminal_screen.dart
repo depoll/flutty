@@ -3628,6 +3628,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     final terminalViewState = _terminalViewKey.currentState;
     if (_isTmuxActive) {
+      terminalViewState?.refreshThemeColorReports(theme);
       terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
       unawaited(
         Future<void>.delayed(const Duration(milliseconds: 150), () {
@@ -3637,13 +3638,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               session.terminalTheme?.id != theme.id) {
             return;
           }
-          _terminalViewKey.currentState?.refreshFocusReport();
+          _terminalViewKey.currentState?.refreshFocusReport(
+            forceTransition: true,
+          );
         }),
       );
       return;
     }
 
-    terminalViewState?.refreshFocusReport();
+    terminalViewState?.refreshFocusReport(forceTransition: true);
   }
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {

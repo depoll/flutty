@@ -310,6 +310,13 @@ void main() {
 
     expect(output, ['\x1b[I']);
 
+    output.clear();
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport(forceTransition: true);
+
+    expect(output, ['\x1b[O\x1b[I']);
+
     terminal.write('\x1b[?1004l');
     output.clear();
     tester
@@ -338,6 +345,27 @@ void main() {
     }
 
     expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
+  });
+
+  testWidgets('refreshThemeColorReports sends foreground and background', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()..onOutput = output.add;
+
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
+
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshThemeColorReports(
+          monkey_themes.TerminalThemes.defaultLightTheme,
+        );
+
+    expect(output, [
+      '\x1b]10;rgb:1f1f/2323/2828\x1b\\\x1b]11;rgb:ffff/ffff/ffff\x1b\\',
+    ]);
   });
 
   test('grayscale palette backgrounds follow the active theme surface', () {
