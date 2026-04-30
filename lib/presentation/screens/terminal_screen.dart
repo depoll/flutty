@@ -3902,7 +3902,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _loadTheme() async {
     if (!mounted) return;
 
-    final brightness = MediaQuery.of(context).platformBrightness;
+    final brightness = Theme.of(context).brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??

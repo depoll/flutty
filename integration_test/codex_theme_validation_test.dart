@@ -20,6 +20,7 @@ import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/services/host_key_prompt_handler_provider.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/monetization_service.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
 import 'package:xterm/src/ui/palette_builder.dart';
@@ -80,6 +81,23 @@ void main() {
     final encryptionService = SecretEncryptionService.forTesting();
     final hostRepository = HostRepository(db, encryptionService);
     final keyRepository = KeyRepository(db, encryptionService);
+
+    await db
+        .into(db.settings)
+        .insertOnConflictUpdate(
+          SettingsCompanion.insert(
+            key: SettingKeys.defaultTerminalThemeLight,
+            value: 'clean-white',
+          ),
+        );
+    await db
+        .into(db.settings)
+        .insertOnConflictUpdate(
+          SettingsCompanion.insert(
+            key: SettingKeys.defaultTerminalThemeDark,
+            value: 'ocean-dark',
+          ),
+        );
 
     final keyId = await keyRepository.insert(
       SshKeysCompanion.insert(
@@ -157,6 +175,7 @@ void main() {
       () => _terminalFromView(tester).reportFocusMode,
       description: 'Codex/tmux did not request terminal focus reports',
     );
+    await binding.takeScreenshot('codex-clean-white-before-theme-change');
 
     final tokenSuffix = DateTime.now().millisecondsSinceEpoch
         .remainder(46656)
