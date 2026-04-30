@@ -727,6 +727,43 @@ class TmuxService {
     }
   }
 
+  /// Asks every foreground client attached to [sessionName] to redraw.
+  Future<void> refreshForegroundClients(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.action',
+      'refresh_clients_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    try {
+      await _exec(
+        session,
+        buildTmuxRefreshForegroundClientsCommand(
+          sessionName,
+          extraFlags: extraFlags,
+        ),
+        priority: SshExecPriority.low,
+      );
+      DiagnosticsLogService.instance.info(
+        'tmux.action',
+        'refresh_clients_complete',
+        fields: {'connectionId': session.connectionId},
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.action',
+        'refresh_clients_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+  }
+
   /// Watches tmux control-mode notifications that indicate window state
   /// has changed for [sessionName].
   Stream<TmuxWindowChangeEvent> watchWindowChanges(
@@ -1429,6 +1466,33 @@ String? parseTmuxCurrentPanePath(String output) {
     }
   }
   return null;
+}
+
+/// Builds a command that redraws all non-control tmux clients for a session.
+@visibleForTesting
+String buildTmuxRefreshForegroundClientsCommand(
+  String sessionName, {
+  String? extraFlags,
+}) {
+  const sep = r'${SEP}';
+  final listClients = TmuxService._tmuxCommand(
+    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final refreshClient = TmuxService._tmuxCommand(
+    r'refresh-client -t "$client"',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return r'SEP=$(printf "\037"); '
+      '$listClients"#{client_control_mode}$sep#{client_name}" '
+      '2>/dev/null | '
+      r'while IFS="$SEP" read -r control client; do '
+      r'[ "$control" = 0 ] || continue; '
+      r'[ -n "$client" ] || continue; '
+      '$refreshClient 2>/dev/null || true; '
+      'done';
 }
 
 /// Returns whether `tmux list-clients` output includes a non-control client.

@@ -3648,8 +3648,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     final terminalViewState = _terminalViewKey.currentState;
     if (_isTmuxActive) {
-      terminalViewState?.refreshThemeColorReports(theme);
       terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+      terminalViewState?.refreshThemeColorReports(theme);
+      _refreshTmuxClientAfterTerminalThemeChange(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+      );
       unawaited(
         Future<void>.delayed(const Duration(milliseconds: 150), () {
           if (!mounted ||
@@ -3667,6 +3672,35 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     terminalViewState?.refreshFocusReport(forceTransition: true);
+  }
+
+  void _refreshTmuxClientAfterTerminalThemeChange({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+  }) {
+    final tmuxSessionName = _tmuxSessionName;
+    if (tmuxSessionName == null) {
+      return;
+    }
+
+    unawaited(
+      Future<void>.delayed(const Duration(milliseconds: 75), () async {
+        if (!mounted ||
+            refreshGeneration != _terminalThemeRefreshGeneration ||
+            session.terminal != _terminal ||
+            session.terminalTheme?.id != theme.id) {
+          return;
+        }
+        await ref
+            .read(tmuxServiceProvider)
+            .refreshForegroundClients(
+              session,
+              tmuxSessionName,
+              extraFlags: _host?.tmuxExtraFlags,
+            );
+      }),
+    );
   }
 
   void _syncAppThemeOverrideFromSession(SshSession session) {

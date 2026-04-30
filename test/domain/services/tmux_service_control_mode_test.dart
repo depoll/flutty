@@ -92,6 +92,36 @@ void main() {
       },
     );
 
+    test('refresh command redraws non-control clients for a session', () {
+      expect(
+        buildTmuxRefreshForegroundClientsCommand("dev's session"),
+        r'SEP=$(printf "\037"); '
+        'tmux -u list-clients -t '
+        "'dev'\"'\"'s session' -F "
+        r'"#{client_control_mode}${SEP}#{client_name}" '
+        '2>/dev/null | '
+        r'while IFS="$SEP" read -r control client; do '
+        r'[ "$control" = 0 ] || continue; '
+        r'[ -n "$client" ] || continue; '
+        r'tmux -u refresh-client -t "$client" 2>/dev/null || true; '
+        'done',
+      );
+    });
+
+    test('refresh command reuses tmux client flags', () {
+      expect(
+        buildTmuxRefreshForegroundClientsCommand(
+          'main',
+          extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
+        ),
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client"',
+        ),
+      );
+    });
+
     test('detectInstalledAgentTools caches empty results', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 20);

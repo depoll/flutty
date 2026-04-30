@@ -107,6 +107,31 @@ List<Color> _buildMonkeyTerminalPalette(TerminalTheme theme) =>
       growable: false,
     );
 
+bool _terminalThemesEqual(TerminalTheme a, TerminalTheme b) =>
+    a.cursor == b.cursor &&
+    a.selection == b.selection &&
+    a.foreground == b.foreground &&
+    a.background == b.background &&
+    a.black == b.black &&
+    a.red == b.red &&
+    a.green == b.green &&
+    a.yellow == b.yellow &&
+    a.blue == b.blue &&
+    a.magenta == b.magenta &&
+    a.cyan == b.cyan &&
+    a.white == b.white &&
+    a.brightBlack == b.brightBlack &&
+    a.brightRed == b.brightRed &&
+    a.brightGreen == b.brightGreen &&
+    a.brightYellow == b.brightYellow &&
+    a.brightBlue == b.brightBlue &&
+    a.brightMagenta == b.brightMagenta &&
+    a.brightCyan == b.brightCyan &&
+    a.brightWhite == b.brightWhite &&
+    a.searchHitBackground == b.searchHitBackground &&
+    a.searchHitBackgroundCurrent == b.searchHitBackgroundCurrent &&
+    a.searchHitForeground == b.searchHitForeground;
+
 /// Resolves SGR 2 faint text while preserving readable contrast.
 ///
 /// xterm paints faint text at 50% opacity, which drops many dark-theme
@@ -1261,7 +1286,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   @override
   set theme(TerminalTheme value) {
-    if (value == theme) {
+    if (_terminalThemesEqual(value, theme)) {
       return;
     }
     super.theme = value;
@@ -1497,7 +1522,7 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   set theme(TerminalTheme value) {
-    if (value == _painter.theme) return;
+    if (_terminalThemesEqual(value, _painter.theme)) return;
     _painter.theme = value;
     markNeedsPaint();
   }
