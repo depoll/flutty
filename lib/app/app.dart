@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../data/database/database.dart';
 import '../data/repositories/host_repository.dart';
+import '../domain/models/terminal_theme.dart';
 import '../domain/models/terminal_themes.dart';
 import '../domain/services/auth_service.dart';
 import '../domain/services/background_ssh_service.dart';
@@ -37,26 +38,23 @@ class FluttyApp extends ConsumerWidget {
 
     if (terminalThemesApplyToApp) {
       final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+      final terminalAppThemeOverride = ref.watch(
+        terminalAppThemeOverrideProvider,
+      );
       final terminalThemes =
           ref.watch(allTerminalThemesProvider).asData?.value ??
           TerminalThemes.all;
-      final lightTerminalTheme = TerminalThemes.resolveById(
+      lightTheme = buildTerminalAppTheme(
         brightness: Brightness.light,
-        themeId: terminalThemeSettings.lightThemeId,
-        additionalThemes: terminalThemes,
+        terminalThemeSettings: terminalThemeSettings,
+        terminalThemes: terminalThemes,
+        terminalAppThemeOverride: terminalAppThemeOverride,
       );
-      final darkTerminalTheme = TerminalThemes.resolveById(
+      darkTheme = buildTerminalAppTheme(
         brightness: Brightness.dark,
-        themeId: terminalThemeSettings.darkThemeId,
-        additionalThemes: terminalThemes,
-      );
-      lightTheme = FluttyTheme.fromTerminalTheme(
-        lightTerminalTheme,
-        brightness: Brightness.light,
-      );
-      darkTheme = FluttyTheme.fromTerminalTheme(
-        darkTerminalTheme,
-        brightness: Brightness.dark,
+        terminalThemeSettings: terminalThemeSettings,
+        terminalThemes: terminalThemes,
+        terminalAppThemeOverride: terminalAppThemeOverride,
       );
     } else {
       lightTheme = FluttyTheme.light;
@@ -75,6 +73,30 @@ class FluttyApp extends ConsumerWidget {
       ),
     );
   }
+}
+
+/// Builds an app [ThemeData] from global settings plus active terminal overrides.
+@visibleForTesting
+ThemeData buildTerminalAppTheme({
+  required Brightness brightness,
+  required TerminalThemeSettings terminalThemeSettings,
+  required List<TerminalThemeData> terminalThemes,
+  TerminalAppThemeOverride? terminalAppThemeOverride,
+}) {
+  final themeId = switch (brightness) {
+    Brightness.light =>
+      terminalAppThemeOverride?.lightThemeId ??
+          terminalThemeSettings.lightThemeId,
+    Brightness.dark =>
+      terminalAppThemeOverride?.darkThemeId ??
+          terminalThemeSettings.darkThemeId,
+  };
+  final terminalTheme = TerminalThemes.resolveById(
+    brightness: brightness,
+    themeId: themeId,
+    additionalThemes: terminalThemes,
+  );
+  return FluttyTheme.fromTerminalTheme(terminalTheme, brightness: brightness);
 }
 
 class _BackgroundLifecycleBridge extends ConsumerStatefulWidget {

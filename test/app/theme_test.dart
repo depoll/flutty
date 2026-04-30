@@ -1,8 +1,11 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:monkeyssh/app/app.dart';
 import 'package:monkeyssh/app/theme.dart';
 import 'package:monkeyssh/domain/models/terminal_theme.dart';
 import 'package:monkeyssh/domain/models/terminal_themes.dart';
+import 'package:monkeyssh/domain/services/settings_service.dart';
+import 'package:monkeyssh/domain/services/terminal_theme_service.dart';
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
@@ -46,6 +49,48 @@ void main() {
       expect(theme.brightness, Brightness.light);
       expect(theme.colorScheme.brightness, Brightness.light);
       expect(theme.scaffoldBackgroundColor, terminalTheme.background);
+    });
+
+    test('builds app theme from active terminal connection override', () {
+      const terminalThemeSettings = TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      );
+      const overrideTheme = TerminalThemes.cityLights;
+
+      final theme = buildTerminalAppTheme(
+        brightness: Brightness.dark,
+        terminalThemeSettings: terminalThemeSettings,
+        terminalThemes: TerminalThemes.all,
+        terminalAppThemeOverride: TerminalAppThemeOverride(
+          owner: const Object(),
+          darkThemeId: overrideTheme.id,
+        ),
+      );
+
+      expect(theme.scaffoldBackgroundColor, overrideTheme.background);
+      expect(theme.colorScheme.onSurface, overrideTheme.foreground);
+    });
+
+    test('falls back to global theme when override omits brightness', () {
+      const terminalThemeSettings = TerminalThemeSettings(
+        lightThemeId: TerminalThemes.defaultLightThemeId,
+        darkThemeId: TerminalThemes.defaultDarkThemeId,
+      );
+      const globalTheme = TerminalThemes.midnightPurple;
+
+      final theme = buildTerminalAppTheme(
+        brightness: Brightness.dark,
+        terminalThemeSettings: terminalThemeSettings,
+        terminalThemes: TerminalThemes.all,
+        terminalAppThemeOverride: TerminalAppThemeOverride(
+          owner: const Object(),
+          lightThemeId: TerminalThemes.cleanWhite.id,
+        ),
+      );
+
+      expect(theme.scaffoldBackgroundColor, globalTheme.background);
+      expect(theme.colorScheme.onSurface, globalTheme.foreground);
     });
   });
 }

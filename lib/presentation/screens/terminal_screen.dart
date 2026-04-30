@@ -3269,6 +3269,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _startClisInYoloMode = false;
   TerminalThemeData? _currentTheme;
   TerminalThemeData? _sessionThemeOverride;
+  final Object _terminalAppThemeOverrideOwner = Object();
+  late final TerminalAppThemeOverrideNotifier _terminalAppThemeOverrideNotifier;
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3435,6 +3437,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         ),
       ),
     );
+    _terminalAppThemeOverrideNotifier = ref.read(
+      terminalAppThemeOverrideProvider.notifier,
+    );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
@@ -3567,6 +3572,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             : _sessionsNotifier?.getSession(_connectionId!));
     targetSession?.terminalTheme = theme;
   }
+
+  void _syncAppThemeOverrideFromSession(SshSession session) {
+    _terminalAppThemeOverrideNotifier.activeOverride = TerminalAppThemeOverride(
+      owner: _terminalAppThemeOverrideOwner,
+      lightThemeId: session.terminalThemeLightId,
+      darkThemeId: session.terminalThemeDarkId,
+    );
+  }
+
+  void _clearAppThemeOverride() => _terminalAppThemeOverrideNotifier
+      .clearForOwner(_terminalAppThemeOverrideOwner);
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {
     final isDark = Theme.of(context).brightness == Brightness.dark;
@@ -3903,6 +3919,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _resolveEffectiveTerminalTheme(),
           session: session,
         );
+        _syncAppThemeOverrideFromSession(session);
       }
       return false;
     }
@@ -3916,6 +3933,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (resolvedTheme != null) {
       _applyTerminalThemeToSession(resolvedTheme, session: session);
     }
+    _syncAppThemeOverrideFromSession(session);
     return resolvedTheme != null;
   }
 
@@ -5479,6 +5497,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _disconnect() async {
     final connectionId = _connectionId;
     _connectionId = null;
+    _clearAppThemeOverride();
     await _doneSubscription?.cancel();
     _doneSubscription = null;
     _shell = null;
@@ -5509,6 +5528,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     final previousConnectionId = _connectionId;
     _connectionId = null;
+    _clearAppThemeOverride();
     _connectionLostWhileBackgrounded = false;
     try {
       await _doneSubscription?.cancel();
@@ -5532,6 +5552,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
+    _clearAppThemeOverride();
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
     _stopSharedClipboardSync();
@@ -6156,10 +6177,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       final hasHostThemeAccess = monetizationState.allowsFeature(
         MonetizationFeature.hostSpecificThemes,
       );
-      if (_connectionId != null) {
-        ref
-            .read(activeSessionsProvider.notifier)
-            .updateSessionTheme(_connectionId!, theme.id, isDark: isDark);
+      final connectionId = _connectionId;
+      if (connectionId != null) {
+        final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
+        final session =
+            (sessionsNotifier
+                  ..updateSessionTheme(connectionId, theme.id, isDark: isDark))
+                .getSession(connectionId);
+        if (session != null) {
+          _syncAppThemeOverrideFromSession(session);
+        }
       }
       setState(() => _sessionThemeOverride = theme);
       _applyTerminalThemeToSession(theme);
