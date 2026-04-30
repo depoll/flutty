@@ -65,6 +65,11 @@ on:
         type: boolean
         default: false
         description: 'Whether to build an unsigned Android release bundle artifact'
+      build-android-apk:
+        required: false
+        type: boolean
+        default: true
+        description: 'Whether to derive and upload a debug Android APK artifact from the debug AAB when deploy-android-to == none'
       upload-android-to-internal-app-sharing:
         required: false
         type: boolean
@@ -346,8 +351,8 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
-      - name: Build debug AAB for Internal App Sharing
-        if: inputs.upload-android-to-internal-app-sharing && inputs.deploy-android-to == 'none'
+      - name: Build debug AAB for preview artifacts
+        if: (inputs.upload-android-to-internal-app-sharing || inputs.build-android-apk) && inputs.deploy-android-to == 'none'
         run: |
           flutter build appbundle \
             --flavor ${{ inputs.flavor }} \
@@ -359,18 +364,54 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
-      - name: Build debug APK
-        if: inputs.deploy-android-to == 'none'
+      - name: Generate APK artifact from debug AAB
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
+        env:
+          BUNDLETOOL_VERSION: '1.18.3'
         run: |
-          flutter build apk \
-            --flavor ${{ inputs.flavor }} \
-            --debug \
-            --no-tree-shake-icons \
-            --build-name=${{ inputs.build-name }} \
-            --build-number=${{ inputs.build-number }} \
-            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
-            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
-            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+          set -euo pipefail
+
+          BUNDLETOOL_JAR="$RUNNER_TEMP/bundletool.jar"
+          AAB_PATH="build/app/outputs/bundle/${{ inputs.flavor }}Debug/app-${{ inputs.flavor }}-debug.aab"
+          APKS_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-debug.apks"
+          APK_DIR="$RUNNER_TEMP/app-${{ inputs.flavor }}-debug-apks"
+          APK_PATH="build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk"
+          DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
+
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output "$BUNDLETOOL_JAR" \
+            "https://github.com/google/bundletool/releases/download/${BUNDLETOOL_VERSION}/bundletool-all-${BUNDLETOOL_VERSION}.jar"
+
+          if [ ! -f "$DEBUG_KEYSTORE" ]; then
+            mkdir -p "$HOME/.android"
+            keytool -genkeypair \
+              -keystore "$DEBUG_KEYSTORE" \
+              -storepass android \
+              -alias androiddebugkey \
+              -keypass android \
+              -keyalg RSA \
+              -keysize 2048 \
+              -validity 10000 \
+              -dname "CN=Android Debug,O=Android,C=US"
+          fi
+
+          java -jar "$BUNDLETOOL_JAR" build-apks \
+            --bundle="$AAB_PATH" \
+            --output="$APKS_PATH" \
+            --mode=universal \
+            --ks="$DEBUG_KEYSTORE" \
+            --ks-pass=pass:android \
+            --ks-key-alias=androiddebugkey \
+            --key-pass=pass:android \
+            --overwrite
+
+          rm -rf "$APK_DIR"
+          mkdir -p "$APK_DIR" "$(dirname "$APK_PATH")"
+          unzip -q "$APKS_PATH" universal.apk -d "$APK_DIR"
+          mv "$APK_DIR/universal.apk" "$APK_PATH"
 
       - name: Download reusable AAB artifact
         if: inputs.android-reuse-aab-artifact-name != ''
@@ -432,7 +473,7 @@ jobs:
 
       - name: Upload APK artifact
         id: upload-apk
-        if: inputs.deploy-android-to == 'none'
+        if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
