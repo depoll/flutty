@@ -346,6 +346,19 @@ jobs:
             --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
             --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
 
+      - name: Build debug AAB for Internal App Sharing
+        if: inputs.upload-android-to-internal-app-sharing && inputs.deploy-android-to == 'none'
+        run: |
+          flutter build appbundle \
+            --flavor ${{ inputs.flavor }} \
+            --debug \
+            --no-tree-shake-icons \
+            --build-name=${{ inputs.build-name }} \
+            --build-number=${{ inputs.build-number }} \
+            --dart-define=FLUTTY_PR_NUMBER="$FLUTTY_PR_NUMBER" \
+            --dart-define=FLUTTY_PR_TITLE="$FLUTTY_PR_TITLE" \
+            --dart-define=FLUTTY_DIAGNOSTICS_ENABLED="$FLUTTY_DIAGNOSTICS_ENABLED"
+
       - name: Build debug APK
         if: inputs.deploy-android-to == 'none'
         run: |
@@ -499,8 +512,8 @@ jobs:
         run: |
           cd android
           PACKAGE_NAME="${{ inputs.flavor == 'private' && 'xyz.depollsoft.monkeyssh.private' || 'xyz.depollsoft.monkeyssh' }}"
-          APK_PATH="../build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-debug.apk"
-          bundle exec fastlane internal_app_sharing package_name:"$PACKAGE_NAME" apk_path:"$APK_PATH"
+          AAB_PATH="../build/app/outputs/bundle/${{ inputs.flavor }}Debug/app-${{ inputs.flavor }}-debug.aab"
+          bundle exec fastlane internal_app_sharing package_name:"$PACKAGE_NAME" aab_path:"$AAB_PATH"
 
           INTERNAL_APP_SHARING_URL="$(tr -d '\r\n' < "$INTERNAL_APP_SHARING_URL_FILE")"
           if [ -z "$INTERNAL_APP_SHARING_URL" ]; then
