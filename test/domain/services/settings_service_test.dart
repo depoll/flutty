@@ -422,6 +422,68 @@ void main() {
           customTheme.id,
         );
       });
+
+      test(
+        'normalizes unknown ids when custom theme JSON is not a list',
+        () async {
+          final settings = container.read(settingsServiceProvider);
+          await settings.setString(
+            SettingKeys.customTerminalThemes,
+            jsonEncode({'themes': <String>[]}),
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeLight,
+            'missing-light-theme',
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeDark,
+            'missing-dark-theme',
+          );
+
+          container.read(terminalThemeSettingsProvider);
+          await _waitForStoredTerminalThemeIds(
+            settings,
+            lightThemeId: TerminalThemes.defaultLightThemeId,
+            darkThemeId: TerminalThemes.defaultDarkThemeId,
+          );
+          final state = container.read(terminalThemeSettingsProvider);
+
+          expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
+          expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
+        },
+      );
+
+      test(
+        'keeps valid custom themes while skipping malformed entries',
+        () async {
+          final settings = container.read(settingsServiceProvider);
+          final customTheme = TerminalThemes.cleanWhite.copyWith(
+            id: 'custom-theme-with-malformed-neighbors',
+            name: 'Custom Theme With Malformed Neighbors',
+            isCustom: true,
+          );
+          await settings.setString(
+            SettingKeys.customTerminalThemes,
+            jsonEncode([
+              42,
+              {'id': 'incomplete-theme'},
+              customTheme.toJson(),
+            ]),
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeLight,
+            customTheme.id,
+          );
+
+          container.read(terminalThemeSettingsProvider);
+          final state = await _waitForTerminalThemeSettings(
+            container,
+            (settings) => settings.lightThemeId == customTheme.id,
+          );
+
+          expect(state.lightThemeId, customTheme.id);
+        },
+      );
     });
 
     // Note: most NotifierProvider tests (themeModeNotifierProvider,
@@ -451,14 +513,25 @@ Future<void> _waitForStoredTerminalThemeIds(
   required String lightThemeId,
   required String darkThemeId,
 }) async {
+  String? lastLight;
+  String? lastDark;
+
   for (var attempt = 0; attempt < 20; attempt += 1) {
     final light = await settings.getString(
       SettingKeys.defaultTerminalThemeLight,
     );
     final dark = await settings.getString(SettingKeys.defaultTerminalThemeDark);
+    lastLight = light;
+    lastDark = dark;
     if (light == lightThemeId && dark == darkThemeId) {
       return;
     }
     await Future<void>.delayed(const Duration(milliseconds: 10));
   }
+
+  throw TestFailure(
+    'Timed out waiting for stored terminal theme IDs. '
+    'Expected light="$lightThemeId", dark="$darkThemeId", '
+    'but last observed light="$lastLight", dark="$lastDark".',
+  );
 }

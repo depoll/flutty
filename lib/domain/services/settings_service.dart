@@ -4,8 +4,36 @@ import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../../data/database/database.dart';
-import '../models/terminal_theme.dart';
 import '../models/terminal_themes.dart';
+
+const _customTerminalThemeRequiredColorKeys = <String>[
+  'foreground',
+  'background',
+  'cursor',
+  'selection',
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite',
+];
+
+const _customTerminalThemeOptionalColorKeys = <String>[
+  'searchHitBackground',
+  'searchHitBackgroundCurrent',
+  'searchHitForeground',
+];
 
 /// Keys for app settings.
 abstract final class SettingKeys {
@@ -686,16 +714,54 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     }
 
     try {
-      final list = jsonDecode(json) as List<dynamic>;
-      return list
-          .map(
-            (item) =>
-                TerminalThemeData.fromJson(item as Map<String, dynamic>).id,
-          )
-          .toSet();
+      final decoded = jsonDecode(json);
+      if (decoded is! List) {
+        return const {};
+      }
+
+      final themeIds = <String>{};
+      for (final item in decoded) {
+        final themeId = _customTerminalThemeIdFromJson(item);
+        if (themeId != null) {
+          themeIds.add(themeId);
+        }
+      }
+      return themeIds;
     } on FormatException {
       return const {};
     }
+  }
+
+  String? _customTerminalThemeIdFromJson(Object? item) {
+    if (item is! Map) {
+      return null;
+    }
+
+    final id = item['id'];
+    if (id is! String || id.isEmpty || item['name'] is! String) {
+      return null;
+    }
+    if (item['isDark'] is! bool) {
+      return null;
+    }
+    final isCustom = item['isCustom'];
+    if (isCustom != null && isCustom is! bool) {
+      return null;
+    }
+
+    for (final key in _customTerminalThemeRequiredColorKeys) {
+      if (item[key] is! int) {
+        return null;
+      }
+    }
+    for (final key in _customTerminalThemeOptionalColorKeys) {
+      final value = item[key];
+      if (value != null && value is! int) {
+        return null;
+      }
+    }
+
+    return id;
   }
 
   String _normalizeThemeId(
