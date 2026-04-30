@@ -512,6 +512,14 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     );
   }
 
+  /// Re-sends the current viewport dimensions to the attached terminal.
+  void refreshTerminalSize() {
+    final renderObject = _viewportKey.currentContext?.findRenderObject();
+    if (renderObject is MonkeyRenderTerminal) {
+      renderObject._refreshTerminalSize();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final mediaQuery = MediaQuery.of(context);
@@ -1373,7 +1381,11 @@ class MonkeyRenderTerminal extends RenderBox
 
   bool _isDebouncingKeyboardResize = false;
 
-  ({TerminalSize viewportSize, ({int width, int height}) pixelSize})?
+  ({
+    TerminalSize viewportSize,
+    ({int width, int height}) pixelSize,
+    bool resizeTerminal,
+  })?
   _pendingTerminalResize;
 
   final TerminalPainter _painter;
@@ -2182,7 +2194,7 @@ class MonkeyRenderTerminal extends RenderBox
     _onEditableRect?.call(rect, caretRect);
   }
 
-  void _updateViewportSize() {
+  void _updateViewportSize({bool notifyIfUnchanged = false}) {
     final availableWidth = size.width - _padding.horizontal;
     final availableHeight = _viewportHeight;
     if (availableWidth <= _painter.cellSize.width ||
@@ -2199,9 +2211,22 @@ class MonkeyRenderTerminal extends RenderBox
       padding: _padding,
     );
 
-    if (_viewportSize != viewportSize || _viewportPixelSize != pixelSize) {
+    if (_viewportSize != viewportSize) {
       _resizeTerminalIfNeeded(viewportSize: viewportSize, pixelSize: pixelSize);
+    } else if (_viewportPixelSize != pixelSize || notifyIfUnchanged) {
+      _notifyTerminalResizeIfNeeded(
+        viewportSize: viewportSize,
+        pixelSize: pixelSize,
+      );
     }
+  }
+
+  void _refreshTerminalSize() {
+    if (!hasSize) {
+      markNeedsLayout();
+      return;
+    }
+    _updateViewportSize(notifyIfUnchanged: true);
   }
 
   void _resizeTerminalIfNeeded({
@@ -2226,11 +2251,36 @@ class MonkeyRenderTerminal extends RenderBox
       _pendingTerminalResize = (
         viewportSize: nextViewportSize,
         pixelSize: nextPixelSize,
+        resizeTerminal: true,
       );
       return;
     }
 
     _applyTerminalResize(nextViewportSize, nextPixelSize);
+  }
+
+  void _notifyTerminalResizeIfNeeded({
+    required TerminalSize viewportSize,
+    required ({int width, int height}) pixelSize,
+  }) {
+    if (!_autoResize) {
+      return;
+    }
+
+    if (_isDebouncingKeyboardResize) {
+      final pendingResize = _pendingTerminalResize;
+      if (pendingResize != null && pendingResize.resizeTerminal) {
+        return;
+      }
+      _pendingTerminalResize = (
+        viewportSize: viewportSize,
+        pixelSize: pixelSize,
+        resizeTerminal: false,
+      );
+      return;
+    }
+
+    _notifyTerminalResize(viewportSize, pixelSize);
   }
 
   void _applyTerminalResize(
@@ -2240,6 +2290,20 @@ class MonkeyRenderTerminal extends RenderBox
     _viewportSize = viewportSize;
     _viewportPixelSize = pixelSize;
     _terminal.resize(
+      viewportSize.width,
+      viewportSize.height,
+      pixelSize.width,
+      pixelSize.height,
+    );
+  }
+
+  void _notifyTerminalResize(
+    TerminalSize viewportSize,
+    ({int width, int height}) pixelSize,
+  ) {
+    _viewportSize = viewportSize;
+    _viewportPixelSize = pixelSize;
+    _terminal.onResize?.call(
       viewportSize.width,
       viewportSize.height,
       pixelSize.width,
@@ -2260,10 +2324,17 @@ class MonkeyRenderTerminal extends RenderBox
         if (pendingResize == null || !_autoResize) {
           return;
         }
-        _applyTerminalResize(
-          pendingResize.viewportSize,
-          pendingResize.pixelSize,
-        );
+        if (pendingResize.resizeTerminal) {
+          _applyTerminalResize(
+            pendingResize.viewportSize,
+            pendingResize.pixelSize,
+          );
+        } else {
+          _notifyTerminalResize(
+            pendingResize.viewportSize,
+            pendingResize.pixelSize,
+          );
+        }
       },
     );
   }

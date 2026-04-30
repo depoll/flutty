@@ -3261,6 +3261,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _lastObservedRemoteClipboardText;
   String? _lastAppliedLocalClipboardText;
   String? _lastAppliedRemoteClipboardText;
+  bool _isTerminalSizeRefreshQueued = false;
 
   // Theme state
   Host? _host;
@@ -4064,6 +4065,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
         });
+        _scheduleTerminalSizeRefresh();
         _restoreTerminalFocus();
 
         // Detect tmux on existing sessions too (may not have been detected
@@ -4125,6 +4127,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;
       });
+      _scheduleTerminalSizeRefresh();
       _restoreTerminalFocus();
       _primeTmuxStateFromHost();
 
@@ -4204,6 +4207,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
       _shell?.resizeTerminal(width, height, pixelWidth, pixelHeight);
     };
+  }
+
+  void _scheduleTerminalSizeRefresh() {
+    if (_isTerminalSizeRefreshQueued) {
+      return;
+    }
+    _isTerminalSizeRefreshQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _isTerminalSizeRefreshQueued = false;
+      if (!mounted) {
+        return;
+      }
+      _terminalViewKey.currentState?.refreshTerminalSize();
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   void _schedulePromptOutputImeResetCheck(String data) {
@@ -5162,6 +5180,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       sessionName,
       forceVisibleTmux: forceVisibleTmux,
     );
+    _scheduleTerminalSizeRefresh();
   }
 
   /// Creates a new tmux window via exec channel, then reattaches the visible
@@ -5206,6 +5225,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
     _tmuxWorkingDirectory = resolvedWorkingDirectory;
     await _reattachTmuxIfNeeded(session, sessionName);
+    _scheduleTerminalSizeRefresh();
   }
 
   /// Closes a tmux window via exec channel.
@@ -5221,6 +5241,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           windowIndex,
           extraFlags: _host?.tmuxExtraFlags,
         );
+    _scheduleTerminalSizeRefresh();
   }
 
   Future<void> _reattachTmuxIfNeeded(
@@ -5404,6 +5425,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
       });
+      _scheduleTerminalSizeRefresh();
     }
     return shell;
   }
@@ -5578,6 +5600,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _stopSharedClipboardSync();
     } else if (state == AppLifecycleState.resumed && _wasBackgrounded) {
       _wasBackgrounded = false;
+      _scheduleTerminalSizeRefresh();
       final session = _observedSession;
       if (session != null && session.clipboardSharingEnabled) {
         unawaited(_startSharedClipboardSync(session));
@@ -5588,6 +5611,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _reconnect();
       }
     }
+  }
+
+  @override
+  void didChangeMetrics() {
+    super.didChangeMetrics();
+    _scheduleTerminalSizeRefresh();
   }
 
   @override
