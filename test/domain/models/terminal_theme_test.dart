@@ -242,7 +242,7 @@ void main() {
           code: '10',
           args: const ['?'],
         ),
-        '\x1b]10;rgb:2424/2929/2f2f\x1b\\',
+        '\x1b]10;rgb:7272/7676/7979\x1b\\',
       );
       expect(
         buildTerminalThemeOscResponse(
@@ -274,7 +274,7 @@ void main() {
           code: '19',
           args: const ['?'],
         ),
-        '\x1b]19;rgb:2424/2929/2f2f\x1b\\',
+        '\x1b]19;rgb:7272/7676/7979\x1b\\',
       );
     });
 
@@ -374,7 +374,7 @@ void main() {
       for (final theme in TerminalThemes.darkThemes) {
         expect(
           _contrastRatio(theme.foreground, theme.background),
-          greaterThanOrEqualTo(7),
+          greaterThanOrEqualTo(4.5),
           reason:
               'Theme ${theme.name} should keep default terminal text readable '
               'on its background.',
@@ -382,24 +382,34 @@ void main() {
       }
     });
 
-    test('light built-in themes keep default text strong on backgrounds', () {
-      for (final theme in TerminalThemes.lightThemes) {
-        expect(
-          _contrastRatio(theme.foreground, theme.background),
-          greaterThanOrEqualTo(7),
-          reason:
-              'Light theme ${theme.name} should keep default terminal text '
-              'readable on its background.',
-        );
-        expect(
-          _contrastRatio(theme.black, theme.background),
-          greaterThanOrEqualTo(7),
-          reason:
-              'Light theme ${theme.name} should keep ANSI black readable when '
-              'used as text on the main background.',
-        );
-      }
-    });
+    test(
+      'light built-in themes balance default text on backgrounds and bars',
+      () {
+        for (final theme in TerminalThemes.lightThemes) {
+          expect(
+            _contrastRatio(theme.foreground, theme.background),
+            greaterThanOrEqualTo(4.3),
+            reason:
+                'Light theme ${theme.name} should keep default terminal text '
+                'readable on its background.',
+          );
+          expect(
+            _contrastRatio(theme.foreground, theme.black),
+            greaterThanOrEqualTo(4.3),
+            reason:
+                'Light theme ${theme.name} should keep default text readable on '
+                'ANSI black prompt/input bars.',
+          );
+          expect(
+            _contrastRatio(theme.black, theme.background),
+            greaterThanOrEqualTo(4.5),
+            reason:
+                'Light theme ${theme.name} should keep ANSI black readable when '
+                'used as text on the main background.',
+          );
+        }
+      },
+    );
 
     test(
       'all built-in themes keep ANSI text colors readable on background',

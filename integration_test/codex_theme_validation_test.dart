@@ -402,7 +402,10 @@ int _effectiveBackgroundCellColor(CellData cell) =>
       : _resolveForegroundColor(cell.foreground, xtermTheme, palette);
 
   if ((cell.flags & CellFlags.faint) != 0) {
-    foreground = Color.alphaBlend(foreground.withAlpha(128), background);
+    foreground = resolveMonkeyTerminalFaintForegroundColor(
+      foreground: foreground,
+      background: background,
+    );
   }
   return (foreground: foreground, background: background);
 }
