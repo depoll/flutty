@@ -3020,14 +3020,17 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   return buttonItems;
 }
 
-/// Builds a selection menu action that reads terminal selection before hiding.
+/// Builds a menu callback that lets the action read selection before hiding.
 @visibleForTesting
 VoidCallback buildTerminalSelectionContextMenuAction({
   required VoidCallback action,
   required VoidCallback hideToolbar,
 }) => () {
-  action();
-  hideToolbar();
+  try {
+    action();
+  } finally {
+    hideToolbar();
+  }
 };
 
 /// Whether terminal tap links should be resolved for the current overlay state.

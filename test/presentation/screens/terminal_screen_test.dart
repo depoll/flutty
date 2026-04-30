@@ -191,6 +191,18 @@ void main() {
       expect(copiedText, 'alpha');
       expect(selectedText, isNull);
     });
+
+    test('hides terminal selection toolbar when action throws', () {
+      var didHideToolbar = false;
+
+      final onPressed = buildTerminalSelectionContextMenuAction(
+        action: () => throw StateError('copy failed'),
+        hideToolbar: () => didHideToolbar = true,
+      );
+
+      expect(onPressed, throwsStateError);
+      expect(didHideToolbar, isTrue);
+    });
   });
 
   group('MonkeyTerminalView system selection geometry', () {
