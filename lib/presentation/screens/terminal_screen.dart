@@ -3020,6 +3020,16 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   return buttonItems;
 }
 
+/// Builds a selection menu action that reads terminal selection before hiding.
+@visibleForTesting
+VoidCallback buildTerminalSelectionContextMenuAction({
+  required VoidCallback action,
+  required VoidCallback hideToolbar,
+}) => () {
+  action();
+  hideToolbar();
+};
+
 /// Whether terminal tap links should be resolved for the current overlay state.
 @visibleForTesting
 bool shouldResolveTerminalTapLinks({
@@ -6603,37 +6613,37 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           hasCopy = true;
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_copySelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () => unawaited(_copySelection()),
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.lookUp:
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_lookUpTerminalSelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () => unawaited(_lookUpTerminalSelection()),
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.searchWeb:
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_searchWebForTerminalSelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () => unawaited(_searchWebForTerminalSelection()),
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.share:
           buttonItems.add(
             item.copyWith(
-              onPressed: () {
-                selectableRegionState.hideToolbar();
-                unawaited(_shareTerminalSelection());
-              },
+              onPressed: buildTerminalSelectionContextMenuAction(
+                action: () => unawaited(_shareTerminalSelection()),
+                hideToolbar: selectableRegionState.hideToolbar,
+              ),
             ),
           );
         case ContextMenuButtonType.selectAll:
@@ -6653,10 +6663,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       buttonItems.insert(
         0,
         ContextMenuButtonItem(
-          onPressed: () {
-            selectableRegionState.hideToolbar();
-            unawaited(_copySelection());
-          },
+          onPressed: buildTerminalSelectionContextMenuAction(
+            action: () => unawaited(_copySelection()),
+            hideToolbar: selectableRegionState.hideToolbar,
+          ),
           type: ContextMenuButtonType.copy,
         ),
       );

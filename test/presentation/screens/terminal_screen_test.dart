@@ -176,6 +176,21 @@ void main() {
 
       expect(didPaste, isTrue);
     });
+
+    test('runs terminal selection menu action before hiding toolbar', () {
+      String? selectedText = 'alpha';
+      String? copiedText;
+
+      final onPressed = buildTerminalSelectionContextMenuAction(
+        action: () => copiedText = selectedText,
+        hideToolbar: () => selectedText = null,
+      );
+
+      onPressed();
+
+      expect(copiedText, 'alpha');
+      expect(selectedText, isNull);
+    });
   });
 
   group('MonkeyTerminalView system selection geometry', () {
