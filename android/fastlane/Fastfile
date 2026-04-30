@@ -167,6 +167,33 @@ platform :android do
     FileUtils.rm_rf(upload_metadata_path) if remove_metadata_path
   end
 
+  desc 'Upload flavor APK/AAB to Play Store Internal App Sharing'
+  lane :internal_app_sharing do |options|
+    package = options[:package_name] || 'xyz.depollsoft.monkeyssh.private'
+    apk_path = options[:apk_path] || options[:apk]
+    aab_path = options[:aab_path] || options[:aab]
+    output_file = ENV['INTERNAL_APP_SHARING_URL_FILE']
+    upload_options = {
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+    }
+
+    if apk_path.to_s.empty? && aab_path.to_s.empty?
+      UI.user_error!('Provide apk_path/apk or aab_path/aab for Internal App Sharing upload')
+    elsif apk_path.to_s.empty?
+      upload_options[:aab] = aab_path
+    else
+      upload_options[:apk] = apk_path
+    end
+
+    urls = upload_to_play_store_internal_app_sharing(upload_options)
+    url = Array(urls).first.to_s
+    UI.user_error!('Internal App Sharing upload did not return a download URL') if url.empty?
+
+    File.write(output_file, "#{url}\n") unless output_file.to_s.empty?
+    UI.success("Internal App Sharing URL: #{url}")
+  end
+
   desc 'Upload production flavor AAB to Play Store production'
   lane :release do |options|
     skip_meta = options[:skip_metadata].to_s == 'true'
