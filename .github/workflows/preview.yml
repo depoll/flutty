@@ -234,10 +234,17 @@ jobs:
             );
             let androidLink = `[View workflow run](${runUrl})`;
             if (androidJob && androidJob.status === 'completed') {
-              if (androidJob.conclusion === 'success' && androidInternalAppSharingUrl) {
-                androidLink = `[Install via Internal App Sharing](${androidInternalAppSharingUrl})`;
-              } else if (androidJob.conclusion === 'success' && apkArtifact) {
-                androidLink = `[Download APK artifact](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+              if (androidJob.conclusion === 'success') {
+                const androidLinks = [];
+                if (androidInternalAppSharingUrl) {
+                  androidLinks.push(`[Install via Internal App Sharing](${androidInternalAppSharingUrl})`);
+                }
+                if (apkArtifact) {
+                  androidLinks.push(`[Download APK artifact](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`);
+                }
+                if (androidLinks.length > 0) {
+                  androidLink = androidLinks.join('<br>');
+                }
               } else if (androidJob.conclusion === 'skipped') {
                 androidLink = 'N/A (build skipped for fork PR)';
               }
@@ -338,10 +345,17 @@ jobs:
             );
             let androidLink = `[View workflow run](${runUrl})`;
             if (androidJob && androidJob.status === 'completed') {
-              if (androidJob.conclusion === 'success' && androidInternalAppSharingUrl) {
-                androidLink = `[Install via Internal App Sharing](${androidInternalAppSharingUrl})`;
-              } else if (androidJob.conclusion === 'success' && apkArtifact) {
-                androidLink = `[Download APK artifact](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+              if (androidJob.conclusion === 'success') {
+                const androidLinks = [];
+                if (androidInternalAppSharingUrl) {
+                  androidLinks.push(`[Install via Internal App Sharing](${androidInternalAppSharingUrl})`);
+                }
+                if (apkArtifact) {
+                  androidLinks.push(`[Download APK artifact](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`);
+                }
+                if (androidLinks.length > 0) {
+                  androidLink = androidLinks.join('<br>');
+                }
               } else if (androidJob.conclusion === 'skipped') {
                 androidLink = 'N/A (build skipped for fork PR)';
               }
