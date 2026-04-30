@@ -169,6 +169,9 @@ class _AppearanceSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeNotifierProvider);
+    final terminalThemesApplyToApp = ref.watch(
+      terminalThemesApplyToAppNotifierProvider,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -182,6 +185,21 @@ class _AppearanceSection extends ConsumerWidget {
           title: const Text('Theme'),
           subtitle: Text(_themeModeLabel(themeMode)),
           onTap: () => _showThemeDialog(context, ref, themeMode),
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.color_lens_outlined),
+          title: const Text('Use terminal themes for app'),
+          subtitle: const Text(
+            'Apply the selected terminal light and dark themes to app colors',
+          ),
+          value: terminalThemesApplyToApp,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(terminalThemesApplyToAppNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
         ),
       ],
     );
@@ -1488,6 +1506,8 @@ class _ImportExportSection extends ConsumerWidget {
       }
       ref
         ..invalidate(themeModeNotifierProvider)
+        ..invalidate(terminalThemesApplyToAppNotifierProvider)
+        ..invalidate(terminalThemesApplyToAppProvider)
         ..invalidate(fontSizeNotifierProvider)
         ..invalidate(fontFamilyNotifierProvider)
         ..invalidate(cursorStyleNotifierProvider)

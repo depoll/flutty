@@ -29,34 +29,47 @@ class FluttyApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeNotifierProvider);
-    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
-    final terminalThemes =
-        ref.watch(allTerminalThemesProvider).asData?.value ??
-        TerminalThemes.all;
-    final lightTerminalTheme = TerminalThemes.resolveById(
-      brightness: Brightness.light,
-      themeId: terminalThemeSettings.lightThemeId,
-      additionalThemes: terminalThemes,
+    final terminalThemesApplyToApp = ref.watch(
+      terminalThemesApplyToAppNotifierProvider,
     );
-    final darkTerminalTheme = TerminalThemes.resolveById(
-      brightness: Brightness.dark,
-      themeId: terminalThemeSettings.darkThemeId,
-      additionalThemes: terminalThemes,
-    );
+    late final ThemeData lightTheme;
+    late final ThemeData darkTheme;
+
+    if (terminalThemesApplyToApp) {
+      final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
+      final terminalThemes =
+          ref.watch(allTerminalThemesProvider).asData?.value ??
+          TerminalThemes.all;
+      final lightTerminalTheme = TerminalThemes.resolveById(
+        brightness: Brightness.light,
+        themeId: terminalThemeSettings.lightThemeId,
+        additionalThemes: terminalThemes,
+      );
+      final darkTerminalTheme = TerminalThemes.resolveById(
+        brightness: Brightness.dark,
+        themeId: terminalThemeSettings.darkThemeId,
+        additionalThemes: terminalThemes,
+      );
+      lightTheme = FluttyTheme.fromTerminalTheme(
+        lightTerminalTheme,
+        brightness: Brightness.light,
+      );
+      darkTheme = FluttyTheme.fromTerminalTheme(
+        darkTerminalTheme,
+        brightness: Brightness.dark,
+      );
+    } else {
+      lightTheme = FluttyTheme.light;
+      darkTheme = FluttyTheme.dark;
+    }
     final appName = ref.watch(appDisplayNameProvider);
 
     return _BackgroundLifecycleBridge(
       child: MaterialApp.router(
         title: appName,
         debugShowCheckedModeBanner: false,
-        theme: FluttyTheme.fromTerminalTheme(
-          lightTerminalTheme,
-          brightness: Brightness.light,
-        ),
-        darkTheme: FluttyTheme.fromTerminalTheme(
-          darkTerminalTheme,
-          brightness: Brightness.dark,
-        ),
+        theme: lightTheme,
+        darkTheme: darkTheme,
         themeMode: themeMode,
         routerConfig: router,
       ),

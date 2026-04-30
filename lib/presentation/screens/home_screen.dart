@@ -250,6 +250,8 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           }
           ref
             ..invalidate(themeModeNotifierProvider)
+            ..invalidate(terminalThemesApplyToAppNotifierProvider)
+            ..invalidate(terminalThemesApplyToAppProvider)
             ..invalidate(fontSizeNotifierProvider)
             ..invalidate(fontFamilyNotifierProvider)
             ..invalidate(cursorStyleNotifierProvider)

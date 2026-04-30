@@ -40,6 +40,8 @@ void invalidateImportedEntityProviders(ProviderInvalidator invalidate) {
 /// Refreshes presentation providers that depend on synced settings and data.
 void invalidateSyncedDataProviders(ProviderInvalidator invalidate) {
   invalidate(themeModeNotifierProvider);
+  invalidate(terminalThemesApplyToAppNotifierProvider);
+  invalidate(terminalThemesApplyToAppProvider);
   invalidate(fontSizeNotifierProvider);
   invalidate(fontFamilyNotifierProvider);
   invalidate(cursorStyleNotifierProvider);

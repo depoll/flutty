@@ -12,6 +12,9 @@ abstract final class SettingKeys {
   /// Theme mode: 'system', 'light', 'dark'.
   static const themeMode = 'theme_mode';
 
+  /// Whether terminal themes also style app chrome.
+  static const terminalThemesApplyToApp = 'terminal_themes_apply_to_app';
+
   /// Terminal font family.
   static const terminalFont = 'terminal_font';
 
@@ -233,6 +236,54 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
 /// Provider for theme mode with write capability.
 final themeModeNotifierProvider =
     NotifierProvider<ThemeModeNotifier, ThemeMode>(ThemeModeNotifier.new);
+
+/// Provider for terminal themes applying to app chrome.
+final terminalThemesApplyToAppProvider = FutureProvider<bool>((ref) async {
+  final settings = ref.watch(settingsServiceProvider);
+  return settings.getBool(
+    SettingKeys.terminalThemesApplyToApp,
+    defaultValue: true,
+  );
+});
+
+/// Notifier for terminal themes applying to app chrome.
+class TerminalThemesApplyToAppNotifier extends Notifier<bool> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  @override
+  bool build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return true;
+  }
+
+  Future<void> _init() async {
+    final value = await _settings.getBool(
+      SettingKeys.terminalThemesApplyToApp,
+      defaultValue: true,
+    );
+    if (_disposed) return;
+    state = value;
+  }
+
+  /// Set whether terminal themes also style app chrome.
+  Future<void> setEnabled({required bool enabled}) async {
+    await _settings.setBool(
+      SettingKeys.terminalThemesApplyToApp,
+      value: enabled,
+    );
+    state = enabled;
+  }
+}
+
+/// Provider for terminal themes applying to app chrome with write capability.
+final terminalThemesApplyToAppNotifierProvider =
+    NotifierProvider<TerminalThemesApplyToAppNotifier, bool>(
+      TerminalThemesApplyToAppNotifier.new,
+    );
 
 /// Provider for font size setting.
 final fontSizeProvider = FutureProvider<double>((ref) async {

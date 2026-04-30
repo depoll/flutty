@@ -174,6 +174,10 @@ void main() {
   group('SettingKeys', () {
     test('has expected constants', () {
       expect(SettingKeys.themeMode, 'theme_mode');
+      expect(
+        SettingKeys.terminalThemesApplyToApp,
+        'terminal_themes_apply_to_app',
+      );
       expect(SettingKeys.terminalFont, 'terminal_font');
       expect(SettingKeys.terminalFontSize, 'terminal_font_size');
       expect(SettingKeys.terminalColorScheme, 'terminal_color_scheme');
@@ -217,6 +221,51 @@ void main() {
         container.invalidate(themeModeProvider);
         final result = await container.read(themeModeProvider.future);
         expect(result, 'dark');
+      });
+    });
+
+    group('terminalThemesApplyToAppProvider', () {
+      test('returns true by default', () async {
+        final result = await container.read(
+          terminalThemesApplyToAppProvider.future,
+        );
+        expect(result, isTrue);
+      });
+
+      test('returns stored false when disabled', () async {
+        final settings = container.read(settingsServiceProvider);
+        await settings.setBool(
+          SettingKeys.terminalThemesApplyToApp,
+          value: false,
+        );
+        container.invalidate(terminalThemesApplyToAppProvider);
+
+        final result = await container.read(
+          terminalThemesApplyToAppProvider.future,
+        );
+
+        expect(result, isFalse);
+      });
+    });
+
+    group('terminalThemesApplyToAppNotifierProvider', () {
+      test('persists disabled state', () async {
+        final notifier = container.read(
+          terminalThemesApplyToAppNotifierProvider.notifier,
+        );
+
+        await notifier.setEnabled(enabled: false);
+
+        expect(
+          container.read(terminalThemesApplyToAppNotifierProvider),
+          isFalse,
+        );
+        expect(
+          await container
+              .read(settingsServiceProvider)
+              .getBool(SettingKeys.terminalThemesApplyToApp),
+          isFalse,
+        );
       });
     });
 

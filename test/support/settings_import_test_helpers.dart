@@ -164,6 +164,12 @@ class StaticThemeModeNotifier extends ThemeModeNotifier {
   ThemeMode build() => ThemeMode.system;
 }
 
+class StaticTerminalThemesApplyToAppNotifier
+    extends TerminalThemesApplyToAppNotifier {
+  @override
+  bool build() => true;
+}
+
 class StaticFontSizeNotifier extends FontSizeNotifier {
   @override
   double build() => 14;
