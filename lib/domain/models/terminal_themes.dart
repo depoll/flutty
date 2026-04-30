@@ -50,8 +50,8 @@ abstract final class TerminalThemes {
 
   /// Gets a theme by ID, returns null if not found.
   ///
-  /// [additionalThemes] should contain non-built-in themes, such as
-  /// user-created themes loaded from settings.
+  /// [additionalThemes] may include custom themes or a combined built-in/custom
+  /// list; built-ins are checked first so duplicate built-in IDs are ignored.
   static TerminalThemeData? getById(
     String id, {
     Iterable<TerminalThemeData> additionalThemes = const [],

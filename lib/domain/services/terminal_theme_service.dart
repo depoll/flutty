@@ -139,12 +139,12 @@ class TerminalThemeService {
     }
 
     try {
-      final list = jsonDecode(json) as List<dynamic>;
-      return list
-          .map(
-            (item) => TerminalThemeData.fromJson(item as Map<String, dynamic>),
-          )
-          .toList();
+      final decoded = jsonDecode(json);
+      if (decoded is! List) {
+        return [];
+      }
+
+      return [for (final item in decoded) ?TerminalThemeData.tryFromJson(item)];
     } on FormatException {
       return [];
     }

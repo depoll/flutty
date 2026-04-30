@@ -30,14 +30,13 @@ class FluttyApp extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final router = ref.watch(routerProvider);
     final themeMode = ref.watch(themeModeNotifierProvider);
-    final terminalThemesApplyToApp = ref
-        .watch(terminalThemesApplyToAppProvider)
-        .asData
-        ?.value;
+    final terminalThemesApplyToApp = ref.watch(
+      terminalThemesApplyToAppNotifierProvider,
+    );
     late final ThemeData lightTheme;
     late final ThemeData darkTheme;
 
-    if (terminalThemesApplyToApp ?? false) {
+    if (terminalThemesApplyToApp) {
       final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
       final terminalAppThemeOverride = ref.watch(
         terminalAppThemeOverrideProvider,
