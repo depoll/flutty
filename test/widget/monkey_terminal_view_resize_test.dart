@@ -368,49 +368,76 @@ void main() {
     ]);
   });
 
-  test('grayscale palette backgrounds follow the active theme surface', () {
+  test('explicit xterm palette grayscale colors stay standard', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
     final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
         .toXtermTheme();
+    final darkPainter = MonkeyTerminalPainter(
+      theme: darkTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+    final lightPainter = MonkeyTerminalPainter(
+      theme: lightTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
 
-    final staleLightInputBackground =
-        resolveMonkeyTerminalPaletteBackgroundColor(darkTheme, 255);
-    final staleDarkInputBackground =
-        resolveMonkeyTerminalPaletteBackgroundColor(lightTheme, 235);
-
-    expect(staleLightInputBackground, isNot(const Color(0xFFEEEEEE)));
-    expect(staleDarkInputBackground, isNot(const Color(0xFF262626)));
-    expect(staleLightInputBackground.computeLuminance(), lessThan(0.45));
-    expect(staleDarkInputBackground.computeLuminance(), greaterThan(0.55));
+    for (final painter in [darkPainter, lightPainter]) {
+      expect(
+        painter.resolveForegroundColor(CellColor.palette | 244),
+        const Color(0xFF808080),
+      );
+      expect(
+        painter.resolveBackgroundColor(CellColor.palette | 235),
+        const Color(0xFF262626),
+      );
+    }
   });
 
-  test('grayscale palette foregrounds follow the active theme text color', () {
+  test('ANSI bright colors follow the active theme palette', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
     final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
         .toXtermTheme();
-
-    final darkMutedText = resolveMonkeyTerminalPaletteForegroundColor(
-      darkTheme,
-      244,
+    final darkPainter = MonkeyTerminalPainter(
+      theme: darkTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
     );
-    final lightMutedText = resolveMonkeyTerminalPaletteForegroundColor(
-      lightTheme,
-      244,
+    final lightPainter = MonkeyTerminalPainter(
+      theme: lightTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
     );
 
-    expect(darkMutedText, isNot(const Color(0xFF808080)));
-    expect(lightMutedText, isNot(const Color(0xFF808080)));
-    expect(darkMutedText, isNot(lightMutedText));
     expect(
-      _contrastRatio(darkMutedText, darkTheme.background),
-      greaterThan(2.5),
+      darkPainter.resolveForegroundColor(CellColor.named | 8),
+      darkTheme.brightBlack,
     );
     expect(
-      _contrastRatio(lightMutedText, lightTheme.background),
-      greaterThan(2.5),
+      lightPainter.resolveForegroundColor(CellColor.named | 8),
+      lightTheme.brightBlack,
     );
+    expect(
+      darkPainter.resolveForegroundColor(CellColor.named | 15),
+      darkTheme.brightWhite,
+    );
+    expect(
+      lightPainter.resolveForegroundColor(CellColor.named | 15),
+      lightTheme.brightWhite,
+    );
+    expect(
+      darkPainter.resolveBackgroundColor(CellColor.palette | 15),
+      darkTheme.brightWhite,
+    );
+    expect(
+      lightPainter.resolveBackgroundColor(CellColor.palette | 15),
+      lightTheme.brightWhite,
+    );
+    expect(darkTheme.brightBlack, isNot(lightTheme.brightBlack));
+    expect(darkTheme.brightWhite, isNot(darkTheme.white));
   });
 
   test('faint terminal text preserves each theme base readability', () {

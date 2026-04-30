@@ -46,8 +46,6 @@ import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
-const _xtermGrayscalePaletteStart = 232;
-const _xtermGrayscalePaletteEnd = 255;
 const _minimumFaintTextContrast = 4.5;
 
 double _contrastRatio(Color a, Color b) {
@@ -58,75 +56,54 @@ double _contrastRatio(Color a, Color b) {
   return (brightest + 0.05) / (darkest + 0.05);
 }
 
-/// Resolves 256-color palette backgrounds against the active terminal theme.
+/// Resolves xterm palette colors while preserving xterm-256color semantics.
 ///
-/// Some TUIs, including Codex, derive subtle input surfaces from the terminal
-/// default background but emit them as xterm grayscale palette indexes. Keeping
-/// those background indexes fixed makes the surface stale after a theme switch,
-/// so background grayscale entries are treated as theme-relative surfaces.
+/// Palette entries 0-15 are theme-controlled ANSI colors; entries 16-255 are
+/// fixed xterm color-cube/grayscale colors.
 @visibleForTesting
-Color resolveMonkeyTerminalPaletteBackgroundColor(
-  TerminalTheme theme,
-  int colorIndex,
-) {
-  if (colorIndex < _xtermGrayscalePaletteStart ||
-      colorIndex > _xtermGrayscalePaletteEnd) {
-    return PaletteBuilder(theme).paletteColor(colorIndex);
+Color resolveMonkeyTerminalPaletteColor(TerminalTheme theme, int colorIndex) {
+  switch (colorIndex) {
+    case 0:
+      return theme.black;
+    case 1:
+      return theme.red;
+    case 2:
+      return theme.green;
+    case 3:
+      return theme.yellow;
+    case 4:
+      return theme.blue;
+    case 5:
+      return theme.magenta;
+    case 6:
+      return theme.cyan;
+    case 7:
+      return theme.white;
+    case 8:
+      return theme.brightBlack;
+    case 9:
+      return theme.brightRed;
+    case 10:
+      return theme.brightGreen;
+    case 11:
+      return theme.brightYellow;
+    case 12:
+      return theme.brightBlue;
+    case 13:
+      return theme.brightMagenta;
+    case 14:
+      return theme.brightCyan;
+    case 15:
+      return theme.brightWhite;
+    default:
+      return PaletteBuilder(theme).paletteColor(colorIndex);
   }
-
-  final scale =
-      (colorIndex - _xtermGrayscalePaletteStart) /
-      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
-  final isLightBackground = theme.background.computeLuminance() > 0.5;
-  final overlay = isLightBackground ? Colors.black : Colors.white;
-  final opacity = isLightBackground
-      ? lerpDouble(0.10, 0.02, scale)!
-      : lerpDouble(0.04, 0.20, scale)!;
-  return Color.alphaBlend(
-    overlay.withAlpha((opacity * 255).round()),
-    theme.background,
-  );
 }
 
-/// Resolves 256-color palette foregrounds against the active terminal theme.
-///
-/// CLI tools often use xterm grayscale palette indexes for muted log text. A
-/// fixed grayscale foreground stays gray after switching to a colored terminal
-/// theme, so grayscale foregrounds are treated as theme-relative opacity levels.
-@visibleForTesting
-Color resolveMonkeyTerminalPaletteForegroundColor(
-  TerminalTheme theme,
-  int colorIndex,
-) {
-  if (colorIndex < _xtermGrayscalePaletteStart ||
-      colorIndex > _xtermGrayscalePaletteEnd) {
-    return PaletteBuilder(theme).paletteColor(colorIndex);
-  }
-
-  final scale =
-      (colorIndex - _xtermGrayscalePaletteStart) /
-      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
-  final isLightBackground = theme.background.computeLuminance() > 0.5;
-  final opacity = isLightBackground
-      ? lerpDouble(0.92, 0.35, scale)!
-      : lerpDouble(0.28, 0.92, scale)!;
-  return Color.alphaBlend(
-    theme.foreground.withAlpha((opacity * 255).round()),
-    theme.background,
-  );
-}
-
-List<Color> _buildThemeAwareBackgroundPalette(TerminalTheme theme) =>
+List<Color> _buildMonkeyTerminalPalette(TerminalTheme theme) =>
     List<Color>.generate(
       256,
-      (index) => resolveMonkeyTerminalPaletteBackgroundColor(theme, index),
-      growable: false,
-    );
-
-List<Color> _buildThemeAwareForegroundPalette(TerminalTheme theme) =>
-    List<Color>.generate(
-      256,
-      (index) => resolveMonkeyTerminalPaletteForegroundColor(theme, index),
+      (index) => resolveMonkeyTerminalPaletteColor(theme, index),
       growable: false,
     );
 
@@ -1270,11 +1247,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
     required super.theme,
     required super.textStyle,
     required super.textScaler,
-  }) : _backgroundPalette = _buildThemeAwareBackgroundPalette(theme),
-       _foregroundPalette = _buildThemeAwareForegroundPalette(theme);
+  }) : _palette = _buildMonkeyTerminalPalette(theme);
 
-  List<Color> _backgroundPalette;
-  List<Color> _foregroundPalette;
+  List<Color> _palette;
   final _paragraphCache = ParagraphCache(10240);
 
   @override
@@ -1301,8 +1276,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
       return;
     }
     super.theme = value;
-    _backgroundPalette = _buildThemeAwareBackgroundPalette(value);
-    _foregroundPalette = _buildThemeAwareForegroundPalette(value);
+    _palette = _buildMonkeyTerminalPalette(value);
     _paragraphCache.clear();
   }
 
@@ -1372,7 +1346,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         return theme.foreground;
       case CellColor.named:
       case CellColor.palette:
-        return _foregroundPalette[colorValue];
+        return _palette[colorValue];
       case CellColor.rgb:
       default:
         return Color(colorValue | 0xFF000000);
@@ -1389,7 +1363,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         return theme.background;
       case CellColor.named:
       case CellColor.palette:
-        return _backgroundPalette[colorValue];
+        return _palette[colorValue];
       case CellColor.rgb:
       default:
         return Color(colorValue | 0xFF000000);

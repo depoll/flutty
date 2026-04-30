@@ -23,7 +23,6 @@ import 'package:monkeyssh/domain/services/monetization_service.dart';
 import 'package:monkeyssh/domain/services/settings_service.dart';
 import 'package:monkeyssh/presentation/screens/terminal_screen.dart';
 import 'package:monkeyssh/presentation/widgets/monkey_terminal_view.dart';
-import 'package:xterm/src/ui/palette_builder.dart';
 import 'package:xterm/xterm.dart' hide TerminalThemes;
 
 const _sshPort = int.fromEnvironment('CODEX_THEME_SSH_PORT');
@@ -321,7 +320,7 @@ double _minimumTokenContrast(
   String token,
 ) {
   final xtermTheme = theme.toXtermTheme();
-  final palette = PaletteBuilder(xtermTheme).build();
+  final palette = _buildTerminalPalette(xtermTheme);
   final cell = CellData.empty();
 
   for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
@@ -353,7 +352,7 @@ double _minimumTokenContrast(
   String token,
 ) {
   final xtermTheme = theme.toXtermTheme();
-  final palette = PaletteBuilder(xtermTheme).build();
+  final palette = _buildTerminalPalette(xtermTheme);
   final cell = CellData.empty();
 
   for (var row = 0; row < terminal.buffer.lines.length; row += 1) {
@@ -438,8 +437,7 @@ Color _resolveBackgroundColor(
   final colorValue = cellColor & CellColor.valueMask;
   return switch (colorType) {
     CellColor.normal => xtermTheme.background,
-    CellColor.named || CellColor.palette =>
-      resolveMonkeyTerminalPaletteBackgroundColor(xtermTheme, colorValue),
+    CellColor.named || CellColor.palette => palette[colorValue],
     _ => Color.fromARGB(
       0xFF,
       (colorValue >> 16) & 0xFF,
@@ -448,6 +446,13 @@ Color _resolveBackgroundColor(
     ),
   };
 }
+
+List<Color> _buildTerminalPalette(TerminalTheme xtermTheme) =>
+    List<Color>.generate(
+      256,
+      (index) => resolveMonkeyTerminalPaletteColor(xtermTheme, index),
+      growable: false,
+    );
 
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
