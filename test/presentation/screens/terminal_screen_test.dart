@@ -728,7 +728,10 @@ void main() {
         expect(find.textContaining(tmuxSessionName), findsOneWidget);
         expect(hasSessionCalls, greaterThanOrEqualTo(2));
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
@@ -806,18 +809,28 @@ void main() {
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
         expect(hasSessionCalls, greaterThanOrEqualTo(2));
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
-      'initial tmux target selects the alerted window and can start expanded',
+      'initial tmux target selects stable window ID and can start expanded',
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'alerts';
+        const staleTargetWindowIndex = 2;
         const targetWindowIndex = 3;
+        const targetWindowId = '@9';
         final windows = <TmuxWindow>[
-          const TmuxWindow(index: 1, name: 'shell', isActive: true),
-          const TmuxWindow(index: 3, name: 'agent', isActive: false),
+          const TmuxWindow(index: 1, id: '@8', name: 'shell', isActive: true),
+          const TmuxWindow(
+            index: targetWindowIndex,
+            id: targetWindowId,
+            name: 'agent',
+            isActive: false,
+          ),
         ];
         when(
           () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
@@ -830,6 +843,7 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            windowId: targetWindowId,
           ),
         ).thenAnswer((_) async {});
         when(
@@ -864,7 +878,8 @@ void main() {
                 hostId: host.id,
                 connectionId: session.connectionId,
                 initialTmuxSessionName: tmuxSessionName,
-                initialTmuxWindowIndex: targetWindowIndex,
+                initialTmuxWindowIndex: staleTargetWindowIndex,
+                initialTmuxWindowId: targetWindowId,
                 initiallyExpandTmuxWindows: true,
               ),
             ),
@@ -880,12 +895,16 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            windowId: targetWindowId,
           ),
         ).called(1);
         expect(find.text('shell'), findsOneWidget);
         expect(find.text('agent'), findsOneWidget);
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(
@@ -895,9 +914,15 @@ void main() {
         const tmuxSessionName = 'alerts';
         const tmuxExtraFlags = '-S /tmp/alerts.sock';
         const targetWindowIndex = 3;
+        const targetWindowId = '@9';
         final windows = <TmuxWindow>[
-          const TmuxWindow(index: 1, name: 'shell', isActive: true),
-          const TmuxWindow(index: 3, name: 'agent', isActive: false),
+          const TmuxWindow(index: 1, id: '@8', name: 'shell', isActive: true),
+          const TmuxWindow(
+            index: targetWindowIndex,
+            id: targetWindowId,
+            name: 'agent',
+            isActive: false,
+          ),
         ];
         final secondShellOpen = Completer<void>();
         var shellOpenCount = 0;
@@ -934,6 +959,7 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            windowId: targetWindowId,
             extraFlags: tmuxExtraFlags,
           ),
         ).thenAnswer((_) async {});
@@ -980,6 +1006,7 @@ void main() {
                 connectionId: session.connectionId,
                 initialTmuxSessionName: tmuxSessionName,
                 initialTmuxWindowIndex: targetWindowIndex,
+                initialTmuxWindowId: targetWindowId,
                 initialTmuxWindowRequiresVisibleSession: true,
               ),
             ),
@@ -999,6 +1026,7 @@ void main() {
             session,
             tmuxSessionName,
             targetWindowIndex,
+            windowId: targetWindowId,
             extraFlags: tmuxExtraFlags,
           ),
         ).called(1);
@@ -1033,7 +1061,10 @@ void main() {
         expect(shellWrites.map(utf8.decode).join(), contains(tmuxSessionName));
         expect(shellOpenCount, greaterThanOrEqualTo(2));
       },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+      variant: const TargetPlatformVariant({
+        TargetPlatform.android,
+        TargetPlatform.iOS,
+      }),
     );
 
     testWidgets(

@@ -586,7 +586,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
 
   List<TmuxWindow>? _windows;
   AgentLaunchTool? _preferredLaunchTool;
-  final Set<int> _seenAlertWindows = <int>{};
+  final Set<String> _seenAlertWindowKeys = <String>{};
   late bool _expanded;
   bool _isLoading = true;
   bool _showSessions = false;
@@ -775,32 +775,39 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void _applyWindows(List<TmuxWindow> windows) {
     // Detect new alerts that weren't in the previous window list.
     final newAlerts = windows.where(
-      (w) => w.hasAlert && !w.isActive && !_seenAlertWindows.contains(w.index),
+      (w) =>
+          w.hasAlert &&
+          !w.isActive &&
+          !_seenAlertWindowKeys.contains(_tmuxAlertWindowKey(w)),
     );
     if (newAlerts.isNotEmpty) {
       unawaited(_bounceController.forward(from: 0));
       for (final w in newAlerts) {
-        _seenAlertWindows.add(w.index);
+        _seenAlertWindowKeys.add(_tmuxAlertWindowKey(w));
         _sendAlertNotification(w, windows);
       }
     }
 
-    final activeAlerts = _seenAlertWindows
+    final activeAlerts = _seenAlertWindowKeys
         .where(
-          (idx) =>
-              windows.any((w) => w.index == idx && w.hasAlert && w.isActive),
+          (key) => windows.any(
+            (w) => _tmuxAlertWindowKey(w) == key && w.hasAlert && w.isActive,
+          ),
         )
         .toList(growable: false);
-    for (final windowIndex in activeAlerts) {
-      _clearAlertNotification(windowIndex);
+    for (final windowKey in activeAlerts) {
+      _clearAlertNotification(windowKey);
     }
 
-    final clearedAlerts = _seenAlertWindows
-        .where((idx) => !windows.any((w) => w.index == idx && w.hasAlert))
+    final clearedAlerts = _seenAlertWindowKeys
+        .where(
+          (key) =>
+              !windows.any((w) => _tmuxAlertWindowKey(w) == key && w.hasAlert),
+        )
         .toList(growable: false);
-    for (final windowIndex in clearedAlerts) {
-      _seenAlertWindows.remove(windowIndex);
-      _clearAlertNotification(windowIndex);
+    for (final windowKey in clearedAlerts) {
+      _seenAlertWindowKeys.remove(windowKey);
+      _clearAlertNotification(windowKey);
     }
 
     final nextPendingSelectedWindowIndex =
@@ -1101,15 +1108,18 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   int _tmuxAlertNotificationId(
     SshSession session,
     String tmuxSessionName,
-    int windowIndex,
+    String windowKey,
   ) =>
       Object.hash(
         session.hostId,
         session.connectionId,
         tmuxSessionName,
-        windowIndex,
+        windowKey,
       ) &
       0x7fffffff;
+
+  String _tmuxAlertWindowKey(TmuxWindow window) =>
+      window.id ?? 'index:${window.index}';
 
   void _sendAlertNotification(TmuxWindow window, List<TmuxWindow> windows) {
     final content = resolveTmuxAlertNotificationContent(
@@ -1125,7 +1135,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             notificationId: _tmuxAlertNotificationId(
               widget.session,
               widget.tmuxSessionName,
-              window.index,
+              _tmuxAlertWindowKey(window),
             ),
             title: content.title,
             body: content.body,
@@ -1134,12 +1144,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
               connectionId: widget.session.connectionId,
               tmuxSessionName: widget.tmuxSessionName,
               windowIndex: window.index,
+              windowId: window.id,
             ),
           ),
     );
   }
 
-  void _clearAlertNotification(int windowIndex) {
+  void _clearAlertNotification(String windowKey) {
     unawaited(
       widget.ref
           .read(localNotificationServiceProvider)
@@ -1147,7 +1158,7 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
             _tmuxAlertNotificationId(
               widget.session,
               widget.tmuxSessionName,
-              windowIndex,
+              windowKey,
             ),
           ),
     );
@@ -1156,13 +1167,13 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
   void _clearAlertNotificationFor(
     SshSession session,
     String tmuxSessionName,
-    int windowIndex,
+    String windowKey,
   ) {
     unawaited(
       widget.ref
           .read(localNotificationServiceProvider)
           .clearTmuxAlert(
-            _tmuxAlertNotificationId(session, tmuxSessionName, windowIndex),
+            _tmuxAlertNotificationId(session, tmuxSessionName, windowKey),
           ),
     );
   }
@@ -1171,10 +1182,10 @@ class _TmuxExpandableBarState extends State<_TmuxExpandableBar>
     SshSession session,
     String tmuxSessionName,
   ) {
-    for (final windowIndex in _seenAlertWindows) {
-      _clearAlertNotificationFor(session, tmuxSessionName, windowIndex);
+    for (final windowKey in _seenAlertWindowKeys) {
+      _clearAlertNotificationFor(session, tmuxSessionName, windowKey);
     }
-    _seenAlertWindows.clear();
+    _seenAlertWindowKeys.clear();
   }
 
   void _onVerticalDragUpdate(DragUpdateDetails details) {
@@ -3165,6 +3176,7 @@ class TerminalScreen extends ConsumerStatefulWidget {
     this.connectionId,
     this.initialTmuxSessionName,
     this.initialTmuxWindowIndex,
+    this.initialTmuxWindowId,
     this.initialTmuxWindowRequiresVisibleSession = false,
     this.initiallyExpandTmuxWindows = false,
     super.key,
@@ -3182,6 +3194,9 @@ class TerminalScreen extends ConsumerStatefulWidget {
   /// Optional tmux window to focus after opening the terminal.
   final int? initialTmuxWindowIndex;
 
+  /// Optional stable tmux window ID to focus after opening the terminal.
+  final String? initialTmuxWindowId;
+
   /// Whether focusing the initial tmux window must also make tmux visible.
   final bool initialTmuxWindowRequiresVisibleSession;
 
@@ -3197,10 +3212,12 @@ class _InitialTmuxWindowTarget {
     required this.sessionName,
     required this.windowIndex,
     required this.requiresVisibleSession,
+    this.windowId,
   });
 
   final String sessionName;
   final int windowIndex;
+  final String? windowId;
   final bool requiresVisibleSession;
 }
 
@@ -3505,6 +3522,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   ) {
     final sessionName = widget.initialTmuxSessionName?.trim();
     final windowIndex = widget.initialTmuxWindowIndex;
+    final windowId = widget.initialTmuxWindowId?.trim();
     if (sessionName == null ||
         sessionName.isEmpty ||
         windowIndex == null ||
@@ -3514,6 +3532,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     return _InitialTmuxWindowTarget(
       sessionName: sessionName,
       windowIndex: windowIndex,
+      windowId: windowId != null && isValidTmuxWindowId(windowId)
+          ? windowId
+          : null,
       requiresVisibleSession: widget.initialTmuxWindowRequiresVisibleSession,
     );
   }
@@ -4886,16 +4907,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     List<TmuxWindow> windows,
   ) async {
     final target = _pendingInitialTmuxWindowTarget;
-    if (target == null ||
-        target.sessionName != sessionName ||
-        !windows.any((window) => window.index == target.windowIndex)) {
+    if (target == null || target.sessionName != sessionName) {
+      return;
+    }
+    final targetWindow = target.windowId == null
+        ? windows
+              .where((window) => window.index == target.windowIndex)
+              .firstOrNull
+        : windows.where((window) => window.id == target.windowId).firstOrNull;
+    if (targetWindow == null) {
       return;
     }
     _pendingInitialTmuxWindowTarget = null;
     try {
       await _switchTmuxWindow(
         session,
-        target.windowIndex,
+        targetWindow.index,
+        windowId: target.windowId,
         forceVisibleTmux: target.requiresVisibleSession,
       );
     } on Exception catch (error) {
@@ -5213,19 +5241,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _switchTmuxWindow(
     SshSession session,
     int windowIndex, {
+    String? windowId,
     bool forceVisibleTmux = false,
   }) async {
     final sessionName = _tmuxSessionName;
     if (sessionName == null) return;
 
-    await ref
-        .read(tmuxServiceProvider)
-        .selectWindow(
-          session,
-          sessionName,
-          windowIndex,
-          extraFlags: _host?.tmuxExtraFlags,
-        );
+    final tmux = ref.read(tmuxServiceProvider);
+    final targetWindowId = windowId != null && isValidTmuxWindowId(windowId)
+        ? windowId
+        : null;
+    if (targetWindowId == null) {
+      await tmux.selectWindow(
+        session,
+        sessionName,
+        windowIndex,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    } else {
+      await tmux.selectWindow(
+        session,
+        sessionName,
+        windowIndex,
+        windowId: targetWindowId,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    }
 
     // Clear stale working directory — it will be refreshed from
     // OSC 7 or the next tmux query.

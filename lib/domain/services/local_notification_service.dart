@@ -6,6 +6,8 @@ import 'package:flutter/services.dart';
 import 'package:flutter_local_notifications/flutter_local_notifications.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../models/tmux_state.dart';
+
 /// Local notification channel used for tmux activity alerts.
 const tmuxAlertNotificationChannelId = 'tmux-alerts';
 const _androidNotificationIcon = 'ic_notification_monkey';
@@ -22,6 +24,7 @@ class TmuxAlertNotificationPayload {
     required this.connectionId,
     required this.tmuxSessionName,
     required this.windowIndex,
+    this.windowId,
   });
 
   static const _type = 'tmux-alert';
@@ -39,6 +42,9 @@ class TmuxAlertNotificationPayload {
   /// tmux window index that needs attention.
   final int windowIndex;
 
+  /// Stable tmux window ID that needs attention, when available.
+  final String? windowId;
+
   /// Encodes this payload for the notification plugin.
   String encode() => jsonEncode(<String, Object>{
     'type': _type,
@@ -47,6 +53,7 @@ class TmuxAlertNotificationPayload {
     'connectionId': connectionId,
     'tmuxSessionName': tmuxSessionName,
     'windowIndex': windowIndex,
+    'windowId': ?windowId,
   });
 
   /// Decodes a notification payload, returning `null` for other payload types.
@@ -65,11 +72,16 @@ class TmuxAlertNotificationPayload {
       final connectionId = decoded['connectionId'];
       final tmuxSessionName = decoded['tmuxSessionName'];
       final windowIndex = decoded['windowIndex'];
+      final windowId = decoded['windowId'];
+      final stableWindowId = windowId is String && isValidTmuxWindowId(windowId)
+          ? windowId
+          : null;
       if (hostId is! int ||
           connectionId is! int ||
           tmuxSessionName is! String ||
           tmuxSessionName.trim().isEmpty ||
-          windowIndex is! int) {
+          windowIndex is! int ||
+          (windowId != null && stableWindowId == null)) {
         return null;
       }
       return TmuxAlertNotificationPayload(
@@ -77,6 +89,7 @@ class TmuxAlertNotificationPayload {
         connectionId: connectionId,
         tmuxSessionName: tmuxSessionName,
         windowIndex: windowIndex,
+        windowId: stableWindowId,
       );
     } on FormatException {
       return null;
@@ -90,11 +103,12 @@ class TmuxAlertNotificationPayload {
           hostId == other.hostId &&
           connectionId == other.connectionId &&
           tmuxSessionName == other.tmuxSessionName &&
-          windowIndex == other.windowIndex;
+          windowIndex == other.windowIndex &&
+          windowId == other.windowId;
 
   @override
   int get hashCode =>
-      Object.hash(hostId, connectionId, tmuxSessionName, windowIndex);
+      Object.hash(hostId, connectionId, tmuxSessionName, windowIndex, windowId);
 }
 
 /// Builds the terminal route location for a tmux alert notification tap.
@@ -105,6 +119,7 @@ String buildTmuxAlertTerminalLocation(TmuxAlertNotificationPayload payload) =>
         'connectionId': '${payload.connectionId}',
         'tmuxSession': payload.tmuxSessionName,
         'tmuxWindow': '${payload.windowIndex}',
+        if (payload.windowId != null) 'tmuxWindowId': payload.windowId!,
       },
     ).toString();
 

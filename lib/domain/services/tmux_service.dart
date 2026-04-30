@@ -591,7 +591,7 @@ class TmuxService {
         '"#{window_index}$sep#{window_name}$sep#{window_active}$sep'
         '#{pane_current_command}$sep#{pane_current_path}$sep'
         '#{window_flags}$sep#{pane_title}$sep#{window_activity}$sep'
-        '#{pane_start_command}$sep#{@flutty_agent_tool}"',
+        '#{pane_start_command}$sep#{@flutty_agent_tool}$sep#{window_id}"',
       );
       final windows = List<TmuxWindow>.unmodifiable(
         _parseLines(output, TmuxWindow.fromTmuxFormat),
@@ -854,22 +854,30 @@ class TmuxService {
     SshSession session,
     String sessionName,
     int windowIndex, {
+    String? windowId,
     String? extraFlags,
   }) async {
+    final targetWindowId = windowId?.trim();
+    final safeWindowId =
+        targetWindowId != null && isValidTmuxWindowId(targetWindowId)
+        ? targetWindowId
+        : null;
+    final hasTargetWindowId = safeWindowId != null;
+    final target = safeWindowId == null
+        ? '${_shellQuote(sessionName)}:$windowIndex'
+        : _shellQuote(safeWindowId);
     DiagnosticsLogService.instance.info(
       'tmux.action',
       'select_window_start',
       fields: {
         'connectionId': session.connectionId,
         'windowIndex': windowIndex,
+        'hasWindowId': hasTargetWindowId,
       },
     );
     await _exec(
       session,
-      _tmuxCommand(
-        'select-window -t ${_shellQuote(sessionName)}:$windowIndex',
-        extraFlags: extraFlags,
-      ),
+      _tmuxCommand('select-window -t $target', extraFlags: extraFlags),
     );
     DiagnosticsLogService.instance.info(
       'tmux.action',
@@ -877,6 +885,7 @@ class TmuxService {
       fields: {
         'connectionId': session.connectionId,
         'windowIndex': windowIndex,
+        'hasWindowId': hasTargetWindowId,
       },
     );
   }
@@ -1626,7 +1635,8 @@ const _tmuxWindowSubscriptionFormat =
     '#{pane_title}$tmuxWindowFieldSeparator'
     '#{window_activity}$tmuxWindowFieldSeparator'
     '#{pane_start_command}$tmuxWindowFieldSeparator'
-    '#{@flutty_agent_tool}';
+    '#{@flutty_agent_tool}$tmuxWindowFieldSeparator'
+    '#{window_id}';
 
 const _tmuxControlModeClientFlags = 'read-only,ignore-size,no-output,wait-exit';
 

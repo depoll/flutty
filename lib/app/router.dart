@@ -66,6 +66,7 @@ final routerProvider = Provider<GoRouter>((ref) {
           final initialTmuxWindowIndex = int.tryParse(
             state.uri.queryParameters['tmuxWindow'] ?? '',
           );
+          final initialTmuxWindowId = state.uri.queryParameters['tmuxWindowId'];
           if (hostId == null) {
             return const Scaffold(body: Center(child: Text('Invalid host ID')));
           }
@@ -76,6 +77,7 @@ final routerProvider = Provider<GoRouter>((ref) {
                 connectionId,
                 initialTmuxSessionName,
                 initialTmuxWindowIndex,
+                initialTmuxWindowId,
                 state.uri.queryParameters['notificationTap'],
               ),
             ),
@@ -83,6 +85,7 @@ final routerProvider = Provider<GoRouter>((ref) {
             connectionId: connectionId,
             initialTmuxSessionName: initialTmuxSessionName,
             initialTmuxWindowIndex: initialTmuxWindowIndex,
+            initialTmuxWindowId: initialTmuxWindowId,
             initialTmuxWindowRequiresVisibleSession:
                 state.uri.queryParameters['notificationTap'] != null,
             initiallyExpandTmuxWindows:
