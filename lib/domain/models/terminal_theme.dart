@@ -11,6 +11,25 @@ import 'package:xterm/xterm.dart';
 String buildTerminalThemeModeReport({required bool isDark}) =>
     isDark ? '\x1b[?997;1n' : '\x1b[?997;2n';
 
+/// Builds standard color reports used to refresh tmux after a theme change.
+///
+/// tmux can cache default colors and ANSI palette entries for panes. Reporting
+/// the full theme-controlled surface keeps tmux-aware TUIs aligned without
+/// changing fixed xterm 16-255 palette entries or literal RGB colors.
+String buildTerminalThemeRefreshReports(TerminalThemeData theme) {
+  final paletteArgs = <String>[
+    for (var index = 0; index < 16; index += 1) ...['$index', '?'],
+  ];
+  return [
+    buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
+    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
+    buildTerminalThemeOscResponse(theme: theme, code: '12', args: const ['?']),
+    buildTerminalThemeOscResponse(theme: theme, code: '17', args: const ['?']),
+    buildTerminalThemeOscResponse(theme: theme, code: '19', args: const ['?']),
+    buildTerminalThemeOscResponse(theme: theme, code: '4', args: paletteArgs),
+  ].whereType<String>().join();
+}
+
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///
 /// Modern TUIs use these queries (notably `OSC 11;?`) to detect whether the

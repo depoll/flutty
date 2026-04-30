@@ -580,20 +580,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     );
   }
 
-  /// Reports the current terminal foreground/background colors to tmux.
+  /// Reports the current terminal theme colors to tmux.
   void refreshThemeColorReports(TerminalThemeData theme) {
-    final reports = [
-      buildTerminalThemeOscResponse(
-        theme: theme,
-        code: '10',
-        args: const ['?'],
-      ),
-      buildTerminalThemeOscResponse(
-        theme: theme,
-        code: '11',
-        args: const ['?'],
-      ),
-    ].whereType<String>().join();
+    final reports = buildTerminalThemeRefreshReports(theme);
     if (reports.isEmpty) {
       return;
     }
