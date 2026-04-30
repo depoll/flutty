@@ -3649,7 +3649,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     final terminalViewState = _terminalViewKey.currentState;
     if (_isTmuxActive) {
-      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+      // Notify theme-aware TUIs of the new mode and push fresh OSC 10/11/12/4
+      // reports. tmux caches the outer terminal's default colors and ANSI
+      // palette and answers OSC queries from that cache; without these
+      // unsolicited reports, apps inside tmux (e.g. Copilot) keep deriving
+      // colors from the previous theme.
+      terminalViewState
+        ?..refreshThemeModeReport(isDark: theme.isDark)
+        ..refreshThemeColorReports(theme);
       _refreshTmuxClientAfterTerminalThemeChange(
         theme: theme,
         session: session,
