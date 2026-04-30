@@ -481,6 +481,9 @@ jobs:
 
       - name: Upload APK to Internal App Sharing
         id: upload-internal-app-sharing
+        # IAS upload uses the debug APK built in the non-deploy path.
+        # When deploy-android-to != 'none' the Play Store deployment already
+        # handles distribution, so IAS is intentionally skipped in that case.
         if: inputs.deploy-android-to-internal-app-sharing && inputs.deploy-android-to == 'none'
         env:
           PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
