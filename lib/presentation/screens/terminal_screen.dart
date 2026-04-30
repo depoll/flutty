@@ -3322,6 +3322,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalThemeData? _sessionThemeOverride;
   final Object _terminalAppThemeOverrideOwner = Object();
   late final TerminalAppThemeOverrideNotifier _terminalAppThemeOverrideNotifier;
+  Brightness? _lastThemeDependencyBrightness;
   int _terminalThemeRefreshGeneration = 0;
 
   // Cache the notifier for use in dispose
@@ -3723,6 +3724,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             : TerminalThemes.defaultLightTheme);
   }
 
+  SshConnectionState _selectTrackedConnectionState(
+    Map<int, SshConnectionState> states,
+  ) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return SshConnectionState.disconnected;
+    }
+    return states[connectionId] ?? SshConnectionState.disconnected;
+  }
+
   Future<void> _startSharedClipboardSync(SshSession session) async {
     _stopSharedClipboardSync();
     _remoteClipboardUnsupported = false;
@@ -4029,6 +4040,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) return;
 
     final brightness = Theme.of(context).brightness;
+    _lastThemeDependencyBrightness = brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??
@@ -4041,10 +4053,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
 
-    if (mounted) {
-      setState(() => _currentTheme = theme);
-      _applyTerminalThemeToSession(theme);
+    if (!mounted) {
+      return;
     }
+    final didThemeChange = _currentTheme?.id != theme.id;
+    if (didThemeChange) {
+      setState(() => _currentTheme = theme);
+    }
+    _applyTerminalThemeToSession(theme);
   }
 
   Future<bool> _restoreSessionThemeOverride(SshSession session) async {
@@ -4055,7 +4071,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     if (themeId == null) {
       if (mounted) {
-        setState(() => _sessionThemeOverride = null);
+        if (_sessionThemeOverride != null) {
+          setState(() => _sessionThemeOverride = null);
+        }
         _applyTerminalThemeToSession(
           _resolveEffectiveTerminalTheme(),
           session: session,
@@ -4070,7 +4088,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return false;
     }
-    setState(() => _sessionThemeOverride = resolvedTheme);
+    if (_sessionThemeOverride?.id != resolvedTheme?.id) {
+      setState(() => _sessionThemeOverride = resolvedTheme);
+    }
     if (resolvedTheme != null) {
       _applyTerminalThemeToSession(resolvedTheme, session: session);
     }
@@ -5587,8 +5607,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTrackedConnectionStateChange(
-    Map<int, SshConnectionState>? previous,
-    Map<int, SshConnectionState> next,
+    SshConnectionState? previous,
+    SshConnectionState next,
   ) {
     final connectionId = _connectionId;
     if (connectionId == null) {
@@ -5596,9 +5616,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final previousState =
-        previous?[connectionId] ?? SshConnectionState.disconnected;
-    final nextState = next[connectionId] ?? SshConnectionState.disconnected;
+    final previousState = previous ?? SshConnectionState.disconnected;
+    final nextState = next;
     _syncTerminalWakeLock(nextState);
     if (previousState == nextState ||
         nextState != SshConnectionState.disconnected) {
@@ -5791,6 +5810,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
+    final brightness = Theme.of(context).brightness;
+    if (_currentTheme != null && _lastThemeDependencyBrightness == brightness) {
+      return;
+    }
+    _lastThemeDependencyBrightness = brightness;
     if (_currentTheme == null) {
       return;
     }
@@ -5876,19 +5900,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<Map<int, SshConnectionState>>(
-      activeSessionsProvider,
+    ref.listen<SshConnectionState>(
+      activeSessionsProvider.select(_selectTrackedConnectionState),
       _handleTrackedConnectionStateChange,
     );
     final theme = Theme.of(context);
-    final connectionStates = ref.watch(activeSessionsProvider);
+    final connectionState = ref.watch(
+      activeSessionsProvider.select(_selectTrackedConnectionState),
+    );
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
-    final connectionState = _connectionId == null
-        ? SshConnectionState.disconnected
-        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&

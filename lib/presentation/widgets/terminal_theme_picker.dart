@@ -366,6 +366,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       return;
     }
 
+    var didSelectTheme = false;
     setState(() => _importingSchemeId = scheme.id);
     try {
       final liveSchemeService = ref.read(itermColorSchemeServiceProvider);
@@ -381,6 +382,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
       }
 
       if (mounted) {
+        didSelectTheme = true;
         widget.onThemeSelected(theme);
       }
     } on ItermColorSchemeException catch (error) {
@@ -392,7 +394,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         );
       }
     } finally {
-      if (mounted) {
+      if (mounted && !didSelectTheme) {
         setState(() => _importingSchemeId = null);
       }
     }

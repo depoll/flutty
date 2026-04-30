@@ -1922,12 +1922,21 @@ class SshSession {
   }
 
   /// Persist a per-session terminal theme override.
-  void setTerminalThemeId(String themeId, {required bool isDark}) {
+  ///
+  /// Returns `true` when the stored theme ID changed.
+  bool setTerminalThemeId(String themeId, {required bool isDark}) {
     if (isDark) {
+      if (terminalThemeDarkId == themeId) {
+        return false;
+      }
       terminalThemeDarkId = themeId;
-      return;
+      return true;
+    }
+    if (terminalThemeLightId == themeId) {
+      return false;
     }
     terminalThemeLightId = themeId;
+    return true;
   }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
@@ -3280,7 +3289,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (session == null) {
       return;
     }
-    session.setTerminalThemeId(themeId, isDark: isDark);
+    final changed = session.setTerminalThemeId(themeId, isDark: isDark);
+    if (!changed) {
+      return;
+    }
     state = {...state};
   }
 

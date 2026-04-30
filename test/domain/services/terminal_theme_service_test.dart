@@ -4,6 +4,7 @@ import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -224,6 +225,41 @@ void main() {
         final customs = await themeService.getCustomThemes();
         expect(customs, isEmpty);
       });
+    });
+  });
+
+  group('TerminalAppThemeOverrideNotifier', () {
+    test('does not notify for repeated equivalent overrides', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final owner = Object();
+      final notifications = <TerminalAppThemeOverride?>[];
+      final subscription = container.listen<TerminalAppThemeOverride?>(
+        terminalAppThemeOverrideProvider,
+        (_, next) => notifications.add(next),
+      );
+      addTearDown(subscription.close);
+
+      final notifier = container.read(
+        terminalAppThemeOverrideProvider.notifier,
+      );
+      void setOverride(Object overrideOwner) {
+        notifier.activeOverride = TerminalAppThemeOverride(
+          owner: overrideOwner,
+          lightThemeId: TerminalThemes.githubLightDefault.id,
+          darkThemeId: TerminalThemes.dracula.id,
+        );
+      }
+
+      setOverride(owner);
+      setOverride(owner);
+
+      expect(notifications, hasLength(1));
+
+      setOverride(Object());
+
+      expect(notifications, hasLength(2));
     });
   });
 }

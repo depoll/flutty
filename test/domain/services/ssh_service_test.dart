@@ -982,6 +982,36 @@ void main() {
       );
     });
 
+    test('updateSessionTheme skips unchanged theme IDs', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final notifications = <Map<int, SshConnectionState>>[];
+      final subscription = container.listen<Map<int, SshConnectionState>>(
+        activeSessionsProvider,
+        (_, next) => notifications.add(next),
+      );
+      addTearDown(subscription.close);
+
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      final connectionId = result.connectionId!;
+      notifications.clear();
+
+      notifier.updateSessionTheme(
+        connectionId,
+        monkey_themes.TerminalThemes.dracula.id,
+        isDark: true,
+      );
+      expect(notifications, hasLength(1));
+      notifications.clear();
+
+      notifier.updateSessionTheme(
+        connectionId,
+        monkey_themes.TerminalThemes.dracula.id,
+        isDark: true,
+      );
+      expect(notifications, isEmpty);
+    });
+
     test(
       'disconnectAll clears active sessions and connection attempts',
       () async {
