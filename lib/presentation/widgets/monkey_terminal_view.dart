@@ -545,16 +545,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
   }
 
-  /// Re-sends a focus-gained report after terminal state changes.
+  /// Re-sends focus reports after terminal state changes.
   ///
   /// TUIs such as Codex re-query terminal colors after focus-gained events. The
   /// app can use this after a theme change so those TUIs refresh cached
   /// foreground/background colors without waiting for a real focus transition.
-  void refreshFocusReport() {
+  void refreshFocusReport({bool forceTransition = false}) {
     if (!widget.terminal.reportFocusMode) {
       return;
     }
-    widget.terminal.onOutput?.call(_terminalFocusInReport);
+    widget.terminal.onOutput?.call(
+      forceTransition
+          ? '$_terminalFocusOutReport$_terminalFocusInReport'
+          : _terminalFocusInReport,
+    );
   }
 
   /// Reports the current terminal theme mode to focus-aware terminal muxers.
@@ -562,6 +566,26 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.terminal.onOutput?.call(
       buildTerminalThemeModeReport(isDark: isDark),
     );
+  }
+
+  /// Reports the current terminal foreground/background colors to tmux.
+  void refreshThemeColorReports(TerminalThemeData theme) {
+    final reports = [
+      buildTerminalThemeOscResponse(
+        theme: theme,
+        code: '10',
+        args: const ['?'],
+      ),
+      buildTerminalThemeOscResponse(
+        theme: theme,
+        code: '11',
+        args: const ['?'],
+      ),
+    ].whereType<String>().join();
+    if (reports.isEmpty) {
+      return;
+    }
+    widget.terminal.onOutput?.call(reports);
   }
 
   /// Re-sends the current viewport dimensions to the attached terminal.
