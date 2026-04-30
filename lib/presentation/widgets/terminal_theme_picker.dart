@@ -13,7 +13,6 @@ import 'theme_preview_card.dart';
 const _liveThemeSearchMinLength = 2;
 const _liveThemeSearchDebounce = Duration(milliseconds: 350);
 const _liveThemeResultLimit = 24;
-const _liveThemePreviewLimit = 4;
 
 /// A reusable widget for selecting terminal themes.
 ///
@@ -42,6 +41,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   String _searchQuery = '';
   String _liveSearchQuery = '';
   String? _importingSchemeId;
+  ItermColorSchemeMetadata? _previewingScheme;
   _ThemeFilter _filter = _ThemeFilter.all;
   final TextEditingController _searchController = TextEditingController();
   Timer? _liveSearchDebounceTimer;
@@ -70,7 +70,10 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
 
     // Get the currently selected theme for the preview
     final currentTheme = widget.selectedThemeId != null
-        ? _themeById(availableThemes, widget.selectedThemeId!)
+        ? TerminalThemes.getById(
+            widget.selectedThemeId!,
+            additionalThemes: availableThemes,
+          )
         : null;
 
     return NestedScrollView(
@@ -187,6 +190,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     setState(() {
       _searchQuery = '';
       _liveSearchQuery = '';
+      _previewingScheme = null;
     });
   }
 
@@ -195,6 +199,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final query = value.trim();
     setState(() {
       _searchQuery = value;
+      _previewingScheme = null;
       if (query.length < _liveThemeSearchMinLength) {
         _liveSearchQuery = '';
       }
@@ -346,6 +351,9 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             return _LiveThemePreviewGrid(
               schemes: remoteSchemes,
               importingSchemeId: _importingSchemeId,
+              previewingScheme: _previewingScheme,
+              onSchemePreviewed: (scheme) =>
+                  setState(() => _previewingScheme = scheme),
               onSchemeSelected: _importLiveScheme,
             );
           },
@@ -466,24 +474,19 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   }
 }
 
-TerminalThemeData? _themeById(Iterable<TerminalThemeData> themes, String id) {
-  for (final theme in themes) {
-    if (theme.id == id) {
-      return theme;
-    }
-  }
-  return TerminalThemes.getById(id);
-}
-
 class _LiveThemePreviewGrid extends StatelessWidget {
   const _LiveThemePreviewGrid({
     required this.schemes,
     required this.importingSchemeId,
+    required this.previewingScheme,
+    required this.onSchemePreviewed,
     required this.onSchemeSelected,
   });
 
   final List<ItermColorSchemeMetadata> schemes;
   final String? importingSchemeId;
+  final ItermColorSchemeMetadata? previewingScheme;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemePreviewed;
   final ValueChanged<ItermColorSchemeMetadata> onSchemeSelected;
 
   @override
@@ -491,46 +494,34 @@ class _LiveThemePreviewGrid extends StatelessWidget {
     final visibleSchemes = schemes
         .take(_liveThemeResultLimit)
         .toList(growable: false);
-    final previewSchemes = visibleSchemes
-        .take(_liveThemePreviewLimit)
-        .toList(growable: false);
-    final compactSchemes = visibleSchemes
-        .skip(_liveThemePreviewLimit)
-        .toList(growable: false);
-    final screenWidth = MediaQuery.of(context).size.width;
-    final crossAxisCount = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
+    final activePreview =
+        previewingScheme != null &&
+            visibleSchemes.any((scheme) => scheme.id == previewingScheme!.id)
+        ? previewingScheme
+        : null;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            mainAxisSpacing: 12,
-            crossAxisSpacing: 12,
-            childAspectRatio: 0.9,
-          ),
-          itemCount: previewSchemes.length,
-          itemBuilder: (context, index) {
-            final scheme = previewSchemes[index];
-            return _LiveThemePreviewCard(
-              scheme: scheme,
-              isImporting: importingSchemeId == scheme.id,
+        if (activePreview != null) ...[
+          SizedBox(
+            height: 168,
+            child: _LiveThemePreviewCard(
+              scheme: activePreview,
+              isImporting: importingSchemeId == activePreview.id,
               isBusy: importingSchemeId != null,
-              onTap: () => onSchemeSelected(scheme),
-            );
-          },
-        ),
-        if (compactSchemes.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          _LiveThemeCompactList(
-            schemes: compactSchemes,
-            importingSchemeId: importingSchemeId,
-            onSchemeSelected: onSchemeSelected,
+              onTap: () => onSchemeSelected(activePreview),
+            ),
           ),
+          const SizedBox(height: 12),
         ],
+        _LiveThemeCompactList(
+          schemes: visibleSchemes,
+          importingSchemeId: importingSchemeId,
+          previewingSchemeId: activePreview?.id,
+          onSchemePreviewed: onSchemePreviewed,
+          onSchemeSelected: onSchemeSelected,
+        ),
         if (schemes.length > visibleSchemes.length) ...[
           const SizedBox(height: 12),
           _LiveThemeMessage(
@@ -538,15 +529,6 @@ class _LiveThemePreviewGrid extends StatelessWidget {
             message:
                 'Showing the first ${visibleSchemes.length} live matches. '
                 'Refine your search to narrow the results.',
-          ),
-        ],
-        if (compactSchemes.isNotEmpty) ...[
-          const SizedBox(height: 12),
-          const _LiveThemeMessage(
-            icon: Icons.speed_outlined,
-            message:
-                'Previews are loaded for the first few matches only. Refine '
-                'your search to preview a specific theme before importing.',
           ),
         ],
       ],
@@ -558,11 +540,15 @@ class _LiveThemeCompactList extends StatelessWidget {
   const _LiveThemeCompactList({
     required this.schemes,
     required this.importingSchemeId,
+    required this.previewingSchemeId,
+    required this.onSchemePreviewed,
     required this.onSchemeSelected,
   });
 
   final List<ItermColorSchemeMetadata> schemes;
   final String? importingSchemeId;
+  final String? previewingSchemeId;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemePreviewed;
   final ValueChanged<ItermColorSchemeMetadata> onSchemeSelected;
 
   @override
@@ -575,7 +561,9 @@ class _LiveThemeCompactList extends StatelessWidget {
             scheme: scheme,
             isImporting: importingSchemeId == scheme.id,
             isBusy: importingSchemeId != null,
-            onTap: () => onSchemeSelected(scheme),
+            isPreviewing: previewingSchemeId == scheme.id,
+            onPreview: () => onSchemePreviewed(scheme),
+            onImport: () => onSchemeSelected(scheme),
           ),
       ],
     ),
@@ -587,13 +575,17 @@ class _LiveThemeCompactTile extends StatelessWidget {
     required this.scheme,
     required this.isImporting,
     required this.isBusy,
-    required this.onTap,
+    required this.isPreviewing,
+    required this.onPreview,
+    required this.onImport,
   });
 
   final ItermColorSchemeMetadata scheme;
   final bool isImporting;
   final bool isBusy;
-  final VoidCallback onTap;
+  final bool isPreviewing;
+  final VoidCallback onPreview;
+  final VoidCallback onImport;
 
   @override
   Widget build(BuildContext context) => ListTile(
@@ -602,12 +594,21 @@ class _LiveThemeCompactTile extends StatelessWidget {
             dimension: 20,
             child: CircularProgressIndicator(strokeWidth: 2),
           )
-        : const Icon(Icons.download_outlined),
+        : const Icon(Icons.palette_outlined),
     title: Text(scheme.name),
-    subtitle: const Text('Import from iTerm2ColorSchemes.com'),
-    trailing: const Icon(Icons.chevron_right),
+    subtitle: Text(
+      isPreviewing
+          ? 'Preview shown above'
+          : 'Preview before importing from iTerm2ColorSchemes.com',
+    ),
+    trailing: IconButton(
+      icon: const Icon(Icons.download_outlined),
+      tooltip: 'Import theme',
+      onPressed: isBusy ? null : onImport,
+    ),
     enabled: !isBusy || isImporting,
-    onTap: isBusy ? null : onTap,
+    selected: isPreviewing,
+    onTap: isBusy ? null : onPreview,
   );
 }
 

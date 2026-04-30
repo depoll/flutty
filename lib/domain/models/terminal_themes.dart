@@ -84,12 +84,58 @@ abstract final class TerminalThemes {
   static String resolveThemeId(String id) => _legacyThemeIdAliases[id] ?? id;
 
   /// Gets a theme by ID, returns null if not found.
-  static TerminalThemeData? getById(String id) {
+  ///
+  /// [additionalThemes] may include custom themes or a combined built-in/custom
+  /// list; built-ins are checked first so duplicate built-in IDs are ignored.
+  static TerminalThemeData? getById(
+    String id, {
+    Iterable<TerminalThemeData> additionalThemes = const [],
+  }) {
+    for (final theme in all) {
+      if (theme.id == id) return theme;
+    }
+    for (final theme in additionalThemes) {
+      if (theme.id == id) return theme;
+    }
+
     final resolvedId = resolveThemeId(id);
+    if (resolvedId == id) {
+      return null;
+    }
     for (final theme in all) {
       if (theme.id == resolvedId) return theme;
     }
+    for (final theme in additionalThemes) {
+      if (theme.id == resolvedId) return theme;
+    }
     return null;
+  }
+
+  /// Returns the built-in default theme ID for [brightness].
+  static String defaultThemeIdForBrightness(Brightness brightness) =>
+      brightness == Brightness.dark ? defaultDarkThemeId : defaultLightThemeId;
+
+  /// Returns the built-in default theme for [brightness].
+  static TerminalThemeData defaultThemeForBrightness(Brightness brightness) =>
+      brightness == Brightness.dark ? defaultDarkTheme : defaultLightTheme;
+
+  /// Resolves [themeId] against built-in and [additionalThemes].
+  ///
+  /// Falls back to the built-in default for [brightness] when the ID is null or
+  /// unavailable.
+  static TerminalThemeData resolveById({
+    required Brightness brightness,
+    required String? themeId,
+    Iterable<TerminalThemeData> additionalThemes = const [],
+  }) {
+    if (themeId != null) {
+      final theme = getById(themeId, additionalThemes: additionalThemes);
+      if (theme != null) {
+        return theme;
+      }
+    }
+
+    return defaultThemeForBrightness(brightness);
   }
 
   /// Dracula from iTerm2-Color-Schemes.

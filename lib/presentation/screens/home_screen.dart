@@ -250,11 +250,15 @@ class _HomeScreenState extends ConsumerState<HomeScreen>
           }
           ref
             ..invalidate(themeModeNotifierProvider)
+            ..invalidate(terminalThemesApplyToAppNotifierProvider)
+            ..invalidate(terminalThemesApplyToAppProvider)
             ..invalidate(fontSizeNotifierProvider)
             ..invalidate(fontFamilyNotifierProvider)
             ..invalidate(cursorStyleNotifierProvider)
             ..invalidate(bellSoundNotifierProvider)
-            ..invalidate(terminalThemeSettingsProvider);
+            ..invalidate(terminalThemeSettingsProvider)
+            ..invalidate(allTerminalThemesProvider)
+            ..invalidate(customTerminalThemesProvider);
           invalidateImportedEntityProviders(ref.invalidate);
           if (!mounted) {
             return;

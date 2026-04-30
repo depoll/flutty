@@ -390,6 +390,21 @@ void main() {
       expect(theme.name, 'Dracula');
     });
 
+    test('getById returns additional themes', () {
+      final customTheme = TerminalThemes.defaultDarkTheme.copyWith(
+        id: 'custom-theme',
+        name: 'Custom Theme',
+        isCustom: true,
+      );
+
+      final theme = TerminalThemes.getById(
+        'custom-theme',
+        additionalThemes: [customTheme],
+      );
+
+      expect(theme, customTheme);
+    });
+
     test('getById returns null when not exists', () {
       final theme = TerminalThemes.getById('nonexistent-theme');
       expect(theme, isNull);
@@ -434,6 +449,31 @@ void main() {
       for (final theme in TerminalThemes.all) {
         expect(theme.id, startsWith('iterm2-'));
       }
+    });
+
+    test('defaultThemeForBrightness returns built-in defaults', () {
+      expect(
+        TerminalThemes.defaultThemeForBrightness(Brightness.dark),
+        TerminalThemes.defaultDarkTheme,
+      );
+      expect(
+        TerminalThemes.defaultThemeForBrightness(Brightness.light),
+        TerminalThemes.defaultLightTheme,
+      );
+    });
+
+    test('resolveById falls back by brightness when the id is unavailable', () {
+      expect(
+        TerminalThemes.resolveById(
+          brightness: Brightness.dark,
+          themeId: 'missing-theme',
+        ),
+        TerminalThemes.defaultDarkTheme,
+      );
+      expect(
+        TerminalThemes.resolveById(brightness: Brightness.light, themeId: null),
+        TerminalThemes.defaultLightTheme,
+      );
     });
 
     test('built-in themes keep default text usable', () {

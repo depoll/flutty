@@ -9,7 +9,6 @@ import 'package:google_fonts/google_fonts.dart';
 import '../../app/app_metadata.dart';
 import '../../app/routes.dart';
 import '../../domain/models/monetization.dart';
-import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/services/auth_service.dart';
 import '../../domain/services/background_ssh_service.dart';
@@ -170,6 +169,9 @@ class _AppearanceSection extends ConsumerWidget {
   @override
   Widget build(BuildContext context, WidgetRef ref) {
     final themeMode = ref.watch(themeModeNotifierProvider);
+    final terminalThemesApplyToApp = ref.watch(
+      terminalThemesApplyToAppNotifierProvider,
+    );
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -183,6 +185,21 @@ class _AppearanceSection extends ConsumerWidget {
           title: const Text('Theme'),
           subtitle: Text(_themeModeLabel(themeMode)),
           onTap: () => _showThemeDialog(context, ref, themeMode),
+        ),
+        SwitchListTile(
+          secondary: const Icon(Icons.color_lens_outlined),
+          title: const Text('Use terminal themes for app'),
+          subtitle: const Text(
+            'Apply the selected terminal light and dark themes to app colors',
+          ),
+          value: terminalThemesApplyToApp,
+          onChanged: (value) {
+            unawaited(
+              ref
+                  .read(terminalThemesApplyToAppNotifierProvider.notifier)
+                  .setEnabled(enabled: value),
+            );
+          },
         ),
       ],
     );
@@ -609,17 +626,19 @@ class _TerminalSection extends ConsumerWidget {
     );
     final tapToShowKeyboard = ref.watch(tapToShowKeyboardNotifierProvider);
     final themeSettings = ref.watch(terminalThemeSettingsProvider);
-    final terminalThemes =
+    final availableThemes =
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
 
-    final lightTheme = _findTerminalTheme(
-      terminalThemes,
-      themeSettings.lightThemeId,
+    final lightTheme = TerminalThemes.resolveById(
+      brightness: Brightness.light,
+      themeId: themeSettings.lightThemeId,
+      additionalThemes: availableThemes,
     );
-    final darkTheme = _findTerminalTheme(
-      terminalThemes,
-      themeSettings.darkThemeId,
+    final darkTheme = TerminalThemes.resolveById(
+      brightness: Brightness.dark,
+      themeId: themeSettings.darkThemeId,
+      additionalThemes: availableThemes,
     );
 
     return Column(
@@ -632,13 +651,13 @@ class _TerminalSection extends ConsumerWidget {
         ListTile(
           leading: const Icon(Icons.palette_outlined),
           title: const Text('Light Mode Theme'),
-          subtitle: Text(lightTheme?.name ?? 'Default'),
+          subtitle: Text(lightTheme.name),
           onTap: () => _showThemePicker(context, ref, isLight: true),
         ),
         ListTile(
           leading: const Icon(Icons.palette),
           title: const Text('Dark Mode Theme'),
-          subtitle: Text(darkTheme?.name ?? 'Default'),
+          subtitle: Text(darkTheme.name),
           onTap: () => _showThemePicker(context, ref, isLight: false),
         ),
         ListTile(
@@ -813,18 +832,6 @@ class _TerminalSection extends ConsumerWidget {
     'Oxygen Mono' => 'Oxygen Mono',
     _ => family,
   };
-
-  TerminalThemeData? _findTerminalTheme(
-    Iterable<TerminalThemeData> themes,
-    String id,
-  ) {
-    for (final theme in themes) {
-      if (theme.id == id) {
-        return theme;
-      }
-    }
-    return TerminalThemes.getById(id);
-  }
 
   /// Gets a TextStyle for the given font family using Google Fonts.
   TextStyle _getFontStyle(String family, {double fontSize = 16}) =>
@@ -1513,13 +1520,17 @@ class _ImportExportSection extends ConsumerWidget {
       }
       ref
         ..invalidate(themeModeNotifierProvider)
+        ..invalidate(terminalThemesApplyToAppNotifierProvider)
+        ..invalidate(terminalThemesApplyToAppProvider)
         ..invalidate(fontSizeNotifierProvider)
         ..invalidate(fontFamilyNotifierProvider)
         ..invalidate(cursorStyleNotifierProvider)
         ..invalidate(bellSoundNotifierProvider)
         ..invalidate(sharedClipboardNotifierProvider)
         ..invalidate(sharedClipboardProvider)
-        ..invalidate(terminalThemeSettingsProvider);
+        ..invalidate(terminalThemeSettingsProvider)
+        ..invalidate(allTerminalThemesProvider)
+        ..invalidate(customTerminalThemesProvider);
       invalidateImportedEntityProviders(ref.invalidate);
 
       if (!context.mounted) {

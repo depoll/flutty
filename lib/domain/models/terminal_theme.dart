@@ -165,6 +165,35 @@ const _selectionAlphaCandidates = <int>[
   0x1E,
 ];
 
+const _terminalThemeRequiredColorKeys = <String>[
+  'foreground',
+  'background',
+  'cursor',
+  'selection',
+  'black',
+  'red',
+  'green',
+  'yellow',
+  'blue',
+  'magenta',
+  'cyan',
+  'white',
+  'brightBlack',
+  'brightRed',
+  'brightGreen',
+  'brightYellow',
+  'brightBlue',
+  'brightMagenta',
+  'brightCyan',
+  'brightWhite',
+];
+
+const _terminalThemeOptionalColorKeys = <String>[
+  'searchHitBackground',
+  'searchHitBackgroundCurrent',
+  'searchHitForeground',
+];
+
 /// Data model for a terminal color theme.
 ///
 /// Contains all 16 ANSI colors plus special colors for cursor, selection,
@@ -245,6 +274,39 @@ class TerminalThemeData {
       TerminalThemeData.fromJson(
         jsonDecode(jsonString) as Map<String, dynamic>,
       );
+
+  /// Safely creates a theme from decoded JSON, or null when invalid.
+  static TerminalThemeData? tryFromJson(Object? json) {
+    if (json is! Map || json.keys.any((key) => key is! String)) {
+      return null;
+    }
+
+    final id = json['id'];
+    if (id is! String || id.isEmpty || json['name'] is! String) {
+      return null;
+    }
+    if (json['isDark'] is! bool) {
+      return null;
+    }
+    final isCustom = json['isCustom'];
+    if (isCustom != null && isCustom is! bool) {
+      return null;
+    }
+
+    for (final key in _terminalThemeRequiredColorKeys) {
+      if (json[key] is! int) {
+        return null;
+      }
+    }
+    for (final key in _terminalThemeOptionalColorKeys) {
+      final value = json[key];
+      if (value != null && value is! int) {
+        return null;
+      }
+    }
+
+    return TerminalThemeData.fromJson(Map<String, dynamic>.from(json));
+  }
 
   /// Unique identifier for the theme.
   final String id;
