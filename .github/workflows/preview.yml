@@ -110,7 +110,7 @@ jobs:
             | Platform | Link |
             |----------|------|
             | 🍎 **iOS** | Available after a PR preview deploy |
-            | 🤖 **Android (APK)** | [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
+            | 🤖 **Android** | [View workflow run](https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}) |
 
             ### Promote
             Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow reuses these unsigned preview intermediates when their build number is still deployable; otherwise it rebuilds with a newer build number before uploading.
@@ -147,6 +147,9 @@ jobs:
       build-ios: false
       build-android: true
       build-android-unsigned-aab: true
+      deploy-android-to-internal-app-sharing: true
+    secrets:
+      PLAY_STORE_SERVICE_ACCOUNT_JSON: ${{ secrets.PLAY_STORE_SERVICE_ACCOUNT_JSON }}
 
   build-ios:
     name: Build iOS Preview
@@ -184,6 +187,8 @@ jobs:
     steps:
       - name: Resolve preview status
         id: preview-status
+        env:
+          IAS_URL: ${{ needs.build-android.outputs.android-internal-app-sharing-url }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -191,6 +196,7 @@ jobs:
             const repo = context.repo.repo;
             const runId = context.runId;
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
+            const iasUrl = (process.env.IAS_URL || '').trim();
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               owner,
               repo,
@@ -227,8 +233,12 @@ jobs:
             );
             let androidLink = `[View workflow run](${runUrl})`;
             if (androidJob && androidJob.status === 'completed') {
-              if (androidJob.conclusion === 'success' && apkArtifact) {
-                androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+              if (androidJob.conclusion === 'success') {
+                if (iasUrl) {
+                  androidLink = `[Install via Play (Internal App Sharing)](${iasUrl})`;
+                } else if (apkArtifact) {
+                  androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+                }
               } else if (androidJob.conclusion === 'skipped') {
                 androidLink = 'N/A (build skipped for fork PR)';
               }
@@ -256,7 +266,7 @@ jobs:
             | Platform | Link |
             |----------|------|
             | 🍎 **iOS** | Available after a PR preview deploy |
-            | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
+            | 🤖 **Android** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
             Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow reuses these unsigned preview intermediates when their build number is still deployable; otherwise it rebuilds with a newer build number before uploading.
@@ -270,10 +280,11 @@ jobs:
             <!-- preview-build-number:${{ needs.compute-version.outputs.build-number }} -->
             <!-- preview-build-run-id:${{ github.run_id }} -->
 
+
   comment-ios:
     name: PR Comment (iOS)
     runs-on: ubuntu-latest
-    needs: [compute-version, build-ios]
+    needs: [compute-version, build-ios, build-android]
     if: always() && github.event.pull_request.head.repo.full_name == github.repository
     permissions:
       issues: write
@@ -282,6 +293,8 @@ jobs:
     steps:
       - name: Resolve preview status
         id: preview-status
+        env:
+          IAS_URL: ${{ needs.build-android.outputs.android-internal-app-sharing-url }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
@@ -289,6 +302,7 @@ jobs:
             const repo = context.repo.repo;
             const runId = context.runId;
             const runUrl = `https://github.com/${owner}/${repo}/actions/runs/${runId}`;
+            const iasUrl = (process.env.IAS_URL || '').trim();
             const jobs = await github.paginate(github.rest.actions.listJobsForWorkflowRun, {
               owner,
               repo,
@@ -325,8 +339,12 @@ jobs:
             );
             let androidLink = `[View workflow run](${runUrl})`;
             if (androidJob && androidJob.status === 'completed') {
-              if (androidJob.conclusion === 'success' && apkArtifact) {
-                androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+              if (androidJob.conclusion === 'success') {
+                if (iasUrl) {
+                  androidLink = `[Install via Play (Internal App Sharing)](${iasUrl})`;
+                } else if (apkArtifact) {
+                  androidLink = `[Download APK](https://github.com/${owner}/${repo}/actions/runs/${runId}/artifacts/${apkArtifact.id})`;
+                }
               } else if (androidJob.conclusion === 'skipped') {
                 androidLink = 'N/A (build skipped for fork PR)';
               }
@@ -354,7 +372,7 @@ jobs:
             | Platform | Link |
             |----------|------|
             | 🍎 **iOS** | Available after a PR preview deploy |
-            | 🤖 **Android (APK)** | ${{ steps.preview-status.outputs.android-link }} |
+            | 🤖 **Android** | ${{ steps.preview-status.outputs.android-link }} |
 
             ### Promote
             Comment `/deploy` on this PR to deploy the current PR head to TestFlight and the Play Store internal track. The deploy workflow reuses these unsigned preview intermediates when their build number is still deployable; otherwise it rebuilds with a newer build number before uploading.

@@ -195,6 +195,22 @@ platform :android do
     )
   end
 
+  desc 'Upload APK to Play Store Internal App Sharing and write the URL to output_path'
+  lane :internal_app_sharing do |options|
+    package = options[:package_name] || 'xyz.depollsoft.monkeyssh.private'
+    output_path = options[:output_path]
+
+    url = upload_to_play_store_internal_app_sharing(
+      package_name: package,
+      json_key_data: ENV['PLAY_STORE_SERVICE_ACCOUNT_JSON'],
+      apk: options[:apk_path],
+    )
+
+    File.write(output_path, url.to_s) if output_path
+    UI.success("Internal App Sharing URL: #{url}")
+    url
+  end
+
   desc 'Sync metadata, images, and screenshots to Play Store (no build required)'
   lane :sync_metadata do |options|
     package = options[:package_name] || 'xyz.depollsoft.monkeyssh'
