@@ -3649,7 +3649,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalViewState = _terminalViewKey.currentState;
     if (_isTmuxActive) {
       terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
-      terminalViewState?.refreshThemeColorReports(theme);
       _refreshTmuxClientAfterTerminalThemeChange(
         theme: theme,
         session: session,
@@ -3694,9 +3693,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         await ref
             .read(tmuxServiceProvider)
-            .refreshForegroundClients(
+            .refreshTerminalTheme(
               session,
               tmuxSessionName,
+              theme,
               extraFlags: _host?.tmuxExtraFlags,
             );
       }),

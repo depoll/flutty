@@ -7,6 +7,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
@@ -114,6 +115,58 @@ void main() {
           'main',
           extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
         ),
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client"',
+        ),
+      );
+    });
+
+    test('theme refresh command updates pane palette before redraw', () {
+      final command = buildTmuxRefreshTerminalThemeCommand(
+        "dev's session",
+        TerminalThemes.dracula,
+      );
+
+      expect(
+        command,
+        contains("tmux -u list-panes -s -t 'dev'\"'\"'s session'"),
+      );
+      expect(command, contains(r'set-option -p -t "$pane"'));
+      expect(command, contains("pane-colours[5] '#ff79c6'"));
+      expect(command, contains("pane-colours[6] '#8be9fd'"));
+      expect(
+        command,
+        contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
+      );
+    });
+
+    test('theme refresh command reuses tmux client flags', () {
+      final command = buildTmuxRefreshTerminalThemeCommand(
+        'main',
+        TerminalThemes.githubLightDefault,
+        extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
+      );
+
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          'list-panes',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'set-option -p -t "$pane" pane-colours[0]',
+        ),
+      );
+      expect(
+        command,
         contains(
           'tmux -u -S '
           "'/tmp/tmux-socket' -L 'alerts' "

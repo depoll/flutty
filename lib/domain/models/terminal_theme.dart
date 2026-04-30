@@ -79,7 +79,7 @@ String? _buildAnsiPaletteOscResponse(
     if (colorIndex == null || args[index + 1].trim() != '?') {
       continue;
     }
-    final color = _terminalPaletteColor(theme, colorIndex);
+    final color = terminalThemePaletteColor(theme, colorIndex);
     if (color == null) {
       continue;
     }
@@ -93,7 +93,11 @@ String? _buildAnsiPaletteOscResponse(
   return responses.join();
 }
 
-Color? _terminalPaletteColor(TerminalThemeData theme, int index) {
+/// Resolves an xterm palette color for [theme].
+///
+/// Indexes 0-15 are theme-controlled ANSI colors. Indexes 16-255 use the
+/// fixed xterm 256-color cube and grayscale ramp.
+Color? terminalThemePaletteColor(TerminalThemeData theme, int index) {
   switch (index) {
     case 0:
       return theme.black;
@@ -155,6 +159,17 @@ String _formatOscColorResponse(String code, Color color, {int? paletteIndex}) {
   return '\x1b]$payload\x1b\\';
 }
 
+/// Formats [color] as a tmux-compatible six-digit RGB hex color.
+String formatTerminalThemeRgbHex(Color color) {
+  final value = color.toARGB32();
+  final red = (value >> 16) & 0xFF;
+  final green = (value >> 8) & 0xFF;
+  final blue = value & 0xFF;
+  return '#${_formatTwoDigitHex(red)}'
+      '${_formatTwoDigitHex(green)}'
+      '${_formatTwoDigitHex(blue)}';
+}
+
 String _formatOscRgbColor(Color color) {
   final value = color.toARGB32();
   final red = (value >> 16) & 0xFF;
@@ -166,9 +181,11 @@ String _formatOscRgbColor(Color color) {
 }
 
 String _formatOscRgbComponent(int value) {
-  final hex = value.toRadixString(16).padLeft(2, '0');
+  final hex = _formatTwoDigitHex(value);
   return '$hex$hex';
 }
+
+String _formatTwoDigitHex(int value) => value.toRadixString(16).padLeft(2, '0');
 
 const _minimumSelectionBackgroundContrast = 1.04;
 const _minimumSelectionTextContrast = 3.5;

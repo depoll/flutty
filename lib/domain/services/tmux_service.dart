@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/agent_launch_preset.dart';
+import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
@@ -764,6 +765,46 @@ class TmuxService {
     }
   }
 
+  /// Updates tmux's pane palette for [sessionName] and redraws foreground
+  /// clients.
+  Future<void> refreshTerminalTheme(
+    SshSession session,
+    String sessionName,
+    TerminalThemeData theme, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.action',
+      'refresh_theme_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    try {
+      await _exec(
+        session,
+        buildTmuxRefreshTerminalThemeCommand(
+          sessionName,
+          theme,
+          extraFlags: extraFlags,
+        ),
+        priority: SshExecPriority.low,
+      );
+      DiagnosticsLogService.instance.info(
+        'tmux.action',
+        'refresh_theme_complete',
+        fields: {'connectionId': session.connectionId},
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.action',
+        'refresh_theme_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+  }
+
   /// Watches tmux control-mode notifications that indicate window state
   /// has changed for [sessionName].
   Stream<TmuxWindowChangeEvent> watchWindowChanges(
@@ -1493,6 +1534,54 @@ String buildTmuxRefreshForegroundClientsCommand(
       r'[ -n "$client" ] || continue; '
       '$refreshClient 2>/dev/null || true; '
       'done';
+}
+
+/// Builds a command that updates tmux's pane palette and redraws foreground
+/// clients.
+@visibleForTesting
+String buildTmuxRefreshTerminalThemeCommand(
+  String sessionName,
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) {
+  const sep = r'${SEP}';
+  final listPanes = TmuxService._tmuxCommand(
+    'list-panes -s -t ${TmuxService._shellQuote(sessionName)} -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final setPaneColours = [
+    for (var index = 0; index < 16; index += 1)
+      _buildTmuxSetPaneColourCommand(index, theme, extraFlags: extraFlags),
+  ].join(' ');
+
+  return r'SEP=$(printf "\037"); '
+      '$listPanes"#{pane_id}$sep#{pane_active}" '
+      '2>/dev/null | '
+      r'while IFS="$SEP" read -r pane _; do '
+      r'[ -n "$pane" ] || continue; '
+      '$setPaneColours '
+      'done; '
+      '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
+}
+
+String _buildTmuxSetPaneColourCommand(
+  int index,
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) {
+  final color = terminalThemePaletteColor(theme, index);
+  if (color == null) {
+    throw ArgumentError.value(index, 'index', 'Expected ANSI color index 0-15');
+  }
+  final hexColor = formatTerminalThemeRgbHex(color);
+  final command = TmuxService._tmuxCommand(
+    'set-option -p -t "\$pane" pane-colours[$index] '
+    '${TmuxService._shellQuote(hexColor)}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return '$command 2>/dev/null || true;';
 }
 
 /// Returns whether `tmux list-clients` output includes a non-control client.
