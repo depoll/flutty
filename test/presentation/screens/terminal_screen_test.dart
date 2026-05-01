@@ -89,6 +89,21 @@ class _TestActiveSessionsNotifier extends ActiveSessionsNotifier {
   Future<void> syncBackgroundStatus() async {}
 }
 
+class _TestThemeModeNotifier extends ThemeModeNotifier {
+  _TestThemeModeNotifier(this.mode);
+
+  ThemeMode mode;
+
+  @override
+  ThemeMode build() => mode;
+
+  @override
+  Future<void> setThemeMode(ThemeMode mode) async {
+    this.mode = mode;
+    state = mode;
+  }
+}
+
 Host _buildHost({
   required int id,
   String? autoConnectCommand,
@@ -606,6 +621,9 @@ void main() {
             monetizationStateProvider.overrideWith(
               (ref) => Stream.value(_proMonetizationState),
             ),
+            themeModeNotifierProvider.overrideWith(
+              () => _TestThemeModeNotifier(themeMode),
+            ),
             sharedClipboardProvider.overrideWith((ref) async => false),
             activeSessionsProvider.overrideWith(
               () => _TestActiveSessionsNotifier(session),
@@ -627,6 +645,10 @@ void main() {
       await tester.pump();
     }
 
+    void enablePlainTuiSignals() {
+      session.terminal!.write('\x1b[?1004h');
+    }
+
     testWidgets('holds wake lock while an opted-in terminal is active', (
       tester,
     ) async {
@@ -646,12 +668,45 @@ void main() {
     });
 
     testWidgets(
-      'refreshes the active TUI when inherited brightness changes',
+      'does not send synthetic terminal reports to an idle shell prompt',
       (tester) async {
         await pumpScreen(tester);
         shellWrites.clear();
 
-        await pumpScreen(tester, themeMode: ThemeMode.dark);
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, isEmpty);
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'refreshes the active TUI when theme mode changes',
+      (tester) async {
+        await pumpScreen(tester);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(themeModeNotifierProvider.notifier)
+            .setThemeMode(ThemeMode.dark);
         await tester.pump();
         await tester.pump(const Duration(milliseconds: 500));
         await tester.pump();
@@ -660,6 +715,10 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
+        expect(writtenShellText, contains('\x1b[?997;1n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;0;'));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
         expect(
           session.terminalTheme?.id,
@@ -670,9 +729,43 @@ void main() {
     );
 
     testWidgets(
+      'refreshes the active TUI when platform brightness changes',
+      (tester) async {
+        tester.platformDispatcher.platformBrightnessTestValue =
+            Brightness.light;
+        addTearDown(tester.platformDispatcher.clearPlatformBrightnessTestValue);
+        await pumpScreen(tester, themeMode: ThemeMode.system);
+        enablePlainTuiSignals();
+        shellWrites.clear();
+
+        tester.platformDispatcher.platformBrightnessTestValue = Brightness.dark;
+        tester.binding.platformDispatcher.onPlatformBrightnessChanged?.call();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[?997;1n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;0;'));
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.android),
+    );
+
+    testWidgets(
       'refreshes the active TUI when terminal theme settings change',
       (tester) async {
         await pumpScreen(tester);
+        enablePlainTuiSignals();
         shellWrites.clear();
 
         final container = ProviderScope.containerOf(
@@ -689,6 +782,10 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
+        expect(writtenShellText, contains('\x1b[?997;2n'));
+        expect(writtenShellText, contains('\x1b]10;'));
+        expect(writtenShellText, contains('\x1b]11;'));
+        expect(writtenShellText, contains('\x1b]4;0;'));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
         expect(
           session.terminalTheme?.id,

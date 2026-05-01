@@ -3327,6 +3327,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final TerminalAppThemeOverrideNotifier _terminalAppThemeOverrideNotifier;
   Brightness? _lastThemeDependencyBrightness;
   int _terminalThemeRefreshGeneration = 0;
+  final Set<Timer> _terminalThemeRefreshTimers = <Timer>{};
+  bool _terminalThemeDependencyReloadQueued = false;
+  bool _pendingTerminalThemeDependencyReload = false;
+  bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3680,17 +3684,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TerminalThemeData theme,
     SshSession session,
   ) {
+    _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
-    final terminalViewState = _terminalViewKey.currentState;
     if (_isTmuxActive) {
       // Notify theme-aware TUIs of the new mode and push fresh OSC 10/11/4
       // reports. tmux caches the outer terminal's default colors and ANSI
       // palette and answers OSC queries from that cache; without these
       // unsolicited reports, apps inside tmux (e.g. Copilot) keep deriving
       // colors from the previous theme.
-      terminalViewState
-        ?..refreshThemeModeReport(isDark: theme.isDark)
-        ..refreshThemeColorReports(theme);
+      _refreshTerminalThemeReportsForTui(theme);
       _refreshTmuxClientAfterTerminalThemeChange(
         theme: theme,
         session: session,
@@ -3699,28 +3701,44 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    // Plain SSH apps opt in to color-scheme change reports with DEC private
-    // mode 2031. OpenTUI/opencode uses the report as a refresh trigger and
-    // then re-queries OSC 10/11; Codex re-queries on FocusGained.
-    if (session.terminalColorSchemeUpdatesMode) {
-      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+    if (!_shouldRefreshPlainTerminalTui(session)) {
+      // A bare shell prompt treats terminal reports as typed input. Only send
+      // synthetic reports after a foreground app has enabled terminal-control
+      // modes that identify it as a TUI.
+      return;
     }
-    terminalViewState?.refreshFocusReport(forceTransition: true, force: true);
-    _scheduleTerminalThemeFocusRefresh(
+
+    // Send the full bundle once a foreground TUI is active. Some TUIs do not
+    // enable DEC 2031 early enough for MonkeySSH to observe it before a system
+    // theme change, and focus-only nudges leave OpenTUI/opencode without a
+    // color-scheme report and Codex without fresh OSC 10/11 values to query.
+    _refreshTerminalThemeReportsForTui(theme);
+    _scheduleTerminalThemeRefreshForTui(
       theme: theme,
       session: session,
       refreshGeneration: refreshGeneration,
-      force: true,
       delay: const Duration(milliseconds: 150),
     );
-    _scheduleTerminalThemeFocusRefresh(
+    _scheduleTerminalThemeRefreshForTui(
       theme: theme,
       session: session,
       refreshGeneration: refreshGeneration,
-      force: true,
       delay: const Duration(milliseconds: 450),
     );
   }
+
+  void _refreshTerminalThemeReportsForTui(TerminalThemeData theme) {
+    _terminalViewKey.currentState
+      ?..refreshThemeModeReport(isDark: theme.isDark)
+      ..refreshThemeColorReports(theme)
+      ..refreshFocusReport(forceTransition: true, force: true);
+  }
+
+  bool _shouldRefreshPlainTerminalTui(SshSession session) =>
+      session.terminalColorSchemeUpdatesMode ||
+      _terminal.reportFocusMode ||
+      _terminal.isUsingAltBuffer ||
+      _terminal.mouseMode != MouseMode.none;
 
   /// Proactively pushes the active terminal theme into tmux's per-pane color
   /// cache.
@@ -3737,22 +3755,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// refreshed.
   ///
   /// This priming sends the same OSC reports + tmux pane palette update +
-  /// foreground-client redraw that a theme switch would, but skips the focus
-  /// transition because there's no active TUI to wake up — the next time an
-  /// inner app queries, it will read the correct cache.
+  /// foreground-client redraw that a theme switch would. It also wakes the
+  /// foreground pane because tmux may be detected after a TUI has already
+  /// cached stale default colors.
   void _primeTmuxTerminalTheme(SshSession session) {
     if (!_isTmuxActive) {
       return;
     }
+    _cancelTerminalThemeRefreshTimers();
     final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
-    _terminalViewKey.currentState
-      ?..refreshThemeModeReport(isDark: theme.isDark)
-      ..refreshThemeColorReports(theme);
+    _refreshTerminalThemeReportsForTui(theme);
 
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: ++_terminalThemeRefreshGeneration,
+        delay: const Duration(milliseconds: 150),
+      );
       return;
     }
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
     // Run the tmux palette update synchronously instead of using the 75ms
     // debounced path; priming should fire immediately when tmux is detected
     // so the cache is right before any inner TUI queries it.
@@ -3764,7 +3788,33 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             tmuxSessionName,
             theme,
             extraFlags: _host?.tmuxExtraFlags,
-          ),
+          )
+          .then((_) {
+            if (!_isCurrentTerminalThemeRefresh(
+              theme: theme,
+              session: session,
+              refreshGeneration: refreshGeneration,
+            )) {
+              return;
+            }
+            _refreshTerminalThemeReportsForTui(theme);
+            _scheduleTerminalThemeRefreshForTui(
+              theme: theme,
+              session: session,
+              refreshGeneration: refreshGeneration,
+              delay: const Duration(milliseconds: 150),
+            );
+          })
+          .catchError((Object error) {
+            DiagnosticsLogService.instance.warning(
+              'terminal.theme',
+              'tmux_prime_failed',
+              fields: {
+                'connectionId': session.connectionId,
+                'errorType': error.runtimeType,
+              },
+            );
+          }),
     );
   }
 
@@ -3775,11 +3825,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) {
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
-      _scheduleTerminalThemeFocusRefresh(
+      _scheduleTerminalThemeRefreshForTui(
         theme: theme,
         session: session,
         refreshGeneration: refreshGeneration,
-        force: true,
         delay: const Duration(milliseconds: 150),
       );
       return;
@@ -3813,50 +3862,49 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             },
           );
         }
-        _scheduleTerminalThemeFocusRefresh(
+        _refreshTerminalThemeReportsForTui(theme);
+        _scheduleTerminalThemeRefreshForTui(
           theme: theme,
           session: session,
           refreshGeneration: refreshGeneration,
-          force: true,
           delay: const Duration(milliseconds: 25),
         );
-        _scheduleTerminalThemeFocusRefresh(
+        _scheduleTerminalThemeRefreshForTui(
           theme: theme,
           session: session,
           refreshGeneration: refreshGeneration,
-          force: true,
           delay: const Duration(milliseconds: 275),
         );
       }),
     );
   }
 
-  void _scheduleTerminalThemeFocusRefresh({
+  void _scheduleTerminalThemeRefreshForTui({
     required TerminalThemeData theme,
     required SshSession session,
     required int refreshGeneration,
-    required bool force,
     required Duration delay,
   }) {
-    unawaited(
-      Future<void>.delayed(delay, () {
-        if (!_isCurrentTerminalThemeRefresh(
-          theme: theme,
-          session: session,
-          refreshGeneration: refreshGeneration,
-        )) {
-          return;
-        }
-        // Force the focus transition even when the outer xterm doesn't know
-        // focus reporting is enabled. Inside tmux the inner app's
-        // `CSI ? 1004 h` request is intercepted, so the outer xterm flag is not
-        // a reliable gate. Codex et al. re-query OSC 10/11 on FocusGained.
-        _terminalViewKey.currentState?.refreshFocusReport(
-          forceTransition: true,
-          force: force,
-        );
-      }),
-    );
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (!_isCurrentTerminalThemeRefresh(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+      )) {
+        return;
+      }
+      _refreshTerminalThemeReportsForTui(theme);
+    });
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
+  void _cancelTerminalThemeRefreshTimers() {
+    for (final timer in _terminalThemeRefreshTimers) {
+      timer.cancel();
+    }
+    _terminalThemeRefreshTimers.clear();
   }
 
   bool _isCurrentTerminalThemeRefresh({
@@ -3920,14 +3968,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _handleTerminalThemeDependenciesChanged({
     bool forceRemoteRefresh = false,
   }) {
-    if (!mounted || _currentTheme == null) {
+    if (!mounted) {
       return;
     }
-    unawaited(
-      _reloadTerminalThemeForDependencies(
-        forceRemoteRefresh: forceRemoteRefresh,
-      ),
-    );
+    _pendingTerminalThemeDependencyReload = true;
+    _pendingTerminalThemeDependencyForceRemoteRefresh =
+        _pendingTerminalThemeDependencyForceRemoteRefresh || forceRemoteRefresh;
+    _scheduleTerminalThemeDependencyReload();
+  }
+
+  void _scheduleTerminalThemeDependencyReload() {
+    if (_terminalThemeDependencyReloadQueued) {
+      return;
+    }
+    _terminalThemeDependencyReloadQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _terminalThemeDependencyReloadQueued = false;
+      if (!mounted || !_pendingTerminalThemeDependencyReload) {
+        return;
+      }
+      if (_currentTheme == null) {
+        return;
+      }
+      final forceRemoteRefresh =
+          _pendingTerminalThemeDependencyForceRemoteRefresh;
+      _pendingTerminalThemeDependencyReload = false;
+      _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+      unawaited(
+        _reloadTerminalThemeForDependencies(
+          forceRemoteRefresh: forceRemoteRefresh,
+        ),
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
   }
 
   Future<void> _reloadTerminalThemeForDependencies({
@@ -3952,6 +4025,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _syncAppThemeOverrideFromSession(SshSession session) {
+    if (session.terminalThemeLightId == null &&
+        session.terminalThemeDarkId == null) {
+      _clearAppThemeOverride();
+      return;
+    }
     _terminalAppThemeOverrideNotifier.activeOverride = TerminalAppThemeOverride(
       owner: _terminalAppThemeOverrideOwner,
       lightThemeId: session.terminalThemeLightId,
@@ -3963,12 +4041,22 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       .clearForOwner(_terminalAppThemeOverrideOwner);
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
     return _sessionThemeOverride ??
         _currentTheme ??
         (isDark
             ? TerminalThemes.defaultDarkTheme
             : TerminalThemes.defaultLightTheme);
+  }
+
+  Brightness _resolveTerminalThemeBrightness() {
+    final themeMode = ref.read(themeModeNotifierProvider);
+    return switch (themeMode) {
+      ThemeMode.dark => Brightness.dark,
+      ThemeMode.light => Brightness.light,
+      ThemeMode.system =>
+        WidgetsBinding.instance.platformDispatcher.platformBrightness,
+    };
   }
 
   SshConnectionState _selectTrackedConnectionState(
@@ -4286,7 +4374,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<void> _loadTheme({bool forceRemoteRefresh = false}) async {
     if (!mounted) return;
 
-    final brightness = Theme.of(context).brightness;
+    final brightness = _resolveTerminalThemeBrightness();
     _lastThemeDependencyBrightness = brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
@@ -4310,13 +4398,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _currentTheme = theme;
     }
     _applyTerminalThemeToSession(theme, forceRemoteRefresh: forceRemoteRefresh);
+    if (_pendingTerminalThemeDependencyReload) {
+      _scheduleTerminalThemeDependencyReload();
+    }
   }
 
   Future<bool> _restoreSessionThemeOverride(
     SshSession session, {
     bool forceRemoteRefresh = false,
   }) async {
-    final brightness = Theme.of(context).brightness;
+    final brightness = _resolveTerminalThemeBrightness();
     final themeId = brightness == Brightness.dark
         ? session.terminalThemeDarkId
         : session.terminalThemeLightId;
@@ -4327,6 +4418,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           setState(() => _sessionThemeOverride = null);
         }
         _syncAppThemeOverrideFromSession(session);
+      }
+      if (forceRemoteRefresh) {
+        await _loadTheme(forceRemoteRefresh: true);
+        return true;
       }
       return false;
     }
@@ -4454,12 +4549,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
+        _shell = await session.getShell();
+        _wireTerminalCallbacks(session);
         _applyTerminalThemeToSession(
           _resolveEffectiveTerminalTheme(),
           session: session,
         );
-        _shell = await session.getShell();
-        _wireTerminalCallbacks(session);
         await _applySharedClipboardSetting(
           enabled: sharedClipboardEnabled,
           allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
@@ -6019,12 +6114,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _terminalWakeLockSubscription.close();
     _terminalThemeSettingsSubscription.close();
     _themeModeSubscription.close();
+    _cancelTerminalThemeRefreshTimers();
     unawaited(_terminalWakeLockService.releaseOwner(_terminalWakeLockOwnerId));
     _stopSharedClipboardSync();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
-    _terminal.removeListener(_onTerminalStateChanged);
+    _terminal
+      ..removeListener(_onTerminalStateChanged)
+      ..onOutput = null
+      ..onResize = null;
     _terminalController
       ..removeListener(_onSelectionChanged)
       ..dispose();
@@ -6085,7 +6184,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
-    final brightness = Theme.of(context).brightness;
+    final brightness = _resolveTerminalThemeBrightness();
     final didBrightnessChange = _lastThemeDependencyBrightness != brightness;
     _lastThemeDependencyBrightness = brightness;
     if (_currentTheme == null) {
@@ -6631,7 +6730,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (theme != null && mounted) {
-      final isDark = Theme.of(context).brightness == Brightness.dark;
+      final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
       final monetizationState =
           ref.read(monetizationStateProvider).asData?.value ??
           ref.read(monetizationServiceProvider).currentState;
