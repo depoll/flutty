@@ -360,7 +360,7 @@ void main() {
     tester
         .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
         .refreshThemeColorReports(
-          monkey_themes.TerminalThemes.defaultLightTheme,
+          monkey_themes.TerminalThemes.githubLightDefault,
         );
 
     expect(output, [isNotEmpty]);

@@ -351,36 +351,43 @@ void main() {
     });
 
     group('terminalThemeSettingsProvider', () {
-      test('normalizes legacy default theme ids', () async {
-        final settings = container.read(settingsServiceProvider);
-        await settings.setString(
-          SettingKeys.defaultTerminalThemeLight,
-          'github-light',
-        );
-        await settings.setString(
-          SettingKeys.defaultTerminalThemeDark,
-          'dracula',
-        );
+      test(
+        'normalizes legacy default theme ids to their iTerm2 successors',
+        () async {
+          final settings = container.read(settingsServiceProvider);
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeLight,
+            'github-light',
+          );
+          await settings.setString(
+            SettingKeys.defaultTerminalThemeDark,
+            'dracula',
+          );
 
-        container.read(terminalThemeSettingsProvider);
-        await _waitForStoredTerminalThemeIds(
-          settings,
-          lightThemeId: TerminalThemes.defaultLightThemeId,
-          darkThemeId: TerminalThemes.defaultDarkThemeId,
-        );
-        final state = container.read(terminalThemeSettingsProvider);
+          container.read(terminalThemeSettingsProvider);
+          // Users who explicitly picked GitHub Light or Dracula (via the old
+          // unprefixed legacy IDs) should keep those exact themes after the
+          // MonkeySSH defaults landed; only purely unknown IDs fall back to
+          // the new branded defaults (covered by the next test).
+          await _waitForStoredTerminalThemeIds(
+            settings,
+            lightThemeId: 'iterm2-github-light-default',
+            darkThemeId: 'iterm2-dracula',
+          );
+          final state = container.read(terminalThemeSettingsProvider);
 
-        expect(state.lightThemeId, TerminalThemes.defaultLightThemeId);
-        expect(state.darkThemeId, TerminalThemes.defaultDarkThemeId);
-        expect(
-          await settings.getString(SettingKeys.defaultTerminalThemeLight),
-          TerminalThemes.defaultLightThemeId,
-        );
-        expect(
-          await settings.getString(SettingKeys.defaultTerminalThemeDark),
-          TerminalThemes.defaultDarkThemeId,
-        );
-      });
+          expect(state.lightThemeId, 'iterm2-github-light-default');
+          expect(state.darkThemeId, 'iterm2-dracula');
+          expect(
+            await settings.getString(SettingKeys.defaultTerminalThemeLight),
+            'iterm2-github-light-default',
+          );
+          expect(
+            await settings.getString(SettingKeys.defaultTerminalThemeDark),
+            'iterm2-dracula',
+          );
+        },
+      );
 
       test('normalizes unknown saved theme ids', () async {
         final settings = container.read(settingsServiceProvider);

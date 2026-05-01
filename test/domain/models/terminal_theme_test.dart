@@ -234,7 +234,7 @@ void main() {
     });
 
     test('buildTerminalThemeOscResponse answers special color queries', () {
-      const theme = TerminalThemes.defaultLightTheme;
+      const theme = TerminalThemes.githubLightDefault;
 
       expect(
         buildTerminalThemeOscResponse(
@@ -279,7 +279,7 @@ void main() {
     });
 
     test('buildTerminalThemeOscResponse answers ANSI palette queries', () {
-      const theme = TerminalThemes.defaultLightTheme;
+      const theme = TerminalThemes.githubLightDefault;
 
       expect(
         buildTerminalThemeOscResponse(
@@ -296,7 +296,7 @@ void main() {
     test(
       'buildTerminalThemeRefreshReports includes theme-controlled colors',
       () {
-        const theme = TerminalThemes.defaultLightTheme;
+        const theme = TerminalThemes.githubLightDefault;
 
         final reports = buildTerminalThemeRefreshReports(theme);
 
@@ -313,7 +313,7 @@ void main() {
     );
 
     test('buildTerminalThemeOscResponse ignores unsupported OSC values', () {
-      const theme = TerminalThemes.defaultLightTheme;
+      const theme = TerminalThemes.githubLightDefault;
 
       expect(
         buildTerminalThemeOscResponse(
@@ -406,7 +406,7 @@ void main() {
       final theme = TerminalThemes.getById(TerminalThemes.defaultDarkThemeId);
       expect(theme, isNotNull);
       expect(theme!.id, TerminalThemes.defaultDarkThemeId);
-      expect(theme.name, 'Dracula');
+      expect(theme.name, TerminalThemes.defaultDarkTheme.name);
     });
 
     test('getById returns additional themes', () {
@@ -438,9 +438,12 @@ void main() {
         TerminalThemes.getById('clean-white')?.id,
         TerminalThemes.defaultLightThemeId,
       );
+      // Users who explicitly chose Dracula or GitHub Light keep those exact
+      // themes after the MonkeySSH defaults landed.
+      expect(TerminalThemes.getById('dracula')?.id, 'iterm2-dracula');
       expect(
         TerminalThemes.getById('github-light')?.id,
-        TerminalThemes.defaultLightThemeId,
+        'iterm2-github-light-default',
       );
       expect(
         TerminalThemes.getById('ocean-dark')?.id,
@@ -464,10 +467,26 @@ void main() {
       );
     });
 
-    test('all built-in themes are sourced from iTerm2 scheme IDs', () {
-      for (final theme in TerminalThemes.all) {
-        expect(theme.id, startsWith('iterm2-'));
-      }
+    test(
+      'all built-in themes use a recognised MonkeySSH or iTerm2 scheme ID',
+      () {
+        for (final theme in TerminalThemes.all) {
+          expect(
+            theme.id.startsWith('iterm2-') || theme.id.startsWith('monkeyssh-'),
+            isTrue,
+            reason:
+                'Theme ${theme.name} should use either an iTerm2 scheme ID '
+                'or the MonkeySSH brand prefix, got "${theme.id}".',
+          );
+        }
+      },
+    );
+
+    test('default themes are the MonkeySSH-branded built-ins', () {
+      expect(TerminalThemes.defaultDarkTheme.id, 'monkeyssh-dark');
+      expect(TerminalThemes.defaultDarkTheme.name, 'MonkeySSH Dark');
+      expect(TerminalThemes.defaultLightTheme.id, 'monkeyssh-light');
+      expect(TerminalThemes.defaultLightTheme.name, 'MonkeySSH Light');
     });
 
     test('defaultThemeForBrightness returns built-in defaults', () {
