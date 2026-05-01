@@ -347,7 +347,7 @@ void main() {
     expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
   });
 
-  testWidgets('refreshThemeColorReports sends full theme color refresh', (
+  testWidgets('refreshThemeColorReports sends safe tmux cache refresh', (
     tester,
   ) async {
     final output = <String>[];
@@ -366,12 +366,12 @@ void main() {
     expect(output, [isNotEmpty]);
     expect(output.single, contains('\x1b]10;rgb:1f1f/2323/2828\x1b\\'));
     expect(output.single, contains('\x1b]11;rgb:ffff/ffff/ffff\x1b\\'));
-    expect(output.single, contains('\x1b]12;rgb:0909/6969/dada\x1b\\'));
-    expect(output.single, contains('\x1b]17;rgb:1f1f/2323/2828\x1b\\'));
-    expect(output.single, contains('\x1b]19;rgb:1f1f/2323/2828\x1b\\'));
     expect(output.single, contains('\x1b]4;0;rgb:2424/2929/2f2f\x1b\\'));
     expect(output.single, contains('\x1b]4;8;rgb:5757/6060/6a6a\x1b\\'));
     expect(output.single, contains('\x1b]4;15;rgb:8c8c/9595/9f9f\x1b\\'));
+    expect(output.single, isNot(contains('\x1b]12;')));
+    expect(output.single, isNot(contains('\x1b]17;')));
+    expect(output.single, isNot(contains('\x1b]19;')));
     expect(output.single, isNot(contains('\x1b]4;16;')));
   });
 
