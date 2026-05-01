@@ -715,10 +715,10 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(writtenShellText, contains('\x1b[?997;1n'));
-        expect(writtenShellText, contains('\x1b]10;'));
-        expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, contains('\x1b]4;0;'));
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
         expect(
           session.terminalTheme?.id,
@@ -748,10 +748,10 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(writtenShellText, contains('\x1b[?997;1n'));
-        expect(writtenShellText, contains('\x1b]10;'));
-        expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, contains('\x1b]4;0;'));
+        expect(writtenShellText, isNot(contains('\x1b[?997;1n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
         expect(
           session.terminalTheme?.id,
@@ -782,10 +782,10 @@ void main() {
         final writtenShellText = utf8.decode(
           shellWrites.expand((chunk) => chunk).toList(growable: false),
         );
-        expect(writtenShellText, contains('\x1b[?997;2n'));
-        expect(writtenShellText, contains('\x1b]10;'));
-        expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, contains('\x1b]4;0;'));
+        expect(writtenShellText, isNot(contains('\x1b[?997;2n')));
+        expect(writtenShellText, isNot(contains('\x1b]10;')));
+        expect(writtenShellText, isNot(contains('\x1b]11;')));
+        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
         expect(
           session.terminalTheme?.id,

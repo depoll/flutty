@@ -315,7 +315,9 @@ void main() {
         .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
         .refreshFocusReport(forceTransition: true);
 
-    expect(output, ['\x1b[O\x1b[I']);
+    expect(output, ['\x1b[O']);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(output, ['\x1b[O', '\x1b[I']);
 
     terminal.write('\x1b[?1004l');
     output.clear();
@@ -329,7 +331,9 @@ void main() {
         .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
         .refreshFocusReport(forceTransition: true, force: true);
 
-    expect(output, ['\x1b[O\x1b[I']);
+    expect(output, ['\x1b[O']);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(output, ['\x1b[O', '\x1b[I']);
   });
 
   testWidgets('refreshThemeModeReport sends xterm theme mode report', (

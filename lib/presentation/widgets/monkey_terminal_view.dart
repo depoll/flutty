@@ -282,6 +282,7 @@ double resolveTerminalHorizontalFillScale({
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
 const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
+const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
@@ -492,6 +493,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
   int _lastTerminalViewWidth = 0;
+  Timer? _pendingFocusInReportTimer;
 
   late TerminalController _controller;
 
@@ -556,6 +558,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void dispose() {
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
+    _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
     if (widget.focusNode == null) {
@@ -596,11 +599,20 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     if (!force && !widget.terminal.reportFocusMode) {
       return;
     }
-    widget.terminal.onOutput?.call(
-      forceTransition
-          ? '$_terminalFocusOutReport$_terminalFocusInReport'
-          : _terminalFocusInReport,
-    );
+    _pendingFocusInReportTimer?.cancel();
+    _pendingFocusInReportTimer = null;
+    if (!forceTransition) {
+      widget.terminal.onOutput?.call(_terminalFocusInReport);
+      return;
+    }
+    widget.terminal.onOutput?.call(_terminalFocusOutReport);
+    _pendingFocusInReportTimer = Timer(_terminalFocusTransitionDelay, () {
+      _pendingFocusInReportTimer = null;
+      if (!mounted) {
+        return;
+      }
+      widget.terminal.onOutput?.call(_terminalFocusInReport);
+    });
   }
 
   /// Reports the current terminal theme mode to focus-aware terminal muxers.

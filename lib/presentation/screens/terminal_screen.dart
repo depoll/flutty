@@ -3687,12 +3687,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     if (_isTmuxActive) {
-      // Notify theme-aware TUIs of the new mode and push fresh OSC 10/11/4
-      // reports. tmux caches the outer terminal's default colors and ANSI
-      // palette and answers OSC queries from that cache; without these
-      // unsolicited reports, apps inside tmux (e.g. Copilot) keep deriving
-      // colors from the previous theme.
-      _refreshTerminalThemeReportsForTui(theme);
+      // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
+      // terminal's default colors and ANSI palette and answers inner-pane OSC
+      // queries from that cache.
+      _refreshTerminalThemeReportsForTui(theme, includeColorReports: true);
       _refreshTmuxClientAfterTerminalThemeChange(
         theme: theme,
         session: session,
@@ -3708,30 +3706,60 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    // Send the full bundle once a foreground TUI is active. Some TUIs do not
-    // enable DEC 2031 early enough for MonkeySSH to observe it before a system
-    // theme change, and focus-only nudges leave OpenTUI/opencode without a
-    // color-scheme report and Codex without fresh OSC 10/11 values to query.
-    _refreshTerminalThemeReportsForTui(theme);
+    // Do not send unsolicited OSC color replies directly to a plain foreground
+    // TUI. Codex treats those bytes as user input, and its crossterm color
+    // re-query can also be disrupted by unrelated terminal reports. Always
+    // send a synthetic focus transition so focus-aware TUIs re-query OSC 10/11
+    // through the normal path; only send the private theme-mode report to apps
+    // that explicitly requested DEC 2031 color-scheme updates.
+    final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
+    _refreshTerminalThemeReportsForTui(theme, includeThemeModeReport: false);
+    if (includeThemeModeReport) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 250),
+        includeFocusReport: false,
+      );
+    }
     _scheduleTerminalThemeRefreshForTui(
       theme: theme,
       session: session,
       refreshGeneration: refreshGeneration,
-      delay: const Duration(milliseconds: 150),
+      delay: const Duration(milliseconds: 550),
+      includeThemeModeReport: false,
     );
-    _scheduleTerminalThemeRefreshForTui(
-      theme: theme,
-      session: session,
-      refreshGeneration: refreshGeneration,
-      delay: const Duration(milliseconds: 450),
-    );
+    if (includeThemeModeReport) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 800),
+        includeFocusReport: false,
+      );
+    }
   }
 
-  void _refreshTerminalThemeReportsForTui(TerminalThemeData theme) {
-    _terminalViewKey.currentState
-      ?..refreshThemeModeReport(isDark: theme.isDark)
-      ..refreshThemeColorReports(theme)
-      ..refreshFocusReport(forceTransition: true, force: true);
+  void _refreshTerminalThemeReportsForTui(
+    TerminalThemeData theme, {
+    bool includeThemeModeReport = true,
+    bool includeColorReports = false,
+    bool includeFocusReport = true,
+  }) {
+    final terminalView = _terminalViewKey.currentState;
+    if (terminalView == null) {
+      return;
+    }
+    if (includeThemeModeReport) {
+      terminalView.refreshThemeModeReport(isDark: theme.isDark);
+    }
+    if (includeColorReports) {
+      terminalView.refreshThemeColorReports(theme);
+    }
+    if (includeFocusReport) {
+      terminalView.refreshFocusReport(forceTransition: true, force: true);
+    }
   }
 
   bool _shouldRefreshPlainTerminalTui(SshSession session) =>
@@ -3764,7 +3792,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _cancelTerminalThemeRefreshTimers();
     final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
-    _refreshTerminalThemeReportsForTui(theme);
+    _refreshTerminalThemeReportsForTui(theme, includeColorReports: true);
 
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
@@ -3773,6 +3801,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         refreshGeneration: ++_terminalThemeRefreshGeneration,
         delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
       );
       return;
     }
@@ -3797,12 +3826,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             )) {
               return;
             }
-            _refreshTerminalThemeReportsForTui(theme);
+            _refreshTerminalThemeReportsForTui(
+              theme,
+              includeColorReports: true,
+            );
             _scheduleTerminalThemeRefreshForTui(
               theme: theme,
               session: session,
               refreshGeneration: refreshGeneration,
               delay: const Duration(milliseconds: 150),
+              includeColorReports: true,
             );
           })
           .catchError((Object error) {
@@ -3830,6 +3863,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         session: session,
         refreshGeneration: refreshGeneration,
         delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
       );
       return;
     }
@@ -3862,18 +3896,20 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             },
           );
         }
-        _refreshTerminalThemeReportsForTui(theme);
+        _refreshTerminalThemeReportsForTui(theme, includeColorReports: true);
         _scheduleTerminalThemeRefreshForTui(
           theme: theme,
           session: session,
           refreshGeneration: refreshGeneration,
           delay: const Duration(milliseconds: 25),
+          includeColorReports: true,
         );
         _scheduleTerminalThemeRefreshForTui(
           theme: theme,
           session: session,
           refreshGeneration: refreshGeneration,
           delay: const Duration(milliseconds: 275),
+          includeColorReports: true,
         );
       }),
     );
@@ -3884,6 +3920,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required SshSession session,
     required int refreshGeneration,
     required Duration delay,
+    bool includeThemeModeReport = true,
+    bool includeColorReports = false,
+    bool includeFocusReport = true,
   }) {
     late final Timer timer;
     timer = Timer(delay, () {
@@ -3895,7 +3934,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       )) {
         return;
       }
-      _refreshTerminalThemeReportsForTui(theme);
+      _refreshTerminalThemeReportsForTui(
+        theme,
+        includeThemeModeReport: includeThemeModeReport,
+        includeColorReports: includeColorReports,
+        includeFocusReport: includeFocusReport,
+      );
     });
     _terminalThemeRefreshTimers.add(timer);
   }

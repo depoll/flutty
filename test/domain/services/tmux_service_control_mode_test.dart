@@ -134,8 +134,52 @@ void main() {
         contains("tmux -u list-panes -s -t 'dev'\"'\"'s session'"),
       );
       expect(command, contains(r'set-option -p -t "$pane"'));
-      expect(command, contains("pane-colours[5] '#ff79c6'"));
-      expect(command, contains("pane-colours[6] '#8be9fd'"));
+      expect(command, contains("'pane-colours[5]' '#ff79c6'"));
+      expect(command, contains("'pane-colours[6]' '#8be9fd'"));
+      expect(
+        command,
+        contains(
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}'
+          '#{pane_current_command}',
+        ),
+      );
+      expect(command, contains(r'[ "$active" = 1 ]'));
+      expect(command, contains(r'[ "$alternate" = 1 ]'));
+      expect(command, contains(r'case "${pane_command##*/}" in'));
+      expect(command, contains('opencode|opencode.exe)'));
+      expect(command, contains(r'send-keys -t "$pane" -H'));
+      expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
+      expect(command, contains('1b 5b 4f'));
+      expect(command, contains('1b 5b 49'));
+      expect(command, contains('sleep 0.05'));
+      expect(command, contains('sleep 0.25'));
+      expect(command, contains('sleep 0.08'));
+      expect(
+        command.indexOf('1b 5b 4f'),
+        lessThan(command.indexOf('1b 5b 49')),
+      );
+      expect(
+        command.indexOf('1b 5b 49'),
+        lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
+      );
+      final opencodeBranchStart = command.indexOf('opencode|opencode.exe)');
+      final opencodeBranchEnd = command.indexOf(';;', opencodeBranchStart);
+      final opencodeBranch = command.substring(
+        opencodeBranchStart,
+        opencodeBranchEnd,
+      );
+      final genericBranchStart = command.indexOf('*) ');
+      final genericBranchEnd = command.indexOf(';;', genericBranchStart);
+      final genericBranch = command.substring(
+        genericBranchStart,
+        genericBranchEnd,
+      );
+      expect(opencodeBranch, contains('1b 5d 31 30 3b'));
+      expect(opencodeBranch, contains('1b 5d 31 31 3b'));
+      expect(opencodeBranch, contains('1b 5d 34 3b 30 3b'));
+      expect(genericBranch, isNot(contains('1b 5d 31 30 3b')));
+      expect(genericBranch, isNot(contains('1b 5d 31 31 3b')));
+      expect(genericBranch, isNot(contains('1b 5d 34 3b 30 3b')));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
@@ -162,7 +206,15 @@ void main() {
         contains(
           'tmux -u -S '
           "'/tmp/tmux-socket' -L 'alerts' "
-          r'set-option -p -t "$pane" pane-colours[0]',
+          r"""set-option -p -t "$pane" 'pane-colours[0]'""",
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'send-keys -t "$pane" -H',
         ),
       );
       expect(

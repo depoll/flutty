@@ -1536,8 +1536,8 @@ String buildTmuxRefreshForegroundClientsCommand(
       'done';
 }
 
-/// Builds a command that updates tmux's pane palette and redraws foreground
-/// clients.
+/// Builds a command that updates tmux's pane palette, notifies active TUIs, and
+/// redraws foreground clients.
 @visibleForTesting
 String buildTmuxRefreshTerminalThemeCommand(
   String sessionName,
@@ -1568,11 +1568,22 @@ String buildTmuxRefreshTerminalThemeCommand(
 
   return r'SEP=$(printf "\037"); '
       '$enableFocusEvents 2>/dev/null || true; '
-      '$listPanes"#{pane_id}$sep#{pane_active}" '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep'
+      '#{pane_current_command}" '
       '2>/dev/null | '
-      r'while IFS="$SEP" read -r pane _; do '
+      r'while IFS="$SEP" read -r pane active alternate pane_command; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
+      r'if [ "$active" = 1 ] && [ "$alternate" = 1 ]; then '
+      r'case "${pane_command##*/}" in '
+      'opencode|opencode.exe) '
+      '${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, includeDirectColorReports: true)} '
+      ';; '
+      '*) '
+      '${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} '
+      ';; '
+      'esac; '
+      'fi; '
       'done; '
       '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
 }
@@ -1587,13 +1598,77 @@ String _buildTmuxSetPaneColourCommand(
     throw ArgumentError.value(index, 'index', 'Expected ANSI color index 0-15');
   }
   final hexColor = formatTerminalThemeRgbHex(color);
+  final optionName = TmuxService._shellQuote('pane-colours[$index]');
   final command = TmuxService._tmuxCommand(
-    'set-option -p -t "\$pane" pane-colours[$index] '
-    '${TmuxService._shellQuote(hexColor)}',
+    'set-option -p -t "\$pane" $optionName ${TmuxService._shellQuote(hexColor)}',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
   return '$command 2>/dev/null || true;';
+}
+
+String _buildTmuxSendPaneTerminalThemeCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+  bool includeDirectColorReports = false,
+}) {
+  final themeModeReport = buildTerminalThemeModeReport(isDark: theme.isDark);
+  final colorReports = buildTerminalThemeRefreshReports(theme);
+  // Do not inject unsolicited OSC color replies into the pane. Apps such as
+  // Codex treat OSC replies they did not request as user input; the tmux pane
+  // palette update above ensures any subsequent OSC 10/11 query sees fresh
+  // colors. OpenCode/OpenTUI is the exception: inside tmux, it only re-queries
+  // OSC colors after receiving the private mode report, but tmux consumes the
+  // outer OSC replies instead of forwarding them back into the pane.
+  //
+  // Keep the private mode report separated from focus and direct color reports
+  // so parsers that are waiting on OSC replies see a complete query/response
+  // cycle instead of one coalesced input chunk.
+  final focusOutCommand = TmuxService._tmuxCommand(
+    r'send-keys -t "$pane" -H '
+    '${_formatTmuxSendKeysHexArguments('\x1b[O')}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final focusInCommand = TmuxService._tmuxCommand(
+    r'send-keys -t "$pane" -H '
+    '${_formatTmuxSendKeysHexArguments('\x1b[I')}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final modeCommand = TmuxService._tmuxCommand(
+    r'send-keys -t "$pane" -H '
+    '${_formatTmuxSendKeysHexArguments(themeModeReport)}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final directColorCommand = TmuxService._tmuxCommand(
+    r'send-keys -t "$pane" -H '
+    '${_formatTmuxSendKeysHexArguments(colorReports)}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return '$focusOutCommand 2>/dev/null || true; '
+      'sleep 0.05; '
+      '$focusInCommand 2>/dev/null || true; '
+      'sleep 0.25; '
+      '$modeCommand 2>/dev/null || true;'
+      '${includeDirectColorReports ? ' sleep 0.08; '
+                '$directColorCommand 2>/dev/null || true;' : ''}';
+}
+
+String _formatTmuxSendKeysHexArguments(String input) =>
+    input.codeUnits.map(_formatTmuxSendKeysHexArgument).join(' ');
+
+String _formatTmuxSendKeysHexArgument(int codeUnit) {
+  if (codeUnit > 0x7F) {
+    throw ArgumentError.value(
+      codeUnit,
+      'codeUnit',
+      'Expected an ASCII terminal response byte',
+    );
+  }
+  return codeUnit.toRadixString(16).padLeft(2, '0');
 }
 
 /// Returns whether `tmux list-clients` output includes a non-control client.
