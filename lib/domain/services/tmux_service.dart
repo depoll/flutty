@@ -1568,21 +1568,13 @@ String buildTmuxRefreshTerminalThemeCommand(
 
   return r'SEP=$(printf "\037"); '
       '$enableFocusEvents 2>/dev/null || true; '
-      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep'
-      '#{pane_current_command}" '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}" '
       '2>/dev/null | '
-      r'while IFS="$SEP" read -r pane active alternate pane_command; do '
+      r'while IFS="$SEP" read -r pane active alternate; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       r'if [ "$active" = 1 ] && [ "$alternate" = 1 ]; then '
-      r'case "${pane_command##*/}" in '
-      'opencode|opencode.exe) '
-      '${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, includeDirectColorReports: true)} '
-      ';; '
-      '*) '
       '${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} '
-      ';; '
-      'esac; '
       'fi; '
       'done; '
       '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
@@ -1610,20 +1602,19 @@ String _buildTmuxSetPaneColourCommand(
 String _buildTmuxSendPaneTerminalThemeCommand(
   TerminalThemeData theme, {
   String? extraFlags,
-  bool includeDirectColorReports = false,
 }) {
   final themeModeReport = buildTerminalThemeModeReport(isDark: theme.isDark);
-  final colorReports = buildTerminalThemeRefreshReports(theme);
-  // Do not inject unsolicited OSC color replies into the pane. Apps such as
-  // Codex treat OSC replies they did not request as user input; the tmux pane
-  // palette update above ensures any subsequent OSC 10/11 query sees fresh
-  // colors. OpenCode/OpenTUI is the exception: inside tmux, it only re-queries
-  // OSC colors after receiving the private mode report, but tmux consumes the
-  // outer OSC replies instead of forwarding them back into the pane.
+  final defaultColorReports = buildTerminalThemeDefaultColorReports(theme);
+  // Do not inject unsolicited OSC 4 palette replies into the pane. Apps such
+  // as Codex can treat palette replies they did not request as user input; the
+  // tmux pane palette update above ensures any subsequent OSC 4 query sees
+  // fresh colors without writing palette bytes to the foreground app.
   //
-  // Keep the private mode report separated from focus and direct color reports
-  // so parsers that are waiting on OSC replies see a complete query/response
-  // cycle instead of one coalesced input chunk.
+  // OSC 10/11 default color replies are intentionally sent after the private
+  // mode report. That gives OpenTUI/OpenCode a complete theme-mode plus default
+  // color cycle even when tmux consumes the outer OSC responses, and Codex
+  // accepts this narrower default-color cycle without leaking palette fragments
+  // into the prompt.
   final focusOutCommand = TmuxService._tmuxCommand(
     r'send-keys -t "$pane" -H '
     '${_formatTmuxSendKeysHexArguments('\x1b[O')}',
@@ -1644,7 +1635,7 @@ String _buildTmuxSendPaneTerminalThemeCommand(
   );
   final directColorCommand = TmuxService._tmuxCommand(
     r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments(colorReports)}',
+    '${_formatTmuxSendKeysHexArguments(defaultColorReports)}',
     extraFlags: extraFlags,
     forceUtf8: true,
   );
@@ -1653,8 +1644,12 @@ String _buildTmuxSendPaneTerminalThemeCommand(
       '$focusInCommand 2>/dev/null || true; '
       'sleep 0.25; '
       '$modeCommand 2>/dev/null || true;'
-      '${includeDirectColorReports ? ' sleep 0.08; '
-                '$directColorCommand 2>/dev/null || true;' : ''}';
+      ' sleep 0.08; '
+      '$directColorCommand 2>/dev/null || true;'
+      ' sleep 0.08; '
+      '$directColorCommand 2>/dev/null || true;'
+      ' sleep 0.08; '
+      '$directColorCommand 2>/dev/null || true;';
 }
 
 String _formatTmuxSendKeysHexArguments(String input) =>

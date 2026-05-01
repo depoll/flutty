@@ -136,17 +136,10 @@ void main() {
       expect(command, contains(r'set-option -p -t "$pane"'));
       expect(command, contains("'pane-colours[5]' '#ff79c6'"));
       expect(command, contains("'pane-colours[6]' '#8be9fd'"));
-      expect(
-        command,
-        contains(
-          r'#{pane_active}${SEP}#{alternate_on}${SEP}'
-          '#{pane_current_command}',
-        ),
-      );
+      expect(command, contains(r'#{pane_active}${SEP}#{alternate_on}'));
       expect(command, contains(r'[ "$active" = 1 ]'));
       expect(command, contains(r'[ "$alternate" = 1 ]'));
-      expect(command, contains(r'case "${pane_command##*/}" in'));
-      expect(command, contains('opencode|opencode.exe)'));
+      expect(command, isNot(contains(r'case "${pane_command##*/}" in')));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));
@@ -162,24 +155,15 @@ void main() {
         command.indexOf('1b 5b 49'),
         lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
       );
-      final opencodeBranchStart = command.indexOf('opencode|opencode.exe)');
-      final opencodeBranchEnd = command.indexOf(';;', opencodeBranchStart);
-      final opencodeBranch = command.substring(
-        opencodeBranchStart,
-        opencodeBranchEnd,
+      expect(
+        command.indexOf('1b 5b 3f 39 39 37 3b 31 6e'),
+        lessThan(command.indexOf('1b 5d 31 30 3b')),
       );
-      final genericBranchStart = command.indexOf('*) ');
-      final genericBranchEnd = command.indexOf(';;', genericBranchStart);
-      final genericBranch = command.substring(
-        genericBranchStart,
-        genericBranchEnd,
-      );
-      expect(opencodeBranch, contains('1b 5d 31 30 3b'));
-      expect(opencodeBranch, contains('1b 5d 31 31 3b'));
-      expect(opencodeBranch, contains('1b 5d 34 3b 30 3b'));
-      expect(genericBranch, isNot(contains('1b 5d 31 30 3b')));
-      expect(genericBranch, isNot(contains('1b 5d 31 31 3b')));
-      expect(genericBranch, isNot(contains('1b 5d 34 3b 30 3b')));
+      expect(command, contains('1b 5d 31 30 3b'));
+      expect(command, contains('1b 5d 31 31 3b'));
+      expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(3));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(3));
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),

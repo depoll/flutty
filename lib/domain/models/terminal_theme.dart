@@ -23,11 +23,20 @@ String buildTerminalThemeRefreshReports(TerminalThemeData theme) {
     for (var index = 0; index < 16; index += 1) ...['$index', '?'],
   ];
   return [
-    buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
-    buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
+    buildTerminalThemeDefaultColorReports(theme),
     buildTerminalThemeOscResponse(theme: theme, code: '4', args: paletteArgs),
   ].whereType<String>().join();
 }
+
+/// Builds unsolicited default foreground/background reports.
+///
+/// These are safe to send to foreground TUIs that have just requested a theme
+/// refresh. Unlike OSC 4 palette reports, OSC 10/11 responses are accepted by
+/// Codex and OpenTUI without leaking palette fragments into the prompt.
+String buildTerminalThemeDefaultColorReports(TerminalThemeData theme) => [
+  buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
+  buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
+].whereType<String>().join();
 
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///

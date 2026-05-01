@@ -631,6 +631,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.terminal.onOutput?.call(reports);
   }
 
+  /// Reports the current default foreground/background colors to a TUI.
+  void refreshThemeDefaultColorReports(TerminalThemeData theme) {
+    final reports = buildTerminalThemeDefaultColorReports(theme);
+    if (reports.isEmpty) {
+      return;
+    }
+    widget.terminal.onOutput?.call(reports);
+  }
+
   /// Re-sends the current viewport dimensions to the attached terminal.
   void refreshTerminalSize() {
     final renderObject = _viewportKey.currentContext?.findRenderObject();

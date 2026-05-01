@@ -3706,12 +3706,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    // Do not send unsolicited OSC color replies directly to a plain foreground
-    // TUI. Codex treats those bytes as user input, and its crossterm color
-    // re-query can also be disrupted by unrelated terminal reports. Always
-    // send a synthetic focus transition so focus-aware TUIs re-query OSC 10/11
-    // through the normal path; only send the private theme-mode report to apps
-    // that explicitly requested DEC 2031 color-scheme updates.
+    // Do not send unsolicited OSC palette replies directly to a plain
+    // foreground TUI. Codex treats those bytes as user input, and its crossterm
+    // color re-query can also be disrupted by unrelated terminal reports.
+    // Always send a synthetic focus transition so focus-aware TUIs re-query OSC
+    // 10/11 through the normal path; only send the private theme-mode and
+    // default-color response cycle to apps that explicitly requested DEC 2031
+    // color-scheme updates.
     final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
     _refreshTerminalThemeReportsForTui(theme, includeThemeModeReport: false);
     if (includeThemeModeReport) {
@@ -3722,6 +3723,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         delay: const Duration(milliseconds: 250),
         includeFocusReport: false,
       );
+      for (final delay in const [
+        Duration(milliseconds: 330),
+        Duration(milliseconds: 410),
+        Duration(milliseconds: 490),
+      ]) {
+        _scheduleTerminalThemeRefreshForTui(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+          delay: delay,
+          includeFocusReport: false,
+          includeThemeModeReport: false,
+          includeDefaultColorReports: true,
+        );
+      }
     }
     _scheduleTerminalThemeRefreshForTui(
       theme: theme,
@@ -3745,6 +3761,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TerminalThemeData theme, {
     bool includeThemeModeReport = true,
     bool includeColorReports = false,
+    bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
   }) {
     final terminalView = _terminalViewKey.currentState;
@@ -3756,6 +3773,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     if (includeColorReports) {
       terminalView.refreshThemeColorReports(theme);
+    }
+    if (includeDefaultColorReports) {
+      terminalView.refreshThemeDefaultColorReports(theme);
     }
     if (includeFocusReport) {
       terminalView.refreshFocusReport(forceTransition: true, force: true);
@@ -3922,6 +3942,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required Duration delay,
     bool includeThemeModeReport = true,
     bool includeColorReports = false,
+    bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
   }) {
     late final Timer timer;
@@ -3938,6 +3959,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         theme,
         includeThemeModeReport: includeThemeModeReport,
         includeColorReports: includeColorReports,
+        includeDefaultColorReports: includeDefaultColorReports,
         includeFocusReport: includeFocusReport,
       );
     });
