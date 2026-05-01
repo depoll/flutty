@@ -142,64 +142,68 @@ abstract final class TerminalThemes {
 
   /// MonkeySSH Dark — the signature MonkeySSH theme built around the logo
   /// teal `#14756c` and mint accent `#7CFF8A`. Designed to feel classy and
-  /// readable: a deep teal-charcoal background, warm off-white text, and
-  /// a measured palette that keeps semantic colors distinct without
-  /// becoming gaudy.
+  /// readable: a cool deep teal-blue charcoal background, teal-tinted
+  /// off-white text, and a measured palette that leans green/teal/cyan/blue
+  /// while keeping semantic colors clearly distinct. The selection is a
+  /// translucent teal so highlighted text remains readable through the
+  /// overlay.
   static const monkeyDark = TerminalThemeData(
     id: 'monkeyssh-dark',
     name: 'MonkeySSH Dark',
     isDark: true,
-    foreground: Color(0xFFE0E8E5),
-    background: Color(0xFF0F1A1C),
+    foreground: Color(0xFFD7E7E3),
+    background: Color(0xFF0D1A20),
     cursor: Color(0xFF14756C),
-    selection: Color(0xFF14756C),
-    black: Color(0xFF1B2528),
+    selection: Color(0x4014756C),
+    black: Color(0xFF152228),
     red: Color(0xFFE27085),
-    green: Color(0xFF5FBC7A),
-    yellow: Color(0xFFD4B86A),
-    blue: Color(0xFF56A8C9),
-    magenta: Color(0xFFB690BD),
+    green: Color(0xFF5FCB85),
+    yellow: Color(0xFFD6CC76),
+    blue: Color(0xFF5BA8D1),
+    magenta: Color(0xFFA99AD8),
     cyan: Color(0xFF3FB8AC),
-    white: Color(0xFFC5CCC9),
-    brightBlack: Color(0xFF516563),
+    white: Color(0xFFC2CECC),
+    brightBlack: Color(0xFF4D6260),
     brightRed: Color(0xFFF08F9F),
     brightGreen: Color(0xFF7CFF8A),
-    brightYellow: Color(0xFFF0D27D),
-    brightBlue: Color(0xFF7AC5E0),
-    brightMagenta: Color(0xFFD5B0DA),
+    brightYellow: Color(0xFFEAD881),
+    brightBlue: Color(0xFF8BCBE5),
+    brightMagenta: Color(0xFFC8B8E0),
     brightCyan: Color(0xFF5FE0CC),
-    brightWhite: Color(0xFFF2F5F4),
+    brightWhite: Color(0xFFF0F4F3),
   );
 
-  /// MonkeySSH Light — the daytime companion to [monkeyDark]. Uses a warm
-  /// ivory paper background, a deep teal-charcoal foreground, and the
-  /// signature logo teal `#14756c` as the cursor and cyan accent. The ANSI
-  /// palette is muted and high-contrast against ivory for a clean, classy
-  /// reading surface.
+  /// MonkeySSH Light — the daytime companion to [monkeyDark]. Uses a cool
+  /// near-white background with a faint mint undertone, a deep teal-charcoal
+  /// foreground, and the signature logo teal `#14756c` as both the cursor
+  /// and the cyan slot so the brand color drives Material's primary as well.
+  /// The ANSI palette favors greens, teals, and blues for a calm, classy
+  /// daytime surface; the selection is a translucent teal so selected text
+  /// stays readable through the overlay.
   static const monkeyLight = TerminalThemeData(
     id: 'monkeyssh-light',
     name: 'MonkeySSH Light',
     isDark: false,
-    foreground: Color(0xFF0E2B28),
-    background: Color(0xFFF8F5EC),
+    foreground: Color(0xFF0D2B28),
+    background: Color(0xFFEBF3F2),
     cursor: Color(0xFF14756C),
-    selection: Color(0xFF14756C),
-    black: Color(0xFF0E2B28),
+    selection: Color(0x4014756C),
+    black: Color(0xFF0D2B28),
     red: Color(0xFFA82F45),
-    green: Color(0xFF2D7E48),
-    yellow: Color(0xFF946513),
-    blue: Color(0xFF1F5F84),
-    magenta: Color(0xFF714485),
+    green: Color(0xFF1F7A48),
+    yellow: Color(0xFF7A6810),
+    blue: Color(0xFF1A6FB0),
+    magenta: Color(0xFF5B5C9C),
     cyan: Color(0xFF14756C),
-    white: Color(0xFF586763),
-    brightBlack: Color(0xFF2E3F3C),
+    white: Color(0xFF5C736E),
+    brightBlack: Color(0xFF2D403D),
     brightRed: Color(0xFFC44660),
-    brightGreen: Color(0xFF358D55),
-    brightYellow: Color(0xFFA77820),
-    brightBlue: Color(0xFF2A77A2),
-    brightMagenta: Color(0xFF85569A),
-    brightCyan: Color(0xFF1A8C82),
-    brightWhite: Color(0xFFFFFEF4),
+    brightGreen: Color(0xFF2A9D5F),
+    brightYellow: Color(0xFF967A1F),
+    brightBlue: Color(0xFF2D8BC8),
+    brightMagenta: Color(0xFF7373B5),
+    brightCyan: Color(0xFF1AA298),
+    brightWhite: Color(0xFFFCFEFD),
   );
 
   /// Dracula from iTerm2-Color-Schemes.

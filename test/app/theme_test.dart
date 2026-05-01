@@ -92,6 +92,45 @@ void main() {
       expect(theme.scaffoldBackgroundColor, globalTheme.background);
       expect(theme.colorScheme.onSurface, globalTheme.foreground);
     });
+
+    test(
+      'uses the brand-teal cursor as Material primary for MonkeySSH themes',
+      () {
+        for (final terminalTheme in [
+          TerminalThemes.monkeyDark,
+          TerminalThemes.monkeyLight,
+        ]) {
+          final theme = FluttyTheme.fromTerminalTheme(
+            terminalTheme,
+            brightness: terminalTheme.isDark
+                ? Brightness.dark
+                : Brightness.light,
+          );
+          expect(
+            theme.colorScheme.primary,
+            terminalTheme.cursor,
+            reason:
+                '${terminalTheme.name} should drive Material primary from '
+                'its saturated cursor color.',
+          );
+        }
+      },
+    );
+
+    test('falls back to the candidate-scoring algorithm for low-saturation '
+        'cursors', () {
+      final theme = FluttyTheme.fromTerminalTheme(
+        TerminalThemes.dracula,
+        brightness: Brightness.dark,
+      );
+      // Dracula uses a near-white cursor (low saturation), so primary
+      // should come from the saturated candidate list instead.
+      expect(theme.colorScheme.primary, isNot(TerminalThemes.dracula.cursor));
+      expect(
+        _terminalAccentCandidates(TerminalThemes.dracula),
+        contains(theme.colorScheme.primary),
+      );
+    });
   });
 }
 
