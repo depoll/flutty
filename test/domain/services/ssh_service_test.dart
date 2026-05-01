@@ -415,6 +415,7 @@ void main() {
         modeState: const (
           reportFocusMode: true,
           bracketedPasteMode: false,
+          colorSchemeUpdatesMode: true,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -431,6 +432,24 @@ void main() {
         '\x1b[?2026;0\$y',
       );
       expect(result.pendingInput, isEmpty);
+
+      final colorSchemeReset = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?2031\$pafter',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: false,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(colorSchemeReset.response, '\x1b[?2031;2\$y');
     });
 
     test('preserves split DEC private mode report queries across chunks', () {
@@ -441,6 +460,7 @@ void main() {
         modeState: const (
           reportFocusMode: true,
           bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -459,6 +479,7 @@ void main() {
         modeState: const (
           reportFocusMode: true,
           bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
           isUsingAltBuffer: false,
           mouseTrackingMode: false,
           mouseDragTrackingMode: false,
@@ -469,6 +490,32 @@ void main() {
 
       expect(second.response, '\x1b[?1004;1\$y');
       expect(second.pendingInput, isEmpty);
+    });
+
+    test('extracts color scheme update mode changes', () {
+      final enabled = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?2031hafter',
+        pendingInput: '',
+      );
+
+      expect(enabled.colorSchemeUpdatesMode, isTrue);
+      expect(enabled.pendingInput, isEmpty);
+
+      final first = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?203',
+        pendingInput: '',
+      );
+
+      expect(first.colorSchemeUpdatesMode, isNull);
+      expect(first.pendingInput, '\x1b[?203');
+
+      final disabled = extractTerminalControlModeUpdates(
+        input: '1lafter',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(disabled.colorSchemeUpdatesMode, isFalse);
+      expect(disabled.pendingInput, isEmpty);
     });
 
     test(

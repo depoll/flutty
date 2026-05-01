@@ -1264,6 +1264,29 @@ void main() {
     );
 
     testWidgets(
+      'skips Pro auto-connect gate when the host has no auto-connect workflow',
+      (tester) async {
+        when(
+          () => monetizationService.canUseFeature(any()),
+        ).thenAnswer((_) async => false);
+
+        await pumpScreen(tester);
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(
+          find.text('This auto-connect workflow needs MonkeySSH Pro to run.'),
+          findsNothing,
+        );
+        verifyNever(
+          () => monetizationService.canUseFeature(
+            MonetizationFeature.autoConnectAutomation,
+          ),
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'terminal tap opens the mobile keyboard when tap-to-show is enabled',
       (tester) async {
         await pumpScreen(tester);

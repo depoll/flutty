@@ -34,6 +34,7 @@ typedef TerminalWindowMetrics = ({
 typedef TerminalControlModeState = ({
   bool reportFocusMode,
   bool bracketedPasteMode,
+  bool colorSchemeUpdatesMode,
   bool isUsingAltBuffer,
   bool mouseTrackingMode,
   bool mouseDragTrackingMode,
@@ -152,10 +153,41 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
+/// Extracts terminal color-scheme update mode changes from shell output.
+///
+/// Some TUIs enable DEC private mode 2031 to request a report when the
+/// terminal switches between light and dark color schemes. xterm.dart does not
+/// currently model that mode, so MonkeySSH tracks it while scanning the same
+/// shell output used for other terminal control queries.
+({bool? colorSchemeUpdatesMode, String pendingInput})
+extractTerminalControlModeUpdates({
+  required String input,
+  required String pendingInput,
+}) {
+  final combinedInput = pendingInput + input;
+  bool? colorSchemeUpdatesMode;
+
+  for (final match in _terminalPrivateModeSetResetPattern.allMatches(
+    combinedInput,
+  )) {
+    final params = match.group(1)?.split(';') ?? const <String>[];
+    if (!params.contains('2031')) {
+      continue;
+    }
+    colorSchemeUpdatesMode = match.group(2) == 'h';
+  }
+
+  return (
+    colorSchemeUpdatesMode: colorSchemeUpdatesMode,
+    pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
+  );
+}
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
+final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -225,10 +257,13 @@ String? _buildTerminalModeReportResponse(
       mode,
       modeState.bracketedPasteMode ? _terminalModeSet : _terminalModeReset,
     ),
+    2031 => _formatTerminalModeReport(
+      mode,
+      modeState.colorSchemeUpdatesMode ? _terminalModeSet : _terminalModeReset,
+    ),
     1016 ||
     2026 ||
-    2027 ||
-    2031 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+    2027 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
     _ => null,
   };
 }
@@ -1846,12 +1881,17 @@ class SshSession {
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
   String _terminalTmuxPassthroughPendingInput = '';
+  String _terminalControlModeUpdatePendingInput = '';
+  bool _terminalColorSchemeUpdatesMode = false;
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
 
   /// The active terminal theme used to answer remote OSC color queries.
   TerminalThemeData? terminalTheme;
+
+  /// Whether the foreground app requested xterm color-scheme update reports.
+  bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
@@ -2074,6 +2114,8 @@ class SshSession {
     _terminalWindowMetrics = null;
     _terminalWindowQueryPendingInput = '';
     _terminalTmuxPassthroughPendingInput = '';
+    _terminalControlModeUpdatePendingInput = '';
+    _terminalColorSchemeUpdatesMode = false;
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
@@ -2261,6 +2303,17 @@ class SshSession {
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
+    final modeUpdateResult = extractTerminalControlModeUpdates(
+      input: data,
+      pendingInput: _terminalControlModeUpdatePendingInput,
+    );
+    _terminalControlModeUpdatePendingInput = modeUpdateResult.pendingInput;
+    final nextColorSchemeUpdatesMode = modeUpdateResult.colorSchemeUpdatesMode;
+    if (nextColorSchemeUpdatesMode != null &&
+        nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
+      _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
+    }
+
     final result = buildTerminalWindowControlQueryResponses(
       input: data,
       pendingInput: _terminalWindowQueryPendingInput,
@@ -2290,6 +2343,7 @@ class SshSession {
   TerminalControlModeState _terminalModeState(Terminal terminal) => (
     reportFocusMode: terminal.reportFocusMode,
     bracketedPasteMode: terminal.bracketedPasteMode,
+    colorSchemeUpdatesMode: _terminalColorSchemeUpdatesMode,
     isUsingAltBuffer: terminal.isUsingAltBuffer,
     mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
     mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,

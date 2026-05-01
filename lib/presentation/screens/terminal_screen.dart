@@ -3675,6 +3675,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    // Plain SSH apps opt in to color-scheme change reports with DEC private
+    // mode 2031. OpenTUI/opencode uses the report as a refresh trigger and
+    // then re-queries OSC 10/11; Codex re-queries on FocusGained.
+    if (session.terminalColorSchemeUpdatesMode) {
+      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
+    }
     terminalViewState?.refreshFocusReport(forceTransition: true);
   }
 
@@ -4708,6 +4714,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
+    final mode = resolveAutoConnectCommandMode(
+      command: resolvedStoredCommand,
+      snippetId: host.autoConnectSnippetId,
+    );
+    if (mode == AutoConnectCommandMode.none) {
+      return;
+    }
+
     final hasAccess = await ref
         .read(monetizationServiceProvider)
         .canUseFeature(MonetizationFeature.autoConnectAutomation);
@@ -4743,15 +4758,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
-      return;
-    }
-
-    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
-    final mode = resolveAutoConnectCommandMode(
-      command: resolvedStoredCommand,
-      snippetId: host.autoConnectSnippetId,
-    );
-    if (mode == AutoConnectCommandMode.none) {
       return;
     }
 
