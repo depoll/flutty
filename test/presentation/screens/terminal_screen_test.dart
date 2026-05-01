@@ -593,7 +593,10 @@ void main() {
       await db.close();
     });
 
-    Future<void> pumpScreen(WidgetTester tester) async {
+    Future<void> pumpScreen(
+      WidgetTester tester, {
+      ThemeMode themeMode = ThemeMode.light,
+    }) async {
       await tester.pumpWidget(
         ProviderScope(
           overrides: [
@@ -609,6 +612,9 @@ void main() {
             ),
           ],
           child: MaterialApp(
+            theme: ThemeData.light(),
+            darkTheme: ThemeData.dark(),
+            themeMode: themeMode,
             home: TerminalScreen(
               hostId: host.id,
               connectionId: session.connectionId,
@@ -638,6 +644,59 @@ void main() {
 
       expect(wakelockPlatform.toggleCalls.last, false);
     });
+
+    testWidgets(
+      'refreshes the active TUI when inherited brightness changes',
+      (tester) async {
+        await pumpScreen(tester);
+        shellWrites.clear();
+
+        await pumpScreen(tester, themeMode: ThemeMode.dark);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.defaultDarkThemeId,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'refreshes the active TUI when terminal theme settings change',
+      (tester) async {
+        await pumpScreen(tester);
+        shellWrites.clear();
+
+        final container = ProviderScope.containerOf(
+          tester.element(find.byType(TerminalScreen)),
+        );
+        await container
+            .read(terminalThemeSettingsProvider.notifier)
+            .setLightTheme(monkey_themes.TerminalThemes.githubLightDefault.id);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 500));
+
+        final writtenShellText = utf8.decode(
+          shellWrites.expand((chunk) => chunk).toList(growable: false),
+        );
+        expect(writtenShellText, contains('\x1b[O\x1b[I'));
+        expect(
+          session.terminalTheme?.id,
+          monkey_themes.TerminalThemes.githubLightDefault.id,
+        );
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
 
     Future<void> pumpTmuxScreen(
       WidgetTester tester,

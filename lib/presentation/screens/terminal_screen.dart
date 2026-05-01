@@ -3297,6 +3297,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   late final ProviderSubscription<bool> _terminalWakeLockSubscription;
+  late final ProviderSubscription<TerminalThemeSettings>
+  _terminalThemeSettingsSubscription;
+  late final ProviderSubscription<ThemeMode> _themeModeSubscription;
   late final TerminalWakeLockService _terminalWakeLockService;
   late final int _terminalWakeLockOwnerId;
   Timer? _localClipboardSyncTimer;
@@ -3503,6 +3506,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _syncTerminalWakeLock();
       },
     );
+    _terminalThemeSettingsSubscription = ref
+        .listenManual<TerminalThemeSettings>(terminalThemeSettingsProvider, (
+          previous,
+          next,
+        ) {
+          if (_sameTerminalThemeSettings(previous, next)) {
+            return;
+          }
+          _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+        });
+    _themeModeSubscription = ref.listenManual<ThemeMode>(
+      themeModeNotifierProvider,
+      (previous, next) {
+        if (previous == next) {
+          return;
+        }
+        _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+      },
+    );
     _terminal = Terminal(maxLines: 10000);
     _terminalController = TerminalController();
     _terminalScrollController = ScrollController()
@@ -3626,6 +3648,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _applyTerminalThemeToSession(
     TerminalThemeData theme, {
     SshSession? session,
+    bool forceRemoteRefresh = false,
   }) {
     final targetSession =
         session ??
@@ -3638,8 +3661,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (targetSession?.terminal != _terminal || targetSession == null) {
       return;
     }
-    if (previousTheme != null &&
-        !_terminalThemesMatchForRemoteRefresh(previousTheme, theme)) {
+    if (forceRemoteRefresh ||
+        (previousTheme != null &&
+            !_terminalThemesMatchForRemoteRefresh(previousTheme, theme))) {
       _refreshTerminalThemeForTui(theme, targetSession);
       return;
     }
@@ -3874,6 +3898,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       previous.brightMagenta == next.brightMagenta &&
       previous.brightCyan == next.brightCyan &&
       previous.brightWhite == next.brightWhite;
+
+  bool _sameTerminalTheme(
+    TerminalThemeData? previous,
+    TerminalThemeData? next,
+  ) {
+    if (previous == null || next == null) {
+      return previous == next;
+    }
+    return _terminalThemesMatchForRemoteRefresh(previous, next);
+  }
+
+  bool _sameTerminalThemeSettings(
+    TerminalThemeSettings? previous,
+    TerminalThemeSettings next,
+  ) =>
+      previous != null &&
+      previous.lightThemeId == next.lightThemeId &&
+      previous.darkThemeId == next.darkThemeId;
+
+  void _handleTerminalThemeDependenciesChanged({
+    bool forceRemoteRefresh = false,
+  }) {
+    if (!mounted || _currentTheme == null) {
+      return;
+    }
+    unawaited(
+      _reloadTerminalThemeForDependencies(
+        forceRemoteRefresh: forceRemoteRefresh,
+      ),
+    );
+  }
+
+  Future<void> _reloadTerminalThemeForDependencies({
+    bool forceRemoteRefresh = false,
+  }) async {
+    final session = _connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(_connectionId!);
+    if (session != null) {
+      final restored = await _restoreSessionThemeOverride(
+        session,
+        forceRemoteRefresh: forceRemoteRefresh,
+      );
+      if (restored) {
+        return;
+      }
+    }
+
+    if (_sessionThemeOverride == null) {
+      await _loadTheme(forceRemoteRefresh: forceRemoteRefresh);
+    }
+  }
 
   void _syncAppThemeOverrideFromSession(SshSession session) {
     _terminalAppThemeOverrideNotifier.activeOverride = TerminalAppThemeOverride(
@@ -4207,7 +4283,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     await _connect(preferredConnectionId: widget.connectionId);
   }
 
-  Future<void> _loadTheme() async {
+  Future<void> _loadTheme({bool forceRemoteRefresh = false}) async {
     if (!mounted) return;
 
     final brightness = Theme.of(context).brightness;
@@ -4227,14 +4303,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return;
     }
-    final didThemeChange = _currentTheme?.id != theme.id;
+    final didThemeChange = !_sameTerminalTheme(_currentTheme, theme);
     if (didThemeChange) {
       setState(() => _currentTheme = theme);
+    } else {
+      _currentTheme = theme;
     }
-    _applyTerminalThemeToSession(theme);
+    _applyTerminalThemeToSession(theme, forceRemoteRefresh: forceRemoteRefresh);
   }
 
-  Future<bool> _restoreSessionThemeOverride(SshSession session) async {
+  Future<bool> _restoreSessionThemeOverride(
+    SshSession session, {
+    bool forceRemoteRefresh = false,
+  }) async {
     final brightness = Theme.of(context).brightness;
     final themeId = brightness == Brightness.dark
         ? session.terminalThemeDarkId
@@ -4245,10 +4326,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (_sessionThemeOverride != null) {
           setState(() => _sessionThemeOverride = null);
         }
-        _applyTerminalThemeToSession(
-          _resolveEffectiveTerminalTheme(),
-          session: session,
-        );
         _syncAppThemeOverrideFromSession(session);
       }
       return false;
@@ -4259,14 +4336,24 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return false;
     }
-    if (_sessionThemeOverride?.id != resolvedTheme?.id) {
+    if (resolvedTheme == null) {
+      if (_sessionThemeOverride != null) {
+        setState(() => _sessionThemeOverride = null);
+      }
+      return false;
+    }
+    if (!_sameTerminalTheme(_sessionThemeOverride, resolvedTheme)) {
       setState(() => _sessionThemeOverride = resolvedTheme);
+    } else {
+      _sessionThemeOverride = resolvedTheme;
     }
-    if (resolvedTheme != null) {
-      _applyTerminalThemeToSession(resolvedTheme, session: session);
-    }
+    _applyTerminalThemeToSession(
+      resolvedTheme,
+      session: session,
+      forceRemoteRefresh: forceRemoteRefresh,
+    );
     _syncAppThemeOverrideFromSession(session);
-    return resolvedTheme != null;
+    return true;
   }
 
   Future<void> _connect({
@@ -5930,6 +6017,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
     _terminalWakeLockSubscription.close();
+    _terminalThemeSettingsSubscription.close();
+    _themeModeSubscription.close();
     unawaited(_terminalWakeLockService.releaseOwner(_terminalWakeLockOwnerId));
     _stopSharedClipboardSync();
     _promptOutputImeResetTimer?.cancel();
@@ -5981,6 +6070,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+  }
+
+  @override
   void didChangeMetrics() {
     super.didChangeMetrics();
     _scheduleTerminalSizeRefresh();
@@ -5991,31 +6086,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     super.didChangeDependencies();
     // Reload theme when system brightness changes
     final brightness = Theme.of(context).brightness;
-    if (_currentTheme != null && _lastThemeDependencyBrightness == brightness) {
-      return;
-    }
+    final didBrightnessChange = _lastThemeDependencyBrightness != brightness;
     _lastThemeDependencyBrightness = brightness;
     if (_currentTheme == null) {
       return;
     }
-
-    final session = _connectionId == null
-        ? null
-        : _sessionsNotifier?.getSession(_connectionId!);
-    if (session != null) {
-      unawaited(
-        _restoreSessionThemeOverride(session).then((restored) {
-          if (!restored) {
-            return _loadTheme();
-          }
-        }),
-      );
+    if (!didBrightnessChange) {
       return;
     }
-
-    if (_sessionThemeOverride == null) {
-      _loadTheme();
-    }
+    _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
   }
 
   List<Widget> _buildTerminalStatusChips(ThemeData theme) {
