@@ -183,11 +183,27 @@ extractTerminalControlModeUpdates({
   );
 }
 
+/// Normalizes terminal-generated output before it is sent to the remote shell.
+///
+/// xterm.dart currently emits cursor-position reports using its internal
+/// zero-based cursor coordinates. The terminal DSR wire protocol is one-based,
+/// and TUIs such as Codex can stall or mis-detect terminal state after receiving
+/// `CSI 0;0 R`.
+String normalizeTerminalOutputForRemoteShell(String data) =>
+    data.replaceAllMapped(_terminalCursorPositionReportPattern, (match) {
+      final row = int.parse(match.group(1)!);
+      final column = int.parse(match.group(2)!);
+      return '\x1b[${row + 1};${column + 1}R';
+    });
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
 final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
 final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
 final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
+final _terminalCursorPositionReportPattern = RegExp(
+  r'\x1b\[([0-9]+);([0-9]+)R',
+);
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -2239,8 +2255,9 @@ class SshSession {
 
     // Wire terminal keyboard output → shell stdin (persistent).
     terminal.onOutput = (data) {
-      _recordShellIo(stdinChars: data.length);
-      shell.write(utf8.encode(data));
+      final output = normalizeTerminalOutputForRemoteShell(data);
+      _recordShellIo(stdinChars: output.length);
+      shell.write(utf8.encode(output));
     };
     _refreshTerminalPreview();
   }

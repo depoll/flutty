@@ -3681,7 +3681,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (session.terminalColorSchemeUpdatesMode) {
       terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
     }
-    terminalViewState?.refreshFocusReport(forceTransition: true);
+    terminalViewState?.refreshFocusReport(forceTransition: true, force: true);
+    _scheduleTerminalThemeFocusRefresh(
+      theme: theme,
+      session: session,
+      refreshGeneration: refreshGeneration,
+      force: true,
+      delay: const Duration(milliseconds: 150),
+    );
+    _scheduleTerminalThemeFocusRefresh(
+      theme: theme,
+      session: session,
+      refreshGeneration: refreshGeneration,
+      force: true,
+      delay: const Duration(milliseconds: 450),
+    );
   }
 
   /// Proactively pushes the active terminal theme into tmux's per-pane color
@@ -4500,7 +4514,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // keyInput(TerminalKey.enter) path already produces '\r', so we
       // only normalize single-'\n' to avoid rewriting legitimate LF
       // characters in pasted or multi-char input.
-      final output = data == '\n' ? '\r' : data;
+      final output = normalizeTerminalOutputForRemoteShell(
+        data == '\n' ? '\r' : data,
+      );
 
       _shell?.write(utf8.encode(output));
     };

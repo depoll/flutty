@@ -324,6 +324,12 @@ void main() {
         .refreshFocusReport();
 
     expect(output, isEmpty);
+
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport(forceTransition: true, force: true);
+
+    expect(output, ['\x1b[O\x1b[I']);
   });
 
   testWidgets('refreshThemeModeReport sends xterm theme mode report', (

@@ -291,6 +291,17 @@ void main() {
       },
     );
 
+    test(
+      'normalizes cursor position reports to terminal protocol coordinates',
+      () {
+        expect(
+          normalizeTerminalOutputForRemoteShell('before\x1b[0;0Rafter'),
+          'before\x1b[1;1Rafter',
+        );
+        expect(normalizeTerminalOutputForRemoteShell('\x1b[4;7R'), '\x1b[5;8R');
+      },
+    );
+
     test('unwraps complete tmux passthrough sequences', () {
       final result = unwrapTerminalTmuxPassthroughSequences(
         input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
