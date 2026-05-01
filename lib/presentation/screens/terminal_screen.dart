@@ -3638,7 +3638,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (targetSession?.terminal != _terminal || targetSession == null) {
       return;
     }
-    if (previousTheme != null && previousTheme.id != theme.id) {
+    if (previousTheme != null &&
+        !_terminalThemesMatchForRemoteRefresh(previousTheme, theme)) {
       _refreshTerminalThemeForTui(theme, targetSession);
       return;
     }
@@ -3658,7 +3659,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     final terminalViewState = _terminalViewKey.currentState;
     if (_isTmuxActive) {
-      // Notify theme-aware TUIs of the new mode and push fresh OSC 10/11/12/4
+      // Notify theme-aware TUIs of the new mode and push fresh OSC 10/11/4
       // reports. tmux caches the outer terminal's default colors and ANSI
       // palette and answers OSC queries from that cache; without these
       // unsolicited reports, apps inside tmux (e.g. Copilot) keep deriving
@@ -3670,26 +3671,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         theme: theme,
         session: session,
         refreshGeneration: refreshGeneration,
-      );
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 150), () {
-          if (!mounted ||
-              refreshGeneration != _terminalThemeRefreshGeneration ||
-              session.terminal != _terminal ||
-              session.terminalTheme?.id != theme.id) {
-            return;
-          }
-          // Force the focus transition even when the outer xterm doesn't
-          // know it's enabled — tmux intercepts the inner app's
-          // `CSI ? 1004 h` request, so the outer terminal's flag isn't a
-          // reliable gate inside tmux. Codex et al. re-query OSC 10/11 on
-          // FocusGained, so this is the trigger that propagates the new
-          // theme into the inner app.
-          _terminalViewKey.currentState?.refreshFocusReport(
-            forceTransition: true,
-            force: true,
-          );
-        }),
       );
       return;
     }
@@ -3750,28 +3731,129 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }) {
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
+      _scheduleTerminalThemeFocusRefresh(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        force: true,
+        delay: const Duration(milliseconds: 150),
+      );
       return;
     }
 
     unawaited(
       Future<void>.delayed(const Duration(milliseconds: 75), () async {
-        if (!mounted ||
-            refreshGeneration != _terminalThemeRefreshGeneration ||
-            session.terminal != _terminal ||
-            session.terminalTheme?.id != theme.id) {
+        if (!_isCurrentTerminalThemeRefresh(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+        )) {
           return;
         }
-        await ref
-            .read(tmuxServiceProvider)
-            .refreshTerminalTheme(
-              session,
-              tmuxSessionName,
-              theme,
-              extraFlags: _host?.tmuxExtraFlags,
-            );
+        try {
+          await ref
+              .read(tmuxServiceProvider)
+              .refreshTerminalTheme(
+                session,
+                tmuxSessionName,
+                theme,
+                extraFlags: _host?.tmuxExtraFlags,
+              );
+        } on Object catch (error) {
+          DiagnosticsLogService.instance.warning(
+            'terminal.theme',
+            'tmux_refresh_failed',
+            fields: {
+              'connectionId': session.connectionId,
+              'errorType': error.runtimeType,
+            },
+          );
+        }
+        _scheduleTerminalThemeFocusRefresh(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+          force: true,
+          delay: const Duration(milliseconds: 25),
+        );
+        _scheduleTerminalThemeFocusRefresh(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+          force: true,
+          delay: const Duration(milliseconds: 275),
+        );
       }),
     );
   }
+
+  void _scheduleTerminalThemeFocusRefresh({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+    required bool force,
+    required Duration delay,
+  }) {
+    unawaited(
+      Future<void>.delayed(delay, () {
+        if (!_isCurrentTerminalThemeRefresh(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+        )) {
+          return;
+        }
+        // Force the focus transition even when the outer xterm doesn't know
+        // focus reporting is enabled. Inside tmux the inner app's
+        // `CSI ? 1004 h` request is intercepted, so the outer xterm flag is not
+        // a reliable gate. Codex et al. re-query OSC 10/11 on FocusGained.
+        _terminalViewKey.currentState?.refreshFocusReport(
+          forceTransition: true,
+          force: force,
+        );
+      }),
+    );
+  }
+
+  bool _isCurrentTerminalThemeRefresh({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+  }) {
+    final activeTheme = session.terminalTheme;
+    return mounted &&
+        refreshGeneration == _terminalThemeRefreshGeneration &&
+        session.terminal == _terminal &&
+        activeTheme != null &&
+        _terminalThemesMatchForRemoteRefresh(activeTheme, theme);
+  }
+
+  bool _terminalThemesMatchForRemoteRefresh(
+    TerminalThemeData previous,
+    TerminalThemeData next,
+  ) =>
+      previous.id == next.id &&
+      previous.isDark == next.isDark &&
+      previous.foreground == next.foreground &&
+      previous.background == next.background &&
+      previous.cursor == next.cursor &&
+      previous.selection == next.selection &&
+      previous.black == next.black &&
+      previous.red == next.red &&
+      previous.green == next.green &&
+      previous.yellow == next.yellow &&
+      previous.blue == next.blue &&
+      previous.magenta == next.magenta &&
+      previous.cyan == next.cyan &&
+      previous.white == next.white &&
+      previous.brightBlack == next.brightBlack &&
+      previous.brightRed == next.brightRed &&
+      previous.brightGreen == next.brightGreen &&
+      previous.brightYellow == next.brightYellow &&
+      previous.brightBlue == next.brightBlue &&
+      previous.brightMagenta == next.brightMagenta &&
+      previous.brightCyan == next.brightCyan &&
+      previous.brightWhite == next.brightWhite;
 
   void _syncAppThemeOverrideFromSession(SshSession session) {
     _terminalAppThemeOverrideNotifier.activeOverride = TerminalAppThemeOverride(
