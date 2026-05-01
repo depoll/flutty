@@ -18,6 +18,7 @@ import 'package:monkeyssh/data/repositories/host_repository.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/models/monetization.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart' as monkey_themes;
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
@@ -131,6 +132,7 @@ void main() {
     registerFallbackValue(<int>[]);
     registerFallbackValue(Uint8List(0));
     registerFallbackValue(MonetizationFeature.autoConnectAutomation);
+    registerFallbackValue(monkey_themes.TerminalThemes.defaultDarkTheme);
   });
 
   group('terminal native selection helpers', () {
@@ -662,6 +664,14 @@ void main() {
       when(
         () => tmuxService.prefetchInstalledAgentTools(session),
       ).thenAnswer((_) async {});
+      when(
+        () => tmuxService.refreshTerminalTheme(
+          session,
+          tmuxSessionName,
+          any(),
+          extraFlags: any(named: 'extraFlags'),
+        ),
+      ).thenAnswer((_) async {});
 
       await tester.pumpWidget(
         ProviderScope(
@@ -731,6 +741,14 @@ void main() {
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
@@ -809,6 +827,14 @@ void main() {
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
         ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
           ProviderScope(
@@ -879,6 +905,14 @@ void main() {
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
 
         await tester.pumpWidget(
@@ -992,6 +1026,14 @@ void main() {
         ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
         when(
           () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
         ).thenAnswer((_) async {});
         session.terminal!.write('\u001b]133;C\u0007');
         expect(session.shellStatus, TerminalShellStatus.runningCommand);

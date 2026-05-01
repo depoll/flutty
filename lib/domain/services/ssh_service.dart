@@ -2362,6 +2362,18 @@ class SshSession {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
+    if (code == '10' || code == '11' || code == '12' || code == '4') {
+      DiagnosticsLogService.instance.debug(
+        'terminal.osc',
+        'theme_query',
+        fields: {
+          'connectionId': connectionId,
+          'code': code,
+          'themeId': terminalTheme?.id,
+          'hasShell': _shell != null,
+        },
+      );
+    }
     final themeOscResponse = terminalTheme == null
         ? null
         : buildTerminalThemeOscResponse(
@@ -2370,7 +2382,30 @@ class SshSession {
             args: args,
           );
     if (themeOscResponse != null) {
-      _shell?.write(utf8.encode(themeOscResponse));
+      final shell = _shell;
+      if (shell == null) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.osc',
+          'theme_query_dropped_no_shell',
+          fields: {
+            'connectionId': connectionId,
+            'code': code,
+            'themeId': terminalTheme?.id,
+          },
+        );
+      } else {
+        shell.write(utf8.encode(themeOscResponse));
+        DiagnosticsLogService.instance.debug(
+          'terminal.osc',
+          'theme_query_answered',
+          fields: {
+            'connectionId': connectionId,
+            'code': code,
+            'themeId': terminalTheme!.id,
+            'responseBytes': themeOscResponse.length,
+          },
+        );
+      }
       return;
     }
 

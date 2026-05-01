@@ -3635,10 +3635,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             : _sessionsNotifier?.getSession(_connectionId!));
     final previousTheme = targetSession?.terminalTheme;
     targetSession?.terminalTheme = theme;
-    if (previousTheme != null &&
-        previousTheme.id != theme.id &&
-        targetSession?.terminal == _terminal) {
-      _refreshTerminalThemeForTui(theme, targetSession!);
+    if (targetSession?.terminal != _terminal || targetSession == null) {
+      return;
+    }
+    if (previousTheme != null && previousTheme.id != theme.id) {
+      _refreshTerminalThemeForTui(theme, targetSession);
+      return;
+    }
+    if (previousTheme == null && _isTmuxActive) {
+      // First time the session learns its terminal theme. tmux already
+      // detected as active means it may have queried OSC 10/11 before
+      // session.terminalTheme was set (e.g., during shell startup) and
+      // cached a fallback. Push the right values now so the cache matches.
+      _primeTmuxTerminalTheme(targetSession);
     }
   }
 
@@ -3686,6 +3695,52 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     terminalViewState?.refreshFocusReport(forceTransition: true);
+  }
+
+  /// Proactively pushes the active terminal theme into tmux's per-pane color
+  /// cache.
+  ///
+  /// Called whenever tmux is freshly detected or re-detected, regardless of
+  /// whether a theme switch just happened. tmux caches the outer terminal's
+  /// default colors per-pane, populated either when tmux first queries the
+  /// outer client or via unsolicited OSC reports. If MonkeySSH attaches to a
+  /// tmux session that was started under a different (or wrong) outer
+  /// terminal — or if a previous attach landed before [SshSession.terminalTheme]
+  /// was set — the cache can answer inner-pane OSC 10/11/12 queries with stale
+  /// values forever. TUIs like Codex CLI bake those answers into their
+  /// composer/surface colors, leaving them mismatched until the cache is
+  /// refreshed.
+  ///
+  /// This priming sends the same OSC reports + tmux pane palette update +
+  /// foreground-client redraw that a theme switch would, but skips the focus
+  /// transition because there's no active TUI to wake up — the next time an
+  /// inner app queries, it will read the correct cache.
+  void _primeTmuxTerminalTheme(SshSession session) {
+    if (!_isTmuxActive) {
+      return;
+    }
+    final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+    _terminalViewKey.currentState
+      ?..refreshThemeModeReport(isDark: theme.isDark)
+      ..refreshThemeColorReports(theme);
+
+    final tmuxSessionName = _tmuxSessionName;
+    if (tmuxSessionName == null) {
+      return;
+    }
+    // Run the tmux palette update synchronously instead of using the 75ms
+    // debounced path; priming should fire immediately when tmux is detected
+    // so the cache is right before any inner TUI queries it.
+    unawaited(
+      ref
+          .read(tmuxServiceProvider)
+          .refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            theme,
+            extraFlags: _host?.tmuxExtraFlags,
+          ),
+    );
   }
 
   void _refreshTmuxClientAfterTerminalThemeChange({
@@ -4931,6 +4986,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'windowCount': windows.length,
           },
         );
+        // Prime tmux's per-pane color cache with the active theme as soon
+        // as we confirm tmux is running. Without this, an inner TUI like
+        // Codex CLI that queries OSC 11 for theme detection would receive
+        // whatever stale value tmux had cached (e.g., from a previous
+        // attach to a different terminal), and bake the wrong composer
+        // surface color into its rendered output.
+        _primeTmuxTerminalTheme(session);
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return true;
       }
