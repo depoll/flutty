@@ -48,6 +48,19 @@ import 'terminal_selection_text.dart';
 
 const _minimumFaintTextContrast = 4.5;
 
+/// xterm 256-color palette grayscale ramp range (inclusive).
+///
+/// Apps that follow modern conventions emit subtle UI surfaces (input boxes,
+/// status panels, etc.) as background fills against grayscale palette
+/// indexes 232-255. Treating those backgrounds as fixed gray makes the
+/// surface stale after a theme switch — Codex's input composer is the most
+/// visible offender — so [resolveMonkeyTerminalPaletteBackgroundColor]
+/// resolves them as theme-relative overlays. Foregrounds, RGB colors, the
+/// 16-color palette, and non-grayscale palette entries (16-231) are
+/// rendered exactly as authored.
+const _xtermGrayscalePaletteStart = 232;
+const _xtermGrayscalePaletteEnd = 255;
+
 double _contrastRatio(Color a, Color b) {
   final luminanceA = a.computeLuminance();
   final luminanceB = b.computeLuminance();
@@ -104,6 +117,51 @@ List<Color> _buildMonkeyTerminalPalette(TerminalTheme theme) =>
     List<Color>.generate(
       256,
       (index) => resolveMonkeyTerminalPaletteColor(theme, index),
+      growable: false,
+    );
+
+/// Resolves 256-color palette entries for cell **backgrounds** against the
+/// active terminal theme.
+///
+/// xterm specifies palette indexes 232-255 as a fixed grayscale ramp, but
+/// modern TUIs (notably Codex CLI) emit subtle input/status surfaces as
+/// grayscale background fills derived in spirit from the terminal's default
+/// background. Fixing those entries to the standard grays leaves the
+/// composer/input box stuck as a near-black panel after switching to a light
+/// theme (or as a near-white panel after switching to dark). Indexes 0-15
+/// and 16-231 are returned unchanged from the standard palette so ANSI
+/// colors, the 6×6×6 cube, and authored RGB backgrounds all render exactly
+/// as the application requested.
+@visibleForTesting
+Color resolveMonkeyTerminalPaletteBackgroundColor(
+  TerminalTheme theme,
+  int colorIndex,
+) {
+  if (colorIndex < _xtermGrayscalePaletteStart ||
+      colorIndex > _xtermGrayscalePaletteEnd) {
+    return resolveMonkeyTerminalPaletteColor(theme, colorIndex);
+  }
+
+  final scale =
+      (colorIndex - _xtermGrayscalePaletteStart) /
+      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
+  final isLightBackground = theme.background.computeLuminance() > 0.5;
+  final overlay = isLightBackground
+      ? const Color(0xFF000000)
+      : const Color(0xFFFFFFFF);
+  final opacity = isLightBackground
+      ? lerpDouble(0.10, 0.02, scale)!
+      : lerpDouble(0.04, 0.20, scale)!;
+  return Color.alphaBlend(
+    overlay.withAlpha((opacity * 255).round()),
+    theme.background,
+  );
+}
+
+List<Color> _buildMonkeyTerminalBackgroundPalette(TerminalTheme theme) =>
+    List<Color>.generate(
+      256,
+      (index) => resolveMonkeyTerminalPaletteBackgroundColor(theme, index),
       growable: false,
     );
 
@@ -587,8 +645,13 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   /// TUIs such as Codex re-query terminal colors after focus-gained events. The
   /// app can use this after a theme change so those TUIs refresh cached
   /// foreground/background colors without waiting for a real focus transition.
-  void refreshFocusReport({bool forceTransition = false}) {
-    if (!widget.terminal.reportFocusMode) {
+  ///
+  /// Set [force] to send the report even when [Terminal.reportFocusMode] is
+  /// off. Inside tmux the outer xterm rarely sees the inner app's
+  /// `CSI ? 1004 h` request because tmux intercepts and re-emits it for its
+  /// own clients, so the outer xterm's tracking flag is unreliable as a gate.
+  void refreshFocusReport({bool forceTransition = false, bool force = false}) {
+    if (!force && !widget.terminal.reportFocusMode) {
       return;
     }
     widget.terminal.onOutput?.call(
@@ -1261,9 +1324,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
     required super.theme,
     required super.textStyle,
     required super.textScaler,
-  }) : _palette = _buildMonkeyTerminalPalette(theme);
+  }) : _palette = _buildMonkeyTerminalPalette(theme),
+       _backgroundPalette = _buildMonkeyTerminalBackgroundPalette(theme);
 
   List<Color> _palette;
+  List<Color> _backgroundPalette;
   final _paragraphCache = ParagraphCache(10240);
 
   @override
@@ -1291,6 +1356,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
     }
     super.theme = value;
     _palette = _buildMonkeyTerminalPalette(value);
+    _backgroundPalette = _buildMonkeyTerminalBackgroundPalette(value);
     _paragraphCache.clear();
   }
 
@@ -1377,7 +1443,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         return theme.background;
       case CellColor.named:
       case CellColor.palette:
-        return _palette[colorValue];
+        return _backgroundPalette[colorValue];
       case CellColor.rgb:
       default:
         return Color(colorValue | 0xFF000000);

@@ -1554,8 +1554,20 @@ String buildTmuxRefreshTerminalThemeCommand(
     for (var index = 0; index < 16; index += 1)
       _buildTmuxSetPaneColourCommand(index, theme, extraFlags: extraFlags),
   ].join(' ');
+  // Make sure tmux forwards focus events to inner panes — without this,
+  // theme-aware TUIs like Codex/Copilot CLI never receive the FocusGained
+  // signal we use as the trigger to re-query OSC 10/11 after a theme switch
+  // and their cached default fg/bg stay stale (e.g. input composer "stuck
+  // almost black"). Safe to re-apply on every refresh because the option is
+  // global and idempotent.
+  final enableFocusEvents = TmuxService._tmuxCommand(
+    'set-option -g focus-events on',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
 
   return r'SEP=$(printf "\037"); '
+      '$enableFocusEvents 2>/dev/null || true; '
       '$listPanes"#{pane_id}$sep#{pane_active}" '
       '2>/dev/null | '
       r'while IFS="$SEP" read -r pane _; do '

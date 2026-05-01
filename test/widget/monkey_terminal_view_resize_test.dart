@@ -375,7 +375,8 @@ void main() {
     expect(output.single, isNot(contains('\x1b]4;16;')));
   });
 
-  test('explicit xterm palette grayscale colors stay standard', () {
+  test('explicit xterm palette colors keep standard semantics for foregrounds '
+      'and non-grayscale backgrounds', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
         .toXtermTheme();
     final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
@@ -392,16 +393,72 @@ void main() {
     );
 
     for (final painter in [darkPainter, lightPainter]) {
+      // Foregrounds are never retinted — including grayscale entries.
       expect(
         painter.resolveForegroundColor(CellColor.palette | 244),
         const Color(0xFF808080),
       );
+      // Non-grayscale backgrounds (the 6×6×6 cube) keep standard xterm
+      // values too; only the grayscale ramp 232-255 becomes theme-relative.
       expect(
-        painter.resolveBackgroundColor(CellColor.palette | 235),
-        const Color(0xFF262626),
+        painter.resolveBackgroundColor(CellColor.palette | 196),
+        const Color(0xFFFF0000),
       );
     }
   });
+
+  test(
+    'xterm grayscale background palette resolves as a theme-relative surface',
+    () {
+      final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+          .toXtermTheme();
+      final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
+          .toXtermTheme();
+      final darkPainter = MonkeyTerminalPainter(
+        theme: darkTheme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+      final lightPainter = MonkeyTerminalPainter(
+        theme: lightTheme,
+        textStyle: const TerminalStyle(),
+        textScaler: TextScaler.noScaling,
+      );
+
+      // Subtle grayscale background (Codex composer surface) is no longer the
+      // fixed standard xterm gray; it's a slight overlay on the theme bg.
+      final darkSurface = darkPainter.resolveBackgroundColor(
+        CellColor.palette | 235,
+      );
+      final lightSurface = lightPainter.resolveBackgroundColor(
+        CellColor.palette | 235,
+      );
+
+      expect(darkSurface, isNot(const Color(0xFF262626)));
+      expect(lightSurface, isNot(const Color(0xFF262626)));
+      // The dark theme's resolved surface should sit above its bg luminance
+      // (slight white overlay) and the light theme's should sit below
+      // (slight black overlay).
+      expect(
+        darkSurface.computeLuminance(),
+        greaterThan(darkTheme.background.computeLuminance()),
+      );
+      expect(
+        lightSurface.computeLuminance(),
+        lessThan(lightTheme.background.computeLuminance()),
+      );
+
+      // Foreground grayscale entries are not retinted.
+      expect(
+        darkPainter.resolveForegroundColor(CellColor.palette | 235),
+        const Color(0xFF262626),
+      );
+      expect(
+        lightPainter.resolveForegroundColor(CellColor.palette | 235),
+        const Color(0xFF262626),
+      );
+    },
+  );
 
   test('ANSI bright colors follow the active theme palette', () {
     final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme

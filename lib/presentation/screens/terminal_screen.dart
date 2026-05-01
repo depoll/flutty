@@ -3670,8 +3670,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               session.terminalTheme?.id != theme.id) {
             return;
           }
+          // Force the focus transition even when the outer xterm doesn't
+          // know it's enabled — tmux intercepts the inner app's
+          // `CSI ? 1004 h` request, so the outer terminal's flag isn't a
+          // reliable gate inside tmux. Codex et al. re-query OSC 10/11 on
+          // FocusGained, so this is the trigger that propagates the new
+          // theme into the inner app.
           _terminalViewKey.currentState?.refreshFocusReport(
             forceTransition: true,
+            force: true,
           );
         }),
       );
