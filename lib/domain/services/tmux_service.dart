@@ -63,6 +63,9 @@ class TmuxService {
   /// In-flight tmux path/profile probes per SSH session.
   static final Map<int, Future<void>> _tmuxPathRequests = {};
 
+  /// In-flight tmux session-existence probes.
+  static final _hasSessionRequests = <_TmuxSessionRequestKey, Future<bool>>{};
+
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
   static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
 
@@ -108,6 +111,9 @@ class TmuxService {
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
     _tmuxPathRequests.remove(connectionId);
+    _hasSessionRequests.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
     _installedAgentToolsCache.remove(connectionId);
     _installedAgentToolRequests.remove(connectionId);
     _execChannelBackoffs.remove(connectionId);
@@ -500,6 +506,43 @@ class TmuxService {
   /// Unlike [hasSession], this distinguishes a missing tmux session from
   /// transient SSH exec/channel failures.
   Future<bool> hasSessionOrThrow(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    final requestKey = _TmuxSessionRequestKey(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+      extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
+    );
+    final existingRequest = _hasSessionRequests[requestKey];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'has_session_join',
+        fields: {
+          'connectionId': session.connectionId,
+          'sessionHash': sessionName.hashCode.abs(),
+        },
+      );
+      return existingRequest;
+    }
+
+    final request = _hasSessionOrThrow(
+      session,
+      sessionName,
+      extraFlags: extraFlags,
+    );
+    _hasSessionRequests[requestKey] = request;
+    request.whenComplete(() {
+      if (identical(_hasSessionRequests[requestKey], request)) {
+        _hasSessionRequests.remove(requestKey);
+      }
+    }).ignore();
+    return request;
+  }
+
+  Future<bool> _hasSessionOrThrow(
     SshSession session,
     String sessionName, {
     String? extraFlags,
@@ -2111,6 +2154,30 @@ TmuxControlHeartbeatAction decideTmuxHeartbeatAction({
     return TmuxControlHeartbeatAction.refresh;
   }
   return TmuxControlHeartbeatAction.noop;
+}
+
+@immutable
+class _TmuxSessionRequestKey {
+  const _TmuxSessionRequestKey({
+    required this.connectionId,
+    required this.sessionName,
+    this.extraFlags,
+  });
+
+  final int connectionId;
+  final String sessionName;
+  final String? extraFlags;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _TmuxSessionRequestKey &&
+          connectionId == other.connectionId &&
+          sessionName == other.sessionName &&
+          extraFlags == other.extraFlags;
+
+  @override
+  int get hashCode => Object.hash(connectionId, sessionName, extraFlags);
 }
 
 @immutable

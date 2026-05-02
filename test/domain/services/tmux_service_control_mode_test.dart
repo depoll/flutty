@@ -309,13 +309,12 @@ void main() {
       },
     );
 
-    test('hasSessionOrThrow dedupes concurrent tmux path probes', () async {
+    test('hasSessionOrThrow dedupes concurrent session probes', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 33);
       const service = TmuxService();
       final execSessions = Queue<SSHSession>.of([
         _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
-        _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
         _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
       ]);
 
@@ -340,7 +339,7 @@ void main() {
           any(that: contains('tmux -u has-session')),
           pty: any(named: 'pty'),
         ),
-      ).called(2);
+      ).called(1);
     });
 
     test(

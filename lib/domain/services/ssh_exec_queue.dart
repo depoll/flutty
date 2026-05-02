@@ -112,6 +112,7 @@ class _SshExecQueue {
       return _normalJobs.removeFirst();
     }
     if (_lowJobs.isEmpty ||
+        _activeCount > 0 ||
         _activeLowPriorityCount >= _maxLowPriorityExecJobsPerConnection) {
       return null;
     }
