@@ -191,9 +191,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   List<PortForward> _portForwards = [];
   _HostEditDraft? _initialDraft;
 
+  /// Tracks whether the form has unsaved changes without requiring a full
+  /// widget tree rebuild on every keystroke. Updated by text-controller
+  /// listeners and by every non-text setState that touches draft state.
+  late final ValueNotifier<bool> _isDirtyNotifier;
+
   @override
   void initState() {
     super.initState();
+    _isDirtyNotifier = ValueNotifier(false);
     _labelController = TextEditingController();
     _hostnameController = TextEditingController();
     _portController = TextEditingController(text: '22');
@@ -216,6 +222,25 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     _agentTmuxFlagsFocusNode = FocusNode();
     _customCommandFocusNode = FocusNode();
     _snippetFocusNode = FocusNode();
+
+    for (final c in [
+      _labelController,
+      _hostnameController,
+      _portController,
+      _usernameController,
+      _passwordController,
+      _tagsController,
+      _autoConnectCommandController,
+      _tmuxSessionController,
+      _tmuxWorkingDirectoryController,
+      _tmuxExtraFlagsController,
+      _agentWorkingDirectoryController,
+      _agentTmuxSessionController,
+      _agentTmuxExtraFlagsController,
+      _agentArgumentsController,
+    ]) {
+      c.addListener(_updateDirtyState);
+    }
 
     if (widget.hostId != null) {
       _loadHost();
@@ -321,10 +346,12 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       _isLoading = false;
       _initialDraft = _currentDraft();
     });
+    _updateDirtyState();
   }
 
   @override
   void dispose() {
+    _isDirtyNotifier.dispose();
     _labelController.dispose();
     _hostnameController.dispose();
     _portController.dispose();
@@ -354,6 +381,15 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
   bool get _hasUnsavedChanges {
     final initialDraft = _initialDraft;
     return initialDraft != null && _currentDraft() != initialDraft;
+  }
+
+  /// Synchronizes [_isDirtyNotifier] with the current unsaved-changes state.
+  ///
+  /// Call this after any mutation that could change [_hasUnsavedChanges]
+  /// without going through a text-controller listener (e.g. dropdown/checkbox
+  /// setStates, or after resetting [_initialDraft] on save/load).
+  void _updateDirtyState() {
+    _isDirtyNotifier.value = _hasUnsavedChanges;
   }
 
   _HostEditDraft _currentDraft() => (
@@ -399,6 +435,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         _isLoading = false;
       }
     });
+    _updateDirtyState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) {
         return;
@@ -430,377 +467,400 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
         ref.watch(allTerminalThemesProvider).asData?.value ??
         TerminalThemes.all;
 
-    return UnsavedChangesGuard(
-      hasUnsavedChanges: _hasUnsavedChanges,
-      child: Scaffold(
-        appBar: AppBar(
-          title: Text(isEditing ? 'Edit Host' : 'Add Host'),
-          actions: [
-            if (!isEditing)
+    // ValueListenableBuilder keeps UnsavedChangesGuard (and its PopScope) in
+    // sync with dirty state without rebuilding the whole tree on every
+    // keystroke. Rebuilds happen only when dirty state actually transitions
+    // (clean → dirty on first edit, dirty → clean after save).
+    return ValueListenableBuilder<bool>(
+      valueListenable: _isDirtyNotifier,
+      builder: (context, isDirty, _) => UnsavedChangesGuard(
+        hasUnsavedChanges: isDirty,
+        child: Scaffold(
+          appBar: AppBar(
+            title: Text(isEditing ? 'Edit Host' : 'Add Host'),
+            actions: [
+              if (!isEditing)
+                IconButton(
+                  icon: const Icon(Icons.download_for_offline_outlined),
+                  tooltip: 'Import transfer payload',
+                  onPressed: () => unawaited(_handleImportTransferTap()),
+                ),
               IconButton(
-                icon: const Icon(Icons.download_for_offline_outlined),
-                tooltip: 'Import transfer payload',
-                onPressed: () => unawaited(_handleImportTransferTap()),
+                icon: Icon(_isFavorite ? Icons.star : Icons.star_border),
+                onPressed: () {
+                  setState(() => _isFavorite = !_isFavorite);
+                  _updateDirtyState();
+                },
+                tooltip: _isFavorite
+                    ? 'Remove from favorites'
+                    : 'Add to favorites',
               ),
-            IconButton(
-              icon: Icon(_isFavorite ? Icons.star : Icons.star_border),
-              onPressed: () => setState(() => _isFavorite = !_isFavorite),
-              tooltip: _isFavorite
-                  ? 'Remove from favorites'
-                  : 'Add to favorites',
-            ),
-          ],
-        ),
-        body: _isLoading
-            ? const Center(child: CircularProgressIndicator())
-            : Form(
-                key: _formKey,
-                onChanged: () => setState(() {}),
-                child: SingleChildScrollView(
-                  controller: _scrollController,
-                  padding: const EdgeInsets.all(16),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      // Label
-                      KeyedSubtree(
-                        key: _labelFieldLocationKey,
-                        child: TextFormField(
-                          key: const Key('host-label-field'),
-                          controller: _labelController,
-                          focusNode: _labelFocusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Label',
-                            hintText: 'My Server',
-                            prefixIcon: Icon(Icons.label),
-                          ),
-                          textInputAction: TextInputAction.next,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Please enter a label';
-                            }
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Hostname
-                      KeyedSubtree(
-                        key: _hostnameFieldLocationKey,
-                        child: TextFormField(
-                          key: const Key('host-hostname-field'),
-                          controller: _hostnameController,
-                          focusNode: _hostnameFocusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Hostname',
-                            hintText: 'example.com or 192.168.1.1',
-                            prefixIcon: Icon(Icons.dns),
-                          ),
-                          keyboardType: TextInputType.url,
-                          textInputAction: TextInputAction.next,
-                          autocorrect: false,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Please enter a hostname';
-                            }
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Port
-                      KeyedSubtree(
-                        key: _portFieldLocationKey,
-                        child: TextFormField(
-                          key: const Key('host-port-field'),
-                          controller: _portController,
-                          focusNode: _portFocusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Port',
-                            hintText: '22',
-                            prefixIcon: Icon(Icons.numbers),
-                          ),
-                          keyboardType: TextInputType.number,
-                          textInputAction: TextInputAction.next,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Please enter a port';
-                            }
-                            final port = int.tryParse(value);
-                            if (port == null || port < 1 || port > 65535) {
-                              return 'Port must be between 1 and 65535';
-                            }
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      // Username
-                      KeyedSubtree(
-                        key: _usernameFieldLocationKey,
-                        child: TextFormField(
-                          key: const Key('host-username-field'),
-                          controller: _usernameController,
-                          focusNode: _usernameFocusNode,
-                          decoration: const InputDecoration(
-                            labelText: 'Username',
-                            hintText: 'root',
-                            prefixIcon: Icon(Icons.person),
-                          ),
-                          textInputAction: TextInputAction.next,
-                          autocorrect: false,
-                          validator: (value) {
-                            if (value == null || value.isEmpty) {
-                              return 'Please enter a username';
-                            }
-                            return null;
-                          },
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-
-                      TextFormField(
-                        controller: _tagsController,
-                        decoration: const InputDecoration(
-                          labelText: 'Tags (optional)',
-                          hintText: 'prod, db, eu-west',
-                          prefixIcon: Icon(Icons.sell_outlined),
-                          helperText:
-                              'Comma-separated tags for search/organization',
-                        ),
-                        textInputAction: TextInputAction.next,
-                        autocorrect: false,
-                      ),
-                      const SizedBox(height: 24),
-
-                      // Authentication section
-                      Text(
-                        'Authentication',
-                        style: Theme.of(context).textTheme.titleMedium,
-                      ),
-                      const SizedBox(height: 12),
-
-                      // Password
-                      TextFormField(
-                        controller: _passwordController,
-                        decoration: InputDecoration(
-                          labelText: 'Password (optional)',
-                          hintText: 'Leave empty for key-only auth',
-                          prefixIcon: const Icon(Icons.lock),
-                          suffixIcon: IconButton(
-                            icon: Icon(
-                              _showPassword
-                                  ? Icons.visibility_off
-                                  : Icons.visibility,
-                            ),
-                            onPressed: () =>
-                                setState(() => _showPassword = !_showPassword),
-                          ),
-                        ),
-                        obscureText: !_showPassword,
-                        textInputAction: TextInputAction.done,
-                      ),
-                      const SizedBox(height: 16),
-
-                      // SSH Key dropdown
-                      keysAsync.when(
-                        loading: () => const LinearProgressIndicator(),
-                        error: (_, _) => const Text('Error loading keys'),
-                        data: (keys) {
-                          // Validate selected key still exists
-                          final validKeyId =
-                              _selectedKeyId != null &&
-                                  keys.any((k) => k.id == _selectedKeyId)
-                              ? _selectedKeyId
-                              : null;
-                          if (validKeyId != _selectedKeyId) {
-                            // Schedule state update for next frame
-                            WidgetsBinding.instance.addPostFrameCallback((_) {
-                              if (mounted) {
-                                setState(() => _selectedKeyId = null);
-                              }
-                            });
-                          }
-                          return DropdownButtonFormField<int?>(
-                            // ignore: deprecated_member_use
-                            value: validKeyId,
+            ],
+          ),
+          body: _isLoading
+              ? const Center(child: CircularProgressIndicator())
+              : Form(
+                  key: _formKey,
+                  child: SingleChildScrollView(
+                    controller: _scrollController,
+                    padding: const EdgeInsets.all(16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Label
+                        KeyedSubtree(
+                          key: _labelFieldLocationKey,
+                          child: TextFormField(
+                            key: const Key('host-label-field'),
+                            controller: _labelController,
+                            focusNode: _labelFocusNode,
                             decoration: const InputDecoration(
-                              labelText: 'SSH Key (optional)',
-                              prefixIcon: Icon(Icons.key),
-                              helperText:
-                                  'Auto tries up to 5 installed keys when password is empty',
+                              labelText: 'Label',
+                              hintText: 'My Server',
+                              prefixIcon: Icon(Icons.label),
                             ),
-                            items: [
-                              const DropdownMenuItem<int?>(child: Text('Auto')),
-                              ...keys.map(
-                                (key) => DropdownMenuItem(
-                                  value: key.id,
-                                  child: Text(key.name),
-                                ),
-                              ),
-                            ],
-                            onChanged: (value) =>
-                                setState(() => _selectedKeyId = value),
-                          );
-                        },
-                      ),
-                      const SizedBox(height: 24),
-
-                      _buildStartupSection(
-                        context: context,
-                        hasAutomationAccess: hasAutomationAccess,
-                        hasAgentPresetAccess: hasAgentPresetAccess,
-                        snippetsAsync: snippetsAsync,
-                      ),
-                      const SizedBox(height: 24),
-
-                      // Advanced section
-                      ExpansionTile(
-                        key: const Key('host-advanced-tile'),
-                        title: const Text('Advanced'),
-                        initiallyExpanded: _selectedJumpHostId != null,
-                        children: [
-                          const SizedBox(height: 8),
-                          // Jump host dropdown
-                          hostsAsync.when(
-                            loading: () => const LinearProgressIndicator(),
-                            error: (_, _) => const Text('Error loading hosts'),
-                            data: (hosts) {
-                              // Filter out current host from jump host options
-                              final availableHosts = hosts
-                                  .where((h) => h.id != widget.hostId)
-                                  .toList();
-                              // Validate selected jump host still exists
-                              final validJumpHostId =
-                                  _selectedJumpHostId != null &&
-                                      availableHosts.any(
-                                        (h) => h.id == _selectedJumpHostId,
-                                      )
-                                  ? _selectedJumpHostId
-                                  : null;
-                              if (validJumpHostId != _selectedJumpHostId) {
-                                WidgetsBinding.instance.addPostFrameCallback((
-                                  _,
-                                ) {
-                                  if (mounted) {
-                                    setState(() => _selectedJumpHostId = null);
-                                  }
-                                });
+                            textInputAction: TextInputAction.next,
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter a label';
                               }
-                              return DropdownButtonFormField<int?>(
-                                // ignore: deprecated_member_use
-                                value: validJumpHostId,
-                                decoration: const InputDecoration(
-                                  labelText: 'Jump Host (optional)',
-                                  prefixIcon: Icon(Icons.hub),
-                                  helperText:
-                                      'Connect through another host (bastion)',
-                                ),
-                                items: [
-                                  const DropdownMenuItem(child: Text('None')),
-                                  ...availableHosts.map(
-                                    (host) => DropdownMenuItem(
-                                      value: host.id,
-                                      child: Text(host.label),
-                                    ),
-                                  ),
-                                ],
-                                onChanged: (value) =>
-                                    setState(() => _selectedJumpHostId = value),
-                              );
+                              return null;
                             },
                           ),
-                          if (_selectedJumpHostId != null) ...[
-                            const SizedBox(height: 16),
-                            _SkipJumpHostOnWifiSection(
-                              ssids: _skipJumpHostOnSsids,
-                              onChanged: (next) =>
-                                  setState(() => _skipJumpHostOnSsids = next),
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Hostname
+                        KeyedSubtree(
+                          key: _hostnameFieldLocationKey,
+                          child: TextFormField(
+                            key: const Key('host-hostname-field'),
+                            controller: _hostnameController,
+                            focusNode: _hostnameFocusNode,
+                            decoration: const InputDecoration(
+                              labelText: 'Hostname',
+                              hintText: 'example.com or 192.168.1.1',
+                              prefixIcon: Icon(Icons.dns),
                             ),
-                          ],
-                          const SizedBox(height: 24),
-                          // Terminal theme section
-                          Row(
-                            children: [
-                              Text(
-                                'Terminal Theme',
-                                style: Theme.of(context).textTheme.titleSmall
-                                    ?.copyWith(
-                                      color: Theme.of(
-                                        context,
-                                      ).colorScheme.primary,
-                                      fontWeight: FontWeight.w600,
-                                    ),
-                              ),
-                              const SizedBox(width: 8),
-                              const PremiumBadge(),
-                            ],
+                            keyboardType: TextInputType.url,
+                            textInputAction: TextInputAction.next,
+                            autocorrect: false,
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter a hostname';
+                              }
+                              return null;
+                            },
                           ),
-                          const SizedBox(height: 12),
-                          if (!hasHostThemeAccess) ...[
-                            Text(
-                              'MonkeySSH Pro unlocks per-host theme overrides. App-wide default themes stay free in Settings.',
-                              style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Port
+                        KeyedSubtree(
+                          key: _portFieldLocationKey,
+                          child: TextFormField(
+                            key: const Key('host-port-field'),
+                            controller: _portController,
+                            focusNode: _portFocusNode,
+                            decoration: const InputDecoration(
+                              labelText: 'Port',
+                              hintText: '22',
+                              prefixIcon: Icon(Icons.numbers),
+                            ),
+                            keyboardType: TextInputType.number,
+                            textInputAction: TextInputAction.next,
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter a port';
+                              }
+                              final port = int.tryParse(value);
+                              if (port == null || port < 1 || port > 65535) {
+                                return 'Port must be between 1 and 65535';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+
+                        // Username
+                        KeyedSubtree(
+                          key: _usernameFieldLocationKey,
+                          child: TextFormField(
+                            key: const Key('host-username-field'),
+                            controller: _usernameController,
+                            focusNode: _usernameFocusNode,
+                            decoration: const InputDecoration(
+                              labelText: 'Username',
+                              hintText: 'root',
+                              prefixIcon: Icon(Icons.person),
+                            ),
+                            textInputAction: TextInputAction.next,
+                            autocorrect: false,
+                            validator: (value) {
+                              if (value == null || value.isEmpty) {
+                                return 'Please enter a username';
+                              }
+                              return null;
+                            },
+                          ),
+                        ),
+                        const SizedBox(height: 16),
+
+                        TextFormField(
+                          controller: _tagsController,
+                          decoration: const InputDecoration(
+                            labelText: 'Tags (optional)',
+                            hintText: 'prod, db, eu-west',
+                            prefixIcon: Icon(Icons.sell_outlined),
+                            helperText:
+                                'Comma-separated tags for search/organization',
+                          ),
+                          textInputAction: TextInputAction.next,
+                          autocorrect: false,
+                        ),
+                        const SizedBox(height: 24),
+
+                        // Authentication section
+                        Text(
+                          'Authentication',
+                          style: Theme.of(context).textTheme.titleMedium,
+                        ),
+                        const SizedBox(height: 12),
+
+                        // Password
+                        TextFormField(
+                          controller: _passwordController,
+                          decoration: InputDecoration(
+                            labelText: 'Password (optional)',
+                            hintText: 'Leave empty for key-only auth',
+                            prefixIcon: const Icon(Icons.lock),
+                            suffixIcon: IconButton(
+                              icon: Icon(
+                                _showPassword
+                                    ? Icons.visibility_off
+                                    : Icons.visibility,
+                              ),
+                              onPressed: () => setState(
+                                () => _showPassword = !_showPassword,
+                              ),
+                            ),
+                          ),
+                          obscureText: !_showPassword,
+                          textInputAction: TextInputAction.done,
+                        ),
+                        const SizedBox(height: 16),
+
+                        // SSH Key dropdown
+                        keysAsync.when(
+                          loading: () => const LinearProgressIndicator(),
+                          error: (_, _) => const Text('Error loading keys'),
+                          data: (keys) {
+                            // Validate selected key still exists
+                            final validKeyId =
+                                _selectedKeyId != null &&
+                                    keys.any((k) => k.id == _selectedKeyId)
+                                ? _selectedKeyId
+                                : null;
+                            if (validKeyId != _selectedKeyId) {
+                              // Schedule state update for next frame
+                              WidgetsBinding.instance.addPostFrameCallback((_) {
+                                if (mounted) {
+                                  setState(() => _selectedKeyId = null);
+                                  _updateDirtyState();
+                                }
+                              });
+                            }
+                            return DropdownButtonFormField<int?>(
+                              // ignore: deprecated_member_use
+                              value: validKeyId,
+                              decoration: const InputDecoration(
+                                labelText: 'SSH Key (optional)',
+                                prefixIcon: Icon(Icons.key),
+                                helperText:
+                                    'Auto tries up to 5 installed keys when password is empty',
+                              ),
+                              items: [
+                                const DropdownMenuItem<int?>(
+                                  child: Text('Auto'),
+                                ),
+                                ...keys.map(
+                                  (key) => DropdownMenuItem(
+                                    value: key.id,
+                                    child: Text(key.name),
+                                  ),
+                                ),
+                              ],
+                              onChanged: (value) {
+                                setState(() => _selectedKeyId = value);
+                                _updateDirtyState();
+                              },
+                            );
+                          },
+                        ),
+                        const SizedBox(height: 24),
+
+                        _buildStartupSection(
+                          context: context,
+                          hasAutomationAccess: hasAutomationAccess,
+                          hasAgentPresetAccess: hasAgentPresetAccess,
+                          snippetsAsync: snippetsAsync,
+                        ),
+                        const SizedBox(height: 24),
+
+                        // Advanced section
+                        ExpansionTile(
+                          key: const Key('host-advanced-tile'),
+                          title: const Text('Advanced'),
+                          initiallyExpanded: _selectedJumpHostId != null,
+                          children: [
+                            const SizedBox(height: 8),
+                            // Jump host dropdown
+                            hostsAsync.when(
+                              loading: () => const LinearProgressIndicator(),
+                              error: (_, _) =>
+                                  const Text('Error loading hosts'),
+                              data: (hosts) {
+                                // Filter out current host from jump host options
+                                final availableHosts = hosts
+                                    .where((h) => h.id != widget.hostId)
+                                    .toList();
+                                // Validate selected jump host still exists
+                                final validJumpHostId =
+                                    _selectedJumpHostId != null &&
+                                        availableHosts.any(
+                                          (h) => h.id == _selectedJumpHostId,
+                                        )
+                                    ? _selectedJumpHostId
+                                    : null;
+                                if (validJumpHostId != _selectedJumpHostId) {
+                                  WidgetsBinding.instance.addPostFrameCallback((
+                                    _,
+                                  ) {
+                                    if (mounted) {
+                                      setState(
+                                        () => _selectedJumpHostId = null,
+                                      );
+                                      _updateDirtyState();
+                                    }
+                                  });
+                                }
+                                return DropdownButtonFormField<int?>(
+                                  // ignore: deprecated_member_use
+                                  value: validJumpHostId,
+                                  decoration: const InputDecoration(
+                                    labelText: 'Jump Host (optional)',
+                                    prefixIcon: Icon(Icons.hub),
+                                    helperText:
+                                        'Connect through another host (bastion)',
+                                  ),
+                                  items: [
+                                    const DropdownMenuItem(child: Text('None')),
+                                    ...availableHosts.map(
+                                      (host) => DropdownMenuItem(
+                                        value: host.id,
+                                        child: Text(host.label),
+                                      ),
+                                    ),
+                                  ],
+                                  onChanged: (value) {
+                                    setState(() => _selectedJumpHostId = value);
+                                    _updateDirtyState();
+                                  },
+                                );
+                              },
+                            ),
+                            if (_selectedJumpHostId != null) ...[
+                              const SizedBox(height: 16),
+                              _SkipJumpHostOnWifiSection(
+                                ssids: _skipJumpHostOnSsids,
+                                onChanged: (next) {
+                                  setState(() => _skipJumpHostOnSsids = next);
+                                  _updateDirtyState();
+                                },
+                              ),
+                            ],
+                            const SizedBox(height: 24),
+                            // Terminal theme section
+                            Row(
+                              children: [
+                                Text(
+                                  'Terminal Theme',
+                                  style: Theme.of(context).textTheme.titleSmall
+                                      ?.copyWith(
+                                        color: Theme.of(
+                                          context,
+                                        ).colorScheme.primary,
+                                        fontWeight: FontWeight.w600,
+                                      ),
+                                ),
+                                const SizedBox(width: 8),
+                                const PremiumBadge(),
+                              ],
                             ),
                             const SizedBox(height: 12),
+                            if (!hasHostThemeAccess) ...[
+                              Text(
+                                'MonkeySSH Pro unlocks per-host theme overrides. App-wide default themes stay free in Settings.',
+                                style: Theme.of(context).textTheme.bodySmall,
+                              ),
+                              const SizedBox(height: 12),
+                            ],
+                            // Light mode theme
+                            _ThemeSelectionTile(
+                              label: 'Light Mode Theme',
+                              themeId: _selectedLightThemeId,
+                              themes: terminalThemes,
+                              defaultLabel: 'Use default',
+                              onTap: () =>
+                                  _handleThemeSelectionTap(isLight: true),
+                            ),
+                            const SizedBox(height: 8),
+                            // Dark mode theme
+                            _ThemeSelectionTile(
+                              label: 'Dark Mode Theme',
+                              themeId: _selectedDarkThemeId,
+                              themes: terminalThemes,
+                              defaultLabel: 'Use default',
+                              onTap: () =>
+                                  _handleThemeSelectionTap(isLight: false),
+                            ),
+                            const SizedBox(height: 16),
+                            // Terminal font section
+                            _FontSelectionTile(
+                              fontFamily: _selectedFontFamily,
+                              defaultLabel: 'Use default',
+                              onTap: _selectFont,
+                            ),
+                            const SizedBox(height: 16),
                           ],
-                          // Light mode theme
-                          _ThemeSelectionTile(
-                            label: 'Light Mode Theme',
-                            themeId: _selectedLightThemeId,
-                            themes: terminalThemes,
-                            defaultLabel: 'Use default',
-                            onTap: () =>
-                                _handleThemeSelectionTap(isLight: true),
-                          ),
-                          const SizedBox(height: 8),
-                          // Dark mode theme
-                          _ThemeSelectionTile(
-                            label: 'Dark Mode Theme',
-                            themeId: _selectedDarkThemeId,
-                            themes: terminalThemes,
-                            defaultLabel: 'Use default',
-                            onTap: () =>
-                                _handleThemeSelectionTap(isLight: false),
-                          ),
-                          const SizedBox(height: 16),
-                          // Terminal font section
-                          _FontSelectionTile(
-                            fontFamily: _selectedFontFamily,
-                            defaultLabel: 'Use default',
-                            onTap: _selectFont,
-                          ),
-                          const SizedBox(height: 16),
-                        ],
-                      ),
-                      const SizedBox(height: 32),
+                        ),
+                        const SizedBox(height: 32),
 
-                      // Port Forwards section
-                      _buildPortForwardsSection(context, isEditing),
-                      const SizedBox(height: 32),
+                        // Port Forwards section
+                        _buildPortForwardsSection(context, isEditing),
+                        const SizedBox(height: 32),
 
-                      // Save button
-                      FilledButton.icon(
-                        key: const Key('host-save-button'),
-                        onPressed: _saveHost,
-                        icon: const Icon(Icons.save),
-                        label: Text(isEditing ? 'Save Changes' : 'Add Host'),
-                      ),
-                      const SizedBox(height: 16),
+                        // Save button
+                        FilledButton.icon(
+                          key: const Key('host-save-button'),
+                          onPressed: _saveHost,
+                          icon: const Icon(Icons.save),
+                          label: Text(isEditing ? 'Save Changes' : 'Add Host'),
+                        ),
+                        const SizedBox(height: 16),
 
-                      // Test connection button
-                      OutlinedButton.icon(
-                        onPressed: _testConnection,
-                        icon: const Icon(Icons.network_check),
-                        label: const Text('Test Connection'),
-                      ),
-                    ],
+                        // Test connection button
+                        OutlinedButton.icon(
+                          onPressed: _testConnection,
+                          icon: const Icon(Icons.network_check),
+                          label: const Text('Test Connection'),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
+        ),
       ),
     );
   }
@@ -885,6 +945,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           onChanged: hasAgentPresetAccess
               ? (value) {
                   setState(() => _startClisInYoloMode = value ?? false);
+                  _updateDirtyState();
                   _syncAutoConnectCommandFromPreset();
                 }
               : null,
@@ -1014,6 +1075,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           ),
           onChanged: (value) {
             setState(() => _disableTmuxStatusBar = value ?? false);
+            _updateDirtyState();
           },
         ),
         if (preview != null) ...[
@@ -1092,6 +1154,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     return;
                   }
                   setState(() => _selectedAgentLaunchTool = value);
+                  _updateDirtyState();
                   _syncAutoConnectCommandFromPreset();
                 }
               : null,
@@ -1141,6 +1204,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           onChanged: hasAgentPresetAccess
               ? (value) {
                   setState(() => _disableAgentTmuxStatusBar = value ?? false);
+                  _updateDirtyState();
                   _syncAutoConnectCommandFromPreset();
                 }
               : null,
@@ -1303,9 +1367,10 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                     ),
                   ],
                   onChanged: hasAutomationAccess
-                      ? (value) => setState(
-                          () => _selectedAutoConnectSnippetId = value,
-                        )
+                      ? (value) {
+                          setState(() => _selectedAutoConnectSnippetId = value);
+                          _updateDirtyState();
+                        }
                       : null,
                   validator: (value) {
                     if (_selectedStartupMode != _HostStartupMode.snippet) {
@@ -1754,6 +1819,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           _selectedAutoConnectMode = AutoConnectCommandMode.snippet;
       }
     });
+    _updateDirtyState();
     if (value == _HostStartupMode.agent) {
       _syncAutoConnectCommandFromPreset();
     }
@@ -2035,6 +2101,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
           _selectedDarkThemeId = theme.id;
         }
       });
+      _updateDirtyState();
     }
   }
 
@@ -2061,6 +2128,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
       setState(() {
         _selectedFontFamily = selected;
       });
+      _updateDirtyState();
     }
   }
 

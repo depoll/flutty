@@ -1493,6 +1493,78 @@ void main() {
       );
     });
 
+    testWidgets(
+      'dirty-state notifier: typing marks form dirty without extra setState pumps',
+      (tester) async {
+        // Verify that the ValueNotifier path correctly drives UnsavedChangesGuard
+        // without the removed Form.onChanged whole-screen-rebuild.
+        await _pumpHostCreateScreen(tester);
+
+        // Type a single character – dirty state should update via controller
+        // listener, not Form.onChanged.
+        await tester.enterText(find.byKey(const Key('host-label-field')), 'X');
+        await tester.pump();
+
+        // Navigating back should trigger the discard dialog.
+        await tester.pageBack();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.text('Discard changes?'), findsOneWidget);
+
+        await tester.tap(find.text('Discard'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(seconds: 2));
+        expect(find.byType(HostEditScreen), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'dirty-state notifier: non-text state change (dropdown) marks form dirty',
+      (tester) async {
+        // Verify that UnsavedChangesGuard responds to non-text setStates that
+        // call _updateDirtyState() – previously only Form.onChanged did this.
+        await _pumpHostCreateScreen(tester);
+
+        // Switch the startup mode dropdown (a pure non-text setState).
+        await _selectStartupMode(tester, 'Open tmux session');
+
+        // Navigating back must trigger the discard dialog because startup mode
+        // changed from the initial "Do nothing" value.
+        await tester.pageBack();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        expect(find.text('Discard changes?'), findsOneWidget);
+
+        await tester.tap(find.text('Discard'));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 300));
+        await tester.pump(const Duration(seconds: 2));
+        expect(find.byType(HostEditScreen), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'dirty-state notifier: save resets dirty state so back-nav is clean',
+      (tester) async {
+        final harness = await _pumpHostCreateScreen(tester);
+
+        await _fillRequiredHostFields(tester);
+        await _tapBottomSave(tester);
+
+        // After a successful save, host is inserted. The screen pops back.
+        expect(harness.hostRepository.insertedHost, isNotNull);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 600));
+        await tester.pump(const Duration(seconds: 2));
+        expect(find.byType(HostEditScreen), findsNothing);
+      },
+    );
+
     testWidgets('keeps auto-run command read-only without Pro access', (
       tester,
     ) async {
