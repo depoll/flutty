@@ -277,12 +277,18 @@ void main() {
       final active = await service.isTmuxActiveOrThrow(session);
 
       expect(active, isFalse);
-      verify(
-        () => client.execute(
-          any(that: contains('list-clients')),
-          pty: any(named: 'pty'),
-        ),
-      ).called(1);
+      final foregroundCommand =
+          verify(
+                () => client.execute(
+                  captureAny(that: contains('list-clients')),
+                  pty: any(named: 'pty'),
+                ),
+              ).captured.single
+              as String;
+      expect(foregroundCommand, contains('#{client_pid}'));
+      expect(foregroundCommand, contains('#{client_control_mode}'));
+      expect(foregroundCommand, contains('connection_pid='));
+      expect(foregroundCommand, isNot(contains('#{client_tty}')));
       verifyNever(
         () => client.execute(
           any(that: contains('list-sessions')),
@@ -741,6 +747,7 @@ void main() {
                   ),
                 ).captured.single
                 as String;
+        expect(foregroundCommand, contains('#{client_pid}'));
         expect(foregroundCommand, contains('#{client_control_mode}'));
       },
     );
