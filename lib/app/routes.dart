@@ -21,6 +21,12 @@ abstract final class Routes {
   /// Snippets route.
   static const snippets = 'snippets';
 
+  /// Add snippet route.
+  static const snippetAdd = 'snippet-add';
+
+  /// Edit snippet route.
+  static const snippetEdit = 'snippet-edit';
+
   /// Port forwards route.
   static const portForwards = 'port-forwards';
 

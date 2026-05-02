@@ -58,6 +58,7 @@ import '../widgets/terminal_text_style.dart';
 import '../widgets/terminal_theme_picker.dart';
 import '../widgets/tmux_window_navigator.dart';
 import '../widgets/tmux_window_status_badge.dart';
+import 'snippet_edit_screen.dart';
 
 part '../widgets/tmux_expandable_bar.dart';
 
@@ -489,6 +490,7 @@ const _terminalPathTouchVerticalPadding = 8.0;
 const _terminalSelectionNearbySearchColumns = 4;
 const _recentLocalClipboardProtection = Duration(seconds: 5);
 const _maxTerminalFilePathVerificationCandidates = 12;
+const _terminalSelectionSnippetNameMaxLength = 60;
 const _terminalFilePathVerificationExtensions = <String>[
   'properties',
   'gradle',
@@ -1878,6 +1880,87 @@ List<ContextMenuButtonItem> buildNativeSelectionContextMenuButtonItems({
   return buttonItems;
 }
 
+/// Builds terminal selection context menu items with terminal-aware callbacks.
+@visibleForTesting
+List<ContextMenuButtonItem> buildTerminalSelectionContextMenuButtonItems({
+  required List<ContextMenuButtonItem> defaultItems,
+  required VoidCallback onCopy,
+  required VoidCallback onLookUp,
+  required VoidCallback onSearchWeb,
+  required VoidCallback onShare,
+  required VoidCallback? onCreateSnippet,
+  required VoidCallback onPaste,
+}) {
+  var hasCopy = false;
+  var addedCreateSnippet = false;
+  final buttonItems = <ContextMenuButtonItem>[];
+
+  void addCreateSnippet() {
+    if (onCreateSnippet == null || addedCreateSnippet) {
+      return;
+    }
+    addedCreateSnippet = true;
+    buttonItems.add(
+      ContextMenuButtonItem(
+        label: 'Create Snippet',
+        onPressed: onCreateSnippet,
+      ),
+    );
+  }
+
+  for (final item in defaultItems) {
+    switch (item.type) {
+      case ContextMenuButtonType.copy:
+        hasCopy = true;
+        buttonItems.add(item.copyWith(onPressed: onCopy));
+        addCreateSnippet();
+      case ContextMenuButtonType.lookUp:
+        buttonItems.add(item.copyWith(onPressed: onLookUp));
+      case ContextMenuButtonType.searchWeb:
+        buttonItems.add(item.copyWith(onPressed: onSearchWeb));
+      case ContextMenuButtonType.share:
+        buttonItems.add(item.copyWith(onPressed: onShare));
+      case ContextMenuButtonType.selectAll:
+      case ContextMenuButtonType.cut:
+      case ContextMenuButtonType.delete:
+        continue;
+      case ContextMenuButtonType.paste:
+        continue;
+      default:
+        buttonItems.add(item);
+    }
+  }
+  if (!hasCopy) {
+    buttonItems.insert(
+      0,
+      ContextMenuButtonItem(
+        onPressed: onCopy,
+        type: ContextMenuButtonType.copy,
+      ),
+    );
+    if (onCreateSnippet != null) {
+      buttonItems.insert(
+        1,
+        ContextMenuButtonItem(
+          label: 'Create Snippet',
+          onPressed: onCreateSnippet,
+        ),
+      );
+      addedCreateSnippet = true;
+    }
+  }
+  if (!addedCreateSnippet) {
+    addCreateSnippet();
+  }
+  buttonItems.add(
+    ContextMenuButtonItem(
+      onPressed: onPaste,
+      type: ContextMenuButtonType.paste,
+    ),
+  );
+  return buttonItems;
+}
+
 /// Builds a menu callback that lets the action read selection before hiding.
 @visibleForTesting
 VoidCallback buildTerminalSelectionContextMenuAction({
@@ -1890,6 +1973,22 @@ VoidCallback buildTerminalSelectionContextMenuAction({
     hideToolbar();
   }
 };
+
+/// Builds an editable snippet name from selected terminal text.
+@visibleForTesting
+String buildSnippetNameFromTerminalSelection(String text) {
+  for (final line in text.split('\n')) {
+    final candidate = line.trim();
+    if (candidate.isEmpty) {
+      continue;
+    }
+    if (candidate.length <= _terminalSelectionSnippetNameMaxLength) {
+      return candidate;
+    }
+    return '${candidate.substring(0, _terminalSelectionSnippetNameMaxLength - 3)}...';
+  }
+  return 'Terminal selection';
+}
 
 /// Whether a polled remote clipboard value should replace the local clipboard.
 @visibleForTesting
@@ -5949,6 +6048,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                     ],
                   ),
                 ),
+                if (_currentTerminalSelectionText() != null)
+                  const PopupMenuItem(
+                    value: 'create_snippet',
+                    child: Row(
+                      children: [
+                        Icon(Icons.code_rounded, size: 20),
+                        SizedBox(width: 12),
+                        Text('Create Snippet'),
+                      ],
+                    ),
+                  ),
                 const PopupMenuItem(
                   value: 'paste',
                   child: Row(
@@ -6630,122 +6740,48 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SelectableRegionState selectableRegionState,
   ) {
     final selectionText = _currentTerminalSelectionText();
-    var hasCopy = false;
-    final buttonItems = <ContextMenuButtonItem>[];
-    for (final item in selectableRegionState.contextMenuButtonItems) {
-      switch (item.type) {
-        case ContextMenuButtonType.copy:
-          hasCopy = true;
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(
-                    _copySelectionText(
-                      text,
-                      clearTerminalSelection: true,
-                      restoreFocus: true,
-                    ),
-                  );
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.lookUp:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(_lookUpTerminalSelectionText(text));
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.searchWeb:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(_searchWebForTerminalSelectionText(text));
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.share:
-          buttonItems.add(
-            item.copyWith(
-              onPressed: buildTerminalSelectionContextMenuAction(
-                action: () {
-                  final text = selectionText;
-                  if (text == null) {
-                    return;
-                  }
-                  unawaited(_shareTerminalSelectionText(text));
-                },
-                hideToolbar: selectableRegionState.hideToolbar,
-              ),
-            ),
-          );
-        case ContextMenuButtonType.selectAll:
-        case ContextMenuButtonType.cut:
-        case ContextMenuButtonType.delete:
-          // Drop items that have no meaningful action against the
-          // terminal's xterm-managed selection.
-          continue;
-        case ContextMenuButtonType.paste:
-          // Replaced below with our terminal-aware paste handler.
-          continue;
-        default:
-          buttonItems.add(item);
-      }
-    }
-    if (!hasCopy) {
-      buttonItems.insert(
-        0,
-        ContextMenuButtonItem(
-          onPressed: buildTerminalSelectionContextMenuAction(
-            action: () {
-              final text = selectionText;
-              if (text == null) {
-                return;
-              }
-              unawaited(
-                _copySelectionText(
-                  text,
-                  clearTerminalSelection: true,
-                  restoreFocus: true,
-                ),
-              );
-            },
-            hideToolbar: selectableRegionState.hideToolbar,
+    VoidCallback selectionAction(void Function(String text) action) =>
+        buildTerminalSelectionContextMenuAction(
+          action: () {
+            final text = selectionText;
+            if (text == null) {
+              return;
+            }
+            action(text);
+          },
+          hideToolbar: selectableRegionState.hideToolbar,
+        );
+
+    final buttonItems = buildTerminalSelectionContextMenuButtonItems(
+      defaultItems: selectableRegionState.contextMenuButtonItems,
+      onCopy: selectionAction(
+        (text) => unawaited(
+          _copySelectionText(
+            text,
+            clearTerminalSelection: true,
+            restoreFocus: true,
           ),
-          type: ContextMenuButtonType.copy,
         ),
-      );
-    }
-    buttonItems.add(
-      ContextMenuButtonItem(
-        onPressed: () {
-          selectableRegionState.hideToolbar();
-          unawaited(_pasteClipboard());
-        },
-        type: ContextMenuButtonType.paste,
       ),
+      onLookUp: selectionAction(
+        (text) => unawaited(_lookUpTerminalSelectionText(text)),
+      ),
+      onSearchWeb: selectionAction(
+        (text) => unawaited(_searchWebForTerminalSelectionText(text)),
+      ),
+      onShare: selectionAction(
+        (text) => unawaited(_shareTerminalSelectionText(text)),
+      ),
+      onCreateSnippet: selectionText == null
+          ? null
+          : selectionAction(
+              (text) =>
+                  unawaited(_createSnippetFromTerminalSelectionText(text)),
+            ),
+      onPaste: () {
+        selectableRegionState.hideToolbar();
+        unawaited(_pasteClipboard());
+      },
     );
     return AdaptiveTextSelectionToolbar.buttonItems(
       anchors: selectableRegionState.contextMenuAnchors,
@@ -6845,6 +6881,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         break;
       case 'copy':
         await _copySelection();
+        break;
+      case 'create_snippet':
+        await _createSnippetFromSelection();
         break;
       case 'paste':
         await _pasteClipboard();
@@ -8387,6 +8426,45 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       clearTerminalSelection: !_isNativeSelectionMode,
       restoreFocus: !_isNativeSelectionMode,
     );
+  }
+
+  Future<void> _createSnippetFromSelection() async {
+    final text = _currentTerminalSelectionText();
+    if (text == null) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    await _createSnippetFromTerminalSelectionText(text);
+  }
+
+  Future<void> _createSnippetFromTerminalSelectionText(String text) async {
+    final command = text.trimRight();
+    if (command.isEmpty) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+      return;
+    }
+
+    if (_isNativeSelectionMode) {
+      if (_isMobilePlatform) {
+        _dismissNativeSelectionOverlayForEditing();
+      } else {
+        _exitNativeSelectionMode();
+      }
+    } else {
+      _terminalController.clearSelection();
+    }
+
+    await context.pushNamed<void>(
+      Routes.snippetAdd,
+      extra: SnippetEditPrefill(
+        name: buildSnippetNameFromTerminalSelection(command),
+        command: command,
+      ),
+    );
+    if (mounted) {
+      _restoreTerminalFocus(showSystemKeyboard: _isMobilePlatform);
+    }
   }
 
   Future<void> _copySelectionText(

@@ -140,6 +140,45 @@ void main() {
       expect(find.text('branch'), findsOneWidget);
     });
 
+    testWidgets('full editor uses snippet prefill values', (tester) async {
+      final snippetRepository = _MockSnippetRepository();
+      when(
+        snippetRepository.getAllFolders,
+      ).thenAnswer((_) async => const <SnippetFolder>[]);
+
+      await tester.pumpWidget(
+        ProviderScope(
+          overrides: [
+            snippetRepositoryProvider.overrideWithValue(snippetRepository),
+          ],
+          child: const MaterialApp(
+            home: SnippetEditScreen(
+              prefill: SnippetEditPrefill(
+                name: 'git status',
+                command: 'git status --short',
+                description: 'Selected from terminal',
+              ),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final nameField = tester.widget<TextFormField>(
+        find.widgetWithText(TextFormField, 'Name'),
+      );
+      final commandField = tester.widget<TextFormField>(
+        find.widgetWithText(TextFormField, 'Command'),
+      );
+      final descriptionField = tester.widget<TextFormField>(
+        find.widgetWithText(TextFormField, 'Description (optional)'),
+      );
+
+      expect(nameField.controller!.text, 'git status');
+      expect(commandField.controller!.text, 'git status --short');
+      expect(descriptionField.controller!.text, 'Selected from terminal');
+    });
+
     testWidgets('reordering snippets persists the new order', (tester) async {
       final snippetRepository = _MockSnippetRepository();
       when(snippetRepository.watchAll).thenAnswer(

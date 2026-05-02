@@ -17,13 +17,36 @@ typedef _SnippetEditDraft = ({
   int? selectedFolderId,
 });
 
+/// Initial values used when creating a new snippet draft.
+@immutable
+class SnippetEditPrefill {
+  /// Creates initial snippet editor values.
+  const SnippetEditPrefill({this.name, this.command, this.description});
+
+  /// Initial snippet name.
+  final String? name;
+
+  /// Initial command content.
+  final String? command;
+
+  /// Initial snippet description.
+  final String? description;
+}
+
 /// Screen for adding or editing a snippet.
 class SnippetEditScreen extends ConsumerStatefulWidget {
   /// Creates a new [SnippetEditScreen].
-  const SnippetEditScreen({this.snippetId, super.key});
+  const SnippetEditScreen({
+    this.snippetId,
+    this.prefill = const SnippetEditPrefill(),
+    super.key,
+  });
 
   /// The snippet ID to edit, or null for a new snippet.
   final int? snippetId;
+
+  /// Initial values for a new snippet draft.
+  final SnippetEditPrefill prefill;
 
   @override
   ConsumerState<SnippetEditScreen> createState() => _SnippetEditScreenState();
@@ -48,8 +71,15 @@ class _SnippetEditScreenState extends ConsumerState<SnippetEditScreen> {
     if (widget.snippetId != null) {
       unawaited(_loadSnippet());
     } else {
+      _applyPrefill(widget.prefill);
       _initialDraft = _currentDraft();
     }
+  }
+
+  void _applyPrefill(SnippetEditPrefill prefill) {
+    _nameController.text = prefill.name ?? '';
+    _contentController.text = prefill.command ?? '';
+    _descriptionController.text = prefill.description ?? '';
   }
 
   Future<void> _loadFolders() async {
