@@ -3331,6 +3331,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _terminalThemeDependencyReloadQueued = false;
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+  String _pendingTerminalThemeDependencyReason = 'unknown';
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3476,6 +3477,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void initState() {
     super.initState();
+    DiagnosticsLogService.instance.info(
+      'terminal.screen',
+      'init',
+      fields: {
+        'hostId': widget.hostId,
+        'hasConnectionId': widget.connectionId != null,
+        'hasInitialTmuxSession': widget.initialTmuxSessionName != null,
+        'hasInitialTmuxWindow': widget.initialTmuxWindowIndex != null,
+      },
+    );
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -3518,7 +3529,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           if (_sameTerminalThemeSettings(previous, next)) {
             return;
           }
-          _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+          _handleTerminalThemeDependenciesChanged(
+            forceRemoteRefresh: true,
+            reason: 'settings_changed',
+          );
         });
     _themeModeSubscription = ref.listenManual<ThemeMode>(
       themeModeNotifierProvider,
@@ -3526,7 +3540,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (previous == next) {
           return;
         }
-        _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+        _handleTerminalThemeDependenciesChanged(
+          forceRemoteRefresh: true,
+          reason: 'theme_mode_changed',
+        );
       },
     );
     _terminal = Terminal(maxLines: 10000);
@@ -3653,6 +3670,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     TerminalThemeData theme, {
     SshSession? session,
     bool forceRemoteRefresh = false,
+    String reason = 'unspecified',
   }) {
     final targetSession =
         session ??
@@ -3660,58 +3678,137 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (_connectionId == null
             ? null
             : _sessionsNotifier?.getSession(_connectionId!));
-    final previousTheme = targetSession?.terminalTheme;
-    targetSession?.terminalTheme = theme;
-    if (targetSession?.terminal != _terminal || targetSession == null) {
+    if (targetSession == null) {
+      if (reason != 'build') {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'apply_no_session',
+          fields: {
+            'reason': reason,
+            'connectionId': _connectionId,
+            'forceRemoteRefresh': forceRemoteRefresh,
+          },
+        );
+      }
+      return;
+    }
+    final previousTheme = targetSession.terminalTheme;
+    targetSession.terminalTheme = theme;
+    if (targetSession.terminal != _terminal) {
+      if (reason != 'build') {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'apply_foreign_terminal',
+          fields: {
+            'reason': reason,
+            'connectionId': targetSession.connectionId,
+            'forceRemoteRefresh': forceRemoteRefresh,
+            'hasSessionTerminal': targetSession.terminal != null,
+          },
+        );
+      }
       return;
     }
     final didThemeChange =
         previousTheme != null &&
         !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
+    final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
+      targetSession,
+    );
     final shouldRefreshFirstTheme =
-        previousTheme == null &&
-        (_isTmuxActive || _shouldRefreshPlainTerminalTui(targetSession));
-    if (forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme) {
-      _refreshTerminalThemeForTui(theme, targetSession);
+        previousTheme == null && (_isTmuxActive || plainTuiRefreshAllowed);
+    final willRefresh =
+        forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme;
+    if (willRefresh || reason != 'build') {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'apply_decision',
+        fields: {
+          'reason': reason,
+          'connectionId': targetSession.connectionId,
+          'forceRemoteRefresh': forceRemoteRefresh,
+          'hasPreviousTheme': previousTheme != null,
+          'didThemeChange': didThemeChange,
+          'shouldRefreshFirstTheme': shouldRefreshFirstTheme,
+          'willRefresh': willRefresh,
+          'isTmuxActive': _isTmuxActive,
+          'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
+          'colorSchemeUpdatesMode':
+              targetSession.terminalColorSchemeUpdatesMode,
+          'focusMode': _terminal.reportFocusMode,
+          'altBuffer': _terminal.isUsingAltBuffer,
+          'mouseMode': _terminal.mouseMode != MouseMode.none,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+    }
+    if (willRefresh) {
+      _refreshTerminalThemeForTui(theme, targetSession, reason: reason);
       return;
     }
   }
 
   void _refreshTerminalThemeForTui(
     TerminalThemeData theme,
-    SshSession session,
-  ) {
+    SshSession session, {
+    required String reason,
+  }) {
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(session);
     DiagnosticsLogService.instance.info(
       'terminal.theme',
       'refresh_requested',
       fields: {
+        'reason': reason,
         'connectionId': session.connectionId,
         'isTmuxActive': _isTmuxActive,
+        'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
         'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
         'focusMode': _terminal.reportFocusMode,
         'altBuffer': _terminal.isUsingAltBuffer,
         'mouseMode': _terminal.mouseMode != MouseMode.none,
+        'shellReady': _shell != null,
+        'terminalViewReady': _terminalViewKey.currentState != null,
       },
     );
     if (_isTmuxActive) {
       // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
       // terminal's default colors and ANSI palette and answers inner-pane OSC
       // queries from that cache.
-      _refreshTerminalThemeReportsForTui(theme, includeColorReports: true);
+      _refreshTerminalThemeReportsForTui(
+        theme,
+        includeColorReports: true,
+        reason: '${reason}_tmux_outer',
+      );
       _refreshTmuxClientAfterTerminalThemeChange(
         theme: theme,
         session: session,
         refreshGeneration: refreshGeneration,
+        reason: reason,
       );
       return;
     }
 
-    if (!_shouldRefreshPlainTerminalTui(session)) {
+    if (!plainTuiRefreshAllowed) {
       // A bare shell prompt treats terminal reports as typed input. Only send
       // synthetic reports after a foreground app has enabled terminal-control
       // modes that identify it as a TUI.
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'plain_refresh_skipped',
+        fields: {
+          'reason': reason,
+          'connectionId': session.connectionId,
+          'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+          'focusMode': _terminal.reportFocusMode,
+          'altBuffer': _terminal.isUsingAltBuffer,
+          'mouseMode': _terminal.mouseMode != MouseMode.none,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
       return;
     }
 
@@ -3723,7 +3820,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // default-color response cycle to apps that explicitly requested DEC 2031
     // color-scheme updates.
     final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
-    _refreshTerminalThemeReportsForTui(theme, includeThemeModeReport: false);
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeThemeModeReport: false,
+      reason: '${reason}_plain_focus',
+    );
     if (includeThemeModeReport) {
       _scheduleTerminalThemeRefreshForTui(
         theme: theme,
@@ -3731,6 +3832,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         refreshGeneration: refreshGeneration,
         delay: const Duration(milliseconds: 250),
         includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode',
       );
       for (final delay in const [
         Duration(milliseconds: 330),
@@ -3745,6 +3847,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           includeFocusReport: false,
           includeThemeModeReport: false,
           includeDefaultColorReports: true,
+          reason: '${reason}_plain_defaults',
         );
       }
     }
@@ -3754,6 +3857,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       refreshGeneration: refreshGeneration,
       delay: const Duration(milliseconds: 550),
       includeThemeModeReport: false,
+      reason: '${reason}_plain_focus_late',
     );
     if (includeThemeModeReport) {
       _scheduleTerminalThemeRefreshForTui(
@@ -3762,6 +3866,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         refreshGeneration: refreshGeneration,
         delay: const Duration(milliseconds: 800),
         includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode_late',
       );
     }
   }
@@ -3772,11 +3877,38 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool includeColorReports = false,
     bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
+    String reason = 'unspecified',
   }) {
     final terminalView = _terminalViewKey.currentState;
     if (terminalView == null) {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'reports_unavailable',
+        fields: {
+          'reason': reason,
+          'includeThemeModeReport': includeThemeModeReport,
+          'includeColorReports': includeColorReports,
+          'includeDefaultColorReports': includeDefaultColorReports,
+          'includeFocusReport': includeFocusReport,
+          'shellReady': _shell != null,
+          'hasOutputCallback': _terminal.onOutput != null,
+        },
+      );
       return;
     }
+    DiagnosticsLogService.instance.debug(
+      'terminal.theme',
+      'reports_sent',
+      fields: {
+        'reason': reason,
+        'includeThemeModeReport': includeThemeModeReport,
+        'includeColorReports': includeColorReports,
+        'includeDefaultColorReports': includeDefaultColorReports,
+        'includeFocusReport': includeFocusReport,
+        'shellReady': _shell != null,
+        'hasOutputCallback': _terminal.onOutput != null,
+      },
+    );
     if (includeThemeModeReport) {
       terminalView.refreshThemeModeReport(isDark: theme.isDark);
     }
@@ -3821,7 +3953,21 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
     _cancelTerminalThemeRefreshTimers();
     final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
-    _refreshTerminalThemeReportsForTui(theme, includeColorReports: true);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'tmux_prime_requested',
+      fields: {
+        'connectionId': session.connectionId,
+        'hasTmuxSessionName': _tmuxSessionName != null,
+        'shellReady': _shell != null,
+        'terminalViewReady': _terminalViewKey.currentState != null,
+      },
+    );
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeColorReports: true,
+      reason: 'tmux_prime_outer',
+    );
 
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
@@ -3831,6 +3977,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         refreshGeneration: ++_terminalThemeRefreshGeneration,
         delay: const Duration(milliseconds: 150),
         includeColorReports: true,
+        reason: 'tmux_prime_no_session_name',
       );
       return;
     }
@@ -3858,6 +4005,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             _refreshTerminalThemeReportsForTui(
               theme,
               includeColorReports: true,
+              reason: 'tmux_prime_complete_outer',
             );
             _scheduleTerminalThemeRefreshForTui(
               theme: theme,
@@ -3865,6 +4013,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               refreshGeneration: refreshGeneration,
               delay: const Duration(milliseconds: 150),
               includeColorReports: true,
+              reason: 'tmux_prime_complete_outer_late',
             );
           })
           .catchError((Object error) {
@@ -3884,6 +4033,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     required TerminalThemeData theme,
     required SshSession session,
     required int refreshGeneration,
+    required String reason,
   }) {
     final tmuxSessionName = _tmuxSessionName;
     if (tmuxSessionName == null) {
@@ -3893,6 +4043,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         refreshGeneration: refreshGeneration,
         delay: const Duration(milliseconds: 150),
         includeColorReports: true,
+        reason: '${reason}_tmux_no_session_name',
       );
       return;
     }
@@ -3907,6 +4058,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           return;
         }
         try {
+          DiagnosticsLogService.instance.info(
+            'terminal.theme',
+            'tmux_refresh_start',
+            fields: {
+              'reason': reason,
+              'connectionId': session.connectionId,
+              'shellReady': _shell != null,
+              'terminalViewReady': _terminalViewKey.currentState != null,
+            },
+          );
           await ref
               .read(tmuxServiceProvider)
               .refreshTerminalTheme(
@@ -3915,23 +4076,39 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                 theme,
                 extraFlags: _host?.tmuxExtraFlags,
               );
+          DiagnosticsLogService.instance.info(
+            'terminal.theme',
+            'tmux_refresh_complete',
+            fields: {
+              'reason': reason,
+              'connectionId': session.connectionId,
+              'shellReady': _shell != null,
+              'terminalViewReady': _terminalViewKey.currentState != null,
+            },
+          );
         } on Object catch (error) {
           DiagnosticsLogService.instance.warning(
             'terminal.theme',
             'tmux_refresh_failed',
             fields: {
+              'reason': reason,
               'connectionId': session.connectionId,
               'errorType': error.runtimeType,
             },
           );
         }
-        _refreshTerminalThemeReportsForTui(theme, includeColorReports: true);
+        _refreshTerminalThemeReportsForTui(
+          theme,
+          includeColorReports: true,
+          reason: '${reason}_tmux_complete_outer',
+        );
         _scheduleTerminalThemeRefreshForTui(
           theme: theme,
           session: session,
           refreshGeneration: refreshGeneration,
           delay: const Duration(milliseconds: 25),
           includeColorReports: true,
+          reason: '${reason}_tmux_complete_outer_25ms',
         );
         _scheduleTerminalThemeRefreshForTui(
           theme: theme,
@@ -3939,6 +4116,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           refreshGeneration: refreshGeneration,
           delay: const Duration(milliseconds: 275),
           includeColorReports: true,
+          reason: '${reason}_tmux_complete_outer_275ms',
         );
       }),
     );
@@ -3953,6 +4131,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool includeColorReports = false,
     bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
+    String reason = 'unspecified',
   }) {
     late final Timer timer;
     timer = Timer(delay, () {
@@ -3970,6 +4149,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         includeColorReports: includeColorReports,
         includeDefaultColorReports: includeDefaultColorReports,
         includeFocusReport: includeFocusReport,
+        reason: reason,
       );
     });
     _terminalThemeRefreshTimers.add(timer);
@@ -4042,6 +4222,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   void _handleTerminalThemeDependenciesChanged({
     bool forceRemoteRefresh = false,
+    String reason = 'unknown',
   }) {
     if (!mounted) {
       return;
@@ -4049,6 +4230,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _pendingTerminalThemeDependencyReload = true;
     _pendingTerminalThemeDependencyForceRemoteRefresh =
         _pendingTerminalThemeDependencyForceRemoteRefresh || forceRemoteRefresh;
+    _pendingTerminalThemeDependencyReason = reason;
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'dependency_changed',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'hasCurrentTheme': _currentTheme != null,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
     _scheduleTerminalThemeDependencyReload();
   }
 
@@ -4067,11 +4260,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
       final forceRemoteRefresh =
           _pendingTerminalThemeDependencyForceRemoteRefresh;
+      final reason = _pendingTerminalThemeDependencyReason;
       _pendingTerminalThemeDependencyReload = false;
       _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+      _pendingTerminalThemeDependencyReason = 'unknown';
       unawaited(
         _reloadTerminalThemeForDependencies(
           forceRemoteRefresh: forceRemoteRefresh,
+          reason: reason,
         ),
       );
     });
@@ -4080,14 +4276,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   Future<void> _reloadTerminalThemeForDependencies({
     bool forceRemoteRefresh = false,
+    String reason = 'unknown',
   }) async {
     final session = _connectionId == null
         ? null
         : _sessionsNotifier?.getSession(_connectionId!);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'dependency_reload',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'hasSession': session != null,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
     if (session != null) {
       final restored = await _restoreSessionThemeOverride(
         session,
         forceRemoteRefresh: forceRemoteRefresh,
+        reason: reason,
       );
       if (restored) {
         return;
@@ -4095,7 +4304,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     if (_sessionThemeOverride == null) {
-      await _loadTheme(forceRemoteRefresh: forceRemoteRefresh);
+      await _loadTheme(forceRemoteRefresh: forceRemoteRefresh, reason: reason);
     }
   }
 
@@ -4442,11 +4651,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
     _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
-    await _loadTheme();
+    DiagnosticsLogService.instance.info(
+      'terminal.screen',
+      'host_loaded',
+      fields: {
+        'hostId': widget.hostId,
+        'hasHost': _host != null,
+        'hasAutoConnectCommand':
+            _host?.autoConnectCommand?.trim().isNotEmpty ?? false,
+        'hasTmuxAutoAttach': _host?.tmuxSessionName?.trim().isNotEmpty ?? false,
+      },
+    );
+    await _loadTheme(reason: 'initial_load');
     await _connect(preferredConnectionId: widget.connectionId);
   }
 
-  Future<void> _loadTheme({bool forceRemoteRefresh = false}) async {
+  Future<void> _loadTheme({
+    bool forceRemoteRefresh = false,
+    String reason = 'load_theme',
+  }) async {
     if (!mounted) return;
 
     final brightness = _resolveTerminalThemeBrightness();
@@ -4467,12 +4690,28 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
     final didThemeChange = !_sameTerminalTheme(_currentTheme, theme);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'loaded',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'brightness': brightness.name,
+        'didThemeChange': didThemeChange,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
     if (didThemeChange) {
       setState(() => _currentTheme = theme);
     } else {
       _currentTheme = theme;
     }
-    _applyTerminalThemeToSession(theme, forceRemoteRefresh: forceRemoteRefresh);
+    _applyTerminalThemeToSession(
+      theme,
+      forceRemoteRefresh: forceRemoteRefresh,
+      reason: reason,
+    );
     if (_pendingTerminalThemeDependencyReload) {
       _scheduleTerminalThemeDependencyReload();
     }
@@ -4481,6 +4720,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Future<bool> _restoreSessionThemeOverride(
     SshSession session, {
     bool forceRemoteRefresh = false,
+    String reason = 'restore_override',
   }) async {
     final brightness = _resolveTerminalThemeBrightness();
     final themeId = brightness == Brightness.dark
@@ -4495,7 +4735,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _syncAppThemeOverrideFromSession(session);
       }
       if (forceRemoteRefresh) {
-        await _loadTheme(forceRemoteRefresh: true);
+        await _loadTheme(
+          forceRemoteRefresh: true,
+          reason: '${reason}_fallback',
+        );
         return true;
       }
       return false;
@@ -4521,6 +4764,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       resolvedTheme,
       session: session,
       forceRemoteRefresh: forceRemoteRefresh,
+      reason: reason,
     );
     _syncAppThemeOverrideFromSession(session);
     return true;
@@ -4629,6 +4873,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _applyTerminalThemeToSession(
           _resolveEffectiveTerminalTheme(),
           session: session,
+          reason: 'open_existing_terminal',
         );
         await _applySharedClipboardSetting(
           enabled: sharedClipboardEnabled,
@@ -4636,7 +4881,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           session: session,
           waitForInitialSync: false,
         );
-        await _restoreSessionThemeOverride(session);
+        await _restoreSessionThemeOverride(
+          session,
+          reason: 'open_existing_restore_override',
+        );
         setState(() {
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
@@ -4675,6 +4923,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _applyTerminalThemeToSession(
         _resolveEffectiveTerminalTheme(),
         session: session,
+        reason: 'open_new_terminal',
       );
 
       _shell = await session.getShell(
@@ -4699,7 +4948,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!mounted) return;
 
-      await _restoreSessionThemeOverride(session);
+      await _restoreSessionThemeOverride(
+        session,
+        reason: 'open_new_restore_override',
+      );
       setState(() {
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;
@@ -5985,6 +6237,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _applyTerminalThemeToSession(
         _resolveEffectiveTerminalTheme(),
         session: session,
+        reason: 'reopen_shell',
       );
       shell = await session.getShell(pty: pty);
       if (!stillOwnsSession()) {
@@ -6246,7 +6499,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void didChangePlatformBrightness() {
     super.didChangePlatformBrightness();
-    _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+    _handleTerminalThemeDependenciesChanged(
+      forceRemoteRefresh: true,
+      reason: 'platform_brightness_changed',
+    );
   }
 
   @override
@@ -6268,7 +6524,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!didBrightnessChange) {
       return;
     }
-    _handleTerminalThemeDependenciesChanged(forceRemoteRefresh: true);
+    _handleTerminalThemeDependenciesChanged(
+      forceRemoteRefresh: true,
+      reason: 'dependencies_brightness_changed',
+    );
   }
 
   List<Widget> _buildTerminalStatusChips(ThemeData theme) {
@@ -6352,7 +6611,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // Use session override, or loaded theme, or fallback.
     final terminalTheme = _resolveEffectiveTerminalTheme();
-    _applyTerminalThemeToSession(terminalTheme);
+    _applyTerminalThemeToSession(terminalTheme, reason: 'build');
     final connectionLabel = describeTerminalConnectionState(
       connectionState,
       isConnecting: _isConnecting,
@@ -6813,6 +7072,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         MonetizationFeature.hostSpecificThemes,
       );
       final connectionId = _connectionId;
+      var hasSession = false;
       if (connectionId != null) {
         final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
         final session =
@@ -6820,11 +7080,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ..updateSessionTheme(connectionId, theme.id, isDark: isDark))
                 .getSession(connectionId);
         if (session != null) {
+          hasSession = true;
           _syncAppThemeOverrideFromSession(session);
         }
       }
       setState(() => _sessionThemeOverride = theme);
-      _applyTerminalThemeToSession(theme, forceRemoteRefresh: true);
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'picker_selected',
+        fields: {
+          'connectionId': connectionId,
+          'isDark': isDark,
+          'hasHostThemeAccess': hasHostThemeAccess,
+          'hasSession': hasSession,
+        },
+      );
+      _applyTerminalThemeToSession(
+        theme,
+        forceRemoteRefresh: true,
+        reason: 'theme_picker',
+      );
 
       // Show option to save to host
       if (_host != null) {
