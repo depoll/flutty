@@ -60,6 +60,9 @@ class TmuxService {
   /// Cached profile source commands per SSH session.
   static final Map<int, String> _profileSourceCache = {};
 
+  /// In-flight tmux path/profile probes per SSH session.
+  static final Map<int, Future<void>> _tmuxPathRequests = {};
+
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
   static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
 
@@ -104,6 +107,7 @@ class TmuxService {
     );
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
+    _tmuxPathRequests.remove(connectionId);
     _installedAgentToolsCache.remove(connectionId);
     _installedAgentToolRequests.remove(connectionId);
     _execChannelBackoffs.remove(connectionId);
@@ -168,6 +172,7 @@ class TmuxService {
       r'status=$?; '
       r'if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then true; '
       'else false; fi',
+      priority: SshExecPriority.low,
     );
     final active = output.trim().isNotEmpty;
     DiagnosticsLogService.instance.info(
@@ -512,6 +517,7 @@ class TmuxService {
       r'if [ "$status" -eq 0 ]; then printf 1; '
       r'elif [ "$status" -eq 1 ]; then printf 0; '
       'else false; fi',
+      priority: SshExecPriority.low,
     );
     final exists = output.trim() == '1';
     DiagnosticsLogService.instance.info(
@@ -746,7 +752,6 @@ class TmuxService {
           sessionName,
           extraFlags: extraFlags,
         ),
-        priority: SshExecPriority.low,
       );
       DiagnosticsLogService.instance.info(
         'tmux.action',
@@ -786,7 +791,6 @@ class TmuxService {
           theme,
           extraFlags: extraFlags,
         ),
-        priority: SshExecPriority.low,
       );
       final stats = _parseTmuxThemeRefreshStats(output);
       DiagnosticsLogService.instance.info(
@@ -1318,12 +1322,26 @@ class TmuxService {
   /// full tmux path for subsequent calls.
   Future<void> _cacheTmuxPath(SshSession session) async {
     if (_tmuxPathCache.containsKey(session.connectionId)) return;
+    final existingRequest = _tmuxPathRequests[session.connectionId];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.cache',
+        'tmux_path_join',
+        fields: {'connectionId': session.connectionId},
+      );
+      try {
+        await existingRequest;
+      } on Object {
+        // The owner logs probe failures; joiners keep the same fallback path.
+      }
+      return;
+    }
     DiagnosticsLogService.instance.debug(
       'tmux.cache',
       'tmux_path_start',
       fields: {'connectionId': session.connectionId},
     );
-    try {
+    final request = () async {
       // Detect login shell and resolve tmux path in a single exec.
       // Redirect stdout from profile scripts to /dev/null so greetings,
       // MOTD, or fortune output don't corrupt our parsed output.
@@ -1337,6 +1355,7 @@ class TmuxService {
         'esac; '
         r'echo "$SHELL_NAME"; '
         'command -v tmux',
+        priority: SshExecPriority.low,
       );
       final lines = output.trim().split('\n');
       if (lines.isNotEmpty) {
@@ -1362,6 +1381,10 @@ class TmuxService {
           'hasProfile': _profileSourceCache.containsKey(session.connectionId),
         },
       );
+    }();
+    _tmuxPathRequests[session.connectionId] = request;
+    try {
+      await request;
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.cache',
@@ -1372,6 +1395,10 @@ class TmuxService {
         },
       );
       // Ignore — we'll fall back to sourcing all profiles.
+    } finally {
+      if (identical(_tmuxPathRequests[session.connectionId], request)) {
+        _tmuxPathRequests.remove(session.connectionId)?.ignore();
+      }
     }
   }
 

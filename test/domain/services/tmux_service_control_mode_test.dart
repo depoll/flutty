@@ -309,6 +309,40 @@ void main() {
       },
     );
 
+    test('hasSessionOrThrow dedupes concurrent tmux path probes', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 33);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final results = await Future.wait([
+        service.hasSessionOrThrow(session, 'work'),
+        service.hasSessionOrThrow(session, 'work'),
+      ]);
+
+      expect(results, [isTrue, isTrue]);
+      verify(
+        () => client.execute(
+          any(that: contains('command -v tmux')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verify(
+        () => client.execute(
+          any(that: contains('tmux -u has-session')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(2);
+    });
+
     test(
       'listWindows serves the last cached snapshot when channels are exhausted',
       () async {
