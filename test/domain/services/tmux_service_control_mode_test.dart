@@ -168,8 +168,8 @@ void main() {
       expect(command, contains('*OpenCode*|*opencode*)'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
-      expect(command, contains('1b 5b 4f'));
       expect(command, contains('1b 5b 49'));
+      expect(command, isNot(contains('1b 5b 4f')));
       final codexBranchStart = command.indexOf('codex|codex-*)');
       final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
       expect(codexBranchStart, isNonNegative);
@@ -178,12 +178,6 @@ void main() {
         command.substring(codexBranchStart, opencodeBranchStart),
         isNot(contains('1b 5b 4f')),
       );
-      expect(
-        command.indexOf('1b 5b 4f', opencodeBranchStart),
-        greaterThan(opencodeBranchStart),
-      );
-      expect(command, contains('sleep 0.25'));
-      expect(command, contains('sleep 0.08'));
       expect(
         command.indexOf('1b 5b 49'),
         lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
@@ -194,9 +188,16 @@ void main() {
       );
       expect(command, contains('1b 5d 31 30 3b'));
       expect(command, contains('1b 5d 31 31 3b'));
+      expect(command, contains('1b 5b 3f 32 30 33 31 3b 31 24 79'));
       expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
-      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(9));
-      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(9));
+      expect(command, isNot(contains('sleep 0.25')));
+      expect(command, isNot(contains('sleep 0.08')));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(3));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(3));
+      expect(
+        RegExp('1b 5b 3f 32 30 33 31 3b 31 24 79').allMatches(command),
+        hasLength(3),
+      );
       expect(
         command,
         contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),

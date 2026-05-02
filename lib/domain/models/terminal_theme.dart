@@ -11,6 +11,26 @@ import 'package:xterm/xterm.dart';
 String buildTerminalThemeModeReport({required bool isDark}) =>
     isDark ? '\x1b[?997;1n' : '\x1b[?997;2n';
 
+/// Builds a DEC private mode report for xterm color-scheme updates.
+///
+/// The report is a standard DECRPM response for DECSET 2031. Theme-aware TUI
+/// renderers treat capability/mode reports as a repaint boundary, which helps
+/// them redraw surfaces that were diff-rendered against the previous default
+/// background.
+String buildTerminalColorSchemeUpdatesModeReport({required bool enabled}) =>
+    '\x1b[?2031;${enabled ? 1 : 2}\$y';
+
+/// Builds the full theme refresh cycle for a color-scheme-aware TUI.
+String buildTerminalThemeModeRefreshReports(
+  TerminalThemeData theme, {
+  bool includeRepaintReport = false,
+}) => [
+  buildTerminalThemeModeReport(isDark: theme.isDark),
+  buildTerminalThemeDefaultColorReports(theme),
+  if (includeRepaintReport)
+    buildTerminalColorSchemeUpdatesModeReport(enabled: true),
+].join();
+
 /// Builds safe unsolicited color reports used to refresh tmux after a theme
 /// change.
 ///

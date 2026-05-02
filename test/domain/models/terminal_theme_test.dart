@@ -21,6 +21,29 @@ void main() {
     test('builds xterm theme mode reports for tmux refreshes', () {
       expect(buildTerminalThemeModeReport(isDark: true), '\x1b[?997;1n');
       expect(buildTerminalThemeModeReport(isDark: false), '\x1b[?997;2n');
+      expect(
+        buildTerminalColorSchemeUpdatesModeReport(enabled: true),
+        '\x1b[?2031;1\$y',
+      );
+      expect(
+        buildTerminalColorSchemeUpdatesModeReport(enabled: false),
+        '\x1b[?2031;2\$y',
+      );
+    });
+
+    test('builds combined theme refresh reports for color-scheme TUIs', () {
+      const theme = TerminalThemes.githubLightDefault;
+
+      final reports = buildTerminalThemeModeRefreshReports(
+        theme,
+        includeRepaintReport: true,
+      );
+
+      expect(reports, startsWith('\x1b[?997;2n'));
+      expect(reports, contains('\x1b]10;rgb:1f1f/2323/2828\x1b\\'));
+      expect(reports, contains('\x1b]11;rgb:ffff/ffff/ffff\x1b\\'));
+      expect(reports, endsWith('\x1b[?2031;1\$y'));
+      expect(reports, isNot(contains('\x1b]4;')));
     });
 
     test('creates with required fields', () {
