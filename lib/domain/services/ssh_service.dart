@@ -3028,6 +3028,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _sshService = ref.watch(sshServiceProvider);
     ref.onDispose(() {
       _previewStateRefreshTimer?.cancel();
+      _previewStateRefreshTimer = null;
+      _previewStateRefreshQueued = false;
       for (final subscription in _disconnectSubscriptions.values) {
         unawaited(subscription.cancel());
       }
@@ -3297,12 +3299,19 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   void _schedulePreviewStateRefresh() {
+    if (!ref.mounted) {
+      return;
+    }
     if (_previewStateRefreshTimer?.isActive ?? false) {
       _previewStateRefreshQueued = true;
       return;
     }
     _previewStateRefreshTimer = Timer(_previewStateRefreshInterval, () {
       _previewStateRefreshTimer = null;
+      if (!ref.mounted) {
+        _previewStateRefreshQueued = false;
+        return;
+      }
       final shouldReschedule = _previewStateRefreshQueued;
       _previewStateRefreshQueued = false;
       state = {...state};

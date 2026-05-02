@@ -1739,7 +1739,13 @@ String buildTmuxRefreshTerminalThemeCommand(
       'esac; '
       r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
       'injected=1; '
-      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & '
+      r'case "${pane_command##*/}" in '
+      'codex|codex-*) '
+      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
+      '*) '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & ;; '
+      'esac; '
       'fi; '
       'fi; '
       r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
@@ -1838,20 +1844,11 @@ String _buildTmuxSendPaneTerminalThemeCommand(
   //
   // OSC 10/11 default color replies are intentionally sent after the private
   // mode report. That gives OpenTUI/OpenCode a complete theme-mode plus default
-  // color cycle even when tmux consumes the outer OSC responses, and Codex
-  // accepts this narrower default-color cycle without leaking palette fragments
-  // into the prompt.
-  final focusOutCommand = TmuxService._tmuxCommand(
-    r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments('\x1b[O')}',
+  // color cycle even when tmux consumes the outer OSC responses. Codex panes
+  // are routed to the focus-only refresh above because unsolicited mode/color
+  // reports can reset its composer input while the user is typing.
+  final focusInCommand = _buildTmuxSendPaneFocusRefreshCommand(
     extraFlags: extraFlags,
-    forceUtf8: true,
-  );
-  final focusInCommand = TmuxService._tmuxCommand(
-    r'send-keys -t "$pane" -H '
-    '${_formatTmuxSendKeysHexArguments('\x1b[I')}',
-    extraFlags: extraFlags,
-    forceUtf8: true,
   );
   final modeCommand = TmuxService._tmuxCommand(
     r'send-keys -t "$pane" -H '
@@ -1865,9 +1862,7 @@ String _buildTmuxSendPaneTerminalThemeCommand(
     extraFlags: extraFlags,
     forceUtf8: true,
   );
-  return '$focusOutCommand 2>/dev/null || true; '
-      'sleep 0.05; '
-      '$focusInCommand 2>/dev/null || true; '
+  return '$focusInCommand 2>/dev/null || true; '
       'sleep 0.25; '
       '$modeCommand 2>/dev/null || true;'
       ' sleep 0.08; '
@@ -1877,6 +1872,14 @@ String _buildTmuxSendPaneTerminalThemeCommand(
       ' sleep 0.08; '
       '$directColorCommand 2>/dev/null || true;';
 }
+
+String _buildTmuxSendPaneFocusRefreshCommand({String? extraFlags}) =>
+    TmuxService._tmuxCommand(
+      r'send-keys -t "$pane" -H '
+      '${_formatTmuxSendKeysHexArguments('\x1b[I')}',
+      extraFlags: extraFlags,
+      forceUtf8: true,
+    );
 
 String _formatTmuxSendKeysHexArguments(String input) =>
     input.codeUnits.map(_formatTmuxSendKeysHexArgument).join(' ');

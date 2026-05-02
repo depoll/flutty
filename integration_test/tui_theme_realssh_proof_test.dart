@@ -134,60 +134,61 @@ void main() {
           .remainder(46656)
           .toRadixString(36);
 
-      await _switchThemeMode(tester, terminal.container, ThemeMode.dark);
-      final darkToken = '${proofCase.tokenPrefix}d$suffix';
-      _terminalFromView(tester).textInput(darkToken);
-      await _waitForTerminalText(
+      await _assertThemeSwitchReadable(
         tester,
-        () => _terminalFromView(tester),
-        darkToken,
-        description: 'Timed out waiting for ${proofCase.label} dark token',
+        binding,
+        terminal.container,
+        proofCase: proofCase,
+        suffix: suffix,
+        step: const _ProofThemeStep(
+          mode: ThemeMode.dark,
+          id: 'dark-readable',
+          tokenInfix: 'd1',
+          theme: monkey_themes.TerminalThemes.defaultDarkTheme,
+          maxBackgroundLuminance: 0.45,
+        ),
       );
-      final darkTerminal = _terminalFromView(tester);
-      final darkContrast = _minimumTokenContrast(
-        darkTerminal,
-        monkey_themes.TerminalThemes.defaultDarkTheme,
-        darkToken,
-      );
-      final darkSurface = _composerSurfaceForToken(
-        darkTerminal,
-        monkey_themes.TerminalThemes.defaultDarkTheme,
-        darkToken,
-      );
-      await binding.takeScreenshot('${proofCase.id}-dark-readable');
-      expect(darkContrast, greaterThanOrEqualTo(3.0));
-      expect(darkSurface.sampledCells, greaterThan(darkToken.length));
-      expect(darkSurface.background.computeLuminance(), lessThan(0.45));
-
-      await _switchThemeMode(tester, terminal.container, ThemeMode.light);
-      final lightToken = '${proofCase.tokenPrefix}l$suffix';
-      _terminalFromView(tester).textInput(lightToken);
-      await _waitForTerminalText(
+      await _assertThemeSwitchReadable(
         tester,
-        () => _terminalFromView(tester),
-        lightToken,
-        description: 'Timed out waiting for ${proofCase.label} light token',
+        binding,
+        terminal.container,
+        proofCase: proofCase,
+        suffix: suffix,
+        step: const _ProofThemeStep(
+          mode: ThemeMode.light,
+          id: 'light-readable',
+          tokenInfix: 'l1',
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
+          minBackgroundLuminance: 0.55,
+        ),
       );
-      final lightTerminal = _terminalFromView(tester);
-      final lightContrast = _minimumTokenContrast(
-        lightTerminal,
-        monkey_themes.TerminalThemes.defaultLightTheme,
-        lightToken,
+      await _assertThemeSwitchReadable(
+        tester,
+        binding,
+        terminal.container,
+        proofCase: proofCase,
+        suffix: suffix,
+        step: const _ProofThemeStep(
+          mode: ThemeMode.dark,
+          id: 'dark-readable-again',
+          tokenInfix: 'd2',
+          theme: monkey_themes.TerminalThemes.defaultDarkTheme,
+          maxBackgroundLuminance: 0.45,
+        ),
       );
-      final lightSurface = _composerSurfaceForToken(
-        lightTerminal,
-        monkey_themes.TerminalThemes.defaultLightTheme,
-        lightToken,
-      );
-      await binding.takeScreenshot('${proofCase.id}-light-readable');
-      expect(lightContrast, greaterThanOrEqualTo(3.0));
-      expect(lightSurface.sampledCells, greaterThan(lightToken.length));
-      expect(lightSurface.background.computeLuminance(), greaterThan(0.55));
-
-      debugPrint(
-        '${proofCase.id} contrast dark=$darkContrast light=$lightContrast '
-        'surface dark=${darkSurface.background} '
-        'light=${lightSurface.background}',
+      await _assertThemeSwitchReadable(
+        tester,
+        binding,
+        terminal.container,
+        proofCase: proofCase,
+        suffix: suffix,
+        step: const _ProofThemeStep(
+          mode: ThemeMode.light,
+          id: 'light-readable-again',
+          tokenInfix: 'l2',
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
+          minBackgroundLuminance: 0.55,
+        ),
       );
     });
   }
@@ -209,6 +210,69 @@ class _ProofCase {
   final String tokenPrefix;
   final String? startupCommand;
   final String? tmuxSessionName;
+}
+
+class _ProofThemeStep {
+  const _ProofThemeStep({
+    required this.mode,
+    required this.id,
+    required this.tokenInfix,
+    required this.theme,
+    this.minBackgroundLuminance,
+    this.maxBackgroundLuminance,
+  });
+
+  final ThemeMode mode;
+  final String id;
+  final String tokenInfix;
+  final TerminalThemeData theme;
+  final double? minBackgroundLuminance;
+  final double? maxBackgroundLuminance;
+}
+
+Future<void> _assertThemeSwitchReadable(
+  WidgetTester tester,
+  IntegrationTestWidgetsFlutterBinding binding,
+  ProviderContainer container, {
+  required _ProofCase proofCase,
+  required String suffix,
+  required _ProofThemeStep step,
+}) async {
+  await _switchThemeMode(tester, container, step.mode);
+  final token = '${proofCase.tokenPrefix}${step.tokenInfix}$suffix';
+  _terminalFromView(tester).textInput(token);
+  await _waitForTerminalText(
+    tester,
+    () => _terminalFromView(tester),
+    token,
+    description: 'Timed out waiting for ${proofCase.label} ${step.id} token',
+  );
+  final terminal = _terminalFromView(tester);
+  final contrast = _minimumTokenContrast(terminal, step.theme, token);
+  final surface = _composerSurfaceForToken(terminal, step.theme, token);
+  await binding.takeScreenshot('${proofCase.id}-${step.id}');
+
+  expect(contrast, greaterThanOrEqualTo(3.0));
+  expect(surface.sampledCells, greaterThan(token.length));
+  final minBackgroundLuminance = step.minBackgroundLuminance;
+  if (minBackgroundLuminance != null) {
+    expect(
+      surface.background.computeLuminance(),
+      greaterThan(minBackgroundLuminance),
+    );
+  }
+  final maxBackgroundLuminance = step.maxBackgroundLuminance;
+  if (maxBackgroundLuminance != null) {
+    expect(
+      surface.background.computeLuminance(),
+      lessThan(maxBackgroundLuminance),
+    );
+  }
+
+  debugPrint(
+    '${proofCase.id} ${step.id} contrast=$contrast '
+    'surface=${surface.background}',
+  );
 }
 
 Future<({ProviderContainer container})> _pumpProofTerminal(

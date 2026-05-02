@@ -155,19 +155,15 @@ void main() {
       expect(command, contains(r'case "${pane_command##*/}" in'));
       expect(command, contains("''|sh|bash|zsh|fish"));
       expect(command, contains('flutty_theme_refresh_pane'));
-      expect(command, contains(') & fi;'));
+      expect(command, contains(') & ;;'));
       expect(command, contains('done; wait; };'));
+      expect(command, contains('codex|codex-*)'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
-      expect(command, contains('1b 5b 4f'));
+      expect(command, isNot(contains('1b 5b 4f')));
       expect(command, contains('1b 5b 49'));
-      expect(command, contains('sleep 0.05'));
       expect(command, contains('sleep 0.25'));
       expect(command, contains('sleep 0.08'));
-      expect(
-        command.indexOf('1b 5b 4f'),
-        lessThan(command.indexOf('1b 5b 49')),
-      );
       expect(
         command.indexOf('1b 5b 49'),
         lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
