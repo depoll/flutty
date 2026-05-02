@@ -14,6 +14,12 @@ class _SshSessionRuntime {
   StreamSubscription<void>? _shellDoneSubscription;
   Timer? _previewRefreshTimer;
   Timer? _shellIoDiagnosticsTimer;
+  Timer? _terminalOutputFlushTimer;
+  SSHSession? _pendingShellOutputShell;
+  Terminal? _pendingShellOutputTerminal;
+  final _pendingShellOutputs =
+      Queue<({String stderrData, String stdoutData, String terminalData})>();
+  int _pendingTerminalWriteChars = 0;
   int _shellStdoutChunkCount = 0;
   int _shellStdoutCharCount = 0;
   int _shellStderrChunkCount = 0;
@@ -27,6 +33,9 @@ class _SshSessionRuntime {
   bool _terminalColorSchemeUpdatesMode = false;
 
   Terminal? _terminal;
+
+  static const _terminalOutputFlushInterval = Duration(milliseconds: 16);
+  static const _maxTerminalOutputFlushChars = 64 * 1024;
 
   SSHSession? get shell => _shell;
 
@@ -122,6 +131,7 @@ class _SshSessionRuntime {
 
   /// Close only the interactive shell channel while keeping the SSH client.
   Future<void> closeShell({bool waitForStreams = true}) async {
+    _flushPendingShellOutput(drainAll: true);
     _flushShellIoDiagnostics();
     _shellIoDiagnosticsTimer?.cancel();
     _shellIoDiagnosticsTimer = null;
@@ -195,19 +205,18 @@ class _SshSessionRuntime {
           (data) {
             _recordShellIo(stdoutChars: data.length);
             final terminalData = _unwrapTerminalTmuxPassthrough(data);
-            if (terminalData.isNotEmpty) {
-              terminal.write(terminalData);
-              _respondToTerminalWindowControlQueries(terminalData, terminal);
-            }
-            _scheduleTerminalPreviewRefresh();
-            final stdoutController = _shellStdoutController;
             if (identical(_shell, shell) &&
-                stdoutController != null &&
-                !stdoutController.isClosed) {
-              stdoutController.add(data);
+                (terminalData.isNotEmpty || data.isNotEmpty)) {
+              _enqueueShellOutput(
+                shell: shell,
+                terminal: terminal,
+                terminalData: terminalData,
+                stdoutData: data,
+              );
             }
           },
           onError: (Object error, StackTrace stackTrace) {
+            _flushPendingShellOutput(drainAll: true);
             DiagnosticsLogService.instance.error(
               'ssh.shell',
               'stdout_error',
@@ -230,16 +239,17 @@ class _SshSessionRuntime {
         .listen(
           (data) {
             _recordShellIo(stderrChars: data.length);
-            terminal.write(data);
-            _scheduleTerminalPreviewRefresh();
-            final stderrController = _shellStderrController;
-            if (identical(_shell, shell) &&
-                stderrController != null &&
-                !stderrController.isClosed) {
-              stderrController.add(data);
+            if (identical(_shell, shell) && data.isNotEmpty) {
+              _enqueueShellOutput(
+                shell: shell,
+                terminal: terminal,
+                terminalData: data,
+                stderrData: data,
+              );
             }
           },
           onError: (Object error, StackTrace stackTrace) {
+            _flushPendingShellOutput(drainAll: true);
             DiagnosticsLogService.instance.error(
               'ssh.shell',
               'stderr_error',
@@ -258,6 +268,7 @@ class _SshSessionRuntime {
         );
     _shellDoneSubscription = shell.done.asStream().listen(
       (_) {
+        _flushPendingShellOutput(drainAll: true);
         DiagnosticsLogService.instance.info(
           'ssh.shell',
           'done',
@@ -352,6 +363,130 @@ class _SshSessionRuntime {
     _shellStderrCharCount = 0;
     _shellStdinWriteCount = 0;
     _shellStdinCharCount = 0;
+  }
+
+  void _enqueueShellOutput({
+    required SSHSession shell,
+    required Terminal terminal,
+    required String terminalData,
+    String? stdoutData,
+    String? stderrData,
+  }) {
+    if (!identical(_shell, shell)) {
+      return;
+    }
+
+    final stdoutChunk = stdoutData ?? '';
+    final stderrChunk = stderrData ?? '';
+    if (terminalData.isEmpty && stdoutChunk.isEmpty && stderrChunk.isEmpty) {
+      return;
+    }
+    _pendingShellOutputs.add((
+      terminalData: terminalData,
+      stdoutData: stdoutChunk,
+      stderrData: stderrChunk,
+    ));
+    _pendingTerminalWriteChars += terminalData.length;
+    _pendingShellOutputShell = shell;
+    _pendingShellOutputTerminal = terminal;
+
+    if (!(_terminalOutputFlushTimer?.isActive ?? false)) {
+      _terminalOutputFlushTimer = Timer(
+        _terminalOutputFlushInterval,
+        _flushPendingShellOutput,
+      );
+    }
+  }
+
+  void _flushPendingShellOutput({bool drainAll = false}) {
+    _terminalOutputFlushTimer?.cancel();
+    _terminalOutputFlushTimer = null;
+
+    final shell = _pendingShellOutputShell;
+    final terminal = _pendingShellOutputTerminal;
+    if (shell == null || terminal == null || !identical(_shell, shell)) {
+      _clearPendingShellOutput();
+      return;
+    }
+
+    final output = _drainPendingShellOutputs(drainAll: drainAll);
+    if (output.terminalData.isNotEmpty) {
+      terminal.write(output.terminalData);
+      _respondToTerminalWindowControlQueries(output.terminalData, terminal);
+      _scheduleTerminalPreviewRefresh();
+    }
+
+    if (output.stdoutData.isNotEmpty) {
+      final stdoutController = _shellStdoutController;
+      if (stdoutController != null && !stdoutController.isClosed) {
+        stdoutController.add(output.stdoutData);
+      }
+    }
+
+    if (output.stderrData.isNotEmpty) {
+      final stderrController = _shellStderrController;
+      if (stderrController != null && !stderrController.isClosed) {
+        stderrController.add(output.stderrData);
+      }
+    }
+
+    if (_pendingShellOutputs.isNotEmpty) {
+      _terminalOutputFlushTimer = Timer(
+        _terminalOutputFlushInterval,
+        _flushPendingShellOutput,
+      );
+      return;
+    }
+
+    _pendingShellOutputShell = null;
+    _pendingShellOutputTerminal = null;
+  }
+
+  ({String stderrData, String stdoutData, String terminalData})
+  _drainPendingShellOutputs({required bool drainAll}) {
+    if (_pendingShellOutputs.isEmpty) {
+      return (terminalData: '', stdoutData: '', stderrData: '');
+    }
+
+    final terminalOutput = StringBuffer();
+    final stdoutOutput = StringBuffer();
+    final stderrOutput = StringBuffer();
+    var remaining = drainAll
+        ? _pendingTerminalWriteChars
+        : _maxTerminalOutputFlushChars;
+    while (_pendingShellOutputs.isNotEmpty) {
+      final next = _pendingShellOutputs.first;
+      final terminalLength = next.terminalData.length;
+      if (!drainAll &&
+          terminalOutput.isNotEmpty &&
+          terminalLength > remaining) {
+        break;
+      }
+
+      _pendingShellOutputs.removeFirst();
+      _pendingTerminalWriteChars -= terminalLength;
+      terminalOutput.write(next.terminalData);
+      stdoutOutput.write(next.stdoutData);
+      stderrOutput.write(next.stderrData);
+      if (!drainAll) {
+        remaining -= terminalLength;
+        if (remaining <= 0 && terminalOutput.isNotEmpty) {
+          break;
+        }
+      }
+    }
+    return (
+      terminalData: terminalOutput.toString(),
+      stdoutData: stdoutOutput.toString(),
+      stderrData: stderrOutput.toString(),
+    );
+  }
+
+  void _clearPendingShellOutput() {
+    _pendingShellOutputs.clear();
+    _pendingTerminalWriteChars = 0;
+    _pendingShellOutputShell = null;
+    _pendingShellOutputTerminal = null;
   }
 
   void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
