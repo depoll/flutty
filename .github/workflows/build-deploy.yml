@@ -405,7 +405,7 @@ jobs:
           AAB_PATH="${{ steps.preview-aab.outputs.path }}"
           APKS_PATH="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview.apks"
           APK_DIR="$RUNNER_TEMP/app-${{ inputs.flavor }}-preview-apks"
-          APK_PATH="build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-preview.apk"
+          APK_PATH="build/app/outputs/flutter-apk/android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk"
           DEBUG_KEYSTORE="$HOME/.android/debug.keystore"
 
           curl \
@@ -493,8 +493,8 @@ jobs:
         if: inputs.build-android-apk && inputs.deploy-android-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/app/outputs/flutter-apk/app-${{ inputs.flavor }}-preview.apk
+          path: build/app/outputs/flutter-apk/android-apk-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.apk
+          archive: false
 
       - name: Fetch PR commits
         if: inputs.pr-number != ''
@@ -773,7 +773,7 @@ jobs:
             if [ -d SwiftSupport ]; then
               ZIP_INPUTS+=(SwiftSupport)
             fi
-            zip -qry ../ipa/Runner-unsigned.ipa "${ZIP_INPUTS[@]}"
+            zip -qry "../ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa" "${ZIP_INPUTS[@]}"
           )
 
       - name: Download reusable IPA artifact
@@ -883,19 +883,39 @@ jobs:
             bundle exec fastlane build_ipa scheme:"$SCHEME"
           fi
 
+      - name: Prepare signed IPA artifact
+        id: signed-ipa-artifact
+        if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
+        run: |
+          set -euo pipefail
+
+          IPA_PATH=$(find build/ios/ipa -maxdepth 1 -name '*.ipa' -print -quit)
+          if [ -z "$IPA_PATH" ]; then
+            echo 'Expected a signed IPA under build/ios/ipa, but none was found.'
+            find build/ios/ipa -maxdepth 2 -print || true
+            exit 1
+          fi
+
+          ARTIFACT_PATH="build/ios/ipa/ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa"
+          if [ "$IPA_PATH" != "$ARTIFACT_PATH" ]; then
+            cp "$IPA_PATH" "$ARTIFACT_PATH"
+          fi
+
+          echo "path=$ARTIFACT_PATH" >> "$GITHUB_OUTPUT"
+
       - name: Upload signed IPA artifact
         if: inputs.deploy-ios-to != 'none' && inputs.ios-reuse-ipa-artifact-name == ''
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/ios/ipa/*.ipa
+          path: ${{ steps.signed-ipa-artifact.outputs.path }}
+          archive: false
 
       - name: Upload unsigned IPA artifact
         if: inputs.build-ios-unsigned-ipa && inputs.ios-reuse-ipa-artifact-name == '' && inputs.deploy-ios-to == 'none'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}
-          path: build/ios/ipa/Runner-unsigned.ipa
+          path: build/ios/ipa/ios-unsigned-${{ inputs.flavor }}-${{ inputs.build-name }}-${{ inputs.build-number }}.ipa
+          archive: false
 
   deploy-status-summary:
     name: Summarize Deploy Status

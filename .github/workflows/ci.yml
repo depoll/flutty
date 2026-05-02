@@ -214,9 +214,8 @@ jobs:
       - name: Upload APK
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
-          name: android-apk
           path: build/app/outputs/flutter-apk/app-production-release.apk
-          compression-level: 0
+          archive: false
           retention-days: 5
 
       - name: Clean up CI signing config
