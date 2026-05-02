@@ -3226,6 +3226,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
+  static const _tmuxForegroundVerificationInterval = Duration(seconds: 5);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -3273,6 +3274,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxWorkingDirectory;
   int _tmuxDetectionGeneration = 0;
   int _tmuxBarRecoveryGeneration = 0;
+  int _tmuxForegroundVerificationGeneration = 0;
+  Timer? _tmuxForegroundVerificationTimer;
+  bool _tmuxForegroundVerificationInFlight = false;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -5390,6 +5394,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
 
   void _clearTmuxState() {
+    _stopTmuxForegroundVerification();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
@@ -5397,6 +5402,91 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
+  }
+
+  void _startTmuxForegroundVerification(
+    SshSession session,
+    String sessionName,
+  ) {
+    _tmuxForegroundVerificationTimer?.cancel();
+    _tmuxForegroundVerificationInFlight = false;
+    final generation = ++_tmuxForegroundVerificationGeneration;
+    _tmuxForegroundVerificationTimer = Timer.periodic(
+      _tmuxForegroundVerificationInterval,
+      (_) => unawaited(
+        _verifyTmuxForegroundSession(session, sessionName, generation),
+      ),
+    );
+  }
+
+  void _stopTmuxForegroundVerification() {
+    _tmuxForegroundVerificationTimer?.cancel();
+    _tmuxForegroundVerificationTimer = null;
+    _tmuxForegroundVerificationGeneration += 1;
+    _tmuxForegroundVerificationInFlight = false;
+  }
+
+  Future<void> _verifyTmuxForegroundSession(
+    SshSession session,
+    String sessionName,
+    int generation,
+  ) async {
+    if (_tmuxForegroundVerificationInFlight ||
+        !mounted ||
+        generation != _tmuxForegroundVerificationGeneration ||
+        _connectionId != session.connectionId ||
+        !_isTmuxActive ||
+        _tmuxSessionName != sessionName) {
+      return;
+    }
+
+    _tmuxForegroundVerificationInFlight = true;
+    try {
+      final foregroundSessionName = await ref
+          .read(tmuxServiceProvider)
+          .foregroundSessionNameOrThrow(
+            session,
+            extraFlags: _host?.tmuxExtraFlags,
+          );
+      if (!mounted ||
+          generation != _tmuxForegroundVerificationGeneration ||
+          _connectionId != session.connectionId ||
+          !_isTmuxActive ||
+          _tmuxSessionName != sessionName) {
+        return;
+      }
+      if (foregroundSessionName == sessionName) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'foreground_verified',
+          fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
+
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'foreground_detached',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasForegroundSession': foregroundSessionName != null,
+        },
+      );
+      setState(_clearTmuxState);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'foreground_verify_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    } finally {
+      if (generation == _tmuxForegroundVerificationGeneration) {
+        _tmuxForegroundVerificationInFlight = false;
+      }
+    }
   }
 
   /// Detects whether the connected session is inside tmux.
@@ -5482,17 +5572,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
 
         final bool active;
+        final String? foregroundSessionName;
         try {
+          foregroundSessionName = await tmux.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: host?.tmuxExtraFlags,
+          );
           active = candidateSessionName != null
-              ? await tmux.hasSessionOrThrow(
-                  session,
-                  candidateSessionName,
-                  extraFlags: host?.tmuxExtraFlags,
-                )
-              : await tmux.isTmuxActiveOrThrow(
-                  session,
-                  extraFlags: host?.tmuxExtraFlags,
-                );
+              ? foregroundSessionName == candidateSessionName
+              : foregroundSessionName != null;
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -5521,6 +5609,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'connectionId': session.connectionId,
             'active': active,
             'hasCandidate': candidateSessionName != null,
+            'hasForegroundSession': foregroundSessionName != null,
           },
         );
         if (!mounted ||
@@ -5535,24 +5624,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
         confirmedTmuxActive = true;
 
-        var sessionName = candidateSessionName;
-        try {
-          sessionName ??= await tmux.currentSessionName(
-            session,
-            extraFlags: host?.tmuxExtraFlags,
-          );
-        } on Object catch (error) {
-          hadDetectionFailure = true;
-          DiagnosticsLogService.instance.warning(
-            'tmux.ui',
-            'detection_session_name_failed',
-            fields: {
-              'connectionId': session.connectionId,
-              'errorType': error.runtimeType,
-            },
-          );
-          continue;
-        }
+        final sessionName = candidateSessionName ?? foregroundSessionName;
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
@@ -5624,6 +5696,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
         });
+        _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
           'detection_success',
@@ -6478,6 +6551,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelTerminalThemeRefreshTimers();
     unawaited(_terminalWakeLockService.releaseOwner(_terminalWakeLockOwnerId));
     _stopSharedClipboardSync();
+    _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);

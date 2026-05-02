@@ -706,6 +706,39 @@ void main() {
       expect(hasForegroundTmuxClient('\n0\n'), isTrue);
       expect(hasForegroundTmuxClient(' \n \n'), isFalse);
     });
+
+    test(
+      'hasForegroundClient requires the primary terminal session to match',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 24);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: 'other\n${_doneMarker()}'),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final hasForegroundClient = await service.hasForegroundClient(
+          session,
+          'work',
+        );
+
+        expect(hasForegroundClient, isFalse);
+        final foregroundCommand =
+            verify(
+                  () => client.execute(
+                    captureAny(that: contains('list-clients')),
+                    pty: any(named: 'pty'),
+                  ),
+                ).captured.single
+                as String;
+        expect(foregroundCommand, contains('#{client_control_mode}'));
+      },
+    );
   });
 
   group('tmux exec recovery', () {

@@ -835,8 +835,8 @@ void main() {
       ];
 
       when(
-        () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
-      ).thenAnswer((_) async => true);
+        () => tmuxService.foregroundSessionNameOrThrow(session),
+      ).thenAnswer((_) async => tmuxSessionName);
       when(
         () => tmuxService.listWindows(session, tmuxSessionName),
       ).thenAnswer((_) async => windows);
@@ -908,15 +908,15 @@ void main() {
           ),
         );
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
-        var hasSessionCalls = 0;
+        var foregroundSessionCalls = 0;
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async {
-          hasSessionCalls += 1;
-          if (hasSessionCalls == 1) {
+          foregroundSessionCalls += 1;
+          if (foregroundSessionCalls == 1) {
             throw StateError('exec channel temporarily unavailable');
           }
-          return true;
+          return tmuxSessionName;
         });
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
@@ -968,7 +968,7 @@ void main() {
 
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
         expect(find.textContaining(tmuxSessionName), findsOneWidget);
-        expect(hasSessionCalls, greaterThanOrEqualTo(2));
+        expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
@@ -993,15 +993,15 @@ void main() {
           ),
         );
         host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
-        var hasSessionCalls = 0;
+        var foregroundSessionCalls = 0;
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
+          () => tmuxService.foregroundSessionNameOrThrow(session),
         ).thenAnswer((_) async {
-          hasSessionCalls += 1;
-          if (hasSessionCalls == 1) {
+          foregroundSessionCalls += 1;
+          if (foregroundSessionCalls == 1) {
             throw StateError('exec channel temporarily unavailable');
           }
-          return false;
+          return null;
         });
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
@@ -1054,7 +1054,83 @@ void main() {
         await tester.pump(const Duration(seconds: 3));
 
         expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
-        expect(hasSessionCalls, greaterThanOrEqualTo(2));
+        expect(foregroundSessionCalls, greaterThanOrEqualTo(2));
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
+      'clears an active tmux bar after the foreground terminal detaches',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+          TmuxWindow(index: 1, name: 'agent', isActive: false),
+        ];
+        host = _buildHost(id: host.id, tmuxSessionName: tmuxSessionName);
+        var foregroundSessionCalls = 0;
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async {
+          foregroundSessionCalls += 1;
+          return foregroundSessionCalls == 1 ? tmuxSessionName : null;
+        });
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+
+        await tester.pump(const Duration(seconds: 5));
+        await tester.pump();
+
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
+        expect(foregroundSessionCalls, 2);
       },
       variant: TargetPlatformVariant.only(TargetPlatform.iOS),
     );
@@ -1070,8 +1146,8 @@ void main() {
           const TmuxWindow(index: 3, name: 'agent', isActive: false),
         ];
         when(
-          () => tmuxService.hasSessionOrThrow(session, tmuxSessionName),
-        ).thenAnswer((_) async => true);
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
         when(
           () => tmuxService.listWindows(session, tmuxSessionName),
         ).thenAnswer((_) async => windows);
@@ -1173,6 +1249,12 @@ void main() {
           tmuxSessionName: tmuxSessionName,
           tmuxExtraFlags: tmuxExtraFlags,
         );
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: tmuxExtraFlags,
+          ),
+        ).thenAnswer((_) async => tmuxSessionName);
         when(
           () => tmuxService.hasSessionOrThrow(
             session,
@@ -1276,9 +1358,8 @@ void main() {
           ),
         ).called(1);
         verify(
-          () => tmuxService.hasSessionOrThrow(
+          () => tmuxService.foregroundSessionNameOrThrow(
             session,
-            tmuxSessionName,
             extraFlags: tmuxExtraFlags,
           ),
         ).called(1);

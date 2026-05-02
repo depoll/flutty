@@ -207,6 +207,16 @@ class TmuxService {
   Future<String?> foregroundSessionNameOrThrow(
     SshSession session, {
     String? extraFlags,
+  }) => _foregroundSessionNameOrThrow(
+    session,
+    priority: SshExecPriority.low,
+    extraFlags: extraFlags,
+  );
+
+  Future<String?> _foregroundSessionNameOrThrow(
+    SshSession session, {
+    required SshExecPriority priority,
+    String? extraFlags,
   }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.query',
@@ -217,7 +227,7 @@ class TmuxService {
     final output = await _exec(
       session,
       _buildForegroundTmuxSessionCommand(extraFlags: extraFlags),
-      priority: SshExecPriority.low,
+      priority: priority,
     );
     final sessionName = output
         .split('\n')
@@ -758,11 +768,11 @@ class TmuxService {
     }
   }
 
-  /// Returns whether [sessionName] still has a non-control tmux client
-  /// attached in the foreground.
+  /// Returns whether [sessionName] is attached in the primary SSH terminal.
   ///
-  /// Control-mode observers are excluded because MonkeySSH uses one for live
-  /// window updates even after the visible interactive shell has left tmux.
+  /// Control-mode observers are excluded by the foreground-session probe
+  /// because MonkeySSH uses one for live window updates even after the visible
+  /// interactive shell has left tmux.
   Future<bool> hasForegroundClient(
     SshSession session,
     String sessionName, {
@@ -774,18 +784,19 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     try {
-      final output = await _exec(
+      final foregroundSessionName = await _foregroundSessionNameOrThrow(
         session,
-        '${_tmuxCommand('list-clients -t ${_shellQuote(sessionName)} '
-        "-F '#{client_control_mode}'", extraFlags: extraFlags)} 2>/dev/null',
+        priority: SshExecPriority.normal,
+        extraFlags: extraFlags,
       );
-      final hasClient = hasForegroundTmuxClient(output);
+      final hasClient = foregroundSessionName == sessionName;
       DiagnosticsLogService.instance.info(
         'tmux.query',
         'foreground_client_complete',
         fields: {
           'connectionId': session.connectionId,
           'hasForegroundClient': hasClient,
+          'hasForegroundSession': foregroundSessionName != null,
         },
       );
       return hasClient;
@@ -1616,8 +1627,10 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
       r'ttys=$(ps -ax -o pid=,ppid=,tty= 2>/dev/null | '
       r'''awk -v parent_pid="$parent_pid" -v self_pid="$$" '$2 == parent_pid && $1 != self_pid && $3 != "?" { print $3 }'); '''
       r'[ -n "$ttys" ] || exit 0; '
-      '$listClients"#{client_tty}\$sep#{session_name}" 2>/dev/null | '
-      r'while IFS="$sep" read -r client_tty session_name; do '
+      '$listClients"#{client_tty}\$sep#{session_name}\$sep#{client_control_mode}" '
+      '2>/dev/null | '
+      r'while IFS="$sep" read -r client_tty session_name control_mode; do '
+      r'[ "$control_mode" = 0 ] || continue; '
       r'[ -n "$client_tty" ] && [ -n "$session_name" ] || continue; '
       r'client_tty=${client_tty#/dev/}; '
       r'for tty in $ttys; do '
