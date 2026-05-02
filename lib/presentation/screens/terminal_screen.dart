@@ -3878,19 +3878,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     // Do not send unsolicited OSC palette replies directly to a plain
     // foreground TUI. Codex treats those bytes as user input, and its crossterm
     // color re-query can also be disrupted by unrelated terminal reports.
-    // Apps that explicitly requested DEC 2031 color-scheme updates receive the
-    // private theme-mode/default-color cycle immediately, plus a mode-status
-    // repaint boundary so diff renderers redraw old-theme surfaces.
+    // Always send a synthetic focus transition so focus-aware TUIs re-query OSC
+    // 10/11 through the normal path; only send the private theme-mode and
+    // default-color response cycle to apps that explicitly requested DEC 2031
+    // color-scheme updates.
     final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
-    if (includeThemeModeReport) {
-      _refreshTerminalThemeReportsForTui(
-        theme,
-        includeFocusReport: false,
-        includeDefaultColorReports: true,
-        includeRepaintReport: true,
-        reason: '${reason}_plain_theme_cycle',
-      );
-    }
     _refreshTerminalThemeReportsForTui(
       theme,
       includeThemeModeReport: false,
@@ -3901,20 +3893,43 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         theme: theme,
         session: session,
         refreshGeneration: refreshGeneration,
-        delay: const Duration(milliseconds: 150),
+        delay: const Duration(milliseconds: 250),
         includeFocusReport: false,
-        includeDefaultColorReports: true,
-        includeRepaintReport: true,
-        reason: '${reason}_plain_theme_cycle_late',
+        reason: '${reason}_plain_theme_mode',
       );
-    } else {
+      for (final delay in const [
+        Duration(milliseconds: 330),
+        Duration(milliseconds: 410),
+        Duration(milliseconds: 490),
+      ]) {
+        _scheduleTerminalThemeRefreshForTui(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+          delay: delay,
+          includeFocusReport: false,
+          includeThemeModeReport: false,
+          includeDefaultColorReports: true,
+          reason: '${reason}_plain_defaults',
+        );
+      }
+    }
+    _scheduleTerminalThemeRefreshForTui(
+      theme: theme,
+      session: session,
+      refreshGeneration: refreshGeneration,
+      delay: const Duration(milliseconds: 550),
+      includeThemeModeReport: false,
+      reason: '${reason}_plain_focus_late',
+    );
+    if (includeThemeModeReport) {
       _scheduleTerminalThemeRefreshForTui(
         theme: theme,
         session: session,
         refreshGeneration: refreshGeneration,
-        delay: const Duration(milliseconds: 550),
-        includeThemeModeReport: false,
-        reason: '${reason}_plain_focus_late',
+        delay: const Duration(milliseconds: 800),
+        includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode_late',
       );
     }
   }
@@ -3925,7 +3940,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool includeColorReports = false,
     bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
-    bool includeRepaintReport = false,
     String reason = 'unspecified',
   }) {
     final terminalView = _terminalViewKey.currentState;
@@ -3939,7 +3953,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           'includeColorReports': includeColorReports,
           'includeDefaultColorReports': includeDefaultColorReports,
           'includeFocusReport': includeFocusReport,
-          'includeRepaintReport': includeRepaintReport,
           'shellReady': _shell != null,
           'hasOutputCallback': _terminal.onOutput != null,
         },
@@ -3955,28 +3968,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'includeColorReports': includeColorReports,
         'includeDefaultColorReports': includeDefaultColorReports,
         'includeFocusReport': includeFocusReport,
-        'includeRepaintReport': includeRepaintReport,
         'shellReady': _shell != null,
         'hasOutputCallback': _terminal.onOutput != null,
       },
     );
-    if (includeThemeModeReport && includeDefaultColorReports) {
-      terminalView.refreshThemeModeColorReports(
-        theme,
-        includeRepaintReport: includeRepaintReport,
-      );
-    } else if (includeThemeModeReport) {
+    if (includeThemeModeReport) {
       terminalView.refreshThemeModeReport(isDark: theme.isDark);
     }
     if (includeColorReports) {
       terminalView.refreshThemeColorReports(theme);
     }
-    if (includeDefaultColorReports && !includeThemeModeReport) {
+    if (includeDefaultColorReports) {
       terminalView.refreshThemeDefaultColorReports(theme);
-    }
-    if (includeRepaintReport &&
-        !(includeThemeModeReport && includeDefaultColorReports)) {
-      terminalView.refreshThemeRepaintReport();
     }
     if (includeFocusReport) {
       terminalView.refreshFocusReport(forceTransition: true, force: true);
@@ -4267,7 +4270,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool includeColorReports = false,
     bool includeDefaultColorReports = false,
     bool includeFocusReport = true,
-    bool includeRepaintReport = false,
     String reason = 'unspecified',
   }) {
     late final Timer timer;
@@ -4286,7 +4288,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         includeColorReports: includeColorReports,
         includeDefaultColorReports: includeDefaultColorReports,
         includeFocusReport: includeFocusReport,
-        includeRepaintReport: includeRepaintReport,
         reason: reason,
       );
     });

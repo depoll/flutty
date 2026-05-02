@@ -357,31 +357,6 @@ void main() {
     expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
   });
 
-  testWidgets('refreshThemeModeColorReports sends a repaintable theme cycle', (
-    tester,
-  ) async {
-    final output = <String>[];
-    final terminal = Terminal()..onOutput = output.add;
-
-    await tester.pumpWidget(
-      buildTerminal(terminal: terminal, size: const Size(320, 240)),
-    );
-
-    tester
-        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
-        .refreshThemeModeColorReports(
-          monkey_themes.TerminalThemes.githubLightDefault,
-          includeRepaintReport: true,
-        );
-
-    expect(output, [isNotEmpty]);
-    expect(output.single, startsWith('\x1b[?997;2n'));
-    expect(output.single, contains('\x1b]10;rgb:1f1f/2323/2828\x1b\\'));
-    expect(output.single, contains('\x1b]11;rgb:ffff/ffff/ffff\x1b\\'));
-    expect(output.single, endsWith('\x1b[?2031;1\$y'));
-    expect(output.single, isNot(contains('\x1b]4;')));
-  });
-
   testWidgets('refreshThemeColorReports sends safe tmux cache refresh', (
     tester,
   ) async {

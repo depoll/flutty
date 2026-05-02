@@ -622,28 +622,6 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     );
   }
 
-  /// Reports the current theme mode and default colors to a TUI.
-  void refreshThemeModeColorReports(
-    TerminalThemeData theme, {
-    bool includeRepaintReport = false,
-  }) {
-    final reports = buildTerminalThemeModeRefreshReports(
-      theme,
-      includeRepaintReport: includeRepaintReport,
-    );
-    if (reports.isEmpty) {
-      return;
-    }
-    widget.terminal.onOutput?.call(reports);
-  }
-
-  /// Reports color-scheme update mode status to trigger a full TUI repaint.
-  void refreshThemeRepaintReport() {
-    widget.terminal.onOutput?.call(
-      buildTerminalColorSchemeUpdatesModeReport(enabled: true),
-    );
-  }
-
   /// Reports the current terminal theme colors to tmux.
   void refreshThemeColorReports(TerminalThemeData theme) {
     final reports = buildTerminalThemeRefreshReports(theme);

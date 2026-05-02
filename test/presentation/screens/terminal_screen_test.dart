@@ -664,11 +664,6 @@ void main() {
       session.terminal!.write('\x1b[?1004h');
     }
 
-    Future<void> enableColorSchemeUpdates(WidgetTester tester) async {
-      shellStdoutController.add(Uint8List.fromList(utf8.encode('\x1b[?2031h')));
-      await tester.pump();
-    }
-
     testWidgets('holds wake lock while an opted-in terminal is active', (
       tester,
     ) async {
@@ -740,39 +735,6 @@ void main() {
         expect(writtenShellText, isNot(contains('\x1b]11;')));
         expect(writtenShellText, isNot(contains('\x1b]4;0;')));
         expect(writtenShellText, contains('\x1b[O\x1b[I'));
-        expect(
-          session.terminalTheme?.id,
-          monkey_themes.TerminalThemes.defaultDarkThemeId,
-        );
-      },
-      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
-    );
-
-    testWidgets(
-      'refreshes a color-scheme-aware TUI with a repaint report',
-      (tester) async {
-        await pumpScreen(tester);
-        await enableColorSchemeUpdates(tester);
-        shellWrites.clear();
-
-        final container = ProviderScope.containerOf(
-          tester.element(find.byType(TerminalScreen)),
-        );
-        await container
-            .read(themeModeNotifierProvider.notifier)
-            .setThemeMode(ThemeMode.dark);
-        await tester.pump();
-        await tester.pump(const Duration(milliseconds: 200));
-
-        final writtenShellText = utf8.decode(
-          shellWrites.expand((chunk) => chunk).toList(growable: false),
-        );
-        expect(writtenShellText, contains('\x1b[?997;1n'));
-        expect(writtenShellText, contains('\x1b]10;'));
-        expect(writtenShellText, contains('\x1b]11;'));
-        expect(writtenShellText, contains('\x1b[?2031;1\$y'));
-        expect(writtenShellText, isNot(contains('\x1b]4;0;')));
-        expect(writtenShellText, isNot(contains('\x0c')));
         expect(
           session.terminalTheme?.id,
           monkey_themes.TerminalThemes.defaultDarkThemeId,
