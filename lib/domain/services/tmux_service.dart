@@ -133,12 +133,10 @@ class TmuxService {
 
   // ── Detection ──────────────────────────────────────────────────────────
 
-  /// Returns `true` if there is at least one tmux session running on the
-  /// remote host.
+  /// Returns `true` if the primary SSH terminal is attached to tmux.
   ///
-  /// Uses `tmux list-sessions` rather than checking the `TMUX` environment
-  /// variable, because SSH exec channels do not share the interactive
-  /// shell's environment.
+  /// This deliberately ignores tmux servers and clients that belong to other
+  /// SSH logins on the same host.
   Future<bool> isTmuxActive(SshSession session, {String? extraFlags}) async {
     try {
       return await isTmuxActiveOrThrow(session, extraFlags: extraFlags);
@@ -155,10 +153,10 @@ class TmuxService {
     }
   }
 
-  /// Returns `true` if tmux has at least one session, and throws when the
-  /// remote check could not complete.
+  /// Returns `true` if the primary SSH terminal is attached to tmux, and throws
+  /// when the remote check could not complete.
   ///
-  /// Unlike [isTmuxActive], this distinguishes "no sessions" from
+  /// Unlike [isTmuxActive], this distinguishes "not attached to tmux" from
   /// infrastructure failures so callers can preserve existing UI on
   /// indeterminate detection results.
   Future<bool> isTmuxActiveOrThrow(
@@ -170,23 +168,71 @@ class TmuxService {
       'active_check_start',
       fields: {'connectionId': session.connectionId},
     );
-    // Cache the tmux binary path on first successful detection.
-    await _cacheTmuxPath(session);
-    final output = await _exec(
-      session,
-      '${_tmuxCommand("list-sessions -F '#{session_name}'", extraFlags: extraFlags)} 2>/dev/null; '
-      r'status=$?; '
-      r'if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then true; '
-      'else false; fi',
-      priority: SshExecPriority.low,
-    );
-    final active = output.trim().isNotEmpty;
+    final active =
+        await foregroundSessionNameOrThrow(session, extraFlags: extraFlags) !=
+        null;
     DiagnosticsLogService.instance.info(
       'tmux.detect',
       'active_check_complete',
       fields: {'connectionId': session.connectionId, 'active': active},
     );
     return active;
+  }
+
+  /// Returns the tmux session attached to the primary SSH terminal, if any.
+  Future<String?> foregroundSessionName(
+    SshSession session, {
+    String? extraFlags,
+  }) async {
+    try {
+      return await foregroundSessionNameOrThrow(
+        session,
+        extraFlags: extraFlags,
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'foreground_session_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
+  /// Returns the tmux session attached to the primary SSH terminal, and throws
+  /// when the remote check could not complete.
+  Future<String?> foregroundSessionNameOrThrow(
+    SshSession session, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'foreground_session_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    await _cacheTmuxPath(session);
+    final output = await _exec(
+      session,
+      _buildForegroundTmuxSessionCommand(extraFlags: extraFlags),
+      priority: SshExecPriority.low,
+    );
+    final sessionName = output
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .firstOrNull;
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'foreground_session_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'active': sessionName != null,
+      },
+    );
+    return sessionName;
   }
 
   /// Returns `true` if tmux is installed on the remote host.
@@ -391,14 +437,10 @@ class TmuxService {
     }
   }
 
-  /// Returns the name of the tmux session the user is most likely
-  /// interacting with, or `null` if no session can be identified.
+  /// Returns the name of the tmux session attached to this terminal.
   ///
-  /// First tries `tmux display-message` (works when the exec shell
-  /// inherits the tmux context). If that fails, falls back to finding
-  /// the first attached session from `tmux list-sessions` — this covers
-  /// the common case where the interactive shell is inside tmux but the
-  /// exec channel is not.
+  /// This does not infer a session from arbitrary attached tmux clients on the
+  /// host; those may belong to other SSH logins.
   Future<String?> currentSessionName(
     SshSession session, {
     String? extraFlags,
@@ -408,6 +450,19 @@ class TmuxService {
       'current_session_start',
       fields: {'connectionId': session.connectionId},
     );
+    final foregroundName = await foregroundSessionName(
+      session,
+      extraFlags: extraFlags,
+    );
+    if (foregroundName != null) {
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'current_session_foreground',
+        fields: {'connectionId': session.connectionId},
+      );
+      return foregroundName;
+    }
+
     try {
       // Direct approach — works if the exec channel is inside tmux.
       final output = await _exec(
@@ -435,44 +490,14 @@ class TmuxService {
           'errorType': error.runtimeType,
         },
       );
-      // Fall through to fallback.
+      // Fall through to an unavailable result.
     }
-
-    // Fallback — find attached sessions.
-    try {
-      final sessions = await listSessions(session, extraFlags: extraFlags);
-      final attached = sessions.where((s) => s.isAttached).toList();
-      if (attached.length == 1) {
-        DiagnosticsLogService.instance.info(
-          'tmux.query',
-          'current_session_attached_fallback',
-          fields: {'connectionId': session.connectionId},
-        );
-        return attached.first.name;
-      }
-      // Multiple attached sessions are ambiguous — we can't determine
-      // which one belongs to this terminal connection. Return null to
-      // avoid targeting the wrong session with destructive operations.
-      DiagnosticsLogService.instance.info(
-        'tmux.query',
-        'current_session_ambiguous',
-        fields: {
-          'connectionId': session.connectionId,
-          'attachedCount': attached.length,
-        },
-      );
-      return null;
-    } on Exception catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'tmux.query',
-        'current_session_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
-      );
-      return null;
-    }
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'current_session_unavailable',
+      fields: {'connectionId': session.connectionId},
+    );
+    return null;
   }
 
   /// Returns `true` if [sessionName] exists on the remote tmux server.
@@ -1577,6 +1602,32 @@ String _diagnosticTmuxCommandKind(String command) {
     return 'which_tmux';
   }
   return 'tmux_exec';
+}
+
+String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
+  final listClients = TmuxService._tmuxCommand(
+    'list-clients -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return r'sep=$(printf "\037"); '
+      r'parent_pid=$(ps -p "$$" -o ppid= 2>/dev/null | tr -d " "); '
+      r'[ -n "$parent_pid" ] || exit 0; '
+      r'ttys=$(ps -ax -o pid=,ppid=,tty= 2>/dev/null | '
+      r'''awk -v parent_pid="$parent_pid" -v self_pid="$$" '$2 == parent_pid && $1 != self_pid && $3 != "?" { print $3 }'); '''
+      r'[ -n "$ttys" ] || exit 0; '
+      '$listClients"#{client_tty}\$sep#{session_name}" 2>/dev/null | '
+      r'while IFS="$sep" read -r client_tty session_name; do '
+      r'[ -n "$client_tty" ] && [ -n "$session_name" ] || continue; '
+      r'client_tty=${client_tty#/dev/}; '
+      r'for tty in $ttys; do '
+      r'tty=${tty#/dev/}; '
+      r'if [ "$client_tty" = "$tty" ]; then '
+      r'printf "%s\n" "$session_name"; '
+      'exit 0; '
+      'fi; '
+      'done; '
+      'done';
 }
 
 /// Parses the current pane path reported by `tmux display-message`.

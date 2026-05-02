@@ -256,6 +256,66 @@ void main() {
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
     });
 
+    test('isTmuxActiveOrThrow ignores unrelated tmux clients', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 22);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: _doneMarker()),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final active = await service.isTmuxActiveOrThrow(session);
+
+      expect(active, isFalse);
+      verify(
+        () => client.execute(
+          any(that: contains('list-clients')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verifyNever(
+        () => client.execute(
+          any(that: contains('list-sessions')),
+          pty: any(named: 'pty'),
+        ),
+      );
+    });
+
+    test('currentSessionName returns the foreground tmux client', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 23);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final sessionName = await service.currentSessionName(session);
+
+      expect(sessionName, 'work');
+      verify(
+        () => client.execute(
+          any(that: contains('list-clients')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verifyNever(
+        () => client.execute(
+          any(that: contains('display-message')),
+          pty: any(named: 'pty'),
+        ),
+      );
+    });
+
     test(
       'hasSessionOrThrow returns false for a missing tmux session',
       () async {
