@@ -34,7 +34,7 @@ class _SshSessionRuntime {
 
   Terminal? _terminal;
 
-  static const _terminalOutputFlushInterval = Duration(milliseconds: 16);
+  static const _terminalOutputFlushInterval = Duration(milliseconds: 8);
   static const _maxTerminalOutputFlushChars = 64 * 1024;
 
   SSHSession? get shell => _shell;
