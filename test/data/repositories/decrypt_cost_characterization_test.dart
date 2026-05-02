@@ -80,7 +80,7 @@ Future<void> _insertKeysWithSecrets(KeyRepository repo, int count) async {
         name: 'key-$i',
         keyType: 'ed25519',
         publicKey: 'ssh-ed25519 AAAA$i',
-        privateKey: '-----BEGIN OPENSSH PRIVATE KEY----- $i -----END-----',
+        privateKey: 'encrypted-key-payload-$i',
         passphrase: Value('passphrase-$i'),
       ),
     );
@@ -368,7 +368,7 @@ void main() {
         final repo = KeyRepository(db, enc);
         addTearDown(db.close);
 
-        const privateKey = '-----BEGIN OPENSSH PRIVATE KEY----- DATA';
+        const privateKey = 'encrypted-key-payload';
         const passphrase = 'key-passphrase';
         await repo.insert(
           SshKeysCompanion.insert(
@@ -455,7 +455,7 @@ void main() {
           name: 'No-passphrase key',
           keyType: 'ed25519',
           publicKey: 'ssh-ed25519 AAAA',
-          privateKey: '-----BEGIN OPENSSH PRIVATE KEY-----',
+          privateKey: 'encrypted-key-payload',
         ),
       );
 
