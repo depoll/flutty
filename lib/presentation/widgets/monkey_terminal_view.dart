@@ -46,8 +46,6 @@ import 'monkey_terminal_scroll_gesture_handler.dart';
 import 'terminal_scroll_mouse_input.dart';
 import 'terminal_selection_text.dart';
 
-const _xtermGrayscalePaletteStart = 232;
-const _xtermGrayscalePaletteEnd = 255;
 const _minimumFaintTextContrast = 4.5;
 
 double _contrastRatio(Color a, Color b) {
@@ -58,42 +56,81 @@ double _contrastRatio(Color a, Color b) {
   return (brightest + 0.05) / (darkest + 0.05);
 }
 
-/// Resolves 256-color palette backgrounds against the active terminal theme.
+/// Resolves xterm palette colors while preserving xterm-256color semantics.
 ///
-/// Some TUIs, including Codex, derive subtle input surfaces from the terminal
-/// default background but emit them as xterm grayscale palette indexes. Keeping
-/// those background indexes fixed makes the surface stale after a theme switch,
-/// so background grayscale entries are treated as theme-relative surfaces.
+/// Palette entries 0-15 are theme-controlled ANSI colors; entries 16-255 are
+/// fixed xterm color-cube/grayscale colors.
 @visibleForTesting
-Color resolveMonkeyTerminalPaletteBackgroundColor(
-  TerminalTheme theme,
-  int colorIndex,
-) {
-  if (colorIndex < _xtermGrayscalePaletteStart ||
-      colorIndex > _xtermGrayscalePaletteEnd) {
-    return PaletteBuilder(theme).paletteColor(colorIndex);
+Color resolveMonkeyTerminalPaletteColor(TerminalTheme theme, int colorIndex) {
+  switch (colorIndex) {
+    case 0:
+      return theme.black;
+    case 1:
+      return theme.red;
+    case 2:
+      return theme.green;
+    case 3:
+      return theme.yellow;
+    case 4:
+      return theme.blue;
+    case 5:
+      return theme.magenta;
+    case 6:
+      return theme.cyan;
+    case 7:
+      return theme.white;
+    case 8:
+      return theme.brightBlack;
+    case 9:
+      return theme.brightRed;
+    case 10:
+      return theme.brightGreen;
+    case 11:
+      return theme.brightYellow;
+    case 12:
+      return theme.brightBlue;
+    case 13:
+      return theme.brightMagenta;
+    case 14:
+      return theme.brightCyan;
+    case 15:
+      return theme.brightWhite;
+    default:
+      return PaletteBuilder(theme).paletteColor(colorIndex);
   }
-
-  final scale =
-      (colorIndex - _xtermGrayscalePaletteStart) /
-      (_xtermGrayscalePaletteEnd - _xtermGrayscalePaletteStart);
-  final isLightBackground = theme.background.computeLuminance() > 0.5;
-  final overlay = isLightBackground ? Colors.black : Colors.white;
-  final opacity = isLightBackground
-      ? lerpDouble(0.10, 0.02, scale)!
-      : lerpDouble(0.04, 0.20, scale)!;
-  return Color.alphaBlend(
-    overlay.withAlpha((opacity * 255).round()),
-    theme.background,
-  );
 }
 
-List<Color> _buildThemeAwareBackgroundPalette(TerminalTheme theme) =>
+List<Color> _buildMonkeyTerminalPalette(TerminalTheme theme) =>
     List<Color>.generate(
       256,
-      (index) => resolveMonkeyTerminalPaletteBackgroundColor(theme, index),
+      (index) => resolveMonkeyTerminalPaletteColor(theme, index),
       growable: false,
     );
+
+bool _terminalThemesEqual(TerminalTheme a, TerminalTheme b) =>
+    a.cursor == b.cursor &&
+    a.selection == b.selection &&
+    a.foreground == b.foreground &&
+    a.background == b.background &&
+    a.black == b.black &&
+    a.red == b.red &&
+    a.green == b.green &&
+    a.yellow == b.yellow &&
+    a.blue == b.blue &&
+    a.magenta == b.magenta &&
+    a.cyan == b.cyan &&
+    a.white == b.white &&
+    a.brightBlack == b.brightBlack &&
+    a.brightRed == b.brightRed &&
+    a.brightGreen == b.brightGreen &&
+    a.brightYellow == b.brightYellow &&
+    a.brightBlue == b.brightBlue &&
+    a.brightMagenta == b.brightMagenta &&
+    a.brightCyan == b.brightCyan &&
+    a.brightWhite == b.brightWhite &&
+    a.searchHitBackground == b.searchHitBackground &&
+    a.searchHitBackgroundCurrent == b.searchHitBackgroundCurrent &&
+    a.searchHitForeground == b.searchHitForeground;
 
 /// Resolves SGR 2 faint text while preserving readable contrast.
 ///
@@ -245,6 +282,7 @@ double resolveTerminalHorizontalFillScale({
 const terminalKeyboardResizeDebounceDuration = Duration(milliseconds: 180);
 const _terminalFocusInReport = '\x1b[I';
 const _terminalFocusOutReport = '\x1b[O';
+const _terminalFocusTransitionDelay = Duration(milliseconds: 50);
 
 /// Adapted xterm terminal view with a trackpad scroll fix for alt-buffer apps.
 class MonkeyTerminalView extends StatefulWidget {
@@ -455,6 +493,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   Simulation? _touchScrollInertiaSimulation;
   double _lastTouchScrollInertiaOffset = 0;
   int _lastTerminalViewWidth = 0;
+  Timer? _pendingFocusInReportTimer;
 
   late TerminalController _controller;
 
@@ -519,6 +558,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
   @override
   void dispose() {
     widget.terminal.removeListener(_handleTerminalMetricsChanged);
+    _pendingFocusInReportTimer?.cancel();
     _stopTouchScrollInertia();
     _touchScrollInertiaTicker.dispose();
     if (widget.focusNode == null) {
@@ -545,16 +585,34 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     }
   }
 
-  /// Re-sends a focus-gained report after terminal state changes.
+  /// Re-sends focus reports after terminal state changes.
   ///
   /// TUIs such as Codex re-query terminal colors after focus-gained events. The
   /// app can use this after a theme change so those TUIs refresh cached
   /// foreground/background colors without waiting for a real focus transition.
-  void refreshFocusReport() {
-    if (!widget.terminal.reportFocusMode) {
+  ///
+  /// Set [force] to send the report even when [Terminal.reportFocusMode] is
+  /// off. Inside tmux the outer xterm rarely sees the inner app's
+  /// `CSI ? 1004 h` request because tmux intercepts and re-emits it for its
+  /// own clients, so the outer xterm's tracking flag is unreliable as a gate.
+  void refreshFocusReport({bool forceTransition = false, bool force = false}) {
+    if (!force && !widget.terminal.reportFocusMode) {
       return;
     }
-    widget.terminal.onOutput?.call(_terminalFocusInReport);
+    _pendingFocusInReportTimer?.cancel();
+    _pendingFocusInReportTimer = null;
+    if (!forceTransition) {
+      widget.terminal.onOutput?.call(_terminalFocusInReport);
+      return;
+    }
+    widget.terminal.onOutput?.call(_terminalFocusOutReport);
+    _pendingFocusInReportTimer = Timer(_terminalFocusTransitionDelay, () {
+      _pendingFocusInReportTimer = null;
+      if (!mounted) {
+        return;
+      }
+      widget.terminal.onOutput?.call(_terminalFocusInReport);
+    });
   }
 
   /// Reports the current terminal theme mode to focus-aware terminal muxers.
@@ -562,6 +620,24 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     widget.terminal.onOutput?.call(
       buildTerminalThemeModeReport(isDark: isDark),
     );
+  }
+
+  /// Reports the current terminal theme colors to tmux.
+  void refreshThemeColorReports(TerminalThemeData theme) {
+    final reports = buildTerminalThemeRefreshReports(theme);
+    if (reports.isEmpty) {
+      return;
+    }
+    widget.terminal.onOutput?.call(reports);
+  }
+
+  /// Reports the current default foreground/background colors to a TUI.
+  void refreshThemeDefaultColorReports(TerminalThemeData theme) {
+    final reports = buildTerminalThemeDefaultColorReports(theme);
+    if (reports.isEmpty) {
+      return;
+    }
+    widget.terminal.onOutput?.call(reports);
   }
 
   /// Re-sends the current viewport dimensions to the attached terminal.
@@ -1211,9 +1287,9 @@ class MonkeyTerminalPainter extends TerminalPainter {
     required super.theme,
     required super.textStyle,
     required super.textScaler,
-  }) : _backgroundPalette = _buildThemeAwareBackgroundPalette(theme);
+  }) : _palette = _buildMonkeyTerminalPalette(theme);
 
-  List<Color> _backgroundPalette;
+  List<Color> _palette;
   final _paragraphCache = ParagraphCache(10240);
 
   @override
@@ -1236,11 +1312,11 @@ class MonkeyTerminalPainter extends TerminalPainter {
 
   @override
   set theme(TerminalTheme value) {
-    if (value == theme) {
+    if (_terminalThemesEqual(value, theme)) {
       return;
     }
     super.theme = value;
-    _backgroundPalette = _buildThemeAwareBackgroundPalette(value);
+    _palette = _buildMonkeyTerminalPalette(value);
     _paragraphCache.clear();
   }
 
@@ -1301,6 +1377,23 @@ class MonkeyTerminalPainter extends TerminalPainter {
   }
 
   @override
+  Color resolveForegroundColor(int cellColor) {
+    final colorType = cellColor & CellColor.typeMask;
+    final colorValue = cellColor & CellColor.valueMask;
+
+    switch (colorType) {
+      case CellColor.normal:
+        return theme.foreground;
+      case CellColor.named:
+      case CellColor.palette:
+        return _palette[colorValue];
+      case CellColor.rgb:
+      default:
+        return Color(colorValue | 0xFF000000);
+    }
+  }
+
+  @override
   Color resolveBackgroundColor(int cellColor) {
     final colorType = cellColor & CellColor.typeMask;
     final colorValue = cellColor & CellColor.valueMask;
@@ -1310,7 +1403,7 @@ class MonkeyTerminalPainter extends TerminalPainter {
         return theme.background;
       case CellColor.named:
       case CellColor.palette:
-        return _backgroundPalette[colorValue];
+        return _palette[colorValue];
       case CellColor.rgb:
       default:
         return Color(colorValue | 0xFF000000);
@@ -1455,7 +1548,7 @@ class MonkeyRenderTerminal extends RenderBox
   }
 
   set theme(TerminalTheme value) {
-    if (value == _painter.theme) return;
+    if (_terminalThemesEqual(value, _painter.theme)) return;
     _painter.theme = value;
     markNeedsPaint();
   }

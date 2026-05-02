@@ -11,6 +11,33 @@ import 'package:xterm/xterm.dart';
 String buildTerminalThemeModeReport({required bool isDark}) =>
     isDark ? '\x1b[?997;1n' : '\x1b[?997;2n';
 
+/// Builds safe unsolicited color reports used to refresh tmux after a theme
+/// change.
+///
+/// tmux consumes OSC 10/11 and OSC 4 replies to refresh its default fg/bg and
+/// ANSI palette caches. Other color-query replies (for example OSC 12/17/19)
+/// are only sent when explicitly queried, because tmux does not consume them as
+/// cache updates and unsolicited replies can reach the foreground pane.
+String buildTerminalThemeRefreshReports(TerminalThemeData theme) {
+  final paletteArgs = <String>[
+    for (var index = 0; index < 16; index += 1) ...['$index', '?'],
+  ];
+  return [
+    buildTerminalThemeDefaultColorReports(theme),
+    buildTerminalThemeOscResponse(theme: theme, code: '4', args: paletteArgs),
+  ].whereType<String>().join();
+}
+
+/// Builds unsolicited default foreground/background reports.
+///
+/// These are safe to send to foreground TUIs that have just requested a theme
+/// refresh. Unlike OSC 4 palette reports, OSC 10/11 responses are accepted by
+/// Codex and OpenTUI without leaking palette fragments into the prompt.
+String buildTerminalThemeDefaultColorReports(TerminalThemeData theme) => [
+  buildTerminalThemeOscResponse(theme: theme, code: '10', args: const ['?']),
+  buildTerminalThemeOscResponse(theme: theme, code: '11', args: const ['?']),
+].whereType<String>().join();
+
 /// Builds an xterm-compatible response for terminal theme OSC color queries.
 ///
 /// Modern TUIs use these queries (notably `OSC 11;?`) to detect whether the
@@ -31,7 +58,7 @@ String? buildTerminalThemeOscResponse({
     case '12':
       return _buildSingleColorOscResponse(code, theme.cursor, args);
     case '17':
-      return _buildSingleColorOscResponse(code, theme.selection, args);
+      return _buildSingleColorOscResponse(code, theme.readableSelection, args);
     case '19':
       return _buildSingleColorOscResponse(code, theme.foreground, args);
     default:
@@ -60,7 +87,7 @@ String? _buildAnsiPaletteOscResponse(
     if (colorIndex == null || args[index + 1].trim() != '?') {
       continue;
     }
-    final color = _terminalPaletteColor(theme, colorIndex);
+    final color = terminalThemePaletteColor(theme, colorIndex);
     if (color == null) {
       continue;
     }
@@ -74,7 +101,11 @@ String? _buildAnsiPaletteOscResponse(
   return responses.join();
 }
 
-Color? _terminalPaletteColor(TerminalThemeData theme, int index) {
+/// Resolves an xterm palette color for [theme].
+///
+/// Indexes 0-15 are theme-controlled ANSI colors. Indexes 16-255 use the
+/// fixed xterm 256-color cube and grayscale ramp.
+Color? terminalThemePaletteColor(TerminalThemeData theme, int index) {
   switch (index) {
     case 0:
       return theme.black;
@@ -136,6 +167,17 @@ String _formatOscColorResponse(String code, Color color, {int? paletteIndex}) {
   return '\x1b]$payload\x1b\\';
 }
 
+/// Formats [color] as a tmux-compatible six-digit RGB hex color.
+String formatTerminalThemeRgbHex(Color color) {
+  final value = color.toARGB32();
+  final red = (value >> 16) & 0xFF;
+  final green = (value >> 8) & 0xFF;
+  final blue = value & 0xFF;
+  return '#${_formatTwoDigitHex(red)}'
+      '${_formatTwoDigitHex(green)}'
+      '${_formatTwoDigitHex(blue)}';
+}
+
 String _formatOscRgbColor(Color color) {
   final value = color.toARGB32();
   final red = (value >> 16) & 0xFF;
@@ -147,9 +189,25 @@ String _formatOscRgbColor(Color color) {
 }
 
 String _formatOscRgbComponent(int value) {
-  final hex = value.toRadixString(16).padLeft(2, '0');
+  final hex = _formatTwoDigitHex(value);
   return '$hex$hex';
 }
+
+String _formatTwoDigitHex(int value) => value.toRadixString(16).padLeft(2, '0');
+
+const _minimumSelectionBackgroundContrast = 1.04;
+const _minimumSelectionTextContrast = 3.5;
+const _selectionAlphaCandidates = <int>[
+  0x66,
+  0x5C,
+  0x52,
+  0x48,
+  0x40,
+  0x36,
+  0x2E,
+  0x26,
+  0x1E,
+];
 
 const _terminalThemeRequiredColorKeys = <String>[
   'foreground',
@@ -375,10 +433,17 @@ class TerminalThemeData {
   /// Foreground color for search hits.
   final Color? searchHitForeground;
 
+  /// Selection highlight adjusted for this app's single selected-text color.
+  Color get readableSelection => normalizeTerminalSelectionColor(
+    foreground: foreground,
+    background: background,
+    selection: selection,
+  );
+
   /// Converts this theme data to xterm's [TerminalTheme].
   TerminalTheme toXtermTheme() => TerminalTheme(
     cursor: cursor,
-    selection: selection,
+    selection: readableSelection,
     foreground: foreground,
     background: background,
     black: black,
@@ -509,4 +574,63 @@ class TerminalThemeData {
 
   @override
   int get hashCode => id.hashCode;
+}
+
+/// Adjusts an iTerm-style selection color for readable selected text.
+Color normalizeTerminalSelectionColor({
+  required Color foreground,
+  required Color background,
+  required Color selection,
+}) {
+  if (_isUsableSelection(
+    foreground: foreground,
+    background: background,
+    selection: selection,
+  )) {
+    return selection;
+  }
+
+  for (final alpha in _selectionAlphaCandidates) {
+    final candidate = selection.withAlpha(alpha);
+    if (_isUsableSelection(
+      foreground: foreground,
+      background: background,
+      selection: candidate,
+    )) {
+      return candidate;
+    }
+  }
+
+  for (final alpha in _selectionAlphaCandidates) {
+    final candidate = foreground.withAlpha(alpha);
+    if (_isUsableSelection(
+      foreground: foreground,
+      background: background,
+      selection: candidate,
+    )) {
+      return candidate;
+    }
+  }
+
+  return selection.withAlpha(_selectionAlphaCandidates.last);
+}
+
+bool _isUsableSelection({
+  required Color foreground,
+  required Color background,
+  required Color selection,
+}) {
+  final compositedSelection = Color.alphaBlend(selection, background);
+  return _contrastRatio(foreground, compositedSelection) >=
+          _minimumSelectionTextContrast &&
+      _contrastRatio(compositedSelection, background) >=
+          _minimumSelectionBackgroundContrast;
+}
+
+double _contrastRatio(Color a, Color b) {
+  final luminanceA = a.computeLuminance();
+  final luminanceB = b.computeLuminance();
+  final brightest = luminanceA > luminanceB ? luminanceA : luminanceB;
+  final darkest = luminanceA > luminanceB ? luminanceB : luminanceA;
+  return (brightest + 0.05) / (darkest + 0.05);
 }

@@ -86,4 +86,62 @@ void main() {
       'normal',
     ]);
   });
+
+  test('keeps a spare slot while normal work is active', () async {
+    final startedJobs = <String>[];
+    final firstNormal = Completer<String>();
+    final low = Completer<String>();
+    final secondNormal = Completer<String>();
+
+    final firstNormalFuture = runQueuedSshExec(3, () {
+      startedJobs.add('normal-1');
+      return firstNormal.future;
+    });
+
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+
+    final lowFuture = runQueuedSshExec(3, () {
+      startedJobs.add('low');
+      return low.future;
+    }, priority: SshExecPriority.low);
+
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+    expect(pendingQueuedSshExecCountForTesting(3), 1);
+
+    final secondNormalFuture = runQueuedSshExec(3, () {
+      startedJobs.add('normal-2');
+      return secondNormal.future;
+    });
+
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1', 'normal-2']);
+    expect(activeQueuedSshExecCountForTesting(3), 2);
+    expect(pendingQueuedSshExecCountForTesting(3), 1);
+
+    secondNormal.complete('normal-2');
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1', 'normal-2']);
+    expect(activeQueuedSshExecCountForTesting(3), 1);
+    expect(pendingQueuedSshExecCountForTesting(3), 1);
+
+    firstNormal.complete('normal-1');
+    await pumpEventQueue();
+
+    expect(startedJobs, ['normal-1', 'normal-2', 'low']);
+
+    low.complete('low');
+
+    expect(
+      await Future.wait([firstNormalFuture, lowFuture, secondNormalFuture]),
+      ['normal-1', 'low', 'normal-2'],
+    );
+  });
 }

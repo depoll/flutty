@@ -9,6 +9,7 @@ import '../models/terminal_themes.dart';
 import 'settings_service.dart';
 
 /// Theme IDs from the foreground terminal connection that should drive app UI.
+@immutable
 class TerminalAppThemeOverride {
   /// Creates a new [TerminalAppThemeOverride].
   const TerminalAppThemeOverride({
@@ -25,6 +26,18 @@ class TerminalAppThemeOverride {
 
   /// Dark terminal theme ID for the foreground terminal connection.
   final String? darkThemeId;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is TerminalAppThemeOverride &&
+          identical(owner, other.owner) &&
+          lightThemeId == other.lightThemeId &&
+          darkThemeId == other.darkThemeId;
+
+  @override
+  int get hashCode =>
+      Object.hash(identityHashCode(owner), lightThemeId, darkThemeId);
 }
 
 /// Notifier for the active terminal connection app-theme override.
@@ -38,7 +51,12 @@ class TerminalAppThemeOverrideNotifier
   TerminalAppThemeOverride? get activeOverride => state;
 
   /// Updates the active terminal app-theme override.
-  set activeOverride(TerminalAppThemeOverride override) => state = override;
+  set activeOverride(TerminalAppThemeOverride override) {
+    if (state == override) {
+      return;
+    }
+    state = override;
+  }
 
   /// Clears the active terminal app-theme override if [owner] created it.
   void clearForOwner(Object owner) {
@@ -100,7 +118,7 @@ class TerminalThemeService {
   /// Gets a theme by ID (checks built-in themes first, then custom).
   Future<TerminalThemeData?> getThemeById(String id) async {
     final builtIn = TerminalThemes.getById(id);
-    if (builtIn != null) {
+    if (builtIn != null && TerminalThemes.resolveThemeId(id) == id) {
       return builtIn;
     }
 
@@ -110,7 +128,7 @@ class TerminalThemeService {
         return theme;
       }
     }
-    return null;
+    return builtIn;
   }
 
   /// Gets all available themes (built-in + custom).

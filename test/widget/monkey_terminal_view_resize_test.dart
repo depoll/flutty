@@ -310,6 +310,15 @@ void main() {
 
     expect(output, ['\x1b[I']);
 
+    output.clear();
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport(forceTransition: true);
+
+    expect(output, ['\x1b[O']);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(output, ['\x1b[O', '\x1b[I']);
+
     terminal.write('\x1b[?1004l');
     output.clear();
     tester
@@ -317,6 +326,14 @@ void main() {
         .refreshFocusReport();
 
     expect(output, isEmpty);
+
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshFocusReport(forceTransition: true, force: true);
+
+    expect(output, ['\x1b[O']);
+    await tester.pump(const Duration(milliseconds: 50));
+    expect(output, ['\x1b[O', '\x1b[I']);
   });
 
   testWidgets('refreshThemeModeReport sends xterm theme mode report', (
@@ -340,19 +357,104 @@ void main() {
     expect(output, ['\x1b[?997;1n', '\x1b[?997;2n']);
   });
 
-  test('grayscale palette backgrounds follow the active theme surface', () {
-    final darkTheme = monkey_themes.TerminalThemes.oceanDark.toXtermTheme();
-    final lightTheme = monkey_themes.TerminalThemes.cleanWhite.toXtermTheme();
+  testWidgets('refreshThemeColorReports sends safe tmux cache refresh', (
+    tester,
+  ) async {
+    final output = <String>[];
+    final terminal = Terminal()..onOutput = output.add;
 
-    final staleLightInputBackground =
-        resolveMonkeyTerminalPaletteBackgroundColor(darkTheme, 255);
-    final staleDarkInputBackground =
-        resolveMonkeyTerminalPaletteBackgroundColor(lightTheme, 235);
+    await tester.pumpWidget(
+      buildTerminal(terminal: terminal, size: const Size(320, 240)),
+    );
 
-    expect(staleLightInputBackground, isNot(const Color(0xFFEEEEEE)));
-    expect(staleDarkInputBackground, isNot(const Color(0xFF262626)));
-    expect(staleLightInputBackground.computeLuminance(), lessThan(0.45));
-    expect(staleDarkInputBackground.computeLuminance(), greaterThan(0.55));
+    tester
+        .state<MonkeyTerminalViewState>(find.byType(MonkeyTerminalView))
+        .refreshThemeColorReports(
+          monkey_themes.TerminalThemes.githubLightDefault,
+        );
+
+    expect(output, [isNotEmpty]);
+    expect(output.single, contains('\x1b]10;rgb:1f1f/2323/2828\x1b\\'));
+    expect(output.single, contains('\x1b]11;rgb:ffff/ffff/ffff\x1b\\'));
+    expect(output.single, contains('\x1b]4;0;rgb:2424/2929/2f2f\x1b\\'));
+    expect(output.single, contains('\x1b]4;8;rgb:5757/6060/6a6a\x1b\\'));
+    expect(output.single, contains('\x1b]4;15;rgb:8c8c/9595/9f9f\x1b\\'));
+    expect(output.single, isNot(contains('\x1b]12;')));
+    expect(output.single, isNot(contains('\x1b]17;')));
+    expect(output.single, isNot(contains('\x1b]19;')));
+    expect(output.single, isNot(contains('\x1b]4;16;')));
+  });
+
+  test('explicit xterm palette grayscale colors stay standard', () {
+    final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .toXtermTheme();
+    final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
+        .toXtermTheme();
+    final darkPainter = MonkeyTerminalPainter(
+      theme: darkTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+    final lightPainter = MonkeyTerminalPainter(
+      theme: lightTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+
+    for (final painter in [darkPainter, lightPainter]) {
+      expect(
+        painter.resolveForegroundColor(CellColor.palette | 244),
+        const Color(0xFF808080),
+      );
+      expect(
+        painter.resolveBackgroundColor(CellColor.palette | 235),
+        const Color(0xFF262626),
+      );
+    }
+  });
+
+  test('ANSI bright colors follow the active theme palette', () {
+    final darkTheme = monkey_themes.TerminalThemes.defaultDarkTheme
+        .toXtermTheme();
+    final lightTheme = monkey_themes.TerminalThemes.defaultLightTheme
+        .toXtermTheme();
+    final darkPainter = MonkeyTerminalPainter(
+      theme: darkTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+    final lightPainter = MonkeyTerminalPainter(
+      theme: lightTheme,
+      textStyle: const TerminalStyle(),
+      textScaler: TextScaler.noScaling,
+    );
+
+    expect(
+      darkPainter.resolveForegroundColor(CellColor.named | 8),
+      darkTheme.brightBlack,
+    );
+    expect(
+      lightPainter.resolveForegroundColor(CellColor.named | 8),
+      lightTheme.brightBlack,
+    );
+    expect(
+      darkPainter.resolveForegroundColor(CellColor.named | 15),
+      darkTheme.brightWhite,
+    );
+    expect(
+      lightPainter.resolveForegroundColor(CellColor.named | 15),
+      lightTheme.brightWhite,
+    );
+    expect(
+      darkPainter.resolveBackgroundColor(CellColor.palette | 15),
+      darkTheme.brightWhite,
+    );
+    expect(
+      lightPainter.resolveBackgroundColor(CellColor.palette | 15),
+      lightTheme.brightWhite,
+    );
+    expect(darkTheme.brightBlack, isNot(lightTheme.brightBlack));
+    expect(darkTheme.brightWhite, isNot(darkTheme.white));
   });
 
   test('faint terminal text preserves each theme base readability', () {
@@ -375,21 +477,21 @@ void main() {
   });
 
   test('faint terminal text remains dim when contrast allows it', () {
-    const slateTheme = monkey_themes.TerminalThemes.slate;
+    const theme = monkey_themes.TerminalThemes.atomOneDark;
     final defaultFaint = Color.alphaBlend(
-      slateTheme.foreground.withAlpha(128),
-      slateTheme.background,
+      theme.foreground.withAlpha(128),
+      theme.background,
     );
     final readableFaint = resolveMonkeyTerminalFaintForegroundColor(
-      foreground: slateTheme.foreground,
-      background: slateTheme.background,
+      foreground: theme.foreground,
+      background: theme.background,
     );
 
-    expect(_contrastRatio(defaultFaint, slateTheme.background), lessThan(4.5));
+    expect(_contrastRatio(defaultFaint, theme.background), lessThan(4.5));
     expect(
-      _contrastRatio(readableFaint, slateTheme.background),
+      _contrastRatio(readableFaint, theme.background),
       greaterThanOrEqualTo(4.5),
     );
-    expect(readableFaint, isNot(slateTheme.foreground));
+    expect(readableFaint, isNot(theme.foreground));
   });
 }

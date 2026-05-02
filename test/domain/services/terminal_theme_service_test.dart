@@ -4,6 +4,7 @@ import 'dart:convert';
 
 import 'package:drift/native.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'package:monkeyssh/data/database/database.dart';
@@ -30,7 +31,7 @@ void main() {
     group('getThemeForHost', () {
       test('returns built-in dark default when no host', () async {
         final theme = await themeService.getThemeForHost(null, Brightness.dark);
-        expect(theme.id, TerminalThemes.midnightPurple.id);
+        expect(theme.id, TerminalThemes.defaultDarkTheme.id);
       });
 
       test('returns built-in light default when no host', () async {
@@ -38,7 +39,7 @@ void main() {
           null,
           Brightness.light,
         );
-        expect(theme.id, TerminalThemes.cleanWhite.id);
+        expect(theme.id, TerminalThemes.defaultLightTheme.id);
       });
 
       test('ignores host override when disabled', () async {
@@ -51,8 +52,8 @@ void main() {
           isFavorite: false,
           createdAt: DateTime(2024),
           updatedAt: DateTime(2024),
-          terminalThemeLightId: TerminalThemes.paper.id,
-          terminalThemeDarkId: TerminalThemes.oceanDark.id,
+          terminalThemeLightId: TerminalThemes.githubLightDefault.id,
+          terminalThemeDarkId: TerminalThemes.nord.id,
           autoConnectRequiresConfirmation: false,
           sortOrder: 0,
         );
@@ -63,15 +64,42 @@ void main() {
           allowHostOverride: false,
         );
 
-        expect(theme.id, TerminalThemes.midnightPurple.id);
+        expect(theme.id, TerminalThemes.defaultDarkTheme.id);
+      });
+
+      test('resolves legacy host override IDs', () async {
+        final host = Host(
+          id: 1,
+          label: 'Prod',
+          hostname: 'prod.example.com',
+          port: 22,
+          username: 'root',
+          isFavorite: false,
+          createdAt: DateTime(2024),
+          updatedAt: DateTime(2024),
+          terminalThemeLightId: 'clean-white',
+          terminalThemeDarkId: 'ocean-dark',
+          autoConnectRequiresConfirmation: false,
+          sortOrder: 0,
+        );
+
+        final theme = await themeService.getThemeForHost(host, Brightness.dark);
+
+        expect(theme.id, TerminalThemes.solarizedDark.id);
       });
     });
 
     group('getThemeById', () {
       test('returns built-in theme by id', () async {
+        final theme = await themeService.getThemeById('iterm2-dracula');
+        expect(theme, isNotNull);
+        expect(theme!.name, 'Dracula');
+      });
+
+      test('returns mapped built-in theme by legacy id', () async {
         final theme = await themeService.getThemeById('midnight-purple');
         expect(theme, isNotNull);
-        expect(theme!.name, 'Midnight Purple');
+        expect(theme!.id, TerminalThemes.defaultDarkThemeId);
       });
 
       test('returns null for unknown id', () async {
@@ -128,7 +156,7 @@ void main() {
       );
 
       test('skips malformed custom theme entries', () async {
-        final theme = TerminalThemes.midnightPurple.copyWith(
+        final theme = TerminalThemes.defaultDarkTheme.copyWith(
           id: 'custom-with-malformed-neighbors',
           name: 'Custom With Malformed Neighbors',
           isCustom: true,
@@ -151,7 +179,7 @@ void main() {
 
     group('saveCustomTheme', () {
       test('saves and retrieves a custom theme', () async {
-        final theme = TerminalThemes.midnightPurple.copyWith(
+        final theme = TerminalThemes.defaultDarkTheme.copyWith(
           id: 'custom-test',
           name: 'Custom Test',
           isCustom: true,
@@ -166,7 +194,7 @@ void main() {
       });
 
       test('updates existing custom theme', () async {
-        final theme = TerminalThemes.midnightPurple.copyWith(
+        final theme = TerminalThemes.defaultDarkTheme.copyWith(
           id: 'custom-update',
           name: 'Original',
           isCustom: true,
@@ -184,7 +212,7 @@ void main() {
 
     group('deleteCustomTheme', () {
       test('deletes a custom theme', () async {
-        final theme = TerminalThemes.midnightPurple.copyWith(
+        final theme = TerminalThemes.defaultDarkTheme.copyWith(
           id: 'custom-delete',
           name: 'To Delete',
           isCustom: true,
@@ -197,6 +225,41 @@ void main() {
         final customs = await themeService.getCustomThemes();
         expect(customs, isEmpty);
       });
+    });
+  });
+
+  group('TerminalAppThemeOverrideNotifier', () {
+    test('does not notify for repeated equivalent overrides', () {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      final owner = Object();
+      final notifications = <TerminalAppThemeOverride?>[];
+      final subscription = container.listen<TerminalAppThemeOverride?>(
+        terminalAppThemeOverrideProvider,
+        (_, next) => notifications.add(next),
+      );
+      addTearDown(subscription.close);
+
+      final notifier = container.read(
+        terminalAppThemeOverrideProvider.notifier,
+      );
+      void setOverride(Object overrideOwner) {
+        notifier.activeOverride = TerminalAppThemeOverride(
+          owner: overrideOwner,
+          lightThemeId: TerminalThemes.githubLightDefault.id,
+          darkThemeId: TerminalThemes.dracula.id,
+        );
+      }
+
+      setOverride(owner);
+      setOverride(owner);
+
+      expect(notifications, hasLength(1));
+
+      setOverride(Object());
+
+      expect(notifications, hasLength(2));
     });
   });
 }

@@ -30,6 +30,77 @@ typedef TerminalWindowMetrics = ({
   int pixelHeight,
 });
 
+/// Terminal mode state used to answer DECRQM mode-status queries.
+typedef TerminalControlModeState = ({
+  bool reportFocusMode,
+  bool bracketedPasteMode,
+  bool colorSchemeUpdatesMode,
+  bool isUsingAltBuffer,
+  bool mouseTrackingMode,
+  bool mouseDragTrackingMode,
+  bool mouseMoveTrackingMode,
+  bool sgrMouseReportMode,
+});
+
+/// Unwraps tmux DCS passthrough sequences from shell output.
+///
+/// Apps running inside tmux wrap terminal queries as
+/// `DCS tmux; <escaped sequence> ST`. The inner ESC bytes are doubled by tmux;
+/// this returns a stream that xterm can parse normally while preserving split
+/// passthrough sequences across chunks.
+({String output, String pendingInput}) unwrapTerminalTmuxPassthroughSequences({
+  required String input,
+  required String pendingInput,
+}) {
+  final combinedInput = pendingInput + input;
+  final output = StringBuffer();
+  var cursor = 0;
+
+  while (cursor < combinedInput.length) {
+    final startIndex = combinedInput.indexOf(
+      _terminalTmuxPassthroughStart,
+      cursor,
+    );
+    if (startIndex == -1) {
+      output.write(combinedInput.substring(cursor));
+      final outputValue = output.toString();
+      final pendingSuffix = _terminalTmuxPassthroughPendingSuffix(outputValue);
+      if (pendingSuffix.isEmpty) {
+        return (output: outputValue, pendingInput: '');
+      }
+      return (
+        output: outputValue.substring(
+          0,
+          outputValue.length - pendingSuffix.length,
+        ),
+        pendingInput: pendingSuffix,
+      );
+    }
+
+    output.write(combinedInput.substring(cursor, startIndex));
+    final payloadStart = startIndex + _terminalTmuxPassthroughStart.length;
+    final endIndex = combinedInput.indexOf(
+      _terminalStringTerminator,
+      payloadStart,
+    );
+    if (endIndex == -1) {
+      return (
+        output: output.toString(),
+        pendingInput: combinedInput.substring(startIndex),
+      );
+    }
+
+    output.write(
+      combinedInput
+          .substring(payloadStart, endIndex)
+          .replaceAll(_escapedTerminalEscape, _terminalEscape),
+    );
+    cursor = endIndex + _terminalStringTerminator.length;
+  }
+
+  return (output: output.toString(), pendingInput: '');
+}
+
 /// Builds responses for terminal window/cell size and theme reports in shell
 /// output.
 ///
@@ -40,6 +111,7 @@ buildTerminalWindowControlQueryResponses({
   required String input,
   required String pendingInput,
   required TerminalWindowMetrics? metrics,
+  TerminalControlModeState? modeState,
   TerminalThemeData? theme,
 }) {
   final combinedInput = pendingInput + input;
@@ -54,6 +126,22 @@ buildTerminalWindowControlQueryResponses({
     }
   }
 
+  for (final match in _terminalModeReportQueryPattern.allMatches(
+    combinedInput,
+  )) {
+    final params = match.group(1)?.split(';') ?? const <String>[];
+    for (final param in params) {
+      final mode = int.tryParse(param);
+      if (mode == null) {
+        continue;
+      }
+      final response = _buildTerminalModeReportResponse(mode, modeState);
+      if (response != null) {
+        responses.write(response);
+      }
+    }
+  }
+
   if (theme != null && _terminalThemeModeQueryPattern.hasMatch(combinedInput)) {
     responses.write(buildTerminalThemeModeReport(isDark: theme.isDark));
   }
@@ -65,9 +153,57 @@ buildTerminalWindowControlQueryResponses({
   );
 }
 
+/// Extracts terminal color-scheme update mode changes from shell output.
+///
+/// Some TUIs enable DEC private mode 2031 to request a report when the
+/// terminal switches between light and dark color schemes. xterm.dart does not
+/// currently model that mode, so MonkeySSH tracks it while scanning the same
+/// shell output used for other terminal control queries.
+({bool? colorSchemeUpdatesMode, String pendingInput})
+extractTerminalControlModeUpdates({
+  required String input,
+  required String pendingInput,
+}) {
+  final combinedInput = pendingInput + input;
+  bool? colorSchemeUpdatesMode;
+
+  for (final match in _terminalPrivateModeSetResetPattern.allMatches(
+    combinedInput,
+  )) {
+    final params = match.group(1)?.split(';') ?? const <String>[];
+    if (!params.contains('2031')) {
+      continue;
+    }
+    colorSchemeUpdatesMode = match.group(2) == 'h';
+  }
+
+  return (
+    colorSchemeUpdatesMode: colorSchemeUpdatesMode,
+    pendingInput: _terminalControlQueryPendingSuffix(combinedInput),
+  );
+}
+
+/// Normalizes terminal-generated output before it is sent to the remote shell.
+///
+/// xterm.dart currently emits cursor-position reports using its internal
+/// zero-based cursor coordinates. The terminal DSR wire protocol is one-based,
+/// and TUIs such as Codex can stall or mis-detect terminal state after receiving
+/// `CSI 0;0 R`.
+String normalizeTerminalOutputForRemoteShell(String data) =>
+    data.replaceAllMapped(_terminalCursorPositionReportPattern, (match) {
+      final row = int.parse(match.group(1)!);
+      final column = int.parse(match.group(2)!);
+      return '\x1b[${row + 1};${column + 1}R';
+    });
+
 final _terminalWindowQueryPattern = RegExp(r'\x1b\[([0-9;?]*)t');
+final _terminalModeReportQueryPattern = RegExp(r'\x1b\[\?([0-9;]+)\$p');
 final _terminalThemeModeQueryPattern = RegExp(r'\x1b\[\?996n');
-final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?]*)$');
+final _terminalControlQueryPrefixPattern = RegExp(r'^\x1b(?:$|\[[0-9;?\$]*)$');
+final _terminalPrivateModeSetResetPattern = RegExp(r'\x1b\[\?([0-9;]+)([hl])');
+final _terminalCursorPositionReportPattern = RegExp(
+  r'\x1b\[([0-9]+);([0-9]+)R',
+);
 
 String? _buildTerminalWindowQueryResponse(
   String primaryParam,
@@ -92,6 +228,86 @@ String? _buildTerminalWindowQueryResponse(
     default:
       return null;
   }
+}
+
+String? _buildTerminalModeReportResponse(
+  int mode,
+  TerminalControlModeState? modeState,
+) {
+  if (modeState == null) {
+    return switch (mode) {
+      1016 ||
+      2026 ||
+      2027 ||
+      2031 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+      _ => null,
+    };
+  }
+
+  return switch (mode) {
+    1000 => _formatTerminalModeReport(
+      mode,
+      modeState.mouseTrackingMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1002 => _formatTerminalModeReport(
+      mode,
+      modeState.mouseDragTrackingMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1003 => _formatTerminalModeReport(
+      mode,
+      modeState.mouseMoveTrackingMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1004 => _formatTerminalModeReport(
+      mode,
+      modeState.reportFocusMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1006 => _formatTerminalModeReport(
+      mode,
+      modeState.sgrMouseReportMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1049 => _formatTerminalModeReport(
+      mode,
+      modeState.isUsingAltBuffer ? _terminalModeSet : _terminalModeReset,
+    ),
+    2004 => _formatTerminalModeReport(
+      mode,
+      modeState.bracketedPasteMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    2031 => _formatTerminalModeReport(
+      mode,
+      modeState.colorSchemeUpdatesMode ? _terminalModeSet : _terminalModeReset,
+    ),
+    1016 ||
+    2026 ||
+    2027 => _formatTerminalModeReport(mode, _terminalModeNotRecognized),
+    _ => null,
+  };
+}
+
+const _terminalModeNotRecognized = 0;
+const _terminalModeSet = 1;
+const _terminalModeReset = 2;
+
+const _terminalEscape = '\x1b';
+const _escapedTerminalEscape = '$_terminalEscape$_terminalEscape';
+const _terminalStringTerminator = '$_terminalEscape\\';
+const _terminalTmuxPassthroughStart = '${_terminalEscape}Ptmux;';
+
+String _formatTerminalModeReport(int mode, int status) =>
+    '\x1b[?$mode;$status\$y';
+
+String _terminalTmuxPassthroughPendingSuffix(String input) {
+  final maxSuffixLength =
+      input.length < _terminalTmuxPassthroughStart.length - 1
+      ? input.length
+      : _terminalTmuxPassthroughStart.length - 1;
+  for (var length = maxSuffixLength; length > 0; length -= 1) {
+    final suffix = input.substring(input.length - length);
+    if (_terminalTmuxPassthroughStart.startsWith(suffix)) {
+      return suffix;
+    }
+  }
+  return '';
 }
 
 bool _hasValidTerminalWindowMetrics(TerminalWindowMetrics? metrics) =>
@@ -1680,12 +1896,18 @@ class SshSession {
   int _shellStdinCharCount = 0;
   TerminalWindowMetrics? _terminalWindowMetrics;
   String _terminalWindowQueryPendingInput = '';
+  String _terminalTmuxPassthroughPendingInput = '';
+  String _terminalControlModeUpdatePendingInput = '';
+  bool _terminalColorSchemeUpdatesMode = false;
 
   /// Persistent terminal that survives screen rebuilds.
   Terminal? _terminal;
 
   /// The active terminal theme used to answer remote OSC color queries.
   TerminalThemeData? terminalTheme;
+
+  /// Whether the foreground app requested xterm color-scheme update reports.
+  bool get terminalColorSchemeUpdatesMode => _terminalColorSchemeUpdatesMode;
 
   /// Tracks OSC 8 hyperlinks rendered in the persistent terminal.
   final terminalHyperlinkTracker = TerminalHyperlinkTracker();
@@ -1756,12 +1978,21 @@ class SshSession {
   }
 
   /// Persist a per-session terminal theme override.
-  void setTerminalThemeId(String themeId, {required bool isDark}) {
+  ///
+  /// Returns `true` when the stored theme ID changed.
+  bool setTerminalThemeId(String themeId, {required bool isDark}) {
     if (isDark) {
+      if (terminalThemeDarkId == themeId) {
+        return false;
+      }
       terminalThemeDarkId = themeId;
-      return;
+      return true;
+    }
+    if (terminalThemeLightId == themeId) {
+      return false;
     }
     terminalThemeLightId = themeId;
+    return true;
   }
 
   /// Ensure a [Terminal] exists and is wired to the shell streams.
@@ -1898,6 +2129,9 @@ class SshSession {
     _lastExitCode = null;
     _terminalWindowMetrics = null;
     _terminalWindowQueryPendingInput = '';
+    _terminalTmuxPassthroughPendingInput = '';
+    _terminalControlModeUpdatePendingInput = '';
+    _terminalColorSchemeUpdatesMode = false;
     _terminal = null;
     _terminalPreview = null;
     _windowTitle = null;
@@ -1925,8 +2159,11 @@ class SshSession {
         .listen(
           (data) {
             _recordShellIo(stdoutChars: data.length);
-            _respondToTerminalWindowControlQueries(data);
-            terminal.write(data);
+            final terminalData = _unwrapTerminalTmuxPassthrough(data);
+            if (terminalData.isNotEmpty) {
+              terminal.write(terminalData);
+              _respondToTerminalWindowControlQueries(terminalData, terminal);
+            }
             _scheduleTerminalPreviewRefresh();
             final stdoutController = _shellStdoutController;
             if (identical(_shell, shell) &&
@@ -2018,8 +2255,9 @@ class SshSession {
 
     // Wire terminal keyboard output → shell stdin (persistent).
     terminal.onOutput = (data) {
-      _recordShellIo(stdinChars: data.length);
-      shell.write(utf8.encode(data));
+      final output = normalizeTerminalOutputForRemoteShell(data);
+      _recordShellIo(stdinChars: output.length);
+      shell.write(utf8.encode(output));
     };
     _refreshTerminalPreview();
   }
@@ -2081,11 +2319,23 @@ class SshSession {
     _shellStdinCharCount = 0;
   }
 
-  void _respondToTerminalWindowControlQueries(String data) {
+  void _respondToTerminalWindowControlQueries(String data, Terminal terminal) {
+    final modeUpdateResult = extractTerminalControlModeUpdates(
+      input: data,
+      pendingInput: _terminalControlModeUpdatePendingInput,
+    );
+    _terminalControlModeUpdatePendingInput = modeUpdateResult.pendingInput;
+    final nextColorSchemeUpdatesMode = modeUpdateResult.colorSchemeUpdatesMode;
+    if (nextColorSchemeUpdatesMode != null &&
+        nextColorSchemeUpdatesMode != _terminalColorSchemeUpdatesMode) {
+      _terminalColorSchemeUpdatesMode = nextColorSchemeUpdatesMode;
+    }
+
     final result = buildTerminalWindowControlQueryResponses(
       input: data,
       pendingInput: _terminalWindowQueryPendingInput,
       metrics: _terminalWindowMetrics,
+      modeState: _terminalModeState(terminal),
       theme: terminalTheme,
     );
     _terminalWindowQueryPendingInput = result.pendingInput;
@@ -2097,6 +2347,26 @@ class SshSession {
 
     _shell?.write(utf8.encode(response));
   }
+
+  String _unwrapTerminalTmuxPassthrough(String data) {
+    final result = unwrapTerminalTmuxPassthroughSequences(
+      input: data,
+      pendingInput: _terminalTmuxPassthroughPendingInput,
+    );
+    _terminalTmuxPassthroughPendingInput = result.pendingInput;
+    return result.output;
+  }
+
+  TerminalControlModeState _terminalModeState(Terminal terminal) => (
+    reportFocusMode: terminal.reportFocusMode,
+    bracketedPasteMode: terminal.bracketedPasteMode,
+    colorSchemeUpdatesMode: _terminalColorSchemeUpdatesMode,
+    isUsingAltBuffer: terminal.isUsingAltBuffer,
+    mouseTrackingMode: terminal.mouseMode == MouseMode.upDownScroll,
+    mouseDragTrackingMode: terminal.mouseMode == MouseMode.upDownScrollDrag,
+    mouseMoveTrackingMode: terminal.mouseMode == MouseMode.upDownScrollMove,
+    sgrMouseReportMode: terminal.mouseReportMode == MouseReportMode.sgr,
+  );
 
   void _scheduleTerminalPreviewRefresh() {
     if (_previewRefreshTimer?.isActive ?? false) {
@@ -2163,6 +2433,18 @@ class SshSession {
   }
 
   void _handlePrivateOsc(String code, List<String> args) {
+    if (code == '10' || code == '11' || code == '12' || code == '4') {
+      DiagnosticsLogService.instance.debug(
+        'terminal.osc',
+        'theme_query',
+        fields: {
+          'connectionId': connectionId,
+          'code': code,
+          'themeId': terminalTheme?.id,
+          'hasShell': _shell != null,
+        },
+      );
+    }
     final themeOscResponse = terminalTheme == null
         ? null
         : buildTerminalThemeOscResponse(
@@ -2171,7 +2453,30 @@ class SshSession {
             args: args,
           );
     if (themeOscResponse != null) {
-      _shell?.write(utf8.encode(themeOscResponse));
+      final shell = _shell;
+      if (shell == null) {
+        DiagnosticsLogService.instance.warning(
+          'terminal.osc',
+          'theme_query_dropped_no_shell',
+          fields: {
+            'connectionId': connectionId,
+            'code': code,
+            'themeId': terminalTheme?.id,
+          },
+        );
+      } else {
+        shell.write(utf8.encode(themeOscResponse));
+        DiagnosticsLogService.instance.debug(
+          'terminal.osc',
+          'theme_query_answered',
+          fields: {
+            'connectionId': connectionId,
+            'code': code,
+            'themeId': terminalTheme!.id,
+            'responseBytes': themeOscResponse.length,
+          },
+        );
+      }
       return;
     }
 
@@ -2723,6 +3028,8 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     _sshService = ref.watch(sshServiceProvider);
     ref.onDispose(() {
       _previewStateRefreshTimer?.cancel();
+      _previewStateRefreshTimer = null;
+      _previewStateRefreshQueued = false;
       for (final subscription in _disconnectSubscriptions.values) {
         unawaited(subscription.cancel());
       }
@@ -2992,12 +3299,19 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
   }
 
   void _schedulePreviewStateRefresh() {
+    if (!ref.mounted) {
+      return;
+    }
     if (_previewStateRefreshTimer?.isActive ?? false) {
       _previewStateRefreshQueued = true;
       return;
     }
     _previewStateRefreshTimer = Timer(_previewStateRefreshInterval, () {
       _previewStateRefreshTimer = null;
+      if (!ref.mounted) {
+        _previewStateRefreshQueued = false;
+        return;
+      }
       final shouldReschedule = _previewStateRefreshQueued;
       _previewStateRefreshQueued = false;
       state = {...state};
@@ -3090,7 +3404,10 @@ class ActiveSessionsNotifier extends Notifier<Map<int, SshConnectionState>> {
     if (session == null) {
       return;
     }
-    session.setTerminalThemeId(themeId, isDark: isDark);
+    final changed = session.setTerminalThemeId(themeId, isDark: isDark);
+    if (!changed) {
+      return;
+    }
     state = {...state};
   }
 

@@ -7,6 +7,7 @@ import 'package:dartssh2/dartssh2.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mocktail/mocktail.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
+import 'package:monkeyssh/domain/models/terminal_themes.dart';
 import 'package:monkeyssh/domain/models/tmux_state.dart';
 import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
@@ -93,6 +94,157 @@ void main() {
       },
     );
 
+    test('refresh command redraws non-control clients for a session', () {
+      expect(
+        buildTmuxRefreshForegroundClientsCommand("dev's session"),
+        r'SEP=$(printf "\037"); '
+        'tmux -u list-clients -t '
+        "'dev'\"'\"'s session' -F "
+        r'"#{client_control_mode}${SEP}#{client_name}" '
+        '2>/dev/null | '
+        r'while IFS="$SEP" read -r control client; do '
+        r'[ "$control" = 0 ] || continue; '
+        r'[ -n "$client" ] || continue; '
+        r'tmux -u refresh-client -t "$client" 2>/dev/null || true; '
+        'done',
+      );
+    });
+
+    test('refresh command reuses tmux client flags', () {
+      expect(
+        buildTmuxRefreshForegroundClientsCommand(
+          'main',
+          extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
+        ),
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client"',
+        ),
+      );
+    });
+
+    test('theme refresh command updates pane palette before redraw', () {
+      final command = buildTmuxRefreshTerminalThemeCommand(
+        "dev's session",
+        TerminalThemes.dracula,
+      );
+
+      expect(
+        command,
+        contains("tmux -u list-panes -s -t 'dev'\"'\"'s session'"),
+      );
+      expect(command, contains(r'set-option -p -t "$pane"'));
+      expect(
+        RegExp(r'tmux -u set-option -p -t "\$pane"').allMatches(command),
+        hasLength(1),
+      );
+      expect(command, contains(r'\; set-option -p -t "$pane"'));
+      expect(command, contains("'pane-colours[5]' '#ff79c6'"));
+      expect(command, contains("'pane-colours[6]' '#8be9fd'"));
+      expect(
+        command,
+        contains(
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}${SEP}#{pane_title}',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title',
+        ),
+      );
+      expect(command, contains(r'[ "$active" = 1 ]'));
+      expect(command, isNot(contains('window_active')));
+      expect(command, contains(r'[ "$alternate" = 1 ]'));
+      expect(command, contains(r'[ "$foreground_tui" = 1 ]'));
+      expect(command, contains(r'case "${pane_command##*/}" in'));
+      expect(command, contains("''|sh|bash|zsh|fish"));
+      expect(command, contains('flutty_theme_refresh_pane'));
+      expect(command, contains(') & ;;'));
+      expect(command, contains('done; wait; };'));
+      expect(command, contains('codex|codex-*)'));
+      expect(command, contains('opencode|opencode-*)'));
+      expect(command, contains(r'case "$pane_title" in'));
+      expect(command, contains('*OpenCode*|*opencode*)'));
+      expect(command, contains(r'send-keys -t "$pane" -H'));
+      expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
+      expect(command, contains('1b 5b 4f'));
+      expect(command, contains('1b 5b 49'));
+      final codexBranchStart = command.indexOf('codex|codex-*)');
+      final opencodeBranchStart = command.indexOf('opencode|opencode-*)');
+      expect(codexBranchStart, isNonNegative);
+      expect(opencodeBranchStart, greaterThan(codexBranchStart));
+      expect(
+        command.substring(codexBranchStart, opencodeBranchStart),
+        isNot(contains('1b 5b 4f')),
+      );
+      expect(
+        command.indexOf('1b 5b 4f', opencodeBranchStart),
+        greaterThan(opencodeBranchStart),
+      );
+      expect(command, contains('sleep 0.25'));
+      expect(command, contains('sleep 0.08'));
+      expect(
+        command.indexOf('1b 5b 49'),
+        lessThan(command.indexOf('1b 5b 3f 39 39 37 3b 31 6e')),
+      );
+      expect(
+        command.indexOf('1b 5b 3f 39 39 37 3b 31 6e'),
+        lessThan(command.indexOf('1b 5d 31 30 3b')),
+      );
+      expect(command, contains('1b 5d 31 30 3b'));
+      expect(command, contains('1b 5d 31 31 3b'));
+      expect(command, isNot(contains('1b 5d 34 3b 30 3b')));
+      expect(RegExp('1b 5d 31 30 3b').allMatches(command), hasLength(9));
+      expect(RegExp('1b 5d 31 31 3b').allMatches(command), hasLength(9));
+      expect(
+        command,
+        contains("tmux -u list-clients -t 'dev'\"'\"'s session'"),
+      );
+    });
+
+    test('theme refresh command reuses tmux client flags', () {
+      final command = buildTmuxRefreshTerminalThemeCommand(
+        'main',
+        TerminalThemes.githubLightDefault,
+        extraFlags: '-S /tmp/tmux-socket -x 160 -L alerts',
+      );
+
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          'list-panes',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r"""set-option -p -t "$pane" 'pane-colours[0]'""",
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'send-keys -t "$pane" -H',
+        ),
+      );
+      expect(
+        command,
+        contains(
+          'tmux -u -S '
+          "'/tmp/tmux-socket' -L 'alerts' "
+          r'refresh-client -t "$client"',
+        ),
+      );
+    });
+
     test('detectInstalledAgentTools caches empty results', () async {
       final client = _MockSshClient();
       final session = _buildSession(client, connectionId: 20);
@@ -128,6 +280,74 @@ void main() {
 
       expect(tools, {AgentLaunchTool.geminiCli});
       verify(() => client.execute(any(), pty: any(named: 'pty'))).called(1);
+    });
+
+    test('isTmuxActiveOrThrow ignores unrelated tmux clients', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 22);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: _doneMarker()),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final active = await service.isTmuxActiveOrThrow(session);
+
+      expect(active, isFalse);
+      final foregroundCommand =
+          verify(
+                () => client.execute(
+                  captureAny(that: contains('list-clients')),
+                  pty: any(named: 'pty'),
+                ),
+              ).captured.single
+              as String;
+      expect(foregroundCommand, contains('#{client_pid}'));
+      expect(foregroundCommand, contains('#{client_control_mode}'));
+      expect(foregroundCommand, contains('connection_pid='));
+      expect(foregroundCommand, isNot(contains('exit 0')));
+      expect(foregroundCommand, contains('break 2'));
+      expect(foregroundCommand, isNot(contains('#{client_tty}')));
+      verifyNever(
+        () => client.execute(
+          any(that: contains('list-sessions')),
+          pty: any(named: 'pty'),
+        ),
+      );
+    });
+
+    test('currentSessionName returns the foreground tmux client', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 23);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: 'work\n${_doneMarker()}'),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final sessionName = await service.currentSessionName(session);
+
+      expect(sessionName, 'work');
+      verify(
+        () => client.execute(
+          any(that: contains('list-clients')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verifyNever(
+        () => client.execute(
+          any(that: contains('display-message')),
+          pty: any(named: 'pty'),
+        ),
+      );
     });
 
     test(
@@ -182,6 +402,39 @@ void main() {
         );
       },
     );
+
+    test('hasSessionOrThrow dedupes concurrent session probes', () async {
+      final client = _MockSshClient();
+      final session = _buildSession(client, connectionId: 33);
+      const service = TmuxService();
+      final execSessions = Queue<SSHSession>.of([
+        _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+        _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+      ]);
+
+      when(
+        () => client.execute(any(), pty: any(named: 'pty')),
+      ).thenAnswer((_) async => execSessions.removeFirst());
+
+      final results = await Future.wait([
+        service.hasSessionOrThrow(session, 'work'),
+        service.hasSessionOrThrow(session, 'work'),
+      ]);
+
+      expect(results, [isTrue, isTrue]);
+      verify(
+        () => client.execute(
+          any(that: contains('command -v tmux')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+      verify(
+        () => client.execute(
+          any(that: contains('tmux -u has-session')),
+          pty: any(named: 'pty'),
+        ),
+      ).called(1);
+    });
 
     test(
       'listWindows serves the last cached snapshot when channels are exhausted',
@@ -493,6 +746,40 @@ void main() {
       expect(hasForegroundTmuxClient('\n0\n'), isTrue);
       expect(hasForegroundTmuxClient(' \n \n'), isFalse);
     });
+
+    test(
+      'hasForegroundClient requires the primary terminal session to match',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 24);
+        const service = TmuxService();
+        final execSessions = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: 'other\n${_doneMarker()}'),
+        ]);
+
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execSessions.removeFirst());
+
+        final hasForegroundClient = await service.hasForegroundClient(
+          session,
+          'work',
+        );
+
+        expect(hasForegroundClient, isFalse);
+        final foregroundCommand =
+            verify(
+                  () => client.execute(
+                    captureAny(that: contains('list-clients')),
+                    pty: any(named: 'pty'),
+                  ),
+                ).captured.single
+                as String;
+        expect(foregroundCommand, contains('#{client_pid}'));
+        expect(foregroundCommand, contains('#{client_control_mode}'));
+      },
+    );
   });
 
   group('tmux exec recovery', () {

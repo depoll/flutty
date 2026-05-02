@@ -344,6 +344,10 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
         HardwareKeyboard.instance.addHandler(_handleGlobalKeyEvent);
       }
     }
+    if (hasInputConnection &&
+        widget.keyboardAppearance != oldWidget.keyboardAppearance) {
+      _connection!.updateConfig(_buildTextInputConfiguration());
+    }
     if (!_shouldCreateInputConnection) {
       _closeInputConnectionIfNeeded();
     } else if (oldWidget.readOnly && widget.focusNode.hasFocus) {
@@ -891,21 +895,7 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
     if (hasInputConnection) {
       if (show) _connection!.show();
     } else {
-      final config = TextInputConfiguration(
-        // Keep these explicit because terminal IME behavior is central here.
-        // ignore: avoid_redundant_argument_values
-        autocorrect: false,
-        inputAction: TextInputAction.newline,
-        keyboardAppearance: widget.keyboardAppearance,
-        // Enable suggestions so the IME adds spaces between swiped words.
-        // ignore: avoid_redundant_argument_values
-        enableSuggestions: true,
-        smartDashesType: SmartDashesType.disabled,
-        smartQuotesType: SmartQuotesType.disabled,
-        enableIMEPersonalizedLearning: false,
-      );
-
-      _connection = TextInput.attach(this, config);
+      _connection = TextInput.attach(this, _buildTextInputConfiguration());
       if (show) _connection!.show();
       _invalidatePendingEditingUpdates();
       _sawImeComposition = false;
@@ -925,6 +915,21 @@ class _TerminalTextInputHandlerState extends State<TerminalTextInputHandler>
       _connection!.setEditingState(_initEditingState);
     }
   }
+
+  TextInputConfiguration _buildTextInputConfiguration() =>
+      TextInputConfiguration(
+        // Keep these explicit because terminal IME behavior is central here.
+        // ignore: avoid_redundant_argument_values
+        autocorrect: false,
+        inputAction: TextInputAction.newline,
+        keyboardAppearance: widget.keyboardAppearance,
+        // Enable suggestions so the IME adds spaces between swiped words.
+        // ignore: avoid_redundant_argument_values
+        enableSuggestions: true,
+        smartDashesType: SmartDashesType.disabled,
+        smartQuotesType: SmartQuotesType.disabled,
+        enableIMEPersonalizedLearning: false,
+      );
 
   void _closeInputConnectionIfNeeded() {
     _stopHardwareKeyRepeat();

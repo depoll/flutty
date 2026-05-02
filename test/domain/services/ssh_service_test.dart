@@ -291,6 +291,63 @@ void main() {
       },
     );
 
+    test(
+      'normalizes cursor position reports to terminal protocol coordinates',
+      () {
+        expect(
+          normalizeTerminalOutputForRemoteShell('before\x1b[0;0Rafter'),
+          'before\x1b[1;1Rafter',
+        );
+        expect(normalizeTerminalOutputForRemoteShell('\x1b[4;7R'), '\x1b[5;8R');
+      },
+    );
+
+    test('unwraps complete tmux passthrough sequences', () {
+      final result = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b\x1b]11;?\x07\x1b\\after',
+        pendingInput: '',
+      );
+
+      expect(result.output, 'before\x1b]11;?\x07after');
+      expect(result.pendingInput, isEmpty);
+    });
+
+    test('preserves split tmux passthrough sequences across chunks', () {
+      final first = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtmux;\x1b',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1bPtmux;\x1b');
+
+      final second = unwrapTerminalTmuxPassthroughSequences(
+        input: '\x1b[?1004\$p\x1b\\after',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[?1004\$pafter');
+      expect(second.pendingInput, isEmpty);
+    });
+
+    test('preserves split tmux passthrough sequence starts', () {
+      final first = unwrapTerminalTmuxPassthroughSequences(
+        input: 'before\x1bPtm',
+        pendingInput: '',
+      );
+
+      expect(first.output, 'before');
+      expect(first.pendingInput, '\x1bPtm');
+
+      final second = unwrapTerminalTmuxPassthroughSequences(
+        input: 'ux;\x1b\x1b[14t\x1b\\after',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(second.output, '\x1b[14tafter');
+      expect(second.pendingInput, isEmpty);
+    });
+
     test('answers terminal window and cell size reports', () {
       final result = buildTerminalWindowControlQueryResponses(
         input: 'before\x1b[14tmiddle\x1b[16tafter',
@@ -342,7 +399,7 @@ void main() {
         input: 'before\x1b[?996nafter',
         pendingInput: '',
         metrics: null,
-        theme: monkey_themes.TerminalThemes.midnightPurple,
+        theme: monkey_themes.TerminalThemes.defaultDarkTheme,
       );
 
       expect(dark.response, '\x1b[?997;1n');
@@ -352,11 +409,124 @@ void main() {
         input: 'before\x1b[?996nafter',
         pendingInput: '',
         metrics: null,
-        theme: monkey_themes.TerminalThemes.cleanWhite,
+        theme: monkey_themes.TerminalThemes.defaultLightTheme,
       );
 
       expect(light.response, '\x1b[?997;2n');
       expect(light.pendingInput, isEmpty);
+    });
+
+    test('answers DEC private mode report queries', () {
+      final result = buildTerminalWindowControlQueryResponses(
+        input:
+            'before\x1b[?1004\$p\x1b[?2004\$p\x1b[?1006\$p'
+            '\x1b[?2026\$pafter',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: true,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: true,
+        ),
+      );
+
+      expect(
+        result.response,
+        '\x1b[?1004;1\$y'
+        '\x1b[?2004;2\$y'
+        '\x1b[?1006;1\$y'
+        '\x1b[?2026;0\$y',
+      );
+      expect(result.pendingInput, isEmpty);
+
+      final colorSchemeReset = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?2031\$pafter',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: false,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(colorSchemeReset.response, '\x1b[?2031;2\$y');
+    });
+
+    test('preserves split DEC private mode report queries across chunks', () {
+      final first = buildTerminalWindowControlQueryResponses(
+        input: 'before\x1b[?1004\$',
+        pendingInput: '',
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(first.response, isNull);
+      expect(first.pendingInput, '\x1b[?1004\$');
+
+      final second = buildTerminalWindowControlQueryResponses(
+        input: 'pafter',
+        pendingInput: first.pendingInput,
+        metrics: null,
+        modeState: const (
+          reportFocusMode: true,
+          bracketedPasteMode: false,
+          colorSchemeUpdatesMode: false,
+          isUsingAltBuffer: false,
+          mouseTrackingMode: false,
+          mouseDragTrackingMode: false,
+          mouseMoveTrackingMode: false,
+          sgrMouseReportMode: false,
+        ),
+      );
+
+      expect(second.response, '\x1b[?1004;1\$y');
+      expect(second.pendingInput, isEmpty);
+    });
+
+    test('extracts color scheme update mode changes', () {
+      final enabled = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?2031hafter',
+        pendingInput: '',
+      );
+
+      expect(enabled.colorSchemeUpdatesMode, isTrue);
+      expect(enabled.pendingInput, isEmpty);
+
+      final first = extractTerminalControlModeUpdates(
+        input: 'before\x1b[?203',
+        pendingInput: '',
+      );
+
+      expect(first.colorSchemeUpdatesMode, isNull);
+      expect(first.pendingInput, '\x1b[?203');
+
+      final disabled = extractTerminalControlModeUpdates(
+        input: '1lafter',
+        pendingInput: first.pendingInput,
+      );
+
+      expect(disabled.colorSchemeUpdatesMode, isFalse);
+      expect(disabled.pendingInput, isEmpty);
     });
 
     test(
@@ -366,7 +536,7 @@ void main() {
           input: 'before\x1b[?99',
           pendingInput: '',
           metrics: null,
-          theme: monkey_themes.TerminalThemes.cleanWhite,
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
         );
 
         expect(first.response, isNull);
@@ -376,7 +546,7 @@ void main() {
           input: '6nafter',
           pendingInput: first.pendingInput,
           metrics: null,
-          theme: monkey_themes.TerminalThemes.cleanWhite,
+          theme: monkey_themes.TerminalThemes.defaultLightTheme,
         );
 
         expect(second.response, '\x1b[?997;2n');
@@ -868,6 +1038,36 @@ void main() {
         notifier.getConnectionAttempt(42)?.latestMessage,
         'Connection closed',
       );
+    });
+
+    test('updateSessionTheme skips unchanged theme IDs', () async {
+      final notifier = container.read(activeSessionsProvider.notifier);
+      final notifications = <Map<int, SshConnectionState>>[];
+      final subscription = container.listen<Map<int, SshConnectionState>>(
+        activeSessionsProvider,
+        (_, next) => notifications.add(next),
+      );
+      addTearDown(subscription.close);
+
+      final result = await notifier.connect(42, forceNew: true);
+      expect(result.success, isTrue);
+      final connectionId = result.connectionId!;
+      notifications.clear();
+
+      notifier.updateSessionTheme(
+        connectionId,
+        monkey_themes.TerminalThemes.dracula.id,
+        isDark: true,
+      );
+      expect(notifications, hasLength(1));
+      notifications.clear();
+
+      notifier.updateSessionTheme(
+        connectionId,
+        monkey_themes.TerminalThemes.dracula.id,
+        isDark: true,
+      );
+      expect(notifications, isEmpty);
     });
 
     test(

@@ -6,6 +6,7 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../models/agent_launch_preset.dart';
+import '../models/terminal_theme.dart';
 import '../models/tmux_state.dart';
 import 'diagnostics_log_service.dart';
 import 'ssh_exec_queue.dart';
@@ -59,6 +60,12 @@ class TmuxService {
   /// Cached profile source commands per SSH session.
   static final Map<int, String> _profileSourceCache = {};
 
+  /// In-flight tmux path/profile probes per SSH session.
+  static final Map<int, Future<void>> _tmuxPathRequests = {};
+
+  /// In-flight tmux session-existence probes.
+  static final _hasSessionRequests = <_TmuxSessionRequestKey, Future<bool>>{};
+
   /// Cached set of installed agent CLIs per SSH session (by connectionId).
   static final _installedAgentToolsCache = <int, _CachedInstalledAgentTools>{};
 
@@ -103,6 +110,10 @@ class TmuxService {
     );
     _tmuxPathCache.remove(connectionId);
     _profileSourceCache.remove(connectionId);
+    _tmuxPathRequests.remove(connectionId);
+    _hasSessionRequests.removeWhere(
+      (key, _) => key.connectionId == connectionId,
+    );
     _installedAgentToolsCache.remove(connectionId);
     _installedAgentToolRequests.remove(connectionId);
     _execChannelBackoffs.remove(connectionId);
@@ -122,12 +133,10 @@ class TmuxService {
 
   // ── Detection ──────────────────────────────────────────────────────────
 
-  /// Returns `true` if there is at least one tmux session running on the
-  /// remote host.
+  /// Returns `true` if the primary SSH terminal is attached to tmux.
   ///
-  /// Uses `tmux list-sessions` rather than checking the `TMUX` environment
-  /// variable, because SSH exec channels do not share the interactive
-  /// shell's environment.
+  /// This deliberately ignores tmux servers and clients that belong to other
+  /// SSH logins on the same host.
   Future<bool> isTmuxActive(SshSession session, {String? extraFlags}) async {
     try {
       return await isTmuxActiveOrThrow(session, extraFlags: extraFlags);
@@ -144,10 +153,10 @@ class TmuxService {
     }
   }
 
-  /// Returns `true` if tmux has at least one session, and throws when the
-  /// remote check could not complete.
+  /// Returns `true` if the primary SSH terminal is attached to tmux, and throws
+  /// when the remote check could not complete.
   ///
-  /// Unlike [isTmuxActive], this distinguishes "no sessions" from
+  /// Unlike [isTmuxActive], this distinguishes "not attached to tmux" from
   /// infrastructure failures so callers can preserve existing UI on
   /// indeterminate detection results.
   Future<bool> isTmuxActiveOrThrow(
@@ -159,22 +168,81 @@ class TmuxService {
       'active_check_start',
       fields: {'connectionId': session.connectionId},
     );
-    // Cache the tmux binary path on first successful detection.
-    await _cacheTmuxPath(session);
-    final output = await _exec(
-      session,
-      '${_tmuxCommand("list-sessions -F '#{session_name}'", extraFlags: extraFlags)} 2>/dev/null; '
-      r'status=$?; '
-      r'if [ "$status" -eq 0 ] || [ "$status" -eq 1 ]; then true; '
-      'else false; fi',
-    );
-    final active = output.trim().isNotEmpty;
+    final active =
+        await foregroundSessionNameOrThrow(session, extraFlags: extraFlags) !=
+        null;
     DiagnosticsLogService.instance.info(
       'tmux.detect',
       'active_check_complete',
       fields: {'connectionId': session.connectionId, 'active': active},
     );
     return active;
+  }
+
+  /// Returns the tmux session attached to the primary SSH terminal, if any.
+  Future<String?> foregroundSessionName(
+    SshSession session, {
+    String? extraFlags,
+  }) async {
+    try {
+      return await foregroundSessionNameOrThrow(
+        session,
+        extraFlags: extraFlags,
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.query',
+        'foreground_session_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+      return null;
+    }
+  }
+
+  /// Returns the tmux session attached to the primary SSH terminal, and throws
+  /// when the remote check could not complete.
+  Future<String?> foregroundSessionNameOrThrow(
+    SshSession session, {
+    String? extraFlags,
+  }) => _foregroundSessionNameOrThrow(
+    session,
+    priority: SshExecPriority.low,
+    extraFlags: extraFlags,
+  );
+
+  Future<String?> _foregroundSessionNameOrThrow(
+    SshSession session, {
+    required SshExecPriority priority,
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'foreground_session_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    await _cacheTmuxPath(session);
+    final output = await _exec(
+      session,
+      _buildForegroundTmuxSessionCommand(extraFlags: extraFlags),
+      priority: priority,
+    );
+    final sessionName = output
+        .split('\n')
+        .map((line) => line.trim())
+        .where((line) => line.isNotEmpty)
+        .firstOrNull;
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'foreground_session_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'active': sessionName != null,
+      },
+    );
+    return sessionName;
   }
 
   /// Returns `true` if tmux is installed on the remote host.
@@ -379,14 +447,10 @@ class TmuxService {
     }
   }
 
-  /// Returns the name of the tmux session the user is most likely
-  /// interacting with, or `null` if no session can be identified.
+  /// Returns the name of the tmux session attached to this terminal.
   ///
-  /// First tries `tmux display-message` (works when the exec shell
-  /// inherits the tmux context). If that fails, falls back to finding
-  /// the first attached session from `tmux list-sessions` — this covers
-  /// the common case where the interactive shell is inside tmux but the
-  /// exec channel is not.
+  /// This does not infer a session from arbitrary attached tmux clients on the
+  /// host; those may belong to other SSH logins.
   Future<String?> currentSessionName(
     SshSession session, {
     String? extraFlags,
@@ -396,6 +460,19 @@ class TmuxService {
       'current_session_start',
       fields: {'connectionId': session.connectionId},
     );
+    final foregroundName = await foregroundSessionName(
+      session,
+      extraFlags: extraFlags,
+    );
+    if (foregroundName != null) {
+      DiagnosticsLogService.instance.info(
+        'tmux.query',
+        'current_session_foreground',
+        fields: {'connectionId': session.connectionId},
+      );
+      return foregroundName;
+    }
+
     try {
       // Direct approach — works if the exec channel is inside tmux.
       final output = await _exec(
@@ -423,44 +500,14 @@ class TmuxService {
           'errorType': error.runtimeType,
         },
       );
-      // Fall through to fallback.
+      // Fall through to an unavailable result.
     }
-
-    // Fallback — find attached sessions.
-    try {
-      final sessions = await listSessions(session, extraFlags: extraFlags);
-      final attached = sessions.where((s) => s.isAttached).toList();
-      if (attached.length == 1) {
-        DiagnosticsLogService.instance.info(
-          'tmux.query',
-          'current_session_attached_fallback',
-          fields: {'connectionId': session.connectionId},
-        );
-        return attached.first.name;
-      }
-      // Multiple attached sessions are ambiguous — we can't determine
-      // which one belongs to this terminal connection. Return null to
-      // avoid targeting the wrong session with destructive operations.
-      DiagnosticsLogService.instance.info(
-        'tmux.query',
-        'current_session_ambiguous',
-        fields: {
-          'connectionId': session.connectionId,
-          'attachedCount': attached.length,
-        },
-      );
-      return null;
-    } on Exception catch (error) {
-      DiagnosticsLogService.instance.warning(
-        'tmux.query',
-        'current_session_failed',
-        fields: {
-          'connectionId': session.connectionId,
-          'errorType': error.runtimeType,
-        },
-      );
-      return null;
-    }
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'current_session_unavailable',
+      fields: {'connectionId': session.connectionId},
+    );
+    return null;
   }
 
   /// Returns `true` if [sessionName] exists on the remote tmux server.
@@ -498,6 +545,43 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
+    final requestKey = _TmuxSessionRequestKey(
+      connectionId: session.connectionId,
+      sessionName: sessionName,
+      extraFlags: resolveTmuxClientFlagsFromExtraFlags(extraFlags),
+    );
+    final existingRequest = _hasSessionRequests[requestKey];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.query',
+        'has_session_join',
+        fields: {
+          'connectionId': session.connectionId,
+          'sessionHash': sessionName.hashCode.abs(),
+        },
+      );
+      return existingRequest;
+    }
+
+    final request = _hasSessionOrThrow(
+      session,
+      sessionName,
+      extraFlags: extraFlags,
+    );
+    _hasSessionRequests[requestKey] = request;
+    request.whenComplete(() {
+      if (identical(_hasSessionRequests[requestKey], request)) {
+        _hasSessionRequests.remove(requestKey);
+      }
+    }).ignore();
+    return request;
+  }
+
+  Future<bool> _hasSessionOrThrow(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
     DiagnosticsLogService.instance.debug(
       'tmux.query',
       'has_session_start',
@@ -511,6 +595,7 @@ class TmuxService {
       r'if [ "$status" -eq 0 ]; then printf 1; '
       r'elif [ "$status" -eq 1 ]; then printf 0; '
       'else false; fi',
+      priority: SshExecPriority.low,
     );
     final exists = output.trim() == '1';
     DiagnosticsLogService.instance.info(
@@ -683,37 +768,22 @@ class TmuxService {
     }
   }
 
-  /// Returns whether [sessionName] still has a non-control tmux client
-  /// attached in the foreground.
+  /// Returns whether [sessionName] is attached in the primary SSH terminal.
   ///
-  /// Control-mode observers are excluded because MonkeySSH uses one for live
-  /// window updates even after the visible interactive shell has left tmux.
+  /// Control-mode observers are excluded by the foreground-session probe
+  /// because MonkeySSH uses one for live window updates even after the visible
+  /// interactive shell has left tmux.
   Future<bool> hasForegroundClient(
     SshSession session,
     String sessionName, {
     String? extraFlags,
   }) async {
-    DiagnosticsLogService.instance.debug(
-      'tmux.query',
-      'foreground_client_start',
-      fields: {'connectionId': session.connectionId},
-    );
     try {
-      final output = await _exec(
+      return await hasForegroundClientOrThrow(
         session,
-        '${_tmuxCommand('list-clients -t ${_shellQuote(sessionName)} '
-        "-F '#{client_control_mode}'", extraFlags: extraFlags)} 2>/dev/null',
+        sessionName,
+        extraFlags: extraFlags,
       );
-      final hasClient = hasForegroundTmuxClient(output);
-      DiagnosticsLogService.instance.info(
-        'tmux.query',
-        'foreground_client_complete',
-        fields: {
-          'connectionId': session.connectionId,
-          'hasForegroundClient': hasClient,
-        },
-      );
-      return hasClient;
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.query',
@@ -724,6 +794,120 @@ class TmuxService {
         },
       );
       return false;
+    }
+  }
+
+  /// Returns whether [sessionName] is attached in the primary SSH terminal, and
+  /// throws when the remote check could not complete.
+  Future<bool> hasForegroundClientOrThrow(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'foreground_client_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    final foregroundSessionName = await _foregroundSessionNameOrThrow(
+      session,
+      priority: SshExecPriority.normal,
+      extraFlags: extraFlags,
+    );
+    final hasClient = foregroundSessionName == sessionName;
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'foreground_client_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'hasForegroundClient': hasClient,
+        'hasForegroundSession': foregroundSessionName != null,
+      },
+    );
+    return hasClient;
+  }
+
+  /// Asks every foreground client attached to [sessionName] to redraw.
+  Future<void> refreshForegroundClients(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.action',
+      'refresh_clients_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    try {
+      await _exec(
+        session,
+        buildTmuxRefreshForegroundClientsCommand(
+          sessionName,
+          extraFlags: extraFlags,
+        ),
+      );
+      DiagnosticsLogService.instance.info(
+        'tmux.action',
+        'refresh_clients_complete',
+        fields: {'connectionId': session.connectionId},
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.action',
+        'refresh_clients_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+  }
+
+  /// Updates tmux's pane palette for [sessionName] and redraws foreground
+  /// clients.
+  Future<void> refreshTerminalTheme(
+    SshSession session,
+    String sessionName,
+    TerminalThemeData theme, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.action',
+      'refresh_theme_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    try {
+      final output = await _exec(
+        session,
+        buildTmuxRefreshTerminalThemeCommand(
+          sessionName,
+          theme,
+          extraFlags: extraFlags,
+        ),
+      );
+      final stats = _parseTmuxThemeRefreshStats(output);
+      DiagnosticsLogService.instance.info(
+        'tmux.action',
+        'refresh_theme_complete',
+        fields: {
+          'connectionId': session.connectionId,
+          if (stats != null) ...{
+            'paneCount': stats.paneCount,
+            'activePaneCount': stats.activePaneCount,
+            'alternatePaneCount': stats.alternatePaneCount,
+            'injectedPaneCount': stats.injectedPaneCount,
+          },
+        },
+      );
+    } on Exception catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.action',
+        'refresh_theme_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
     }
   }
 
@@ -1240,12 +1424,26 @@ class TmuxService {
   /// full tmux path for subsequent calls.
   Future<void> _cacheTmuxPath(SshSession session) async {
     if (_tmuxPathCache.containsKey(session.connectionId)) return;
+    final existingRequest = _tmuxPathRequests[session.connectionId];
+    if (existingRequest != null) {
+      DiagnosticsLogService.instance.debug(
+        'tmux.cache',
+        'tmux_path_join',
+        fields: {'connectionId': session.connectionId},
+      );
+      try {
+        await existingRequest;
+      } on Object {
+        // The owner logs probe failures; joiners keep the same fallback path.
+      }
+      return;
+    }
     DiagnosticsLogService.instance.debug(
       'tmux.cache',
       'tmux_path_start',
       fields: {'connectionId': session.connectionId},
     );
-    try {
+    final request = () async {
       // Detect login shell and resolve tmux path in a single exec.
       // Redirect stdout from profile scripts to /dev/null so greetings,
       // MOTD, or fortune output don't corrupt our parsed output.
@@ -1259,6 +1457,7 @@ class TmuxService {
         'esac; '
         r'echo "$SHELL_NAME"; '
         'command -v tmux',
+        priority: SshExecPriority.low,
       );
       final lines = output.trim().split('\n');
       if (lines.isNotEmpty) {
@@ -1284,6 +1483,10 @@ class TmuxService {
           'hasProfile': _profileSourceCache.containsKey(session.connectionId),
         },
       );
+    }();
+    _tmuxPathRequests[session.connectionId] = request;
+    try {
+      await request;
     } on Object catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.cache',
@@ -1294,6 +1497,10 @@ class TmuxService {
         },
       );
       // Ignore — we'll fall back to sourcing all profiles.
+    } finally {
+      if (identical(_tmuxPathRequests[session.connectionId], request)) {
+        _tmuxPathRequests.remove(session.connectionId)?.ignore();
+      }
     }
   }
 
@@ -1386,6 +1593,9 @@ Duration resolveTmuxControlRestartDelay(
 }
 
 String _diagnosticTmuxCommandKind(String command) {
+  if (command.contains('flutty_theme_refresh_pane')) {
+    return 'refresh_theme';
+  }
   if (command.contains('attach-session')) {
     return 'control_attach';
   }
@@ -1428,6 +1638,32 @@ String _diagnosticTmuxCommandKind(String command) {
   return 'tmux_exec';
 }
 
+String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
+  final listClients = TmuxService._tmuxCommand(
+    'list-clients -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return r'sep=$(printf "\037"); '
+      r'connection_pid=$(ps -p "$$" -o ppid= 2>/dev/null | tr -d " "); '
+      r'if [ -n "$connection_pid" ]; then '
+      '$listClients"#{client_pid}\$sep#{session_name}\$sep#{client_control_mode}" '
+      '2>/dev/null | '
+      r'while IFS="$sep" read -r client_pid session_name control_mode; do '
+      r'[ "$control_mode" = 0 ] || continue; '
+      r'[ -n "$client_pid" ] && [ -n "$session_name" ] || continue; '
+      r'pid="$client_pid"; '
+      r'while [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ]; do '
+      r'if [ "$pid" = "$connection_pid" ]; then '
+      r'printf "%s\n" "$session_name"; '
+      'break 2; '
+      'fi; '
+      r'pid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d " "); '
+      'done; '
+      'done; '
+      'fi';
+}
+
 /// Parses the current pane path reported by `tmux display-message`.
 @visibleForTesting
 String? parseTmuxCurrentPanePath(String output) {
@@ -1438,6 +1674,259 @@ String? parseTmuxCurrentPanePath(String output) {
     }
   }
   return null;
+}
+
+/// Builds a command that redraws all non-control tmux clients for a session.
+@visibleForTesting
+String buildTmuxRefreshForegroundClientsCommand(
+  String sessionName, {
+  String? extraFlags,
+}) {
+  const sep = r'${SEP}';
+  final listClients = TmuxService._tmuxCommand(
+    'list-clients -t ${TmuxService._shellQuote(sessionName)} -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final refreshClient = TmuxService._tmuxCommand(
+    r'refresh-client -t "$client"',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return r'SEP=$(printf "\037"); '
+      '$listClients"#{client_control_mode}$sep#{client_name}" '
+      '2>/dev/null | '
+      r'while IFS="$SEP" read -r control client; do '
+      r'[ "$control" = 0 ] || continue; '
+      r'[ -n "$client" ] || continue; '
+      '$refreshClient 2>/dev/null || true; '
+      'done';
+}
+
+/// Builds a command that updates tmux's pane palette, notifies active TUIs, and
+/// redraws foreground clients.
+@visibleForTesting
+String buildTmuxRefreshTerminalThemeCommand(
+  String sessionName,
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) {
+  const sep = r'${SEP}';
+  final listPanes = TmuxService._tmuxCommand(
+    'list-panes -s -t ${TmuxService._shellQuote(sessionName)} -F ',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final setPaneColours = _buildTmuxSetPaneColoursCommand(
+    theme,
+    extraFlags: extraFlags,
+  );
+  // Make sure tmux forwards focus events to inner panes — without this,
+  // theme-aware TUIs like Codex/Copilot CLI never receive the FocusGained
+  // signal we use as the trigger to re-query OSC 10/11 after a theme switch
+  // and their cached default fg/bg stay stale (e.g. input composer "stuck
+  // almost black"). Safe to re-apply on every refresh because the option is
+  // global and idempotent.
+  final enableFocusEvents = TmuxService._tmuxCommand(
+    'set-option -g focus-events on',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+
+  return r'SEP=$(printf "\037"); '
+      '$enableFocusEvents 2>/dev/null || true; '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}$sep#{pane_title}" '
+      '2>/dev/null | '
+      r'{ while IFS="$SEP" read -r pane active alternate pane_command pane_title; do '
+      r'[ -n "$pane" ] || continue; '
+      '$setPaneColours '
+      'injected=0; foreground_tui=0; '
+      r'if [ "$active" = 1 ]; then '
+      r'case "${pane_command##*/}" in '
+      "''|sh|bash|zsh|fish|nu|pwsh|powershell|cmd|cmd.exe|tmux|ssh|mosh|login) foreground_tui=0 ;; "
+      '*) foreground_tui=1 ;; '
+      'esac; '
+      r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
+      'injected=1; '
+      r'case "${pane_command##*/}" in '
+      'codex|codex-*) '
+      '( ${_buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags)} '
+      '2>/dev/null || true ) & ;; '
+      'opencode|opencode-*) '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
+      '*) '
+      r'case "$pane_title" in '
+      '*OpenCode*|*opencode*) '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags, forceFocusTransition: true, includeLateFocusTransition: true)} ) & ;; '
+      '*) '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & ;; '
+      'esac ;; '
+      'esac; '
+      'fi; '
+      'fi; '
+      r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
+      'done; wait; }; '
+      '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
+}
+
+class _TmuxThemeRefreshStats {
+  const _TmuxThemeRefreshStats({
+    required this.paneCount,
+    required this.activePaneCount,
+    required this.alternatePaneCount,
+    required this.injectedPaneCount,
+  });
+
+  final int paneCount;
+  final int activePaneCount;
+  final int alternatePaneCount;
+  final int injectedPaneCount;
+}
+
+_TmuxThemeRefreshStats? _parseTmuxThemeRefreshStats(String output) {
+  var paneCount = 0;
+  var activePaneCount = 0;
+  var alternatePaneCount = 0;
+  var injectedPaneCount = 0;
+  for (final line in output.split('\n')) {
+    if (!line.startsWith('flutty_theme_refresh_pane:')) {
+      continue;
+    }
+    final fields = line
+        .substring('flutty_theme_refresh_pane:'.length)
+        .split(',');
+    if (fields.length != 3) {
+      continue;
+    }
+    paneCount += 1;
+    if (fields[0] == '1') {
+      activePaneCount += 1;
+    }
+    if (fields[1] == '1') {
+      alternatePaneCount += 1;
+    }
+    if (fields[2] == '1') {
+      injectedPaneCount += 1;
+    }
+  }
+  if (paneCount == 0) {
+    return null;
+  }
+  return _TmuxThemeRefreshStats(
+    paneCount: paneCount,
+    activePaneCount: activePaneCount,
+    alternatePaneCount: alternatePaneCount,
+    injectedPaneCount: injectedPaneCount,
+  );
+}
+
+String _buildTmuxSetPaneColoursCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+}) {
+  final commands = <String>[
+    for (var index = 0; index < 16; index += 1)
+      _buildTmuxSetPaneColourSubcommand(index, theme),
+  ];
+  final command = TmuxService._tmuxCommand(
+    commands.join(r' \; '),
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return '$command 2>/dev/null || true;';
+}
+
+String _buildTmuxSetPaneColourSubcommand(int index, TerminalThemeData theme) {
+  final color = terminalThemePaletteColor(theme, index);
+  if (color == null) {
+    throw ArgumentError.value(index, 'index', 'Expected ANSI color index 0-15');
+  }
+  final hexColor = formatTerminalThemeRgbHex(color);
+  final optionName = TmuxService._shellQuote('pane-colours[$index]');
+  return r'set-option -p -t "$pane" '
+      '$optionName ${TmuxService._shellQuote(hexColor)}';
+}
+
+String _buildTmuxSendPaneTerminalThemeCommand(
+  TerminalThemeData theme, {
+  String? extraFlags,
+  bool forceFocusTransition = false,
+  bool includeLateFocusTransition = false,
+}) {
+  final themeModeReport = buildTerminalThemeModeReport(isDark: theme.isDark);
+  final defaultColorReports = buildTerminalThemeDefaultColorReports(theme);
+  // Do not inject unsolicited OSC 4 palette replies into the pane. Apps such
+  // as Codex can treat palette replies they did not request as user input; the
+  // tmux pane palette update above ensures any subsequent OSC 4 query sees
+  // fresh colors without writing palette bytes to the foreground app.
+  //
+  // OSC 10/11 default color replies are intentionally sent after the private
+  // mode report. That gives OpenTUI/OpenCode a complete theme-mode plus default
+  // color cycle even when tmux consumes the outer OSC responses. Codex panes
+  // are routed to the focus-only refresh above because unsolicited mode/color
+  // reports can reset its composer input while the user is typing.
+  final focusCommand = forceFocusTransition
+      ? _buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)
+      : _buildTmuxSendPaneFocusRefreshCommand(extraFlags: extraFlags);
+  final lateFocusCommand = includeLateFocusTransition
+      ? ' sleep 0.08; '
+            '${_buildTmuxSendPaneFocusTransitionCommand(extraFlags: extraFlags)} '
+            '2>/dev/null || true;'
+      : '';
+  final modeCommand = TmuxService._tmuxCommand(
+    r'send-keys -t "$pane" -H '
+    '${_formatTmuxSendKeysHexArguments(themeModeReport)}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  final directColorCommand = TmuxService._tmuxCommand(
+    r'send-keys -t "$pane" -H '
+    '${_formatTmuxSendKeysHexArguments(defaultColorReports)}',
+    extraFlags: extraFlags,
+    forceUtf8: true,
+  );
+  return '$focusCommand 2>/dev/null || true; '
+      'sleep 0.25; '
+      '$modeCommand 2>/dev/null || true;'
+      ' sleep 0.08; '
+      '$directColorCommand 2>/dev/null || true;'
+      ' sleep 0.08; '
+      '$directColorCommand 2>/dev/null || true;'
+      ' sleep 0.08; '
+      '$directColorCommand 2>/dev/null || true;'
+      '$lateFocusCommand';
+}
+
+String _buildTmuxSendPaneFocusRefreshCommand({String? extraFlags}) =>
+    _buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags);
+
+String _buildTmuxSendPaneFocusTransitionCommand({String? extraFlags}) =>
+    '${_buildTmuxSendPaneFocusReportCommand('\x1b[O', extraFlags: extraFlags)} '
+    '2>/dev/null || true; sleep 0.12; '
+    '${_buildTmuxSendPaneFocusReportCommand('\x1b[I', extraFlags: extraFlags)}';
+
+String _buildTmuxSendPaneFocusReportCommand(
+  String report, {
+  String? extraFlags,
+}) => TmuxService._tmuxCommand(
+  r'send-keys -t "$pane" -H '
+  '${_formatTmuxSendKeysHexArguments(report)}',
+  extraFlags: extraFlags,
+  forceUtf8: true,
+);
+
+String _formatTmuxSendKeysHexArguments(String input) =>
+    input.codeUnits.map(_formatTmuxSendKeysHexArgument).join(' ');
+
+String _formatTmuxSendKeysHexArgument(int codeUnit) {
+  if (codeUnit > 0x7F) {
+    throw ArgumentError.value(
+      codeUnit,
+      'codeUnit',
+      'Expected an ASCII terminal response byte',
+    );
+  }
+  return codeUnit.toRadixString(16).padLeft(2, '0');
 }
 
 /// Returns whether `tmux list-clients` output includes a non-control client.
@@ -1787,6 +2276,30 @@ TmuxControlHeartbeatAction decideTmuxHeartbeatAction({
     return TmuxControlHeartbeatAction.refresh;
   }
   return TmuxControlHeartbeatAction.noop;
+}
+
+@immutable
+class _TmuxSessionRequestKey {
+  const _TmuxSessionRequestKey({
+    required this.connectionId,
+    required this.sessionName,
+    this.extraFlags,
+  });
+
+  final int connectionId;
+  final String sessionName;
+  final String? extraFlags;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is _TmuxSessionRequestKey &&
+          connectionId == other.connectionId &&
+          sessionName == other.sessionName &&
+          extraFlags == other.extraFlags;
+
+  @override
+  int get hashCode => Object.hash(connectionId, sessionName, extraFlags);
 }
 
 @immutable

@@ -16,6 +16,7 @@ import '../../domain/models/agent_launch_preset.dart';
 import '../../domain/models/auto_connect_command.dart';
 import '../../domain/models/host_cli_launch_preferences.dart';
 import '../../domain/models/monetization.dart';
+import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
 import '../../domain/models/tmux_state.dart';
 import '../../domain/services/agent_launch_preset_service.dart';
@@ -23,6 +24,7 @@ import '../../domain/services/host_cli_launch_preferences_service.dart';
 import '../../domain/services/monetization_service.dart';
 import '../../domain/services/secure_transfer_service.dart';
 import '../../domain/services/ssh_service.dart';
+import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/wifi_network_service.dart';
 import '../providers/entity_list_providers.dart';
 import '../widgets/agent_tool_icon.dart';
@@ -424,6 +426,9 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
     final hasHostThemeAccess = monetizationState.allowsFeature(
       MonetizationFeature.hostSpecificThemes,
     );
+    final terminalThemes =
+        ref.watch(allTerminalThemesProvider).asData?.value ??
+        TerminalThemes.all;
 
     return UnsavedChangesGuard(
       hasUnsavedChanges: _hasUnsavedChanges,
@@ -746,6 +751,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           _ThemeSelectionTile(
                             label: 'Light Mode Theme',
                             themeId: _selectedLightThemeId,
+                            themes: terminalThemes,
                             defaultLabel: 'Use default',
                             onTap: () =>
                                 _handleThemeSelectionTap(isLight: true),
@@ -755,6 +761,7 @@ class _HostEditScreenState extends ConsumerState<HostEditScreen> {
                           _ThemeSelectionTile(
                             label: 'Dark Mode Theme',
                             themeId: _selectedDarkThemeId,
+                            themes: terminalThemes,
                             defaultLabel: 'Use default',
                             onTap: () =>
                                 _handleThemeSelectionTap(isLight: false),
@@ -2404,18 +2411,20 @@ class _ThemeSelectionTile extends StatelessWidget {
   const _ThemeSelectionTile({
     required this.label,
     required this.themeId,
+    required this.themes,
     required this.defaultLabel,
     required this.onTap,
   });
 
   final String label;
   final String? themeId;
+  final Iterable<TerminalThemeData> themes;
   final String defaultLabel;
   final VoidCallback onTap;
 
   @override
   Widget build(BuildContext context) {
-    final theme = themeId != null ? TerminalThemes.getById(themeId!) : null;
+    final theme = themeId != null ? _findTheme(themes, themeId!) : null;
     final colorScheme = Theme.of(context).colorScheme;
 
     return ListTile(
@@ -2471,6 +2480,15 @@ class _ThemeSelectionTile extends StatelessWidget {
     margin: const EdgeInsets.symmetric(horizontal: 1),
     decoration: BoxDecoration(color: color, shape: BoxShape.circle),
   );
+
+  TerminalThemeData? _findTheme(Iterable<TerminalThemeData> themes, String id) {
+    for (final theme in themes) {
+      if (theme.id == id) {
+        return theme;
+      }
+    }
+    return TerminalThemes.getById(id);
+  }
 }
 
 class _FontSelectionTile extends StatelessWidget {

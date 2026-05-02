@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import '../../domain/models/terminal_theme.dart';
 
@@ -13,6 +12,7 @@ class ThemePreviewCard extends StatelessWidget {
     required this.theme,
     required this.isSelected,
     required this.onTap,
+    this.trailingIcon,
     this.onLongPress,
     super.key,
   });
@@ -26,11 +26,17 @@ class ThemePreviewCard extends StatelessWidget {
   /// Called when the card is tapped.
   final VoidCallback onTap;
 
+  /// Optional trailing icon shown in the card footer.
+  final IconData? trailingIcon;
+
   /// Called when the card is long-pressed (for custom themes).
   final VoidCallback? onLongPress;
 
   TextStyle _getPreviewFontStyle({double fontSize = 8, Color? color}) {
-    final baseStyle = GoogleFonts.jetBrainsMono(fontSize: fontSize);
+    final baseStyle = TextStyle(
+      fontFamily: 'JetBrains Mono',
+      fontSize: fontSize,
+    );
     return color != null ? baseStyle.copyWith(color: color) : baseStyle;
   }
 
@@ -101,9 +107,9 @@ class ThemePreviewCard extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                       ),
                     ),
-                    if (theme.isCustom)
+                    if (trailingIcon != null || theme.isCustom)
                       Icon(
-                        Icons.edit,
+                        trailingIcon ?? Icons.download_done_outlined,
                         size: 12,
                         color: colorScheme.onSurfaceVariant,
                       ),

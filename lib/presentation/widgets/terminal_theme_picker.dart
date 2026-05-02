@@ -1,11 +1,18 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
-import 'package:google_fonts/google_fonts.dart';
 
+import '../../domain/models/iterm_color_scheme.dart';
 import '../../domain/models/terminal_theme.dart';
 import '../../domain/models/terminal_themes.dart';
+import '../../domain/services/iterm_color_scheme_service.dart';
 import '../../domain/services/terminal_theme_service.dart';
 import 'theme_preview_card.dart';
+
+const _liveThemeSearchMinLength = 2;
+const _liveThemeSearchDebounce = Duration(milliseconds: 350);
+const _liveThemeResultLimit = 24;
 
 /// A reusable widget for selecting terminal themes.
 ///
@@ -16,9 +23,6 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
   const TerminalThemePicker({
     required this.selectedThemeId,
     required this.onThemeSelected,
-    this.onCreateCustomTheme,
-    this.onEditCustomTheme,
-    this.onDeleteCustomTheme,
     super.key,
   });
 
@@ -28,15 +32,6 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
   /// Called when a theme is selected.
   final ValueChanged<TerminalThemeData> onThemeSelected;
 
-  /// Called when user wants to create a custom theme.
-  final VoidCallback? onCreateCustomTheme;
-
-  /// Called when user wants to edit a custom theme.
-  final ValueChanged<TerminalThemeData>? onEditCustomTheme;
-
-  /// Called when user wants to delete a custom theme.
-  final ValueChanged<TerminalThemeData>? onDeleteCustomTheme;
-
   @override
   ConsumerState<TerminalThemePicker> createState() =>
       _TerminalThemePickerState();
@@ -44,11 +39,16 @@ class TerminalThemePicker extends ConsumerStatefulWidget {
 
 class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
   String _searchQuery = '';
+  String _liveSearchQuery = '';
+  String? _importingSchemeId;
+  ItermColorSchemeMetadata? _previewingScheme;
   _ThemeFilter _filter = _ThemeFilter.all;
   final TextEditingController _searchController = TextEditingController();
+  Timer? _liveSearchDebounceTimer;
 
   @override
   void dispose() {
+    _liveSearchDebounceTimer?.cancel();
     _searchController.dispose();
     super.dispose();
   }
@@ -58,6 +58,15 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     final themesAsync = ref.watch(allTerminalThemesProvider);
     final colorScheme = Theme.of(context).colorScheme;
     final availableThemes = themesAsync.asData?.value ?? TerminalThemes.all;
+    final liveSearchText = _searchQuery.trim();
+    final isLiveSearchPending =
+        liveSearchText.length >= _liveThemeSearchMinLength &&
+        liveSearchText != _liveSearchQuery;
+    final liveResultsAsync =
+        _liveSearchQuery.length >= _liveThemeSearchMinLength &&
+            !isLiveSearchPending
+        ? ref.watch(itermColorSchemeSearchProvider(_liveSearchQuery))
+        : null;
 
     // Get the currently selected theme for the preview
     final currentTheme = widget.selectedThemeId != null
@@ -103,15 +112,12 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
                     suffixIcon: _searchQuery.isNotEmpty
                         ? IconButton(
                             icon: const Icon(Icons.clear),
-                            onPressed: () {
-                              _searchController.clear();
-                              setState(() => _searchQuery = '');
-                            },
+                            onPressed: _clearSearch,
                           )
                         : null,
                     isDense: true,
                   ),
-                  onChanged: (value) => setState(() => _searchQuery = value),
+                  onChanged: _handleSearchChanged,
                 ),
                 const SizedBox(height: 12),
                 // Filter chips
@@ -134,13 +140,6 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
                       isSelected: _filter == _ThemeFilter.light,
                       onTap: () => setState(() => _filter = _ThemeFilter.light),
                     ),
-                    const Spacer(),
-                    if (widget.onCreateCustomTheme != null)
-                      TextButton.icon(
-                        onPressed: widget.onCreateCustomTheme,
-                        icon: const Icon(Icons.add, size: 18),
-                        label: const Text('Custom'),
-                      ),
                   ],
                 ),
               ],
@@ -154,7 +153,7 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             const Center(child: Text('Could not load terminal themes.')),
         data: (themes) {
           final filtered = _filterThemes(themes);
-          if (filtered.isEmpty) {
+          if (filtered.isEmpty && liveSearchText.isEmpty) {
             return Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
@@ -174,10 +173,46 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             );
           }
 
-          return _buildThemeGrid(filtered);
+          return _buildThemeGrid(
+            filtered,
+            installedThemes: themes,
+            liveResultsAsync: liveResultsAsync,
+            isLiveSearchPending: isLiveSearchPending,
+          );
         },
       ),
     );
+  }
+
+  void _clearSearch() {
+    _liveSearchDebounceTimer?.cancel();
+    _searchController.clear();
+    setState(() {
+      _searchQuery = '';
+      _liveSearchQuery = '';
+      _previewingScheme = null;
+    });
+  }
+
+  void _handleSearchChanged(String value) {
+    _liveSearchDebounceTimer?.cancel();
+    final query = value.trim();
+    setState(() {
+      _searchQuery = value;
+      _previewingScheme = null;
+      if (query.length < _liveThemeSearchMinLength) {
+        _liveSearchQuery = '';
+      }
+    });
+    if (query.length < _liveThemeSearchMinLength || query == _liveSearchQuery) {
+      return;
+    }
+    _liveSearchDebounceTimer = Timer(_liveThemeSearchDebounce, () {
+      if (!mounted) {
+        return;
+      }
+      setState(() => _liveSearchQuery = query);
+    });
   }
 
   List<TerminalThemeData> _filterThemes(List<TerminalThemeData> themes) {
@@ -201,7 +236,12 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     return result;
   }
 
-  Widget _buildThemeGrid(List<TerminalThemeData> themes) {
+  Widget _buildThemeGrid(
+    List<TerminalThemeData> themes, {
+    required List<TerminalThemeData> installedThemes,
+    required AsyncValue<List<ItermColorSchemeMetadata>>? liveResultsAsync,
+    required bool isLiveSearchPending,
+  }) {
     // Separate custom themes
     final builtInThemes = themes.where((t) => !t.isCustom).toList();
     final customThemes = themes.where((t) => t.isCustom).toList();
@@ -209,6 +249,8 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
     // Group built-in by dark/light
     final darkThemes = builtInThemes.where((t) => t.isDark).toList();
     final lightThemes = builtInThemes.where((t) => !t.isDark).toList();
+
+    final installedThemeIds = installedThemes.map((theme) => theme.id).toSet();
 
     return ListView(
       padding: const EdgeInsets.symmetric(horizontal: 16),
@@ -240,9 +282,122 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             onThemeSelected: widget.onThemeSelected,
           ),
         ],
+        ..._buildLiveRepositorySection(
+          installedThemeIds: installedThemeIds,
+          liveResultsAsync: liveResultsAsync,
+          isLiveSearchPending: isLiveSearchPending,
+        ),
         const SizedBox(height: 24),
       ],
     );
+  }
+
+  List<Widget> _buildLiveRepositorySection({
+    required Set<String> installedThemeIds,
+    required AsyncValue<List<ItermColorSchemeMetadata>>? liveResultsAsync,
+    required bool isLiveSearchPending,
+  }) {
+    final query = _searchQuery.trim();
+    if (query.isEmpty) {
+      return const [];
+    }
+    if (query.length < _liveThemeSearchMinLength) {
+      return [
+        const SizedBox(height: 8),
+        const _SectionHeader(title: 'iTerm2ColorSchemes.com'),
+        const _LiveThemeMessage(
+          icon: Icons.search,
+          message: 'Type at least 2 characters to search the live repository.',
+        ),
+      ];
+    }
+
+    return [
+      const SizedBox(height: 8),
+      const _SectionHeader(title: 'iTerm2ColorSchemes.com'),
+      if (isLiveSearchPending)
+        const _LiveThemeMessage(
+          icon: Icons.sync,
+          message: 'Searching live repository...',
+          isLoading: true,
+        )
+      else if (liveResultsAsync == null)
+        const _LiveThemeMessage(
+          icon: Icons.search,
+          message: 'Type at least 2 characters to search the live repository.',
+        )
+      else
+        liveResultsAsync.when(
+          loading: () => const _LiveThemeMessage(
+            icon: Icons.sync,
+            message: 'Searching live repository...',
+            isLoading: true,
+          ),
+          error: (_, _) => const _LiveThemeMessage(
+            icon: Icons.cloud_off_outlined,
+            message: 'Could not search iTerm2ColorSchemes.com.',
+          ),
+          data: (schemes) {
+            final remoteSchemes = schemes
+                .where((scheme) => !installedThemeIds.contains(scheme.id))
+                .toList(growable: false);
+            if (remoteSchemes.isEmpty) {
+              return const _LiveThemeMessage(
+                icon: Icons.check_circle_outline,
+                message:
+                    'No additional live themes found. Matching built-ins are shown above.',
+              );
+            }
+            return _LiveThemePreviewGrid(
+              schemes: remoteSchemes,
+              importingSchemeId: _importingSchemeId,
+              previewingScheme: _previewingScheme,
+              onSchemePreviewed: (scheme) =>
+                  setState(() => _previewingScheme = scheme),
+              onSchemeSelected: _importLiveScheme,
+            );
+          },
+        ),
+    ];
+  }
+
+  Future<void> _importLiveScheme(ItermColorSchemeMetadata scheme) async {
+    if (_importingSchemeId != null) {
+      return;
+    }
+
+    var didSelectTheme = false;
+    setState(() => _importingSchemeId = scheme.id);
+    try {
+      final liveSchemeService = ref.read(itermColorSchemeServiceProvider);
+      final importedTheme = await liveSchemeService.loadTheme(scheme);
+      final builtInTheme = TerminalThemes.getById(importedTheme.id);
+      final theme = builtInTheme ?? importedTheme.copyWith(isCustom: true);
+
+      if (builtInTheme == null) {
+        await ref.read(terminalThemeServiceProvider).saveCustomTheme(theme);
+        ref
+          ..invalidate(allTerminalThemesProvider)
+          ..invalidate(customTerminalThemesProvider);
+      }
+
+      if (mounted) {
+        didSelectTheme = true;
+        widget.onThemeSelected(theme);
+      }
+    } on ItermColorSchemeException catch (error) {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not import ${scheme.name}: ${error.message}'),
+          ),
+        );
+      }
+    } finally {
+      if (mounted && !didSelectTheme) {
+        setState(() => _importingSchemeId = null);
+      }
+    }
   }
 
   void _handleCustomThemeLongPress(TerminalThemeData theme) {
@@ -252,14 +407,6 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            ListTile(
-              leading: const Icon(Icons.edit),
-              title: const Text('Edit theme'),
-              onTap: () {
-                Navigator.pop(context);
-                widget.onEditCustomTheme?.call(theme);
-              },
-            ),
             ListTile(
               leading: Icon(
                 Icons.delete,
@@ -292,9 +439,9 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             child: const Text('Cancel'),
           ),
           FilledButton(
-            onPressed: () {
+            onPressed: () async {
               Navigator.pop(context);
-              widget.onDeleteCustomTheme?.call(theme);
+              await _deleteCustomTheme(theme);
             },
             style: FilledButton.styleFrom(
               backgroundColor: Theme.of(context).colorScheme.error,
@@ -302,6 +449,405 @@ class _TerminalThemePickerState extends ConsumerState<TerminalThemePicker> {
             child: const Text('Delete'),
           ),
         ],
+      ),
+    );
+  }
+
+  Future<void> _deleteCustomTheme(TerminalThemeData theme) async {
+    try {
+      await ref.read(terminalThemeServiceProvider).deleteCustomTheme(theme.id);
+      ref
+        ..invalidate(allTerminalThemesProvider)
+        ..invalidate(customTerminalThemesProvider);
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Deleted "${theme.name}"')));
+    } on Object catch (error) {
+      if (!mounted) {
+        return;
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('Could not delete "${theme.name}": $error')),
+      );
+    }
+  }
+}
+
+class _LiveThemePreviewGrid extends StatelessWidget {
+  const _LiveThemePreviewGrid({
+    required this.schemes,
+    required this.importingSchemeId,
+    required this.previewingScheme,
+    required this.onSchemePreviewed,
+    required this.onSchemeSelected,
+  });
+
+  final List<ItermColorSchemeMetadata> schemes;
+  final String? importingSchemeId;
+  final ItermColorSchemeMetadata? previewingScheme;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemePreviewed;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemeSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final visibleSchemes = schemes
+        .take(_liveThemeResultLimit)
+        .toList(growable: false);
+    final activePreview =
+        previewingScheme != null &&
+            visibleSchemes.any((scheme) => scheme.id == previewingScheme!.id)
+        ? previewingScheme
+        : null;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (activePreview != null) ...[
+          SizedBox(
+            height: 168,
+            child: _LiveThemePreviewCard(
+              scheme: activePreview,
+              isImporting: importingSchemeId == activePreview.id,
+              isBusy: importingSchemeId != null,
+              onTap: () => onSchemeSelected(activePreview),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
+        _LiveThemeCompactList(
+          schemes: visibleSchemes,
+          importingSchemeId: importingSchemeId,
+          previewingSchemeId: activePreview?.id,
+          onSchemePreviewed: onSchemePreviewed,
+          onSchemeSelected: onSchemeSelected,
+        ),
+        if (schemes.length > visibleSchemes.length) ...[
+          const SizedBox(height: 12),
+          _LiveThemeMessage(
+            icon: Icons.manage_search,
+            message:
+                'Showing the first ${visibleSchemes.length} live matches. '
+                'Refine your search to narrow the results.',
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _LiveThemeCompactList extends StatelessWidget {
+  const _LiveThemeCompactList({
+    required this.schemes,
+    required this.importingSchemeId,
+    required this.previewingSchemeId,
+    required this.onSchemePreviewed,
+    required this.onSchemeSelected,
+  });
+
+  final List<ItermColorSchemeMetadata> schemes;
+  final String? importingSchemeId;
+  final String? previewingSchemeId;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemePreviewed;
+  final ValueChanged<ItermColorSchemeMetadata> onSchemeSelected;
+
+  @override
+  Widget build(BuildContext context) => Card(
+    margin: EdgeInsets.zero,
+    child: Column(
+      children: [
+        for (final scheme in schemes)
+          _LiveThemeCompactTile(
+            scheme: scheme,
+            isImporting: importingSchemeId == scheme.id,
+            isBusy: importingSchemeId != null,
+            isPreviewing: previewingSchemeId == scheme.id,
+            onPreview: () => onSchemePreviewed(scheme),
+            onImport: () => onSchemeSelected(scheme),
+          ),
+      ],
+    ),
+  );
+}
+
+class _LiveThemeCompactTile extends StatelessWidget {
+  const _LiveThemeCompactTile({
+    required this.scheme,
+    required this.isImporting,
+    required this.isBusy,
+    required this.isPreviewing,
+    required this.onPreview,
+    required this.onImport,
+  });
+
+  final ItermColorSchemeMetadata scheme;
+  final bool isImporting;
+  final bool isBusy;
+  final bool isPreviewing;
+  final VoidCallback onPreview;
+  final VoidCallback onImport;
+
+  @override
+  Widget build(BuildContext context) => ListTile(
+    leading: isImporting
+        ? const SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : const Icon(Icons.palette_outlined),
+    title: Text(scheme.name),
+    subtitle: Text(
+      isPreviewing
+          ? 'Preview shown above'
+          : 'Preview before importing from iTerm2ColorSchemes.com',
+    ),
+    trailing: IconButton(
+      icon: const Icon(Icons.download_outlined),
+      tooltip: 'Import theme',
+      onPressed: isBusy ? null : onImport,
+    ),
+    enabled: !isBusy || isImporting,
+    selected: isPreviewing,
+    onTap: isBusy ? null : onPreview,
+  );
+}
+
+class _LiveThemePreviewCard extends ConsumerWidget {
+  const _LiveThemePreviewCard({
+    required this.scheme,
+    required this.isImporting,
+    required this.isBusy,
+    required this.onTap,
+  });
+
+  final ItermColorSchemeMetadata scheme;
+  final bool isImporting;
+  final bool isBusy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context, WidgetRef ref) {
+    final themeAsync = ref.watch(itermColorSchemeThemeProvider(scheme));
+    return themeAsync.when(
+      data: (theme) => _LiveThemePreviewFrame(
+        isImporting: isImporting,
+        child: ThemePreviewCard(
+          theme: theme,
+          isSelected: false,
+          trailingIcon: Icons.download_outlined,
+          onTap: isBusy ? () {} : onTap,
+        ),
+      ),
+      loading: () => _LiveThemePreviewPlaceholder(
+        name: scheme.name,
+        isImporting: isImporting,
+        isBusy: isBusy,
+        onTap: onTap,
+      ),
+      error: (_, _) => _LiveThemePreviewError(
+        name: scheme.name,
+        isBusy: isBusy,
+        onTap: onTap,
+      ),
+    );
+  }
+}
+
+class _LiveThemePreviewFrame extends StatelessWidget {
+  const _LiveThemePreviewFrame({
+    required this.child,
+    required this.isImporting,
+  });
+
+  final Widget child;
+  final bool isImporting;
+
+  @override
+  Widget build(BuildContext context) => Stack(
+    fit: StackFit.expand,
+    children: [
+      child,
+      if (isImporting)
+        DecoratedBox(
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.scrim.withAlpha(90),
+            borderRadius: BorderRadius.circular(12),
+          ),
+          child: const Center(child: CircularProgressIndicator()),
+        ),
+    ],
+  );
+}
+
+class _LiveThemePreviewPlaceholder extends StatelessWidget {
+  const _LiveThemePreviewPlaceholder({
+    required this.name,
+    required this.isImporting,
+    required this.isBusy,
+    required this.onTap,
+  });
+
+  final String name;
+  final bool isImporting;
+  final bool isBusy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) => _LiveThemePreviewFrame(
+    isImporting: isImporting,
+    child: _LiveThemePreviewShell(
+      name: name,
+      icon: Icons.download_outlined,
+      onTap: isBusy ? null : onTap,
+      child: const Center(
+        child: SizedBox.square(
+          dimension: 24,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+      ),
+    ),
+  );
+}
+
+class _LiveThemePreviewError extends StatelessWidget {
+  const _LiveThemePreviewError({
+    required this.name,
+    required this.isBusy,
+    required this.onTap,
+  });
+
+  final String name;
+  final bool isBusy;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return _LiveThemePreviewShell(
+      name: name,
+      icon: Icons.refresh,
+      onTap: isBusy ? null : onTap,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Icon(Icons.broken_image_outlined, color: colorScheme.error),
+          const SizedBox(height: 8),
+          Text(
+            'Preview unavailable',
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: colorScheme.onSurfaceVariant,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LiveThemePreviewShell extends StatelessWidget {
+  const _LiveThemePreviewShell({
+    required this.name,
+    required this.icon,
+    required this.child,
+    required this.onTap,
+  });
+
+  final String name;
+  final IconData icon;
+  final Widget child;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return GestureDetector(
+      onTap: onTap,
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: colorScheme.outline),
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(11),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Expanded(
+                child: ColoredBox(
+                  color: colorScheme.surfaceContainerHighest,
+                  child: child,
+                ),
+              ),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                decoration: BoxDecoration(
+                  color: colorScheme.surfaceContainerHighest,
+                  border: Border(top: BorderSide(color: colorScheme.outline)),
+                ),
+                child: Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        name,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w500,
+                        ),
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                    Icon(icon, size: 12, color: colorScheme.onSurfaceVariant),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LiveThemeMessage extends StatelessWidget {
+  const _LiveThemeMessage({
+    required this.icon,
+    required this.message,
+    this.isLoading = false,
+  });
+
+  final IconData icon;
+  final String message;
+  final bool isLoading;
+
+  @override
+  Widget build(BuildContext context) {
+    final colorScheme = Theme.of(context).colorScheme;
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Row(
+          children: [
+            if (isLoading)
+              const SizedBox.square(
+                dimension: 20,
+                child: CircularProgressIndicator(strokeWidth: 2),
+              )
+            else
+              Icon(icon, color: colorScheme.onSurfaceVariant),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                message,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -410,7 +956,8 @@ class _CurrentSelectionPreview extends StatelessWidget {
                 const SizedBox(height: 3),
                 Text(
                   r'$ _',
-                  style: GoogleFonts.jetBrainsMono(
+                  style: TextStyle(
+                    fontFamily: 'JetBrains Mono',
                     fontSize: 8,
                     color: theme.foreground,
                   ),
@@ -472,6 +1019,9 @@ class _ThemeGridSection extends StatelessWidget {
     // Use responsive grid based on screen width
     final screenWidth = MediaQuery.of(context).size.width;
     final crossAxisCount = screenWidth < 360 ? 2 : (screenWidth < 600 ? 3 : 4);
+    final resolvedSelectedThemeId = selectedThemeId == null
+        ? null
+        : TerminalThemes.resolveThemeId(selectedThemeId!);
 
     return GridView.builder(
       shrinkWrap: true,
@@ -487,7 +1037,7 @@ class _ThemeGridSection extends StatelessWidget {
         final theme = themes[index];
         return ThemePreviewCard(
           theme: theme,
-          isSelected: theme.id == selectedThemeId,
+          isSelected: theme.id == resolvedSelectedThemeId,
           onTap: () => onThemeSelected(theme),
           onLongPress: onLongPress != null ? () => onLongPress!(theme) : null,
         );
@@ -500,7 +1050,6 @@ class _ThemeGridSection extends StatelessWidget {
 Future<TerminalThemeData?> showThemePickerDialog({
   required BuildContext context,
   required String? currentThemeId,
-  VoidCallback? onCreateCustomTheme,
 }) async => showModalBottomSheet<TerminalThemeData>(
   context: context,
   isScrollControlled: true,
@@ -544,7 +1093,6 @@ Future<TerminalThemeData?> showThemePickerDialog({
           child: TerminalThemePicker(
             selectedThemeId: currentThemeId,
             onThemeSelected: (theme) => Navigator.pop(context, theme),
-            onCreateCustomTheme: onCreateCustomTheme,
           ),
         ),
       ],

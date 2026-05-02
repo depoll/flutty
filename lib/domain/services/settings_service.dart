@@ -663,8 +663,6 @@ class TerminalThemeSettings {
 
 /// Notifier for terminal theme settings.
 class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
-  static const _legacyDefaultTerminalThemeIds = {'github-light', 'dracula'};
-
   late SettingsService _settings;
   bool _disposed = false;
 
@@ -752,12 +750,12 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     if (themeId == null || themeId.isEmpty) {
       return defaultThemeId;
     }
-    if (TerminalThemes.getById(themeId) != null ||
-        customThemeIds.contains(themeId)) {
+    if (customThemeIds.contains(themeId)) {
       return themeId;
     }
-    if (_legacyDefaultTerminalThemeIds.contains(themeId)) {
-      return defaultThemeId;
+    final resolvedThemeId = TerminalThemes.resolveThemeId(themeId);
+    if (TerminalThemes.getById(resolvedThemeId) != null) {
+      return resolvedThemeId;
     }
     return defaultThemeId;
   }

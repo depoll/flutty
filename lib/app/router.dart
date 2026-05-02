@@ -19,7 +19,6 @@ import '../presentation/screens/sftp_screen.dart';
 import '../presentation/screens/snippet_edit_screen.dart';
 import '../presentation/screens/snippets_screen.dart';
 import '../presentation/screens/terminal_screen.dart';
-import '../presentation/screens/theme_editor_screen.dart';
 import '../presentation/screens/upgrade_screen.dart';
 import 'routes.dart';
 
@@ -203,19 +202,6 @@ final routerProvider = Provider<GoRouter>((ref) {
             blockedAction: state.uri.queryParameters['action'],
             blockedOutcome: state.uri.queryParameters['outcome'],
           );
-        },
-      ),
-      GoRoute(
-        path: '/theme-editor',
-        name: Routes.themeEditorNew,
-        builder: (context, state) => const ThemeEditorScreen(),
-      ),
-      GoRoute(
-        path: '/theme-editor/:themeId',
-        name: Routes.themeEditor,
-        builder: (context, state) {
-          final themeId = state.pathParameters['themeId'];
-          return ThemeEditorScreen(themeId: themeId);
         },
       ),
     ],

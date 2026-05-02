@@ -230,6 +230,20 @@ bool shouldPreserveTerminalTmuxStateAfterDetectionFailure({
   return hadVisibleOrPrimedTmuxState && hadDetectionFailure;
 }
 
+/// Returns whether detection should show the expected tmux UI before exec
+/// probes complete.
+@visibleForTesting
+bool shouldPrimeTerminalTmuxStateWhileDetecting({
+  required String? candidateSessionName,
+  required bool hasExistingVisibleTmuxState,
+  required bool mayPreserveExistingTmuxState,
+  required bool isReopeningExistingTerminal,
+}) =>
+    candidateSessionName != null &&
+    !hasExistingVisibleTmuxState &&
+    !mayPreserveExistingTmuxState &&
+    isReopeningExistingTerminal;
+
 /// Chooses the tmux session name to verify during detection.
 ///
 /// Prefer explicit route/host configuration, but keep verifying the existing
@@ -248,6 +262,22 @@ String? resolveTmuxDetectionCandidateSessionName({
     return existing;
   }
   return null;
+}
+
+/// Keeps an existing tmux session candidate scoped to the SSH connection that
+/// created it.
+@visibleForTesting
+String? resolveOwnedTmuxDetectionExistingSessionName({
+  required int sessionConnectionId,
+  required int? tmuxStateConnectionId,
+  String? existingSessionName,
+}) {
+  if (tmuxStateConnectionId != sessionConnectionId) {
+    return null;
+  }
+  return resolveTmuxDetectionCandidateSessionName(
+    existingSessionName: existingSessionName,
+  );
 }
 
 /// Returns whether a tmux bar widget update should keep its last window list.
@@ -293,7 +323,7 @@ bool shouldReattachTmuxAfterWindowAction({
   if (hasForegroundClient) {
     return false;
   }
-  return shellStatus != TerminalShellStatus.runningCommand;
+  return shellStatus == TerminalShellStatus.prompt;
 }
 
 /// Returns whether shell-command review warnings should be shown for text
@@ -2872,6 +2902,11 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
+/// Chooses the platform keyboard appearance that best matches a terminal theme.
+@visibleForTesting
+Brightness resolveTerminalKeyboardAppearance(TerminalThemeData theme) =>
+    theme.isDark ? Brightness.dark : Brightness.light;
+
 /// Applies pasted or rendered text at the terminal cursor within a wrapped line.
 @visibleForTesting
 String applyTerminalCursorInsertion({
@@ -3300,11 +3335,30 @@ class _InitialTmuxWindowTarget {
   final bool requiresVisibleSession;
 }
 
+class _TmuxTerminalThemeRefreshRequest {
+  const _TmuxTerminalThemeRefreshRequest({
+    required this.theme,
+    required this.session,
+    required this.sessionName,
+    required this.refreshGeneration,
+    required this.reason,
+    required this.extraFlags,
+  });
+
+  final TerminalThemeData theme;
+  final SshSession session;
+  final String sessionName;
+  final int refreshGeneration;
+  final String reason;
+  final String? extraFlags;
+}
+
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
   static const _remoteClipboardSyncInterval = Duration(seconds: 1);
   static const _promptOutputImeResetDebounce = Duration(milliseconds: 75);
+  static const _tmuxForegroundVerificationInterval = Duration(seconds: 5);
   final _terminalViewKey = GlobalKey<MonkeyTerminalViewState>();
   final _tmuxBarKey = GlobalKey<_TmuxExpandableBarState>();
 
@@ -3344,6 +3398,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  int? _tmuxStateConnectionId;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -3351,6 +3406,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   String? _tmuxWorkingDirectory;
   int _tmuxDetectionGeneration = 0;
   int _tmuxBarRecoveryGeneration = 0;
+  int _tmuxForegroundVerificationGeneration = 0;
+  Timer? _tmuxForegroundVerificationTimer;
+  bool _tmuxForegroundVerificationInFlight = false;
   final Map<String, _VerifiedTerminalPath> _verifiedTerminalPathCache =
       <String, _VerifiedTerminalPath>{};
   final ListQueue<String> _verifiedTerminalPathCacheOrder = ListQueue<String>();
@@ -3392,6 +3450,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   late final ProviderSubscription<bool> _sharedClipboardSubscription;
   late final ProviderSubscription<bool> _sharedClipboardLocalReadSubscription;
   late final ProviderSubscription<bool> _terminalWakeLockSubscription;
+  late final ProviderSubscription<TerminalThemeSettings>
+  _terminalThemeSettingsSubscription;
+  late final ProviderSubscription<ThemeMode> _themeModeSubscription;
   late final TerminalWakeLockService _terminalWakeLockService;
   late final int _terminalWakeLockOwnerId;
   Timer? _localClipboardSyncTimer;
@@ -3417,7 +3478,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   TerminalThemeData? _sessionThemeOverride;
   final Object _terminalAppThemeOverrideOwner = Object();
   late final TerminalAppThemeOverrideNotifier _terminalAppThemeOverrideNotifier;
+  Brightness? _lastThemeDependencyBrightness;
   int _terminalThemeRefreshGeneration = 0;
+  final Set<Timer> _terminalThemeRefreshTimers = <Timer>{};
+  bool _isTmuxThemeRefreshRunning = false;
+  _TmuxTerminalThemeRefreshRequest? _pendingTmuxThemeRefreshRequest;
+  bool _terminalThemeDependencyReloadQueued = false;
+  bool _pendingTerminalThemeDependencyReload = false;
+  bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+  String _pendingTerminalThemeDependencyReason = 'unknown';
 
   // Cache the notifier for use in dispose
   ActiveSessionsNotifier? _sessionsNotifier;
@@ -3563,6 +3632,16 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   @override
   void initState() {
     super.initState();
+    DiagnosticsLogService.instance.info(
+      'terminal.screen',
+      'init',
+      fields: {
+        'hostId': widget.hostId,
+        'hasConnectionId': widget.connectionId != null,
+        'hasInitialTmuxSession': widget.initialTmuxSessionName != null,
+        'hasInitialTmuxWindow': widget.initialTmuxWindowIndex != null,
+      },
+    );
     _pendingInitialTmuxWindowTarget = _buildInitialTmuxWindowTarget(widget);
     WidgetsBinding.instance.addObserver(this);
     _sharedClipboardSubscription = ref.listenManual<bool>(
@@ -3595,6 +3674,31 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       (previous, next) {
         _terminalWakeLockSetting = next;
         _syncTerminalWakeLock();
+      },
+    );
+    _terminalThemeSettingsSubscription = ref
+        .listenManual<TerminalThemeSettings>(terminalThemeSettingsProvider, (
+          previous,
+          next,
+        ) {
+          if (_sameTerminalThemeSettings(previous, next)) {
+            return;
+          }
+          _handleTerminalThemeDependenciesChanged(
+            forceRemoteRefresh: true,
+            reason: 'settings_changed',
+          );
+        });
+    _themeModeSubscription = ref.listenManual<ThemeMode>(
+      themeModeNotifierProvider,
+      (previous, next) {
+        if (previous == next) {
+          return;
+        }
+        _handleTerminalThemeDependenciesChanged(
+          forceRemoteRefresh: true,
+          reason: 'theme_mode_changed',
+        );
       },
     );
     _terminal = Terminal(maxLines: 10000);
@@ -3724,6 +3828,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void _applyTerminalThemeToSession(
     TerminalThemeData theme, {
     SshSession? session,
+    bool forceRemoteRefresh = false,
+    String reason = 'unspecified',
   }) {
     final targetSession =
         session ??
@@ -3731,41 +3837,721 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         (_connectionId == null
             ? null
             : _sessionsNotifier?.getSession(_connectionId!));
-    final previousTheme = targetSession?.terminalTheme;
-    targetSession?.terminalTheme = theme;
-    if (previousTheme != null &&
-        previousTheme.id != theme.id &&
-        targetSession?.terminal == _terminal) {
-      _refreshTerminalThemeForTui(theme, targetSession!);
+    if (targetSession == null) {
+      if (reason != 'build') {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'apply_no_session',
+          fields: {
+            'reason': reason,
+            'connectionId': _connectionId,
+            'forceRemoteRefresh': forceRemoteRefresh,
+          },
+        );
+      }
+      return;
+    }
+    final previousTheme = targetSession.terminalTheme;
+    targetSession.terminalTheme = theme;
+    if (targetSession.terminal != _terminal) {
+      if (reason != 'build') {
+        DiagnosticsLogService.instance.info(
+          'terminal.theme',
+          'apply_foreign_terminal',
+          fields: {
+            'reason': reason,
+            'connectionId': targetSession.connectionId,
+            'forceRemoteRefresh': forceRemoteRefresh,
+            'hasSessionTerminal': targetSession.terminal != null,
+          },
+        );
+      }
+      return;
+    }
+    final didThemeChange =
+        previousTheme != null &&
+        !_terminalThemesMatchForRemoteRefresh(previousTheme, theme);
+    final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(
+      targetSession,
+    );
+    final shouldRefreshFirstTheme =
+        previousTheme == null && (_isTmuxActive || plainTuiRefreshAllowed);
+    final willRefresh =
+        forceRemoteRefresh || didThemeChange || shouldRefreshFirstTheme;
+    if (willRefresh || reason != 'build') {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'apply_decision',
+        fields: {
+          'reason': reason,
+          'connectionId': targetSession.connectionId,
+          'forceRemoteRefresh': forceRemoteRefresh,
+          'hasPreviousTheme': previousTheme != null,
+          'didThemeChange': didThemeChange,
+          'shouldRefreshFirstTheme': shouldRefreshFirstTheme,
+          'willRefresh': willRefresh,
+          'isTmuxActive': _isTmuxActive,
+          'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
+          'colorSchemeUpdatesMode':
+              targetSession.terminalColorSchemeUpdatesMode,
+          'focusMode': _terminal.reportFocusMode,
+          'altBuffer': _terminal.isUsingAltBuffer,
+          'mouseMode': _terminal.mouseMode != MouseMode.none,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+    }
+    if (willRefresh) {
+      _refreshTerminalThemeForTui(theme, targetSession, reason: reason);
+      return;
     }
   }
 
   void _refreshTerminalThemeForTui(
     TerminalThemeData theme,
-    SshSession session,
-  ) {
+    SshSession session, {
+    required String reason,
+  }) {
+    _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
-    final terminalViewState = _terminalViewKey.currentState;
-    if (_isTmuxActive) {
-      terminalViewState?.refreshThemeModeReport(isDark: theme.isDark);
-      unawaited(
-        Future<void>.delayed(const Duration(milliseconds: 150), () {
-          if (!mounted ||
-              refreshGeneration != _terminalThemeRefreshGeneration ||
-              session.terminal != _terminal ||
-              session.terminalTheme?.id != theme.id) {
-            return;
-          }
-          _terminalViewKey.currentState?.refreshFocusReport();
-        }),
+    final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(session);
+    final tmuxStateBelongsToSession =
+        _tmuxStateConnectionId == session.connectionId;
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'refresh_requested',
+      fields: {
+        'reason': reason,
+        'connectionId': session.connectionId,
+        'isTmuxActive': _isTmuxActive,
+        'tmuxStateBelongsToSession': tmuxStateBelongsToSession,
+        'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
+        'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+        'focusMode': _terminal.reportFocusMode,
+        'altBuffer': _terminal.isUsingAltBuffer,
+        'mouseMode': _terminal.mouseMode != MouseMode.none,
+        'shellReady': _shell != null,
+        'terminalViewReady': _terminalViewKey.currentState != null,
+      },
+    );
+    if (_isTmuxActive && tmuxStateBelongsToSession) {
+      // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
+      // terminal's default colors and ANSI palette and answers inner-pane OSC
+      // queries from that cache.
+      _refreshTerminalThemeReportsForTui(
+        theme,
+        includeColorReports: true,
+        reason: '${reason}_tmux_outer',
+      );
+      _refreshTmuxClientAfterTerminalThemeChange(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        reason: reason,
       );
       return;
     }
 
-    terminalViewState?.refreshFocusReport();
+    if (!plainTuiRefreshAllowed) {
+      // A bare shell prompt treats terminal reports as typed input. Only send
+      // synthetic reports after a foreground app has enabled terminal-control
+      // modes that identify it as a TUI.
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'plain_refresh_skipped',
+        fields: {
+          'reason': reason,
+          'connectionId': session.connectionId,
+          'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
+          'focusMode': _terminal.reportFocusMode,
+          'altBuffer': _terminal.isUsingAltBuffer,
+          'mouseMode': _terminal.mouseMode != MouseMode.none,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      return;
+    }
+
+    // Do not send unsolicited OSC palette replies directly to a plain
+    // foreground TUI. Codex treats those bytes as user input, and its crossterm
+    // color re-query can also be disrupted by unrelated terminal reports.
+    // Always send a synthetic focus transition so focus-aware TUIs re-query OSC
+    // 10/11 through the normal path; only send the private theme-mode and
+    // default-color response cycle to apps that explicitly requested DEC 2031
+    // color-scheme updates.
+    final includeThemeModeReport = session.terminalColorSchemeUpdatesMode;
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeThemeModeReport: false,
+      reason: '${reason}_plain_focus',
+    );
+    if (includeThemeModeReport) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 250),
+        includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode',
+      );
+      for (final delay in const [
+        Duration(milliseconds: 330),
+        Duration(milliseconds: 410),
+        Duration(milliseconds: 490),
+      ]) {
+        _scheduleTerminalThemeRefreshForTui(
+          theme: theme,
+          session: session,
+          refreshGeneration: refreshGeneration,
+          delay: delay,
+          includeFocusReport: false,
+          includeThemeModeReport: false,
+          includeDefaultColorReports: true,
+          reason: '${reason}_plain_defaults',
+        );
+      }
+    }
+    _scheduleTerminalThemeRefreshForTui(
+      theme: theme,
+      session: session,
+      refreshGeneration: refreshGeneration,
+      delay: const Duration(milliseconds: 550),
+      includeThemeModeReport: false,
+      reason: '${reason}_plain_focus_late',
+    );
+    if (includeThemeModeReport) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 800),
+        includeFocusReport: false,
+        reason: '${reason}_plain_theme_mode_late',
+      );
+    }
+  }
+
+  void _refreshTerminalThemeReportsForTui(
+    TerminalThemeData theme, {
+    bool includeThemeModeReport = true,
+    bool includeColorReports = false,
+    bool includeDefaultColorReports = false,
+    bool includeFocusReport = true,
+    String reason = 'unspecified',
+  }) {
+    final terminalView = _terminalViewKey.currentState;
+    if (terminalView == null) {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'reports_unavailable',
+        fields: {
+          'reason': reason,
+          'includeThemeModeReport': includeThemeModeReport,
+          'includeColorReports': includeColorReports,
+          'includeDefaultColorReports': includeDefaultColorReports,
+          'includeFocusReport': includeFocusReport,
+          'shellReady': _shell != null,
+          'hasOutputCallback': _terminal.onOutput != null,
+        },
+      );
+      return;
+    }
+    DiagnosticsLogService.instance.debug(
+      'terminal.theme',
+      'reports_sent',
+      fields: {
+        'reason': reason,
+        'includeThemeModeReport': includeThemeModeReport,
+        'includeColorReports': includeColorReports,
+        'includeDefaultColorReports': includeDefaultColorReports,
+        'includeFocusReport': includeFocusReport,
+        'shellReady': _shell != null,
+        'hasOutputCallback': _terminal.onOutput != null,
+      },
+    );
+    if (includeThemeModeReport) {
+      terminalView.refreshThemeModeReport(isDark: theme.isDark);
+    }
+    if (includeColorReports) {
+      terminalView.refreshThemeColorReports(theme);
+    }
+    if (includeDefaultColorReports) {
+      terminalView.refreshThemeDefaultColorReports(theme);
+    }
+    if (includeFocusReport) {
+      terminalView.refreshFocusReport(forceTransition: true, force: true);
+    }
+  }
+
+  bool _shouldRefreshPlainTerminalTui(SshSession session) =>
+      session.terminalColorSchemeUpdatesMode ||
+      _terminal.reportFocusMode ||
+      _terminal.isUsingAltBuffer ||
+      _terminal.mouseMode != MouseMode.none;
+
+  /// Proactively pushes the active terminal theme into tmux's per-pane color
+  /// cache.
+  ///
+  /// Called whenever tmux is freshly detected or re-detected, regardless of
+  /// whether a theme switch just happened. tmux caches the outer terminal's
+  /// default colors per-pane, populated either when tmux first queries the
+  /// outer client or via unsolicited OSC reports. If MonkeySSH attaches to a
+  /// tmux session that was started under a different (or wrong) outer
+  /// terminal — or if a previous attach landed before [SshSession.terminalTheme]
+  /// was set — the cache can answer inner-pane OSC 10/11/12 queries with stale
+  /// values forever. TUIs like Codex CLI bake those answers into their
+  /// composer/surface colors, leaving them mismatched until the cache is
+  /// refreshed.
+  ///
+  /// This priming sends the same OSC reports + tmux pane palette update +
+  /// foreground-client redraw that a theme switch would. It also wakes the
+  /// foreground pane because tmux may be detected after a TUI has already
+  /// cached stale default colors.
+  void _primeTmuxTerminalTheme(SshSession session) {
+    if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
+      return;
+    }
+    _cancelTerminalThemeRefreshTimers();
+    final theme = session.terminalTheme ?? _resolveEffectiveTerminalTheme();
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'tmux_prime_requested',
+      fields: {
+        'connectionId': session.connectionId,
+        'hasTmuxSessionName': _tmuxSessionName != null,
+        'shellReady': _shell != null,
+        'terminalViewReady': _terminalViewKey.currentState != null,
+      },
+    );
+    _refreshTerminalThemeReportsForTui(
+      theme,
+      includeColorReports: true,
+      reason: 'tmux_prime_outer',
+    );
+
+    final tmuxSessionName = _tmuxSessionName;
+    if (tmuxSessionName == null) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: ++_terminalThemeRefreshGeneration,
+        delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
+        reason: 'tmux_prime_no_session_name',
+      );
+      return;
+    }
+    final refreshGeneration = ++_terminalThemeRefreshGeneration;
+    final extraFlags = _host?.tmuxExtraFlags;
+    _queueTmuxTerminalThemeRefresh(
+      _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: tmuxSessionName,
+        refreshGeneration: refreshGeneration,
+        reason: 'tmux_prime',
+        extraFlags: extraFlags,
+      ),
+    );
+    for (final (:delay, :reason) in const [
+      (delay: Duration(milliseconds: 900), reason: 'tmux_prime_late_900ms'),
+      (delay: Duration(milliseconds: 1800), reason: 'tmux_prime_late_1800ms'),
+    ]) {
+      _scheduleTmuxTerminalThemeRefresh(
+        _TmuxTerminalThemeRefreshRequest(
+          theme: theme,
+          session: session,
+          sessionName: tmuxSessionName,
+          refreshGeneration: refreshGeneration,
+          reason: reason,
+          extraFlags: extraFlags,
+        ),
+        delay: delay,
+      );
+    }
+  }
+
+  void _refreshTmuxClientAfterTerminalThemeChange({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+    required String reason,
+  }) {
+    final tmuxSessionName = _tmuxSessionName;
+    if (tmuxSessionName == null) {
+      _scheduleTerminalThemeRefreshForTui(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+        delay: const Duration(milliseconds: 150),
+        includeColorReports: true,
+        reason: '${reason}_tmux_no_session_name',
+      );
+      return;
+    }
+
+    _scheduleTmuxTerminalThemeRefresh(
+      _TmuxTerminalThemeRefreshRequest(
+        theme: theme,
+        session: session,
+        sessionName: tmuxSessionName,
+        refreshGeneration: refreshGeneration,
+        reason: reason,
+        extraFlags: _host?.tmuxExtraFlags,
+      ),
+      delay: const Duration(milliseconds: 75),
+    );
+  }
+
+  void _scheduleTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request, {
+    required Duration delay,
+  }) {
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (_tmuxSessionName != request.sessionName ||
+          !_isCurrentTerminalThemeRefresh(
+            theme: request.theme,
+            session: request.session,
+            refreshGeneration: request.refreshGeneration,
+          )) {
+        return;
+      }
+      _queueTmuxTerminalThemeRefresh(request);
+    });
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
+  void _queueTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) {
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+    if (_isTmuxThemeRefreshRunning) {
+      _pendingTmuxThemeRefreshRequest = request;
+      DiagnosticsLogService.instance.debug(
+        'terminal.theme',
+        'tmux_refresh_queued',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      return;
+    }
+
+    _isTmuxThemeRefreshRunning = true;
+    unawaited(_runQueuedTmuxTerminalThemeRefresh(request));
+  }
+
+  Future<void> _runQueuedTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest initialRequest,
+  ) async {
+    try {
+      var request = initialRequest;
+      while (true) {
+        await _runTmuxTerminalThemeRefresh(request);
+        final nextRequest = _pendingTmuxThemeRefreshRequest;
+        _pendingTmuxThemeRefreshRequest = null;
+        if (nextRequest == null ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: nextRequest.theme,
+              session: nextRequest.session,
+              refreshGeneration: nextRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        request = nextRequest;
+      }
+    } finally {
+      _isTmuxThemeRefreshRunning = false;
+    }
+  }
+
+  Future<void> _runTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) async {
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+
+    try {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'tmux_refresh_start',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      await ref
+          .read(tmuxServiceProvider)
+          .refreshTerminalTheme(
+            request.session,
+            request.sessionName,
+            request.theme,
+            extraFlags: request.extraFlags,
+          );
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'tmux_refresh_complete',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.theme',
+        'tmux_refresh_failed',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+    _refreshTerminalThemeReportsForTui(
+      request.theme,
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer',
+    );
+    _scheduleTerminalThemeRefreshForTui(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+      delay: const Duration(milliseconds: 25),
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer_25ms',
+    );
+    _scheduleTerminalThemeRefreshForTui(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+      delay: const Duration(milliseconds: 275),
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer_275ms',
+    );
+  }
+
+  void _scheduleTerminalThemeRefreshForTui({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+    required Duration delay,
+    bool includeThemeModeReport = true,
+    bool includeColorReports = false,
+    bool includeDefaultColorReports = false,
+    bool includeFocusReport = true,
+    String reason = 'unspecified',
+  }) {
+    late final Timer timer;
+    timer = Timer(delay, () {
+      _terminalThemeRefreshTimers.remove(timer);
+      if (!_isCurrentTerminalThemeRefresh(
+        theme: theme,
+        session: session,
+        refreshGeneration: refreshGeneration,
+      )) {
+        return;
+      }
+      _refreshTerminalThemeReportsForTui(
+        theme,
+        includeThemeModeReport: includeThemeModeReport,
+        includeColorReports: includeColorReports,
+        includeDefaultColorReports: includeDefaultColorReports,
+        includeFocusReport: includeFocusReport,
+        reason: reason,
+      );
+    });
+    _terminalThemeRefreshTimers.add(timer);
+  }
+
+  void _cancelTerminalThemeRefreshTimers() {
+    for (final timer in _terminalThemeRefreshTimers) {
+      timer.cancel();
+    }
+    _terminalThemeRefreshTimers.clear();
+  }
+
+  bool _isCurrentTerminalThemeRefresh({
+    required TerminalThemeData theme,
+    required SshSession session,
+    required int refreshGeneration,
+  }) {
+    final activeTheme = session.terminalTheme;
+    return mounted &&
+        refreshGeneration == _terminalThemeRefreshGeneration &&
+        session.terminal == _terminal &&
+        activeTheme != null &&
+        _terminalThemesMatchForRemoteRefresh(activeTheme, theme);
+  }
+
+  bool _terminalThemesMatchForRemoteRefresh(
+    TerminalThemeData previous,
+    TerminalThemeData next,
+  ) =>
+      previous.id == next.id &&
+      previous.isDark == next.isDark &&
+      previous.foreground == next.foreground &&
+      previous.background == next.background &&
+      previous.cursor == next.cursor &&
+      previous.selection == next.selection &&
+      previous.black == next.black &&
+      previous.red == next.red &&
+      previous.green == next.green &&
+      previous.yellow == next.yellow &&
+      previous.blue == next.blue &&
+      previous.magenta == next.magenta &&
+      previous.cyan == next.cyan &&
+      previous.white == next.white &&
+      previous.brightBlack == next.brightBlack &&
+      previous.brightRed == next.brightRed &&
+      previous.brightGreen == next.brightGreen &&
+      previous.brightYellow == next.brightYellow &&
+      previous.brightBlue == next.brightBlue &&
+      previous.brightMagenta == next.brightMagenta &&
+      previous.brightCyan == next.brightCyan &&
+      previous.brightWhite == next.brightWhite;
+
+  bool _sameTerminalTheme(
+    TerminalThemeData? previous,
+    TerminalThemeData? next,
+  ) {
+    if (previous == null || next == null) {
+      return previous == next;
+    }
+    return _terminalThemesMatchForRemoteRefresh(previous, next);
+  }
+
+  bool _sameTerminalThemeSettings(
+    TerminalThemeSettings? previous,
+    TerminalThemeSettings next,
+  ) =>
+      previous != null &&
+      previous.lightThemeId == next.lightThemeId &&
+      previous.darkThemeId == next.darkThemeId;
+
+  void _handleTerminalThemeDependenciesChanged({
+    bool forceRemoteRefresh = false,
+    String reason = 'unknown',
+  }) {
+    if (!mounted) {
+      return;
+    }
+    _pendingTerminalThemeDependencyReload = true;
+    _pendingTerminalThemeDependencyForceRemoteRefresh =
+        _pendingTerminalThemeDependencyForceRemoteRefresh || forceRemoteRefresh;
+    _pendingTerminalThemeDependencyReason = reason;
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'dependency_changed',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'hasCurrentTheme': _currentTheme != null,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
+    _scheduleTerminalThemeDependencyReload();
+  }
+
+  void _scheduleTerminalThemeDependencyReload() {
+    if (_terminalThemeDependencyReloadQueued) {
+      return;
+    }
+    _terminalThemeDependencyReloadQueued = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _terminalThemeDependencyReloadQueued = false;
+      if (!mounted || !_pendingTerminalThemeDependencyReload) {
+        return;
+      }
+      if (_currentTheme == null) {
+        return;
+      }
+      final forceRemoteRefresh =
+          _pendingTerminalThemeDependencyForceRemoteRefresh;
+      final reason = _pendingTerminalThemeDependencyReason;
+      _pendingTerminalThemeDependencyReload = false;
+      _pendingTerminalThemeDependencyForceRemoteRefresh = false;
+      _pendingTerminalThemeDependencyReason = 'unknown';
+      unawaited(
+        _reloadTerminalThemeForDependencies(
+          forceRemoteRefresh: forceRemoteRefresh,
+          reason: reason,
+        ),
+      );
+    });
+    WidgetsBinding.instance.ensureVisualUpdate();
+  }
+
+  Future<void> _reloadTerminalThemeForDependencies({
+    bool forceRemoteRefresh = false,
+    String reason = 'unknown',
+  }) async {
+    final session = _connectionId == null
+        ? null
+        : _sessionsNotifier?.getSession(_connectionId!);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'dependency_reload',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'hasSession': session != null,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
+    if (session != null) {
+      final restored = await _restoreSessionThemeOverride(
+        session,
+        forceRemoteRefresh: forceRemoteRefresh,
+        reason: reason,
+      );
+      if (restored) {
+        return;
+      }
+    }
+
+    if (_sessionThemeOverride == null) {
+      await _loadTheme(forceRemoteRefresh: forceRemoteRefresh, reason: reason);
+    }
   }
 
   void _syncAppThemeOverrideFromSession(SshSession session) {
+    if (session.terminalThemeLightId == null &&
+        session.terminalThemeDarkId == null) {
+      _clearAppThemeOverride();
+      return;
+    }
     _terminalAppThemeOverrideNotifier.activeOverride = TerminalAppThemeOverride(
       owner: _terminalAppThemeOverrideOwner,
       lightThemeId: session.terminalThemeLightId,
@@ -3777,10 +4563,32 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       .clearForOwner(_terminalAppThemeOverrideOwner);
 
   TerminalThemeData _resolveEffectiveTerminalTheme() {
-    final isDark = Theme.of(context).brightness == Brightness.dark;
+    final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
     return _sessionThemeOverride ??
         _currentTheme ??
-        (isDark ? TerminalThemes.midnightPurple : TerminalThemes.cleanWhite);
+        (isDark
+            ? TerminalThemes.defaultDarkTheme
+            : TerminalThemes.defaultLightTheme);
+  }
+
+  Brightness _resolveTerminalThemeBrightness() {
+    final themeMode = ref.read(themeModeNotifierProvider);
+    return switch (themeMode) {
+      ThemeMode.dark => Brightness.dark,
+      ThemeMode.light => Brightness.light,
+      ThemeMode.system =>
+        WidgetsBinding.instance.platformDispatcher.platformBrightness,
+    };
+  }
+
+  SshConnectionState _selectTrackedConnectionState(
+    Map<int, SshConnectionState> states,
+  ) {
+    final connectionId = _connectionId;
+    if (connectionId == null) {
+      return SshConnectionState.disconnected;
+    }
+    return states[connectionId] ?? SshConnectionState.disconnected;
   }
 
   Future<void> _startSharedClipboardSync(SshSession session) async {
@@ -4081,14 +4889,29 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         .read(hostCliLaunchPreferencesServiceProvider)
         .getPreferencesForHost(widget.hostId);
     _startClisInYoloMode = cliLaunchPreferences.startInYoloMode;
-    await _loadTheme();
+    DiagnosticsLogService.instance.info(
+      'terminal.screen',
+      'host_loaded',
+      fields: {
+        'hostId': widget.hostId,
+        'hasHost': _host != null,
+        'hasAutoConnectCommand':
+            _host?.autoConnectCommand?.trim().isNotEmpty ?? false,
+        'hasTmuxAutoAttach': _host?.tmuxSessionName?.trim().isNotEmpty ?? false,
+      },
+    );
+    await _loadTheme(reason: 'initial_load');
     await _connect(preferredConnectionId: widget.connectionId);
   }
 
-  Future<void> _loadTheme() async {
+  Future<void> _loadTheme({
+    bool forceRemoteRefresh = false,
+    String reason = 'load_theme',
+  }) async {
     if (!mounted) return;
 
-    final brightness = Theme.of(context).brightness;
+    final brightness = _resolveTerminalThemeBrightness();
+    _lastThemeDependencyBrightness = brightness;
     final themeService = ref.read(terminalThemeServiceProvider);
     final monetizationState =
         ref.read(monetizationStateProvider).asData?.value ??
@@ -4101,26 +4924,60 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ),
     );
 
-    if (mounted) {
+    if (!mounted) {
+      return;
+    }
+    final didThemeChange = !_sameTerminalTheme(_currentTheme, theme);
+    DiagnosticsLogService.instance.info(
+      'terminal.theme',
+      'loaded',
+      fields: {
+        'reason': reason,
+        'connectionId': _connectionId,
+        'forceRemoteRefresh': forceRemoteRefresh,
+        'brightness': brightness.name,
+        'didThemeChange': didThemeChange,
+        'hasSessionOverride': _sessionThemeOverride != null,
+      },
+    );
+    if (didThemeChange) {
       setState(() => _currentTheme = theme);
-      _applyTerminalThemeToSession(theme);
+    } else {
+      _currentTheme = theme;
+    }
+    _applyTerminalThemeToSession(
+      theme,
+      forceRemoteRefresh: forceRemoteRefresh,
+      reason: reason,
+    );
+    if (_pendingTerminalThemeDependencyReload) {
+      _scheduleTerminalThemeDependencyReload();
     }
   }
 
-  Future<bool> _restoreSessionThemeOverride(SshSession session) async {
-    final brightness = Theme.of(context).brightness;
+  Future<bool> _restoreSessionThemeOverride(
+    SshSession session, {
+    bool forceRemoteRefresh = false,
+    String reason = 'restore_override',
+  }) async {
+    final brightness = _resolveTerminalThemeBrightness();
     final themeId = brightness == Brightness.dark
         ? session.terminalThemeDarkId
         : session.terminalThemeLightId;
 
     if (themeId == null) {
       if (mounted) {
-        setState(() => _sessionThemeOverride = null);
-        _applyTerminalThemeToSession(
-          _resolveEffectiveTerminalTheme(),
-          session: session,
-        );
+        if (_sessionThemeOverride != null) {
+          setState(() => _sessionThemeOverride = null);
+        }
         _syncAppThemeOverrideFromSession(session);
+      }
+      if (forceRemoteRefresh) {
+        await _loadTheme(
+          forceRemoteRefresh: true,
+          reason: '${reason}_fallback',
+        );
+        return true;
       }
       return false;
     }
@@ -4130,12 +4987,25 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (!mounted) {
       return false;
     }
-    setState(() => _sessionThemeOverride = resolvedTheme);
-    if (resolvedTheme != null) {
-      _applyTerminalThemeToSession(resolvedTheme, session: session);
+    if (resolvedTheme == null) {
+      if (_sessionThemeOverride != null) {
+        setState(() => _sessionThemeOverride = null);
+      }
+      return false;
     }
+    if (!_sameTerminalTheme(_sessionThemeOverride, resolvedTheme)) {
+      setState(() => _sessionThemeOverride = resolvedTheme);
+    } else {
+      _sessionThemeOverride = resolvedTheme;
+    }
+    _applyTerminalThemeToSession(
+      resolvedTheme,
+      session: session,
+      forceRemoteRefresh: forceRemoteRefresh,
+      reason: reason,
+    );
     _syncAppThemeOverrideFromSession(session);
-    return resolvedTheme != null;
+    return true;
   }
 
   Future<void> _connect({
@@ -4236,19 +5106,23 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         _isUsingAltBuffer = _terminal.isUsingAltBuffer;
         _terminalReportsMouseWheel = _terminal.mouseMode.reportScroll;
         _terminal.addListener(_onTerminalStateChanged);
+        _shell = await session.getShell();
+        _wireTerminalCallbacks(session);
         _applyTerminalThemeToSession(
           _resolveEffectiveTerminalTheme(),
           session: session,
+          reason: 'open_existing_terminal',
         );
-        _shell = await session.getShell();
-        _wireTerminalCallbacks(session);
         await _applySharedClipboardSetting(
           enabled: sharedClipboardEnabled,
           allowLocalClipboardRead: sharedClipboardLocalReadEnabled,
           session: session,
           waitForInitialSync: false,
         );
-        await _restoreSessionThemeOverride(session);
+        await _restoreSessionThemeOverride(
+          session,
+          reason: 'open_existing_restore_override',
+        );
         setState(() {
           _sessionFontSizeOverride = session.terminalFontSize;
           _isConnecting = false;
@@ -4260,7 +5134,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         // Detect tmux on existing sessions too (may not have been detected
         // yet if the terminal was opened before tmux started).
         if (!_isTmuxActive) {
-          unawaited(_detectTmux(session, skipDelay: true));
+          unawaited(
+            _detectTmux(
+              session,
+              skipDelay: true,
+              isReopeningExistingTerminal: true,
+            ),
+          );
         }
         return;
       }
@@ -4287,6 +5167,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _applyTerminalThemeToSession(
         _resolveEffectiveTerminalTheme(),
         session: session,
+        reason: 'open_new_terminal',
       );
 
       _shell = await session.getShell(
@@ -4311,7 +5192,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
       if (!mounted) return;
 
-      await _restoreSessionThemeOverride(session);
+      await _restoreSessionThemeOverride(
+        session,
+        reason: 'open_new_restore_override',
+      );
       setState(() {
         _sessionFontSizeOverride = session.terminalFontSize;
         _isConnecting = false;
@@ -4319,7 +5203,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _syncTerminalWakeLock(SshConnectionState.connected);
       _scheduleTerminalSizeRefresh();
       _restoreTerminalFocus();
-      _primeTmuxStateFromHost();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -4383,7 +5266,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       // keyInput(TerminalKey.enter) path already produces '\r', so we
       // only normalize single-'\n' to avoid rewriting legitimate LF
       // characters in pasted or multi-char input.
-      final output = data == '\n' ? '\r' : data;
+      final output = normalizeTerminalOutputForRemoteShell(
+        data == '\n' ? '\r' : data,
+      );
 
       _shell?.write(utf8.encode(output));
     };
@@ -4597,6 +5482,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
+    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
+    final mode = resolveAutoConnectCommandMode(
+      command: resolvedStoredCommand,
+      snippetId: host.autoConnectSnippetId,
+    );
+    if (mode == AutoConnectCommandMode.none) {
+      return;
+    }
+
     final hasAccess = await ref
         .read(monetizationServiceProvider)
         .canUseFeature(MonetizationFeature.autoConnectAutomation);
@@ -4632,15 +5526,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           ),
         );
       }
-      return;
-    }
-
-    final resolvedStoredCommand = _resolveStoredAutoConnectCommand(host);
-    final mode = resolveAutoConnectCommandMode(
-      command: resolvedStoredCommand,
-      snippetId: host.autoConnectSnippetId,
-    );
-    if (mode == AutoConnectCommandMode.none) {
       return;
     }
 
@@ -4698,22 +5583,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _primeTmuxStateFromHost() {
-    final host = _host;
-    final preferredSessionName = _preferredTmuxSessionName(host);
-    if (!mounted || preferredSessionName == null) {
-      return;
-    }
-
-    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
-    setState(() {
-      _isTmuxActive = true;
-      _tmuxSessionName = preferredSessionName;
-      _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
-      _tmuxWorkingDirectory = preferredWorkingDirectory;
-    });
-  }
-
   String? get _initialTmuxSessionName {
     final sessionName = widget.initialTmuxSessionName?.trim();
     return sessionName == null || sessionName.isEmpty ? null : sessionName;
@@ -4727,12 +5596,99 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       );
 
   void _clearTmuxState() {
+    _stopTmuxForegroundVerification();
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
+  }
+
+  void _startTmuxForegroundVerification(
+    SshSession session,
+    String sessionName,
+  ) {
+    _tmuxForegroundVerificationTimer?.cancel();
+    _tmuxForegroundVerificationInFlight = false;
+    final generation = ++_tmuxForegroundVerificationGeneration;
+    _tmuxForegroundVerificationTimer = Timer.periodic(
+      _tmuxForegroundVerificationInterval,
+      (_) => unawaited(
+        _verifyTmuxForegroundSession(session, sessionName, generation),
+      ),
+    );
+  }
+
+  void _stopTmuxForegroundVerification() {
+    _tmuxForegroundVerificationTimer?.cancel();
+    _tmuxForegroundVerificationTimer = null;
+    _tmuxForegroundVerificationGeneration += 1;
+    _tmuxForegroundVerificationInFlight = false;
+  }
+
+  Future<void> _verifyTmuxForegroundSession(
+    SshSession session,
+    String sessionName,
+    int generation,
+  ) async {
+    if (_tmuxForegroundVerificationInFlight ||
+        !mounted ||
+        generation != _tmuxForegroundVerificationGeneration ||
+        _connectionId != session.connectionId ||
+        !_isTmuxActive ||
+        _tmuxSessionName != sessionName) {
+      return;
+    }
+
+    _tmuxForegroundVerificationInFlight = true;
+    try {
+      final foregroundSessionName = await ref
+          .read(tmuxServiceProvider)
+          .foregroundSessionNameOrThrow(
+            session,
+            extraFlags: _host?.tmuxExtraFlags,
+          );
+      if (!mounted ||
+          generation != _tmuxForegroundVerificationGeneration ||
+          _connectionId != session.connectionId ||
+          !_isTmuxActive ||
+          _tmuxSessionName != sessionName) {
+        return;
+      }
+      if (foregroundSessionName == sessionName) {
+        DiagnosticsLogService.instance.debug(
+          'tmux.ui',
+          'foreground_verified',
+          fields: {'connectionId': session.connectionId},
+        );
+        return;
+      }
+
+      DiagnosticsLogService.instance.info(
+        'tmux.ui',
+        'foreground_detached',
+        fields: {
+          'connectionId': session.connectionId,
+          'hasForegroundSession': foregroundSessionName != null,
+        },
+      );
+      setState(_clearTmuxState);
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'tmux.ui',
+        'foreground_verify_failed',
+        fields: {
+          'connectionId': session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    } finally {
+      if (generation == _tmuxForegroundVerificationGeneration) {
+        _tmuxForegroundVerificationInFlight = false;
+      }
+    }
   }
 
   /// Detects whether the connected session is inside tmux.
@@ -4743,6 +5699,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     SshSession session, {
     bool skipDelay = false,
     bool preserveExistingTmuxState = false,
+    bool isReopeningExistingTerminal = false,
   }) async {
     // Capture the connection ID at the start so we can verify it hasn't
     // changed after async gaps (user may have switched connections).
@@ -4750,41 +5707,58 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final preferredSessionName = _preferredTmuxSessionName(host);
+    final tmuxStateBelongsToSession =
+        _tmuxStateConnectionId == session.connectionId;
+    final mayPreserveExistingTmuxState =
+        preserveExistingTmuxState && tmuxStateBelongsToSession;
     final existingCandidateSessionName =
-        resolveTmuxDetectionCandidateSessionName(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: session.connectionId,
+          tmuxStateConnectionId: _tmuxStateConnectionId,
           existingSessionName: _tmuxSessionName,
         );
     final candidateSessionName = resolveTmuxDetectionCandidateSessionName(
       preferredSessionName: preferredSessionName,
       existingSessionName: existingCandidateSessionName,
     );
-    final shouldPreserveKnownTmuxState =
-        preserveExistingTmuxState ||
-        (candidateSessionName != null &&
+    final hasExistingVisibleTmuxState =
+        tmuxStateBelongsToSession && _isTmuxActive && _tmuxSessionName != null;
+    final shouldKeepExistingTmuxStateWhileDetecting =
+        mayPreserveExistingTmuxState ||
+        (hasExistingVisibleTmuxState &&
+            candidateSessionName != null &&
             candidateSessionName == existingCandidateSessionName);
+    final shouldPrimeTmuxStateWhileDetecting =
+        shouldPrimeTerminalTmuxStateWhileDetecting(
+          candidateSessionName: candidateSessionName,
+          hasExistingVisibleTmuxState: hasExistingVisibleTmuxState,
+          mayPreserveExistingTmuxState: mayPreserveExistingTmuxState,
+          isReopeningExistingTerminal: isReopeningExistingTerminal,
+        );
     final hadVisibleOrPrimedTmuxState =
-        (_isTmuxActive && _tmuxSessionName != null) ||
-        candidateSessionName != null;
+        hasExistingVisibleTmuxState || shouldPrimeTmuxStateWhileDetecting;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
     var confirmedTmuxActive = false;
     var hadDetectionFailure = false;
 
     if (mounted) {
       setState(() {
-        if (candidateSessionName != null) {
+        if (shouldKeepExistingTmuxStateWhileDetecting) {
+          if (preferredWorkingDirectory != null) {
+            _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+            _tmuxWorkingDirectory = preferredWorkingDirectory;
+          }
+        } else if (shouldPrimeTmuxStateWhileDetecting) {
           _isTmuxActive = true;
           _tmuxSessionName = candidateSessionName;
-          _tmuxLaunchWorkingDirectory =
-              preferredWorkingDirectory ??
-              (shouldPreserveKnownTmuxState
-                  ? _tmuxLaunchWorkingDirectory
-                  : null);
-          _tmuxWorkingDirectory =
-              preferredWorkingDirectory ??
-              (shouldPreserveKnownTmuxState ? _tmuxWorkingDirectory : null);
-        } else if (!preserveExistingTmuxState) {
+          _tmuxStateConnectionId = session.connectionId;
+          _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+          _tmuxWorkingDirectory = preferredWorkingDirectory;
+        } else if (!mayPreserveExistingTmuxState) {
+          _stopTmuxForegroundVerification();
           _isTmuxActive = false;
           _tmuxSessionName = null;
+          _tmuxStateConnectionId = null;
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
         }
@@ -4808,17 +5782,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         }
 
         final bool active;
+        final String? foregroundSessionName;
         try {
+          foregroundSessionName = await tmux.foregroundSessionNameOrThrow(
+            session,
+            extraFlags: host?.tmuxExtraFlags,
+          );
           active = candidateSessionName != null
-              ? await tmux.hasSessionOrThrow(
-                  session,
-                  candidateSessionName,
-                  extraFlags: host?.tmuxExtraFlags,
-                )
-              : await tmux.isTmuxActiveOrThrow(
-                  session,
-                  extraFlags: host?.tmuxExtraFlags,
-                );
+              ? foregroundSessionName == candidateSessionName
+              : foregroundSessionName != null;
         } on Object catch (error) {
           hadDetectionFailure = true;
           DiagnosticsLogService.instance.warning(
@@ -4830,12 +5802,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               'errorType': error.runtimeType,
             },
           );
-          if (!shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-            preserveExistingTmuxState: preserveExistingTmuxState,
-            hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
-            confirmedTmuxActive: confirmedTmuxActive,
-            hadDetectionFailure: true,
-          )) {
+          if (candidateSessionName == null &&
+              !hadVisibleOrPrimedTmuxState &&
+              !mayPreserveExistingTmuxState) {
             rethrow;
           }
           continue;
@@ -4847,6 +5816,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'connectionId': session.connectionId,
             'active': active,
             'hasCandidate': candidateSessionName != null,
+            'hasForegroundSession': foregroundSessionName != null,
           },
         );
         if (!mounted ||
@@ -4857,28 +5827,17 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!active) {
           confirmedTmuxActive = false;
           hadDetectionFailure = false;
+          if (candidateSessionName == null &&
+              foregroundSessionName == null &&
+              !hadVisibleOrPrimedTmuxState &&
+              !mayPreserveExistingTmuxState) {
+            break;
+          }
           continue;
         }
         confirmedTmuxActive = true;
 
-        var sessionName = candidateSessionName;
-        try {
-          sessionName ??= await tmux.currentSessionName(
-            session,
-            extraFlags: host?.tmuxExtraFlags,
-          );
-        } on Object catch (error) {
-          hadDetectionFailure = true;
-          DiagnosticsLogService.instance.warning(
-            'tmux.ui',
-            'detection_session_name_failed',
-            fields: {
-              'connectionId': session.connectionId,
-              'errorType': error.runtimeType,
-            },
-          );
-          continue;
-        }
+        final sessionName = candidateSessionName ?? foregroundSessionName;
         if (!mounted ||
             _connectionId != capturedConnectionId ||
             detectionGeneration != _tmuxDetectionGeneration) {
@@ -4946,9 +5905,11 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() {
           _isTmuxActive = true;
           _tmuxSessionName = sessionName;
+          _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
         });
+        _startTmuxForegroundVerification(session, sessionName);
         DiagnosticsLogService.instance.info(
           'tmux.ui',
           'detection_success',
@@ -4957,6 +5918,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             'windowCount': windows.length,
           },
         );
+        // Prime tmux's per-pane color cache with the active theme as soon
+        // as we confirm tmux is running. Without this, an inner TUI like
+        // Codex CLI that queries OSC 11 for theme detection would receive
+        // whatever stale value tmux had cached (e.g., from a previous
+        // attach to a different terminal), and bake the wrong composer
+        // surface color into its rendered output.
+        _primeTmuxTerminalTheme(session);
         await _activateInitialTmuxWindowIfNeeded(session, sessionName, windows);
         return true;
       }
@@ -4968,7 +5936,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-        preserveExistingTmuxState: preserveExistingTmuxState,
+        preserveExistingTmuxState: mayPreserveExistingTmuxState,
         hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: hadDetectionFailure,
@@ -4994,7 +5962,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return false;
       }
 
-      if (!preserveExistingTmuxState) {
+      if (!mayPreserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
       DiagnosticsLogService.instance.info(
@@ -5018,7 +5986,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return false;
       }
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-        preserveExistingTmuxState: preserveExistingTmuxState,
+        preserveExistingTmuxState: mayPreserveExistingTmuxState,
         hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: true,
@@ -5034,7 +6002,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         return false;
       }
-      if (!preserveExistingTmuxState) {
+      if (!mayPreserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
       return false;
@@ -5486,11 +6454,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool forceVisibleTmux = false,
   }) async {
     final tmux = ref.read(tmuxServiceProvider);
-    final hasForegroundClient = await tmux.hasForegroundClient(
-      session,
-      sessionName,
-      extraFlags: _host?.tmuxExtraFlags,
-    );
+    var hasForegroundClient = false;
+    try {
+      hasForegroundClient = await tmux.hasForegroundClientOrThrow(
+        session,
+        sessionName,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    } on Exception catch (error) {
+      if (!forceVisibleTmux) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.ui',
+          'reattach_foreground_check_failed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        return;
+      }
+      hasForegroundClient = false;
+    }
     if (!mounted || hasForegroundClient) {
       DiagnosticsLogService.instance.info(
         'tmux.ui',
@@ -5511,14 +6495,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'tmux updated $sessionName, but this terminal is outside tmux '
-            'while a command is still running.',
+            'tmux updated $sessionName, but this terminal is not safely at '
+            'a shell prompt.',
           ),
         ),
       );
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
-        'reattach_skipped_command_running',
+        'reattach_skipped_shell_not_prompt',
         fields: {'connectionId': session.connectionId},
       );
       return;
@@ -5608,6 +6592,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _applyTerminalThemeToSession(
         _resolveEffectiveTerminalTheme(),
         session: session,
+        reason: 'reopen_shell',
       );
       shell = await session.getShell(pty: pty);
       if (!stillOwnsSession()) {
@@ -5667,8 +6652,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   void _handleTrackedConnectionStateChange(
-    Map<int, SshConnectionState>? previous,
-    Map<int, SshConnectionState> next,
+    SshConnectionState? previous,
+    SshConnectionState next,
   ) {
     final connectionId = _connectionId;
     if (connectionId == null) {
@@ -5676,9 +6661,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       return;
     }
 
-    final previousState =
-        previous?[connectionId] ?? SshConnectionState.disconnected;
-    final nextState = next[connectionId] ?? SshConnectionState.disconnected;
+    final previousState = previous ?? SshConnectionState.disconnected;
+    final nextState = next;
     _syncTerminalWakeLock(nextState);
     if (previousState == nextState ||
         nextState != SshConnectionState.disconnected) {
@@ -5811,12 +6795,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _sharedClipboardSubscription.close();
     _sharedClipboardLocalReadSubscription.close();
     _terminalWakeLockSubscription.close();
+    _terminalThemeSettingsSubscription.close();
+    _themeModeSubscription.close();
+    _cancelTerminalThemeRefreshTimers();
     unawaited(_terminalWakeLockService.releaseOwner(_terminalWakeLockOwnerId));
     _stopSharedClipboardSync();
+    _stopTmuxForegroundVerification();
     _promptOutputImeResetTimer?.cancel();
     _disposeTerminalPathVerificationSftp();
     _observedSession?.removeMetadataListener(_handleSessionMetadataChanged);
-    _terminal.removeListener(_onTerminalStateChanged);
+    _terminal
+      ..removeListener(_onTerminalStateChanged)
+      ..onOutput = null
+      ..onResize = null;
     _terminalController
       ..removeListener(_onSelectionChanged)
       ..dispose();
@@ -5862,6 +6853,15 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   }
 
   @override
+  void didChangePlatformBrightness() {
+    super.didChangePlatformBrightness();
+    _handleTerminalThemeDependenciesChanged(
+      forceRemoteRefresh: true,
+      reason: 'platform_brightness_changed',
+    );
+  }
+
+  @override
   void didChangeMetrics() {
     super.didChangeMetrics();
     _scheduleTerminalSizeRefresh();
@@ -5871,27 +6871,19 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   void didChangeDependencies() {
     super.didChangeDependencies();
     // Reload theme when system brightness changes
+    final brightness = _resolveTerminalThemeBrightness();
+    final didBrightnessChange = _lastThemeDependencyBrightness != brightness;
+    _lastThemeDependencyBrightness = brightness;
     if (_currentTheme == null) {
       return;
     }
-
-    final session = _connectionId == null
-        ? null
-        : _sessionsNotifier?.getSession(_connectionId!);
-    if (session != null) {
-      unawaited(
-        _restoreSessionThemeOverride(session).then((restored) {
-          if (!restored) {
-            return _loadTheme();
-          }
-        }),
-      );
+    if (!didBrightnessChange) {
       return;
     }
-
-    if (_sessionThemeOverride == null) {
-      _loadTheme();
-    }
+    _handleTerminalThemeDependenciesChanged(
+      forceRemoteRefresh: true,
+      reason: 'dependencies_brightness_changed',
+    );
   }
 
   List<Widget> _buildTerminalStatusChips(ThemeData theme) {
@@ -5956,19 +6948,18 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
   @override
   Widget build(BuildContext context) {
-    ref.listen<Map<int, SshConnectionState>>(
-      activeSessionsProvider,
+    ref.listen<SshConnectionState>(
+      activeSessionsProvider.select(_selectTrackedConnectionState),
       _handleTrackedConnectionStateChange,
     );
     final theme = Theme.of(context);
-    final connectionStates = ref.watch(activeSessionsProvider);
+    final connectionState = ref.watch(
+      activeSessionsProvider.select(_selectTrackedConnectionState),
+    );
     final isMobile =
         defaultTargetPlatform == TargetPlatform.android ||
         defaultTargetPlatform == TargetPlatform.iOS;
     final systemKeyboardVisible = MediaQuery.viewInsetsOf(context).bottom > 0;
-    final connectionState = _connectionId == null
-        ? SshConnectionState.disconnected
-        : connectionStates[_connectionId!] ?? SshConnectionState.disconnected;
     final showsDisconnectedOverlay =
         _connectionId != null &&
         !_isConnecting &&
@@ -5976,7 +6967,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
 
     // Use session override, or loaded theme, or fallback.
     final terminalTheme = _resolveEffectiveTerminalTheme();
-    _applyTerminalThemeToSession(terminalTheme);
+    _applyTerminalThemeToSession(terminalTheme, reason: 'build');
     final connectionLabel = describeTerminalConnectionState(
       connectionState,
       isConnecting: _isConnecting,
@@ -6429,7 +7420,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     );
 
     if (theme != null && mounted) {
-      final isDark = Theme.of(context).brightness == Brightness.dark;
+      final isDark = _resolveTerminalThemeBrightness() == Brightness.dark;
       final monetizationState =
           ref.read(monetizationStateProvider).asData?.value ??
           ref.read(monetizationServiceProvider).currentState;
@@ -6437,6 +7428,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         MonetizationFeature.hostSpecificThemes,
       );
       final connectionId = _connectionId;
+      var hasSession = false;
       if (connectionId != null) {
         final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
         final session =
@@ -6444,11 +7436,26 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
                   ..updateSessionTheme(connectionId, theme.id, isDark: isDark))
                 .getSession(connectionId);
         if (session != null) {
+          hasSession = true;
           _syncAppThemeOverrideFromSession(session);
         }
       }
       setState(() => _sessionThemeOverride = theme);
-      _applyTerminalThemeToSession(theme);
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'picker_selected',
+        fields: {
+          'connectionId': connectionId,
+          'isDark': isDark,
+          'hasHostThemeAccess': hasHostThemeAccess,
+          'hasSession': hasSession,
+        },
+      );
+      _applyTerminalThemeToSession(
+        theme,
+        forceRemoteRefresh: true,
+        reason: 'theme_picker',
+      );
 
       // Show option to save to host
       if (_host != null) {
@@ -6656,6 +7663,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -6673,6 +7681,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
+      keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
@@ -6793,7 +7802,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     if (isMobile) {
       terminalView = TextSelectionTheme(
         data: TextSelectionTheme.of(context).copyWith(
-          selectionColor: terminalTheme.selection,
+          selectionColor: terminalTheme.readableSelection,
           selectionHandleColor: terminalTheme.cursor,
         ),
         child: terminalView,
@@ -6835,6 +7844,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       controller: _terminalTextInputController,
       deleteDetection: true,
+      keyboardAppearance: keyboardAppearance,
       onUserInput: _followLiveOutput,
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,

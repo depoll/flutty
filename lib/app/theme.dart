@@ -522,6 +522,16 @@ abstract final class FluttyTheme {
       Color.lerp(background, foreground, amount)!;
 
   static Color _resolveTerminalAccent(TerminalThemeData theme) {
+    // Prefer the theme's cursor color when its designer chose a strongly
+    // saturated, sufficiently contrasty value. Themes that use a near-neutral
+    // cursor (e.g. white-on-black) fall through to the candidate-scoring
+    // fallback below so we still pick a vivid accent.
+    final cursorHsl = HSLColor.fromColor(theme.cursor);
+    if (cursorHsl.saturation >= 0.45 &&
+        _contrastRatio(theme.cursor, theme.background) >= 2.5) {
+      return theme.cursor;
+    }
+
     final candidates = [
       theme.blue,
       theme.cyan,
