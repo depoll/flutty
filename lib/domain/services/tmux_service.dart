@@ -1728,7 +1728,7 @@ String buildTmuxRefreshTerminalThemeCommand(
       '$enableFocusEvents 2>/dev/null || true; '
       '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}" '
       '2>/dev/null | '
-      r'while IFS="$SEP" read -r pane active alternate pane_command; do '
+      r'{ while IFS="$SEP" read -r pane active alternate pane_command; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
       'injected=0; foreground_tui=0; '
@@ -1739,11 +1739,11 @@ String buildTmuxRefreshTerminalThemeCommand(
       'esac; '
       r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
       'injected=1; '
-      '${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} '
+      '( ${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} ) & '
       'fi; '
       'fi; '
       r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
-      'done; '
+      'done; wait; }; '
       '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
 }
 

@@ -3226,6 +3226,24 @@ class _InitialTmuxWindowTarget {
   final bool requiresVisibleSession;
 }
 
+class _TmuxTerminalThemeRefreshRequest {
+  const _TmuxTerminalThemeRefreshRequest({
+    required this.theme,
+    required this.session,
+    required this.sessionName,
+    required this.refreshGeneration,
+    required this.reason,
+    required this.extraFlags,
+  });
+
+  final TerminalThemeData theme;
+  final SshSession session;
+  final String sessionName;
+  final int refreshGeneration;
+  final String reason;
+  final String? extraFlags;
+}
+
 class _TerminalScreenState extends ConsumerState<TerminalScreen>
     with WidgetsBindingObserver {
   static const _localClipboardSyncInterval = Duration(milliseconds: 750);
@@ -3354,6 +3372,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   Brightness? _lastThemeDependencyBrightness;
   int _terminalThemeRefreshGeneration = 0;
   final Set<Timer> _terminalThemeRefreshTimers = <Timer>{};
+  bool _isTmuxThemeRefreshRunning = false;
+  _TmuxTerminalThemeRefreshRequest? _pendingTmuxThemeRefreshRequest;
   bool _terminalThemeDependencyReloadQueued = false;
   bool _pendingTerminalThemeDependencyReload = false;
   bool _pendingTerminalThemeDependencyForceRemoteRefresh = false;
@@ -4078,7 +4098,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
 
     unawaited(
-      Future<void>.delayed(const Duration(milliseconds: 75), () async {
+      Future<void>.delayed(const Duration(milliseconds: 75), () {
         if (!_isCurrentTerminalThemeRefresh(
           theme: theme,
           session: session,
@@ -4086,68 +4106,152 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         )) {
           return;
         }
-        try {
-          DiagnosticsLogService.instance.info(
-            'terminal.theme',
-            'tmux_refresh_start',
-            fields: {
-              'reason': reason,
-              'connectionId': session.connectionId,
-              'shellReady': _shell != null,
-              'terminalViewReady': _terminalViewKey.currentState != null,
-            },
-          );
-          await ref
-              .read(tmuxServiceProvider)
-              .refreshTerminalTheme(
-                session,
-                tmuxSessionName,
-                theme,
-                extraFlags: _host?.tmuxExtraFlags,
-              );
-          DiagnosticsLogService.instance.info(
-            'terminal.theme',
-            'tmux_refresh_complete',
-            fields: {
-              'reason': reason,
-              'connectionId': session.connectionId,
-              'shellReady': _shell != null,
-              'terminalViewReady': _terminalViewKey.currentState != null,
-            },
-          );
-        } on Object catch (error) {
-          DiagnosticsLogService.instance.warning(
-            'terminal.theme',
-            'tmux_refresh_failed',
-            fields: {
-              'reason': reason,
-              'connectionId': session.connectionId,
-              'errorType': error.runtimeType,
-            },
-          );
-        }
-        _refreshTerminalThemeReportsForTui(
-          theme,
-          includeColorReports: true,
-          reason: '${reason}_tmux_complete_outer',
-        );
-        _scheduleTerminalThemeRefreshForTui(
-          theme: theme,
-          session: session,
-          refreshGeneration: refreshGeneration,
-          delay: const Duration(milliseconds: 25),
-          includeColorReports: true,
-          reason: '${reason}_tmux_complete_outer_25ms',
-        );
-        _scheduleTerminalThemeRefreshForTui(
-          theme: theme,
-          session: session,
-          refreshGeneration: refreshGeneration,
-          delay: const Duration(milliseconds: 275),
-          includeColorReports: true,
-          reason: '${reason}_tmux_complete_outer_275ms',
+        _queueTmuxTerminalThemeRefresh(
+          _TmuxTerminalThemeRefreshRequest(
+            theme: theme,
+            session: session,
+            sessionName: tmuxSessionName,
+            refreshGeneration: refreshGeneration,
+            reason: reason,
+            extraFlags: _host?.tmuxExtraFlags,
+          ),
         );
       }),
+    );
+  }
+
+  void _queueTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) {
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+    if (_isTmuxThemeRefreshRunning) {
+      _pendingTmuxThemeRefreshRequest = request;
+      DiagnosticsLogService.instance.debug(
+        'terminal.theme',
+        'tmux_refresh_queued',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      return;
+    }
+
+    _isTmuxThemeRefreshRunning = true;
+    unawaited(_runQueuedTmuxTerminalThemeRefresh(request));
+  }
+
+  Future<void> _runQueuedTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest initialRequest,
+  ) async {
+    try {
+      var request = initialRequest;
+      while (true) {
+        await _runTmuxTerminalThemeRefresh(request);
+        final nextRequest = _pendingTmuxThemeRefreshRequest;
+        _pendingTmuxThemeRefreshRequest = null;
+        if (nextRequest == null ||
+            !_isCurrentTerminalThemeRefresh(
+              theme: nextRequest.theme,
+              session: nextRequest.session,
+              refreshGeneration: nextRequest.refreshGeneration,
+            )) {
+          return;
+        }
+        request = nextRequest;
+      }
+    } finally {
+      _isTmuxThemeRefreshRunning = false;
+    }
+  }
+
+  Future<void> _runTmuxTerminalThemeRefresh(
+    _TmuxTerminalThemeRefreshRequest request,
+  ) async {
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+
+    try {
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'tmux_refresh_start',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+      await ref
+          .read(tmuxServiceProvider)
+          .refreshTerminalTheme(
+            request.session,
+            request.sessionName,
+            request.theme,
+            extraFlags: request.extraFlags,
+          );
+      DiagnosticsLogService.instance.info(
+        'terminal.theme',
+        'tmux_refresh_complete',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'shellReady': _shell != null,
+          'terminalViewReady': _terminalViewKey.currentState != null,
+        },
+      );
+    } on Object catch (error) {
+      DiagnosticsLogService.instance.warning(
+        'terminal.theme',
+        'tmux_refresh_failed',
+        fields: {
+          'reason': request.reason,
+          'connectionId': request.session.connectionId,
+          'errorType': error.runtimeType,
+        },
+      );
+    }
+
+    if (!_isCurrentTerminalThemeRefresh(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+    )) {
+      return;
+    }
+    _refreshTerminalThemeReportsForTui(
+      request.theme,
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer',
+    );
+    _scheduleTerminalThemeRefreshForTui(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+      delay: const Duration(milliseconds: 25),
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer_25ms',
+    );
+    _scheduleTerminalThemeRefreshForTui(
+      theme: request.theme,
+      session: request.session,
+      refreshGeneration: request.refreshGeneration,
+      delay: const Duration(milliseconds: 275),
+      includeColorReports: true,
+      reason: '${request.reason}_tmux_complete_outer_275ms',
     );
   }
 
