@@ -989,7 +989,7 @@ void main() {
     );
 
     testWidgets(
-      'clears a primed tmux bar after later clean inactive detection',
+      'does not show a configured tmux bar before foreground confirmation',
       (tester) async {
         final tmuxService = _MockTmuxService();
         const tmuxSessionName = 'work';
@@ -1064,7 +1064,7 @@ void main() {
 
         await tester.pump();
         await tester.pump();
-        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsOneWidget);
+        expect(find.byKey(const ValueKey('tmux-handle-bar')), findsNothing);
 
         await tester.pump(const Duration(seconds: 3));
 
@@ -1174,7 +1174,8 @@ void main() {
           ),
         ).thenAnswer((_) async {});
         when(
-          () => tmuxService.hasForegroundClient(session, tmuxSessionName),
+          () =>
+              tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
         ).thenAnswer((_) async => true);
         when(
           () => tmuxService.watchWindowChanges(session, tmuxSessionName),
@@ -1238,6 +1239,100 @@ void main() {
     );
 
     testWidgets(
+      'does not type a tmux reattach command when foreground check fails',
+      (tester) async {
+        final tmuxService = _MockTmuxService();
+        const tmuxSessionName = 'work';
+        const targetWindowIndex = 1;
+        const windows = <TmuxWindow>[
+          TmuxWindow(index: 0, name: 'shell', isActive: true),
+          TmuxWindow(index: 1, name: 'agent', isActive: false),
+        ];
+        when(
+          () => tmuxService.foregroundSessionNameOrThrow(session),
+        ).thenAnswer((_) async => tmuxSessionName);
+        when(
+          () => tmuxService.listWindows(session, tmuxSessionName),
+        ).thenAnswer((_) async => windows);
+        when(
+          () => tmuxService.selectWindow(
+            session,
+            tmuxSessionName,
+            targetWindowIndex,
+          ),
+        ).thenAnswer((_) async {});
+        when(
+          () =>
+              tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
+        ).thenThrow(
+          const TmuxCommandException(
+            'SSH exec channel closed before tmux command completed',
+          ),
+        );
+        when(
+          () => tmuxService.watchWindowChanges(session, tmuxSessionName),
+        ).thenAnswer((_) => const Stream<TmuxWindowChangeEvent>.empty());
+        when(
+          () => tmuxService.prefetchInstalledAgentTools(session),
+        ).thenAnswer((_) async {});
+        when(
+          () => tmuxService.refreshTerminalTheme(
+            session,
+            tmuxSessionName,
+            any(),
+            extraFlags: any(named: 'extraFlags'),
+          ),
+        ).thenAnswer((_) async {});
+
+        await tester.pumpWidget(
+          ProviderScope(
+            overrides: [
+              databaseProvider.overrideWithValue(db),
+              hostRepositoryProvider.overrideWithValue(hostRepository),
+              monetizationServiceProvider.overrideWithValue(
+                monetizationService,
+              ),
+              monetizationStateProvider.overrideWith(
+                (ref) => Stream.value(_proMonetizationState),
+              ),
+              sharedClipboardProvider.overrideWith((ref) async => false),
+              activeSessionsProvider.overrideWith(
+                () => _TestActiveSessionsNotifier(session),
+              ),
+              tmuxServiceProvider.overrideWithValue(tmuxService),
+            ],
+            child: MaterialApp(
+              home: TerminalScreen(
+                hostId: host.id,
+                connectionId: session.connectionId,
+                initialTmuxSessionName: tmuxSessionName,
+                initialTmuxWindowIndex: targetWindowIndex,
+              ),
+            ),
+          ),
+        );
+
+        await tester.pump();
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        verify(
+          () => tmuxService.selectWindow(
+            session,
+            tmuxSessionName,
+            targetWindowIndex,
+          ),
+        ).called(1);
+        verify(
+          () =>
+              tmuxService.hasForegroundClientOrThrow(session, tmuxSessionName),
+        ).called(1);
+        expect(shellWrites.map(utf8.decode).join(), isEmpty);
+      },
+      variant: TargetPlatformVariant.only(TargetPlatform.iOS),
+    );
+
+    testWidgets(
       'notification tmux target reopens a busy shell so the selected window is visible',
       (tester) async {
         final tmuxService = _MockTmuxService();
@@ -1293,7 +1388,7 @@ void main() {
           ),
         ).thenAnswer((_) async {});
         when(
-          () => tmuxService.hasForegroundClient(
+          () => tmuxService.hasForegroundClientOrThrow(
             session,
             tmuxSessionName,
             extraFlags: tmuxExtraFlags,
@@ -1366,7 +1461,7 @@ void main() {
           ),
         ).called(1);
         verify(
-          () => tmuxService.hasForegroundClient(
+          () => tmuxService.hasForegroundClientOrThrow(
             session,
             tmuxSessionName,
             extraFlags: tmuxExtraFlags,

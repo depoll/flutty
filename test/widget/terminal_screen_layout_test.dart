@@ -467,7 +467,7 @@ void main() {
           hasForegroundClient: false,
           shellStatus: TerminalShellStatus.editingCommand,
         ),
-        isTrue,
+        isFalse,
       );
       expect(
         shouldReattachTmuxAfterWindowAction(
@@ -481,7 +481,7 @@ void main() {
           hasForegroundClient: false,
           shellStatus: null,
         ),
-        isTrue,
+        isFalse,
       );
     });
 

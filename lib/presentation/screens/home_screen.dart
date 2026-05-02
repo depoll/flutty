@@ -2719,22 +2719,6 @@ class _TmuxConnectionBadgeState extends ConsumerState<_TmuxConnectionBadge> {
 
     final tmux = ref.read(tmuxServiceProvider);
     final preferredSessionName = widget.preferredSessionName?.trim();
-    final active =
-        preferredSessionName != null && preferredSessionName.isNotEmpty
-        ? await tmux.hasSession(
-            session,
-            preferredSessionName,
-            extraFlags: widget.tmuxExtraFlags,
-          )
-        : await tmux.isTmuxActive(session, extraFlags: widget.tmuxExtraFlags);
-    if (!_isCurrentTmuxQuery(queryGeneration)) {
-      return;
-    }
-    if (!active) {
-      await _retryTmuxQuery(retries, expectedGeneration: queryGeneration);
-      return;
-    }
-
     final sessionName =
         preferredSessionName != null && preferredSessionName.isNotEmpty
         ? preferredSessionName

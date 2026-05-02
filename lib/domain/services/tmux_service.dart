@@ -778,28 +778,12 @@ class TmuxService {
     String sessionName, {
     String? extraFlags,
   }) async {
-    DiagnosticsLogService.instance.debug(
-      'tmux.query',
-      'foreground_client_start',
-      fields: {'connectionId': session.connectionId},
-    );
     try {
-      final foregroundSessionName = await _foregroundSessionNameOrThrow(
+      return await hasForegroundClientOrThrow(
         session,
-        priority: SshExecPriority.normal,
+        sessionName,
         extraFlags: extraFlags,
       );
-      final hasClient = foregroundSessionName == sessionName;
-      DiagnosticsLogService.instance.info(
-        'tmux.query',
-        'foreground_client_complete',
-        fields: {
-          'connectionId': session.connectionId,
-          'hasForegroundClient': hasClient,
-          'hasForegroundSession': foregroundSessionName != null,
-        },
-      );
-      return hasClient;
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
         'tmux.query',
@@ -811,6 +795,36 @@ class TmuxService {
       );
       return false;
     }
+  }
+
+  /// Returns whether [sessionName] is attached in the primary SSH terminal, and
+  /// throws when the remote check could not complete.
+  Future<bool> hasForegroundClientOrThrow(
+    SshSession session,
+    String sessionName, {
+    String? extraFlags,
+  }) async {
+    DiagnosticsLogService.instance.debug(
+      'tmux.query',
+      'foreground_client_start',
+      fields: {'connectionId': session.connectionId},
+    );
+    final foregroundSessionName = await _foregroundSessionNameOrThrow(
+      session,
+      priority: SshExecPriority.normal,
+      extraFlags: extraFlags,
+    );
+    final hasClient = foregroundSessionName == sessionName;
+    DiagnosticsLogService.instance.info(
+      'tmux.query',
+      'foreground_client_complete',
+      fields: {
+        'connectionId': session.connectionId,
+        'hasForegroundClient': hasClient,
+        'hasForegroundSession': foregroundSessionName != null,
+      },
+    );
+    return hasClient;
   }
 
   /// Asks every foreground client attached to [sessionName] to redraw.
@@ -1623,7 +1637,7 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
   );
   return r'sep=$(printf "\037"); '
       r'connection_pid=$(ps -p "$$" -o ppid= 2>/dev/null | tr -d " "); '
-      r'[ -n "$connection_pid" ] || exit 0; '
+      r'if [ -n "$connection_pid" ]; then '
       '$listClients"#{client_pid}\$sep#{session_name}\$sep#{client_control_mode}" '
       '2>/dev/null | '
       r'while IFS="$sep" read -r client_pid session_name control_mode; do '
@@ -1633,11 +1647,12 @@ String _buildForegroundTmuxSessionCommand({String? extraFlags}) {
       r'while [ -n "$pid" ] && [ "$pid" != 0 ] && [ "$pid" != 1 ]; do '
       r'if [ "$pid" = "$connection_pid" ]; then '
       r'printf "%s\n" "$session_name"; '
-      'exit 0; '
+      'break 2; '
       'fi; '
       r'pid=$(ps -p "$pid" -o ppid= 2>/dev/null | tr -d " "); '
       'done; '
-      'done';
+      'done; '
+      'fi';
 }
 
 /// Parses the current pane path reported by `tmux display-message`.

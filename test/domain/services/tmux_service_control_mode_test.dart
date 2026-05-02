@@ -288,6 +288,8 @@ void main() {
       expect(foregroundCommand, contains('#{client_pid}'));
       expect(foregroundCommand, contains('#{client_control_mode}'));
       expect(foregroundCommand, contains('connection_pid='));
+      expect(foregroundCommand, isNot(contains('exit 0')));
+      expect(foregroundCommand, contains('break 2'));
       expect(foregroundCommand, isNot(contains('#{client_tty}')));
       verifyNever(
         () => client.execute(

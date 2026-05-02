@@ -309,7 +309,7 @@ bool shouldReattachTmuxAfterWindowAction({
   if (hasForegroundClient) {
     return false;
   }
-  return shellStatus != TerminalShellStatus.runningCommand;
+  return shellStatus == TerminalShellStatus.prompt;
 }
 
 /// Returns whether shell-command review warnings should be shown for text
@@ -4988,7 +4988,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       _syncTerminalWakeLock(SshConnectionState.connected);
       _scheduleTerminalSizeRefresh();
       _restoreTerminalFocus();
-      _primeTmuxStateFromHost();
 
       // Start port forwards
       await _startPortForwards(session);
@@ -5369,23 +5368,6 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     }
   }
 
-  void _primeTmuxStateFromHost() {
-    final host = _host;
-    final preferredSessionName = _preferredTmuxSessionName(host);
-    if (!mounted || preferredSessionName == null) {
-      return;
-    }
-
-    final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
-    setState(() {
-      _isTmuxActive = true;
-      _tmuxSessionName = preferredSessionName;
-      _tmuxStateConnectionId = _connectionId;
-      _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
-      _tmuxWorkingDirectory = preferredWorkingDirectory;
-    });
-  }
-
   String? get _initialTmuxSessionName {
     final sessionName = widget.initialTmuxSessionName?.trim();
     return sessionName == null || sessionName.isEmpty ? null : sessionName;
@@ -5523,34 +5505,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       preferredSessionName: preferredSessionName,
       existingSessionName: existingCandidateSessionName,
     );
-    final shouldPreserveKnownTmuxState =
+    final hasExistingVisibleTmuxState =
+        tmuxStateBelongsToSession && _isTmuxActive && _tmuxSessionName != null;
+    final shouldKeepExistingTmuxStateWhileDetecting =
         mayPreserveExistingTmuxState ||
-        (candidateSessionName != null &&
+        (hasExistingVisibleTmuxState &&
+            candidateSessionName != null &&
             candidateSessionName == existingCandidateSessionName);
-    final hadVisibleOrPrimedTmuxState =
-        (tmuxStateBelongsToSession &&
-            _isTmuxActive &&
-            _tmuxSessionName != null) ||
-        candidateSessionName != null;
+    final hadVisibleOrPrimedTmuxState = hasExistingVisibleTmuxState;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
     var confirmedTmuxActive = false;
     var hadDetectionFailure = false;
 
     if (mounted) {
       setState(() {
-        if (candidateSessionName != null) {
-          _isTmuxActive = true;
-          _tmuxSessionName = candidateSessionName;
-          _tmuxStateConnectionId = session.connectionId;
-          _tmuxLaunchWorkingDirectory =
-              preferredWorkingDirectory ??
-              (shouldPreserveKnownTmuxState
-                  ? _tmuxLaunchWorkingDirectory
-                  : null);
-          _tmuxWorkingDirectory =
-              preferredWorkingDirectory ??
-              (shouldPreserveKnownTmuxState ? _tmuxWorkingDirectory : null);
+        if (shouldKeepExistingTmuxStateWhileDetecting) {
+          if (preferredWorkingDirectory != null) {
+            _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
+            _tmuxWorkingDirectory = preferredWorkingDirectory;
+          }
         } else if (!mayPreserveExistingTmuxState) {
+          _stopTmuxForegroundVerification();
           _isTmuxActive = false;
           _tmuxSessionName = null;
           _tmuxStateConnectionId = null;
@@ -5597,12 +5572,9 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
               'errorType': error.runtimeType,
             },
           );
-          if (!shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-            preserveExistingTmuxState: mayPreserveExistingTmuxState,
-            hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
-            confirmedTmuxActive: confirmedTmuxActive,
-            hadDetectionFailure: true,
-          )) {
+          if (candidateSessionName == null &&
+              !hadVisibleOrPrimedTmuxState &&
+              !mayPreserveExistingTmuxState) {
             rethrow;
           }
           continue;
@@ -5625,6 +5597,12 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (!active) {
           confirmedTmuxActive = false;
           hadDetectionFailure = false;
+          if (candidateSessionName == null &&
+              foregroundSessionName == null &&
+              !hadVisibleOrPrimedTmuxState &&
+              !mayPreserveExistingTmuxState) {
+            break;
+          }
           continue;
         }
         confirmedTmuxActive = true;
@@ -6226,11 +6204,27 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     bool forceVisibleTmux = false,
   }) async {
     final tmux = ref.read(tmuxServiceProvider);
-    final hasForegroundClient = await tmux.hasForegroundClient(
-      session,
-      sessionName,
-      extraFlags: _host?.tmuxExtraFlags,
-    );
+    var hasForegroundClient = false;
+    try {
+      hasForegroundClient = await tmux.hasForegroundClientOrThrow(
+        session,
+        sessionName,
+        extraFlags: _host?.tmuxExtraFlags,
+      );
+    } on Exception catch (error) {
+      if (!forceVisibleTmux) {
+        DiagnosticsLogService.instance.warning(
+          'tmux.ui',
+          'reattach_foreground_check_failed',
+          fields: {
+            'connectionId': session.connectionId,
+            'errorType': error.runtimeType,
+          },
+        );
+        return;
+      }
+      hasForegroundClient = false;
+    }
     if (!mounted || hasForegroundClient) {
       DiagnosticsLogService.instance.info(
         'tmux.ui',
@@ -6251,14 +6245,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(
           content: Text(
-            'tmux updated $sessionName, but this terminal is outside tmux '
-            'while a command is still running.',
+            'tmux updated $sessionName, but this terminal is not safely at '
+            'a shell prompt.',
           ),
         ),
       );
       DiagnosticsLogService.instance.warning(
         'tmux.ui',
-        'reattach_skipped_command_running',
+        'reattach_skipped_shell_not_prompt',
         fields: {'connectionId': session.connectionId},
       );
       return;
