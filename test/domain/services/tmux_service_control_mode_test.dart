@@ -136,10 +136,18 @@ void main() {
       expect(command, contains(r'set-option -p -t "$pane"'));
       expect(command, contains("'pane-colours[5]' '#ff79c6'"));
       expect(command, contains("'pane-colours[6]' '#8be9fd'"));
-      expect(command, contains(r'#{pane_active}${SEP}#{alternate_on}'));
+      expect(
+        command,
+        contains(
+          r'#{pane_active}${SEP}#{alternate_on}${SEP}#{pane_current_command}',
+        ),
+      );
       expect(command, contains(r'[ "$active" = 1 ]'));
       expect(command, contains(r'[ "$alternate" = 1 ]'));
-      expect(command, isNot(contains(r'case "${pane_command##*/}" in')));
+      expect(command, contains(r'[ "$foreground_tui" = 1 ]'));
+      expect(command, contains(r'case "${pane_command##*/}" in'));
+      expect(command, contains("''|sh|bash|zsh|fish"));
+      expect(command, contains('flutty_theme_refresh_pane'));
       expect(command, contains(r'send-keys -t "$pane" -H'));
       expect(command, contains('1b 5b 3f 39 39 37 3b 31 6e'));
       expect(command, contains('1b 5b 4f'));

@@ -250,6 +250,22 @@ String? resolveTmuxDetectionCandidateSessionName({
   return null;
 }
 
+/// Keeps an existing tmux session candidate scoped to the SSH connection that
+/// created it.
+@visibleForTesting
+String? resolveOwnedTmuxDetectionExistingSessionName({
+  required int sessionConnectionId,
+  required int? tmuxStateConnectionId,
+  String? existingSessionName,
+}) {
+  if (tmuxStateConnectionId != sessionConnectionId) {
+    return null;
+  }
+  return resolveTmuxDetectionCandidateSessionName(
+    existingSessionName: existingSessionName,
+  );
+}
+
 /// Returns whether a tmux bar widget update should keep its last window list.
 ///
 /// Recovery updates re-run subscriptions and queries after transient failures,
@@ -3249,6 +3265,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   bool _showsTerminalMetadata = false;
   bool _isTmuxActive = false;
   String? _tmuxSessionName;
+  int? _tmuxStateConnectionId;
   _InitialTmuxWindowTarget? _pendingInitialTmuxWindowTarget;
   bool _showTmuxBar = true;
   bool _isTmuxBarExpanded = false;
@@ -3757,6 +3774,8 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _cancelTerminalThemeRefreshTimers();
     final refreshGeneration = ++_terminalThemeRefreshGeneration;
     final plainTuiRefreshAllowed = _shouldRefreshPlainTerminalTui(session);
+    final tmuxStateBelongsToSession =
+        _tmuxStateConnectionId == session.connectionId;
     DiagnosticsLogService.instance.info(
       'terminal.theme',
       'refresh_requested',
@@ -3764,6 +3783,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'reason': reason,
         'connectionId': session.connectionId,
         'isTmuxActive': _isTmuxActive,
+        'tmuxStateBelongsToSession': tmuxStateBelongsToSession,
         'plainTuiRefreshAllowed': plainTuiRefreshAllowed,
         'colorSchemeUpdatesMode': session.terminalColorSchemeUpdatesMode,
         'focusMode': _terminal.reportFocusMode,
@@ -3773,7 +3793,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         'terminalViewReady': _terminalViewKey.currentState != null,
       },
     );
-    if (_isTmuxActive) {
+    if (_isTmuxActive && tmuxStateBelongsToSession) {
       // Push fresh OSC 10/11/4 reports to tmux itself. tmux caches the outer
       // terminal's default colors and ANSI palette and answers inner-pane OSC
       // queries from that cache.
@@ -3948,7 +3968,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
   /// foreground pane because tmux may be detected after a TUI has already
   /// cached stale default colors.
   void _primeTmuxTerminalTheme(SshSession session) {
-    if (!_isTmuxActive) {
+    if (!_isTmuxActive || _tmuxStateConnectionId != session.connectionId) {
       return;
     }
     _cancelTerminalThemeRefreshTimers();
@@ -5351,6 +5371,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     setState(() {
       _isTmuxActive = true;
       _tmuxSessionName = preferredSessionName;
+      _tmuxStateConnectionId = _connectionId;
       _tmuxLaunchWorkingDirectory = preferredWorkingDirectory;
       _tmuxWorkingDirectory = preferredWorkingDirectory;
     });
@@ -5372,6 +5393,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     _tmuxDetectionGeneration += 1;
     _isTmuxActive = false;
     _tmuxSessionName = null;
+    _tmuxStateConnectionId = null;
     _isTmuxBarExpanded = false;
     _tmuxLaunchWorkingDirectory = null;
     _tmuxWorkingDirectory = null;
@@ -5392,8 +5414,14 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final detectionGeneration = ++_tmuxDetectionGeneration;
     final host = _host;
     final preferredSessionName = _preferredTmuxSessionName(host);
+    final tmuxStateBelongsToSession =
+        _tmuxStateConnectionId == session.connectionId;
+    final mayPreserveExistingTmuxState =
+        preserveExistingTmuxState && tmuxStateBelongsToSession;
     final existingCandidateSessionName =
-        resolveTmuxDetectionCandidateSessionName(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: session.connectionId,
+          tmuxStateConnectionId: _tmuxStateConnectionId,
           existingSessionName: _tmuxSessionName,
         );
     final candidateSessionName = resolveTmuxDetectionCandidateSessionName(
@@ -5401,11 +5429,13 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       existingSessionName: existingCandidateSessionName,
     );
     final shouldPreserveKnownTmuxState =
-        preserveExistingTmuxState ||
+        mayPreserveExistingTmuxState ||
         (candidateSessionName != null &&
             candidateSessionName == existingCandidateSessionName);
     final hadVisibleOrPrimedTmuxState =
-        (_isTmuxActive && _tmuxSessionName != null) ||
+        (tmuxStateBelongsToSession &&
+            _isTmuxActive &&
+            _tmuxSessionName != null) ||
         candidateSessionName != null;
     final preferredWorkingDirectory = host?.tmuxWorkingDirectory;
     var confirmedTmuxActive = false;
@@ -5416,6 +5446,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         if (candidateSessionName != null) {
           _isTmuxActive = true;
           _tmuxSessionName = candidateSessionName;
+          _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory =
               preferredWorkingDirectory ??
               (shouldPreserveKnownTmuxState
@@ -5424,9 +5455,10 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
           _tmuxWorkingDirectory =
               preferredWorkingDirectory ??
               (shouldPreserveKnownTmuxState ? _tmuxWorkingDirectory : null);
-        } else if (!preserveExistingTmuxState) {
+        } else if (!mayPreserveExistingTmuxState) {
           _isTmuxActive = false;
           _tmuxSessionName = null;
+          _tmuxStateConnectionId = null;
           _tmuxLaunchWorkingDirectory = null;
           _tmuxWorkingDirectory = null;
         }
@@ -5473,7 +5505,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
             },
           );
           if (!shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-            preserveExistingTmuxState: preserveExistingTmuxState,
+            preserveExistingTmuxState: mayPreserveExistingTmuxState,
             hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
             confirmedTmuxActive: confirmedTmuxActive,
             hadDetectionFailure: true,
@@ -5588,6 +5620,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         setState(() {
           _isTmuxActive = true;
           _tmuxSessionName = sessionName;
+          _tmuxStateConnectionId = session.connectionId;
           _tmuxLaunchWorkingDirectory = tmuxLaunchCwd;
           _tmuxWorkingDirectory = tmuxCwd;
         });
@@ -5617,7 +5650,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       }
 
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-        preserveExistingTmuxState: preserveExistingTmuxState,
+        preserveExistingTmuxState: mayPreserveExistingTmuxState,
         hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: hadDetectionFailure,
@@ -5643,7 +5676,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return false;
       }
 
-      if (!preserveExistingTmuxState) {
+      if (!mayPreserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
       DiagnosticsLogService.instance.info(
@@ -5667,7 +5700,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         return false;
       }
       if (shouldPreserveTerminalTmuxStateAfterDetectionFailure(
-        preserveExistingTmuxState: preserveExistingTmuxState,
+        preserveExistingTmuxState: mayPreserveExistingTmuxState,
         hadVisibleOrPrimedTmuxState: hadVisibleOrPrimedTmuxState,
         confirmedTmuxActive: confirmedTmuxActive,
         hadDetectionFailure: true,
@@ -5683,7 +5716,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
         );
         return false;
       }
-      if (!preserveExistingTmuxState) {
+      if (!mayPreserveExistingTmuxState) {
         setState(_clearTmuxState);
       }
       return false;

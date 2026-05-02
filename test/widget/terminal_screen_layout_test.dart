@@ -342,6 +342,25 @@ void main() {
       );
     });
 
+    test('ignores existing tmux sessions from other SSH connections', () {
+      expect(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: 2,
+          tmuxStateConnectionId: 1,
+          existingSessionName: 'work',
+        ),
+        isNull,
+      );
+      expect(
+        resolveOwnedTmuxDetectionExistingSessionName(
+          sessionConnectionId: 2,
+          tmuxStateConnectionId: 2,
+          existingSessionName: ' work ',
+        ),
+        'work',
+      );
+    });
+
     test('preserves tmux bar snapshots during same-session recovery', () {
       expect(
         shouldPreserveTmuxBarSnapshotOnUpdate(

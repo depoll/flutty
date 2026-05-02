@@ -779,7 +779,7 @@ class TmuxService {
       fields: {'connectionId': session.connectionId},
     );
     try {
-      await _exec(
+      final output = await _exec(
         session,
         buildTmuxRefreshTerminalThemeCommand(
           sessionName,
@@ -788,10 +788,19 @@ class TmuxService {
         ),
         priority: SshExecPriority.low,
       );
+      final stats = _parseTmuxThemeRefreshStats(output);
       DiagnosticsLogService.instance.info(
         'tmux.action',
         'refresh_theme_complete',
-        fields: {'connectionId': session.connectionId},
+        fields: {
+          'connectionId': session.connectionId,
+          if (stats != null) ...{
+            'paneCount': stats.paneCount,
+            'activePaneCount': stats.activePaneCount,
+            'alternatePaneCount': stats.alternatePaneCount,
+            'injectedPaneCount': stats.injectedPaneCount,
+          },
+        },
       );
     } on Exception catch (error) {
       DiagnosticsLogService.instance.warning(
@@ -1455,6 +1464,9 @@ Duration resolveTmuxControlRestartDelay(
 }
 
 String _diagnosticTmuxCommandKind(String command) {
+  if (command.contains('flutty_theme_refresh_pane')) {
+    return 'refresh_theme';
+  }
   if (command.contains('attach-session')) {
     return 'control_attach';
   }
@@ -1568,16 +1580,76 @@ String buildTmuxRefreshTerminalThemeCommand(
 
   return r'SEP=$(printf "\037"); '
       '$enableFocusEvents 2>/dev/null || true; '
-      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}" '
+      '$listPanes"#{pane_id}$sep#{pane_active}$sep#{alternate_on}$sep#{pane_current_command}" '
       '2>/dev/null | '
-      r'while IFS="$SEP" read -r pane active alternate; do '
+      r'while IFS="$SEP" read -r pane active alternate pane_command; do '
       r'[ -n "$pane" ] || continue; '
       '$setPaneColours '
-      r'if [ "$active" = 1 ] && [ "$alternate" = 1 ]; then '
+      'injected=0; foreground_tui=0; '
+      r'if [ "$active" = 1 ]; then '
+      r'case "${pane_command##*/}" in '
+      "''|sh|bash|zsh|fish|nu|pwsh|powershell|cmd|cmd.exe|tmux|ssh|mosh|login) foreground_tui=0 ;; "
+      '*) foreground_tui=1 ;; '
+      'esac; '
+      r'if [ "$alternate" = 1 ] || [ "$foreground_tui" = 1 ]; then '
+      'injected=1; '
       '${_buildTmuxSendPaneTerminalThemeCommand(theme, extraFlags: extraFlags)} '
       'fi; '
+      'fi; '
+      r'printf "flutty_theme_refresh_pane:%s,%s,%s\n" "$active" "$alternate" "$injected"; '
       'done; '
       '${buildTmuxRefreshForegroundClientsCommand(sessionName, extraFlags: extraFlags)}';
+}
+
+class _TmuxThemeRefreshStats {
+  const _TmuxThemeRefreshStats({
+    required this.paneCount,
+    required this.activePaneCount,
+    required this.alternatePaneCount,
+    required this.injectedPaneCount,
+  });
+
+  final int paneCount;
+  final int activePaneCount;
+  final int alternatePaneCount;
+  final int injectedPaneCount;
+}
+
+_TmuxThemeRefreshStats? _parseTmuxThemeRefreshStats(String output) {
+  var paneCount = 0;
+  var activePaneCount = 0;
+  var alternatePaneCount = 0;
+  var injectedPaneCount = 0;
+  for (final line in output.split('\n')) {
+    if (!line.startsWith('flutty_theme_refresh_pane:')) {
+      continue;
+    }
+    final fields = line
+        .substring('flutty_theme_refresh_pane:'.length)
+        .split(',');
+    if (fields.length != 3) {
+      continue;
+    }
+    paneCount += 1;
+    if (fields[0] == '1') {
+      activePaneCount += 1;
+    }
+    if (fields[1] == '1') {
+      alternatePaneCount += 1;
+    }
+    if (fields[2] == '1') {
+      injectedPaneCount += 1;
+    }
+  }
+  if (paneCount == 0) {
+    return null;
+  }
+  return _TmuxThemeRefreshStats(
+    paneCount: paneCount,
+    activePaneCount: activePaneCount,
+    alternatePaneCount: alternatePaneCount,
+    injectedPaneCount: injectedPaneCount,
+  );
 }
 
 String _buildTmuxSetPaneColourCommand(
