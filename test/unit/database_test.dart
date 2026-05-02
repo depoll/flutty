@@ -591,4 +591,303 @@ void main() {
       expect((await databaseFileFuture).existsSync(), isTrue);
     });
   });
+
+  group('Schema integrity', () {
+    Future<Set<String>> columnNames(AppDatabase db, String tableName) async {
+      final rows = await db.customSelect('PRAGMA table_info($tableName)').get();
+      return rows.map((r) => r.read<String>('name')).toSet();
+    }
+
+    test('hosts table has all expected columns after fresh open', () async {
+      final columns = await columnNames(db, 'hosts');
+      for (final expected in [
+        'id',
+        'label',
+        'hostname',
+        'port',
+        'username',
+        'password',
+        'key_id',
+        'group_id',
+        'jump_host_id',
+        'skip_jump_host_on_ssids',
+        'is_favorite',
+        'color',
+        'notes',
+        'tags',
+        'created_at',
+        'updated_at',
+        'last_connected_at',
+        'terminal_theme_light_id',
+        'terminal_theme_dark_id',
+        'terminal_font_family',
+        'auto_connect_command',
+        'auto_connect_snippet_id',
+        'auto_connect_requires_confirmation',
+        'sort_order',
+        'tmux_session_name',
+        'tmux_working_directory',
+        'tmux_extra_flags',
+      ]) {
+        expect(
+          columns,
+          contains(expected),
+          reason: 'hosts table is missing column: $expected',
+        );
+      }
+    });
+
+    test('snippets table has sort_order column after fresh open', () async {
+      final columns = await columnNames(db, 'snippets');
+      expect(
+        columns,
+        containsAll(['id', 'name', 'command', 'sort_order', 'usage_count']),
+      );
+    });
+
+    test('stored user_version matches schemaVersion', () async {
+      final rows = await db.customSelect('PRAGMA user_version').get();
+      final stored = rows.first.read<int>('user_version');
+      expect(stored, equals(db.schemaVersion));
+    });
+  });
+
+  group('beforeOpen key type repair', () {
+    Future<File> createTestDbFile(String name) async {
+      final dir = Directory(
+        p.join(
+          Directory.current.path,
+          '.dart_tool',
+          'database_test',
+          '$name-${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      );
+      await dir.create(recursive: true);
+      addTearDown(() async {
+        if (dir.existsSync()) await dir.delete(recursive: true);
+      });
+      return File(p.join(dir.path, 'test.db'));
+    }
+
+    Future<int> insertUnknownKey(
+      AppDatabase target, {
+      required String publicKey,
+    }) => target
+        .into(target.sshKeys)
+        .insert(
+          SshKeysCompanion.insert(
+            name: 'repair-test-key',
+            keyType: 'unknown',
+            publicKey: publicKey,
+            privateKey: 'private-key-material',
+          ),
+        );
+
+    Future<String> reopenAndGetKeyType(File dbFile, int keyId) async {
+      final db2 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      addTearDown(() async => db2.close());
+      final key = await (db2.select(
+        db2.sshKeys,
+      )..where((k) => k.id.equals(keyId))).getSingle();
+      return key.keyType;
+    }
+
+    test('repairs key with ssh-ed25519 public key prefix', () async {
+      final dbFile = await createTestDbFile('repair-ed25519-prefix');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAA...',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'ed25519');
+    });
+
+    test('repairs key with ssh-rsa public key prefix', () async {
+      final dbFile = await createTestDbFile('repair-rsa-prefix');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'ssh-rsa AAAAB3NzaC1yc2EAAAA...',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'rsa');
+    });
+
+    test('repairs key with ecdsa-sha2-nistp256 public key prefix', () async {
+      final dbFile = await createTestDbFile('repair-ecdsa-prefix');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'ecdsa-sha2-nistp256 AAAAE2VjZHNh...',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'ecdsa-256');
+    });
+
+    test('repairs key with malformed Ed25519 toString public key', () async {
+      final dbFile = await createTestDbFile('repair-ed25519-tostring');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'SSH(Ed25519PublicKey abc123)',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'ssh-ed25519');
+    });
+
+    test('repairs key with malformed RSA toString public key', () async {
+      final dbFile = await createTestDbFile('repair-rsa-tostring');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'SSH(RsaPublicKey abc123)',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'ssh-rsa');
+    });
+
+    test('repairs key with malformed ECDSA toString public key', () async {
+      final dbFile = await createTestDbFile('repair-ecdsa-tostring');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'SSH(EcdsaPublicKey abc123)',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'ecdsa-sha2-nistp256');
+    });
+
+    test('leaves key unchanged when type cannot be determined', () async {
+      final dbFile = await createTestDbFile('repair-unrecognised');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await insertUnknownKey(
+        db1,
+        publicKey: 'UNRECOGNISED key-material',
+      );
+      await db1.close();
+
+      expect(await reopenAndGetKeyType(dbFile, id), 'unknown');
+    });
+
+    test('does not modify keys that already have a known type', () async {
+      final dbFile = await createTestDbFile('repair-skip-known');
+      final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+      await db1.select(db1.settings).get();
+      final id = await db1
+          .into(db1.sshKeys)
+          .insert(
+            SshKeysCompanion.insert(
+              name: 'known-key',
+              keyType: 'ed25519',
+              publicKey: 'ssh-ed25519 AAAAC3Nz...',
+              privateKey: 'private-key-material',
+            ),
+          );
+      await db1.close();
+
+      // Key type already correct — repair logic must leave it as-is.
+      expect(await reopenAndGetKeyType(dbFile, id), 'ed25519');
+    });
+  });
+
+  group('Migration idempotency guards', () {
+    Future<File> createTestDbFile(String name) async {
+      final dir = Directory(
+        p.join(
+          Directory.current.path,
+          '.dart_tool',
+          'database_test',
+          '$name-${DateTime.now().microsecondsSinceEpoch}',
+        ),
+      );
+      await dir.create(recursive: true);
+      addTearDown(() async {
+        if (dir.existsSync()) await dir.delete(recursive: true);
+      });
+      return File(p.join(dir.path, 'test.db'));
+    }
+
+    test(
+      'v4+ guarded migrations succeed when run on an already-complete schema',
+      () async {
+        final dbFile = await createTestDbFile('idempotent-v3');
+
+        // Initialise a fresh v8 database so onCreate runs and all columns exist.
+        final db1 = AppDatabase.forTesting(NativeDatabase(dbFile));
+        await db1.select(db1.settings).get();
+        // Roll user_version back to 3 so the next open runs onUpgrade(m, 3, 8).
+        // Migrations for v4-v8 all use _readColumnNames guards, so they must
+        // tolerate existing columns without error.
+        await db1.customStatement('PRAGMA user_version = 3');
+        await db1.close();
+
+        final db2 = AppDatabase.forTesting(NativeDatabase(dbFile));
+        addTearDown(() async => db2.close());
+
+        await expectLater(
+          db2.select(db2.hosts).get(),
+          completes,
+          reason: 'v4-v8 guarded migrations must be idempotent',
+        );
+
+        // Confirm the guarded columns are still present and accessible.
+        final hostColumns = await db2
+            .customSelect('PRAGMA table_info(hosts)')
+            .get();
+        final names = hostColumns.map((r) => r.read<String>('name')).toSet();
+        expect(
+          names,
+          containsAll([
+            'auto_connect_command',
+            'auto_connect_requires_confirmation',
+            'sort_order',
+            'tmux_session_name',
+            'skip_jump_host_on_ssids',
+          ]),
+        );
+      },
+    );
+
+    test(
+      '_readColumnNames equivalent correctly reports existing columns',
+      () async {
+        // The migration guards rely on PRAGMA table_info to detect existing
+        // columns before calling addColumn.  Verify that the PRAGMA result
+        // contains every column name used as a guard key.
+        final rows = await db.customSelect('PRAGMA table_info(hosts)').get();
+        final names = rows.map((r) => r.read<String>('name')).toSet();
+
+        for (final guarded in [
+          'auto_connect_command',
+          'auto_connect_snippet_id',
+          'auto_connect_requires_confirmation',
+          'sort_order',
+          'tmux_session_name',
+          'tmux_working_directory',
+          'tmux_extra_flags',
+          'skip_jump_host_on_ssids',
+        ]) {
+          expect(
+            names,
+            contains(guarded),
+            reason: 'PRAGMA table_info must include guarded column: $guarded',
+          );
+        }
+      },
+    );
+  });
 }
