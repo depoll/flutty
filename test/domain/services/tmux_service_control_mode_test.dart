@@ -1334,6 +1334,172 @@ void main() {
       );
     });
   });
+
+  group('clearCache lifecycle', () {
+    // Connection IDs 60-69 reserved for this group to avoid static-cache
+    // collisions with other groups in the same test run.
+
+    test(
+      'clears installed agent tools cache so subsequent call re-probes SSH',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 60);
+        const service = TmuxService();
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async => _buildOpenExecSession(
+            stdout: '/opt/homebrew/bin/claude\n${_doneMarker()}',
+          ),
+        );
+
+        // Seed the agent-tools cache.
+        final first = await service.detectInstalledAgentTools(session);
+        expect(first, {AgentLaunchTool.claudeCode});
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(60), isTrue);
+
+        // Clear and verify the cache entry is gone.
+        service.clearCache(60);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(60), isFalse);
+
+        // A subsequent call must re-probe via SSH rather than serve stale data.
+        final second = await service.detectInstalledAgentTools(session);
+        expect(second, {AgentLaunchTool.claudeCode});
+        verify(() => client.execute(any(), pty: any(named: 'pty'))).called(2);
+      },
+    );
+
+    test(
+      'clears tmux path cache so subsequent path probe is re-issued',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 61);
+        const service = TmuxService();
+        // hasSessionOrThrow issues two SSH execs: (1) the path probe and
+        // (2) the has-session command.  A second call skips the probe.
+        final execQueue = Queue<SSHSession>.of([
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+          // After clearCache a fresh path probe is issued again.
+          _buildOpenExecSession(stdout: 'zsh\n/usr/bin/tmux\n${_doneMarker()}'),
+          _buildOpenExecSession(stdout: '1\n${_doneMarker()}'),
+        ]);
+        when(
+          () => client.execute(any(), pty: any(named: 'pty')),
+        ).thenAnswer((_) async => execQueue.removeFirst());
+
+        // Seed the path cache via a method that calls _cacheTmuxPath.
+        await service.hasSessionOrThrow(session, 'work');
+        expect(TmuxService.hasTmuxPathCacheEntry(61), isTrue);
+
+        // Clear and verify the cache entry is gone.
+        service.clearCache(61);
+        expect(TmuxService.hasTmuxPathCacheEntry(61), isFalse);
+
+        // A subsequent call must re-probe the tmux binary path.
+        await service.hasSessionOrThrow(session, 'work');
+        expect(TmuxService.hasTmuxPathCacheEntry(61), isTrue);
+        verify(
+          () => client.execute(
+            any(that: contains('command -v tmux')),
+            pty: any(named: 'pty'),
+          ),
+        ).called(2);
+      },
+    );
+
+    test(
+      'clears window snapshot cache so stale windows are not served',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 62);
+        const service = TmuxService();
+        const sep = tmuxWindowFieldSeparator;
+        final windowLine = [
+          '0',
+          'editor',
+          '1',
+          'nvim',
+          '/home/user/project',
+          '*',
+          'editor',
+          '200',
+          'nvim',
+          '',
+          '@1',
+        ].join(sep);
+
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async =>
+              _buildOpenExecSession(stdout: '$windowLine\n${_doneMarker()}'),
+        );
+
+        // listWindows populates _windowSnapshotCache when results are non-empty.
+        final windows = await service.listWindows(session, 'main');
+        expect(windows, hasLength(1));
+        expect(TmuxService.hasWindowSnapshotCacheEntry(62), isTrue);
+
+        // After clearCache the snapshot is gone.
+        service.clearCache(62);
+        expect(TmuxService.hasWindowSnapshotCacheEntry(62), isFalse);
+      },
+    );
+
+    test(
+      'clears exec-channel backoff so the next exec channel is not throttled',
+      () async {
+        final client = _MockSshClient();
+        final session = _buildSession(client, connectionId: 63);
+        const service = TmuxService();
+
+        // Trigger a channel-open failure so a backoff entry is recorded.
+        when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+          (_) async =>
+              Future<SSHSession>.error(SSHChannelOpenError(2, 'open failed')),
+        );
+        await expectLater(
+          service.listWindows(session, 'main'),
+          throwsA(isA<SSHChannelOpenError>()),
+        );
+        expect(TmuxService.hasExecChannelBackoffEntry(63), isTrue);
+
+        // clearCache must remove the backoff so the next open is attempted.
+        service.clearCache(63);
+        expect(TmuxService.hasExecChannelBackoffEntry(63), isFalse);
+      },
+    );
+
+    test(
+      'clearCache for one connection does not affect another connection',
+      () async {
+        final clientA = _MockSshClient();
+        final clientB = _MockSshClient();
+        final sessionA = _buildSession(clientA, connectionId: 64);
+        final sessionB = _buildSession(clientB, connectionId: 65);
+        const service = TmuxService();
+
+        for (final client in [clientA, clientB]) {
+          when(() => client.execute(any(), pty: any(named: 'pty'))).thenAnswer(
+            (_) async => _buildOpenExecSession(
+              stdout: '/opt/homebrew/bin/codex\n${_doneMarker()}',
+            ),
+          );
+        }
+
+        await service.detectInstalledAgentTools(sessionA);
+        await service.detectInstalledAgentTools(sessionB);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(64), isTrue);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(65), isTrue);
+
+        // Clearing A must not affect B.
+        service.clearCache(64);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(64), isFalse);
+        expect(TmuxService.hasInstalledAgentToolsCacheEntry(65), isTrue);
+
+        // Clean up B.
+        service.clearCache(65);
+      },
+    );
+  });
 }
 
 SshSession _buildSession(SSHClient client, {int connectionId = 1}) =>

@@ -14,6 +14,7 @@ import 'package:monkeyssh/data/security/secret_encryption_service.dart';
 import 'package:monkeyssh/domain/models/agent_launch_preset.dart';
 import 'package:monkeyssh/domain/models/host_cli_launch_preferences.dart';
 import 'package:monkeyssh/domain/services/agent_launch_preset_service.dart';
+import 'package:monkeyssh/domain/services/diagnostics_log_service.dart';
 import 'package:monkeyssh/domain/services/host_cli_launch_preferences_service.dart';
 import 'package:monkeyssh/domain/services/host_key_verification.dart';
 import 'package:monkeyssh/domain/services/secure_transfer_service.dart';
@@ -27,6 +28,75 @@ const _publicKeyB =
     'ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIHOD6YHh4xjr8IcP0uT8DODGjPEDGqX2i4eyNvtXq2D+ b';
 const _publicKeyBFingerprint =
     'SHA256:v6rpW34v6+w8LPSvW6v1+Dm8Z6sRf/VNAFNbr8FG3sg';
+
+class _RecordedDiagnosticsEvent {
+  const _RecordedDiagnosticsEvent(
+    this.level,
+    this.category,
+    this.message,
+    this.fields,
+  );
+
+  final DiagnosticsLogLevel level;
+  final String category;
+  final String message;
+  final Map<String, Object?> fields;
+
+  String get searchableText => [
+    level.name,
+    category,
+    message,
+    for (final entry in fields.entries) '${entry.key}=${entry.value}',
+  ].join(' ');
+}
+
+class _RecordingDiagnosticsLogger implements DiagnosticsLogger {
+  final events = <_RecordedDiagnosticsEvent>[];
+
+  @override
+  void debug(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => _record(DiagnosticsLogLevel.debug, category, message, fields);
+
+  @override
+  void error(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => _record(DiagnosticsLogLevel.error, category, message, fields);
+
+  @override
+  void info(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => _record(DiagnosticsLogLevel.info, category, message, fields);
+
+  @override
+  void warning(
+    String category,
+    String message, {
+    Map<String, Object?> fields = const <String, Object?>{},
+  }) => _record(DiagnosticsLogLevel.warning, category, message, fields);
+
+  void _record(
+    DiagnosticsLogLevel level,
+    String category,
+    String message,
+    Map<String, Object?> fields,
+  ) {
+    events.add(
+      _RecordedDiagnosticsEvent(
+        level,
+        category,
+        message,
+        Map<String, Object?>.from(fields),
+      ),
+    );
+  }
+}
 
 void main() {
   late AppDatabase db;
@@ -739,6 +809,95 @@ void main() {
     );
 
     test(
+      'logs migration diagnostics without sensitive payload values',
+      () async {
+        final diagnosticsLogger = _RecordingDiagnosticsLogger();
+        final service = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+          diagnosticsLogger: diagnosticsLogger,
+        );
+        final data = {
+          'settings': {'recentCommand': 'cat /Users/alice/.ssh/id_ed25519'},
+          'snippets': [
+            {
+              'id': 5,
+              'name': 'Deploy secret title',
+              'command': 'cat /Users/alice/.ssh/config',
+            },
+          ],
+          'hosts': [
+            {
+              'id': 1,
+              'label': 'Production secret label',
+              'hostname': 'prod.secret.example.com',
+              'port': 22,
+              'username': 'deploy-user',
+              'password': 'host-password',
+              'autoConnectSnippetId': 5,
+            },
+          ],
+          'portForwards': [
+            {
+              'name': 'Private database tunnel',
+              'hostId': 1,
+              'forwardType': 'local',
+              'localHost': '127.0.0.1',
+              'localPort': 15432,
+              'remoteHost': 'db.internal.example.com',
+              'remotePort': 5432,
+            },
+          ],
+        };
+
+        await service.importMigrationData(
+          data: data,
+          mode: MigrationImportMode.merge,
+          includeKnownHosts: false,
+        );
+
+        expect(
+          diagnosticsLogger.events.map((event) => event.message),
+          containsAll([
+            'migration_import_started',
+            'migration_import_completed',
+          ]),
+        );
+        expect(diagnosticsLogger.events.first.fields, {
+          'mode': MigrationImportMode.merge,
+          'includeKnownHosts': false,
+          'settingsCount': 1,
+          'allowedSettingsKeyCount': null,
+          'groupCount': 0,
+          'keyCount': 0,
+          'hostCount': 1,
+          'snippetFolderCount': 0,
+          'snippetCount': 1,
+          'portForwardCount': 1,
+          'knownHostCount': 0,
+        });
+
+        final diagnosticsText = diagnosticsLogger.events
+            .map((event) => event.searchableText)
+            .join('\n');
+        for (final sensitiveValue in [
+          'cat /Users/alice/.ssh/id_ed25519',
+          'cat /Users/alice/.ssh/config',
+          'Deploy secret title',
+          'Production secret label',
+          'prod.secret.example.com',
+          'deploy-user',
+          'host-password',
+          'Private database tunnel',
+          'db.internal.example.com',
+        ]) {
+          expect(diagnosticsText, isNot(contains(sensitiveValue)));
+        }
+      },
+    );
+
+    test(
       'importMigrationData preserves epoch-millisecond host timestamps',
       () async {
         final createdAt = DateTime.utc(2026, 4, 9, 4);
@@ -1344,6 +1503,209 @@ void main() {
           transferService.importFullMigrationPayload(
             payload: tamperedPayload,
             mode: MigrationImportMode.merge,
+          ),
+          throwsFormatException,
+        );
+      },
+    );
+  });
+
+  group('isolate assembly threshold', () {
+    test('host payload roundtrip via isolate path (threshold = 0)', () async {
+      // threshold=0 forces all payloads through the isolate assembly path.
+      final service = SecureTransferService(
+        db,
+        keyRepository,
+        hostRepository,
+        isolateAssemblyThresholdBytes: 0,
+      );
+      final hostId = await db
+          .into(db.hosts)
+          .insert(
+            HostsCompanion.insert(
+              label: 'Threshold Test Host',
+              hostname: 'threshold.example.com',
+              username: 'user',
+            ),
+          );
+      final host = await (db.select(
+        db.hosts,
+      )..where((h) => h.id.equals(hostId))).getSingle();
+
+      final encoded = await service.createHostPayload(
+        host: host,
+        transferPassphrase: 'pass',
+      );
+      final decrypted = await service.decryptPayload(
+        encodedPayload: encoded,
+        transferPassphrase: 'pass',
+      );
+
+      expect(decrypted.type, TransferPayloadType.host);
+      final hostData = Map<String, dynamic>.from(decrypted.data['host'] as Map);
+      expect(hostData['label'], 'Threshold Test Host');
+      expect(hostData['hostname'], 'threshold.example.com');
+    });
+
+    test(
+      'host payload roundtrip via inline path (threshold = maxInt)',
+      () async {
+        // Very large threshold forces all payloads through the inline path.
+        final service = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+          isolateAssemblyThresholdBytes: 0x7fffffffffffffff,
+        );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Inline Threshold Host',
+                hostname: 'inline.example.com',
+                username: 'user',
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
+
+        final encoded = await service.createHostPayload(
+          host: host,
+          transferPassphrase: 'pass',
+        );
+        final decrypted = await service.decryptPayload(
+          encodedPayload: encoded,
+          transferPassphrase: 'pass',
+        );
+
+        expect(decrypted.type, TransferPayloadType.host);
+        final hostData = Map<String, dynamic>.from(
+          decrypted.data['host'] as Map,
+        );
+        expect(hostData['label'], 'Inline Threshold Host');
+        expect(hostData['hostname'], 'inline.example.com');
+      },
+    );
+
+    test(
+      'isolate path and inline path produce interoperable payloads',
+      () async {
+        final isolateService = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+          isolateAssemblyThresholdBytes: 0,
+        );
+        final inlineService = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+          isolateAssemblyThresholdBytes: 0x7fffffffffffffff,
+        );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Interop Host',
+                hostname: 'interop.example.com',
+                username: 'user',
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
+
+        // Encrypt via isolate path, decrypt via inline path.
+        final isolateEncoded = await isolateService.createHostPayload(
+          host: host,
+          transferPassphrase: 'pass',
+        );
+        final fromInline = await inlineService.decryptPayload(
+          encodedPayload: isolateEncoded,
+          transferPassphrase: 'pass',
+        );
+        expect(fromInline.type, TransferPayloadType.host);
+        expect((fromInline.data['host'] as Map)['label'], 'Interop Host');
+
+        // Encrypt via inline path, decrypt via isolate path.
+        final inlineEncoded = await inlineService.createHostPayload(
+          host: host,
+          transferPassphrase: 'pass',
+        );
+        final fromIsolate = await isolateService.decryptPayload(
+          encodedPayload: inlineEncoded,
+          transferPassphrase: 'pass',
+        );
+        expect(fromIsolate.type, TransferPayloadType.host);
+        expect((fromIsolate.data['host'] as Map)['label'], 'Interop Host');
+      },
+    );
+
+    test('key payload roundtrip via isolate path (threshold = 0)', () async {
+      final service = SecureTransferService(
+        db,
+        keyRepository,
+        hostRepository,
+        isolateAssemblyThresholdBytes: 0,
+      );
+      final keyId = await keyRepository.insert(
+        SshKeysCompanion.insert(
+          name: 'Threshold Key',
+          keyType: 'ed25519',
+          publicKey: _publicKeyA,
+          privateKey: 'test-open-ssh-key-thresholdxyz',
+        ),
+      );
+      final key = await (db.select(
+        db.sshKeys,
+      )..where((k) => k.id.equals(keyId))).getSingle();
+
+      final encoded = await service.createKeyPayload(
+        key: key,
+        transferPassphrase: 'pass',
+      );
+      await db.delete(db.sshKeys).go();
+      final decrypted = await service.decryptPayload(
+        encodedPayload: encoded,
+        transferPassphrase: 'pass',
+      );
+      final imported = await service.importKeyPayload(decrypted);
+
+      expect(imported.name, 'Threshold Key');
+      expect(imported.privateKey, 'test-open-ssh-key-thresholdxyz');
+    });
+
+    test(
+      'wrong passphrase is rejected on isolate path (threshold = 0)',
+      () async {
+        final service = SecureTransferService(
+          db,
+          keyRepository,
+          hostRepository,
+          isolateAssemblyThresholdBytes: 0,
+        );
+        final hostId = await db
+            .into(db.hosts)
+            .insert(
+              HostsCompanion.insert(
+                label: 'Host',
+                hostname: 'example.com',
+                username: 'user',
+              ),
+            );
+        final host = await (db.select(
+          db.hosts,
+        )..where((h) => h.id.equals(hostId))).getSingle();
+        final encoded = await service.createHostPayload(
+          host: host,
+          transferPassphrase: 'correct',
+        );
+
+        await expectLater(
+          service.decryptPayload(
+            encodedPayload: encoded,
+            transferPassphrase: 'wrong',
           ),
           throwsFormatException,
         );

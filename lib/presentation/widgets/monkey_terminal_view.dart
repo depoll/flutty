@@ -499,6 +499,10 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   late ScrollController _scrollController;
 
+  /// Cached action map passed to the [Actions] widget. Allocated once in
+  /// [initState] so each [build] reuses the same map and action objects.
+  late final Map<Type, Action<Intent>> _terminalActions;
+
   MonkeyRenderTerminal get renderTerminal =>
       _viewportKey.currentContext!.findRenderObject() as MonkeyRenderTerminal;
 
@@ -512,6 +516,15 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
     _shortcutManager = ShortcutManager(
       shortcuts: widget.shortcuts ?? defaultTerminalShortcuts,
     );
+    _terminalActions = {
+      PasteTextIntent: CallbackAction<PasteTextIntent>(onInvoke: _onPasteText),
+      CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
+        onInvoke: _onCopySelectionText,
+      ),
+      SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
+        onInvoke: _onSelectAllText,
+      ),
+    };
     super.initState();
     _touchScrollInertiaTicker = createTicker(_onTouchScrollInertiaTick);
   }
@@ -720,17 +733,9 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
         keyboardAppearance: widget.keyboardAppearance,
         deleteDetection: widget.deleteDetection,
         onInsert: _onInsert,
-        onDelete: () {
-          _scrollToBottom();
-          widget.terminal.keyInput(TerminalKey.backspace);
-        },
+        onDelete: _onDelete,
         onComposing: _onComposing,
-        onAction: (action) {
-          _scrollToBottom();
-          if (action == TextInputAction.done) {
-            widget.terminal.keyInput(TerminalKey.enter);
-          }
-        },
+        onAction: _onTextInputAction,
         onKeyEvent: _handleKeyEvent,
         readOnly: widget.readOnly,
         child: child,
@@ -747,57 +752,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       );
     }
 
-    child = Actions(
-      actions: {
-        PasteTextIntent: CallbackAction<PasteTextIntent>(
-          onInvoke: (intent) async {
-            if (widget.onPasteText != null) {
-              await widget.onPasteText!();
-              _controller.clearSelection();
-              return null;
-            }
-
-            final data = await Clipboard.getData(Clipboard.kTextPlain);
-            final text = data?.text;
-            if (text != null) {
-              widget.terminal.paste(text);
-              _controller.clearSelection();
-            }
-            return null;
-          },
-        ),
-        CopySelectionTextIntent: CallbackAction<CopySelectionTextIntent>(
-          onInvoke: (intent) async {
-            final selection = _controller.selection;
-
-            if (selection == null) {
-              return null;
-            }
-
-            final text = widget.terminal.buffer.getText(selection);
-            await Clipboard.setData(ClipboardData(text: text));
-            return null;
-          },
-        ),
-        SelectAllTextIntent: CallbackAction<SelectAllTextIntent>(
-          onInvoke: (intent) {
-            _controller.setSelection(
-              widget.terminal.buffer.createAnchor(
-                0,
-                widget.terminal.buffer.height - widget.terminal.viewHeight,
-              ),
-              widget.terminal.buffer.createAnchor(
-                widget.terminal.viewWidth,
-                widget.terminal.buffer.height - 1,
-              ),
-              mode: SelectionMode.line,
-            );
-            return null;
-          },
-        ),
-      },
-      child: child,
-    );
+    child = Actions(actions: _terminalActions, child: child);
 
     child = KeyboardVisibilty(onKeyboardShow: _onKeyboardShow, child: child);
 
@@ -817,11 +772,7 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
       onSecondaryTapUp: widget.onSecondaryTapUp != null
           ? _onSecondaryTapUp
           : null,
-      resolveLinkTap: widget.resolveLinkTap == null
-          ? null
-          : (localPosition) => widget.resolveLinkTap!(
-              renderTerminal.getCellOffset(localPosition),
-            ),
+      resolveLinkTap: widget.resolveLinkTap == null ? null : _resolveLinkTap,
       onLinkTapDown: widget.onLinkTapDown == null ? null : _onLinkTapDown,
       onLinkTap: widget.onLinkTap,
       onTouchScrollStart: widget.touchScrollToTerminal
@@ -1167,6 +1118,62 @@ class MonkeyTerminalViewState extends State<MonkeyTerminalView>
 
   void _onEditableRect(Rect rect, Rect caretRect) {
     _customTextEditKey.currentState?.setEditableRect(rect, caretRect);
+  }
+
+  void _onDelete() {
+    _scrollToBottom();
+    widget.terminal.keyInput(TerminalKey.backspace);
+  }
+
+  void _onTextInputAction(TextInputAction action) {
+    _scrollToBottom();
+    if (action == TextInputAction.done) {
+      widget.terminal.keyInput(TerminalKey.enter);
+    }
+  }
+
+  String? _resolveLinkTap(Offset localPosition) =>
+      widget.resolveLinkTap!(renderTerminal.getCellOffset(localPosition));
+
+  Future<Object?> _onPasteText(PasteTextIntent intent) async {
+    if (widget.onPasteText != null) {
+      await widget.onPasteText!();
+      _controller.clearSelection();
+      return null;
+    }
+
+    final data = await Clipboard.getData(Clipboard.kTextPlain);
+    final text = data?.text;
+    if (text != null) {
+      widget.terminal.paste(text);
+      _controller.clearSelection();
+    }
+    return null;
+  }
+
+  Future<Object?> _onCopySelectionText(CopySelectionTextIntent intent) async {
+    final selection = _controller.selection;
+    if (selection == null) {
+      return null;
+    }
+    final text = widget.terminal.buffer.getText(selection);
+    await Clipboard.setData(ClipboardData(text: text));
+    return null;
+  }
+
+  Object? _onSelectAllText(SelectAllTextIntent intent) {
+    _controller.setSelection(
+      widget.terminal.buffer.createAnchor(
+        0,
+        widget.terminal.buffer.height - widget.terminal.viewHeight,
+      ),
+      widget.terminal.buffer.createAnchor(
+        widget.terminal.viewWidth,
+        widget.terminal.buffer.height - 1,
+      ),
+      mode: SelectionMode.line,
+    );
+    return null;
   }
 
   void _scrollToBottom() {

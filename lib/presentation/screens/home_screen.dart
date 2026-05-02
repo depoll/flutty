@@ -29,6 +29,7 @@ import '../../domain/services/terminal_theme_service.dart';
 import '../../domain/services/tmux_service.dart';
 import '../../domain/services/transfer_intent_service.dart';
 import '../providers/entity_list_providers.dart';
+import '../providers/host_row_providers.dart';
 import '../widgets/agent_tool_icon.dart';
 import '../widgets/ai_session_picker.dart';
 import '../widgets/connection_attempt_dialog.dart';
@@ -913,69 +914,21 @@ class _HostRow extends ConsumerWidget {
     final colorScheme = theme.colorScheme;
     final isDark = theme.brightness == Brightness.dark;
 
-    final sessionsNotifier = ref.read(activeSessionsProvider.notifier);
-    final connectionStates = ref.watch(activeSessionsProvider);
-    final connectionIds = sessionsNotifier.getConnectionsForHost(host.id);
-    final hostConnectionStates = connectionIds
-        .map((connectionId) => connectionStates[connectionId])
-        .whereType<SshConnectionState>()
-        .toList(growable: false);
-    final isConnected = hostConnectionStates.any(
-      (state) => state == SshConnectionState.connected,
+    // Single per-host watch: only rebuilds when THIS host's data changes.
+    final rowData = ref.watch(
+      hostRowDataProvider((
+        hostId: host.id,
+        lightThemeId: host.terminalThemeLightId,
+        darkThemeId: host.terminalThemeDarkId,
+        isDark: isDark,
+      )),
     );
-    final isConnecting = hostConnectionStates.any(
-      (state) =>
-          state == SshConnectionState.connecting ||
-          state == SshConnectionState.authenticating,
-    );
-    final connectionAttempt = sessionsNotifier.getConnectionAttempt(host.id);
-    final isConnectionStarting =
-        isConnecting || (connectionAttempt?.isInProgress ?? false);
-    final connectionCount = connectionIds.length;
-    final terminalThemeSettings = ref.watch(terminalThemeSettingsProvider);
-    final terminalThemes =
-        ref.watch(allTerminalThemesProvider).asData?.value ??
-        TerminalThemes.all;
-    final monetizationState =
-        ref.watch(monetizationStateProvider).asData?.value ??
-        ref.read(monetizationServiceProvider).currentState;
-    final hasHostThemeAccess = monetizationState.allowsFeature(
-      MonetizationFeature.hostSpecificThemes,
-    );
-    final pinnedHomeScreenShortcutHostIds =
-        ref.watch(pinnedHomeScreenShortcutHostIdsProvider).asData?.value ??
-        const <int>{};
-    final isPinnedToHomeScreen =
-        supportsHomeScreenShortcutActions &&
-        pinnedHomeScreenShortcutHostIds.contains(host.id);
-    final previewEntries = connectionIds
-        .map((connectionId) {
-          final connection = sessionsNotifier.getActiveConnection(connectionId);
-          final state =
-              connectionStates[connectionId] ?? SshConnectionState.connected;
-          return buildConnectionPreviewStackEntry(
-            connectionId: connectionId,
-            state: state,
-            preview: connection?.preview,
-            windowTitle: connection?.windowTitle,
-            iconName: connection?.iconName,
-            workingDirectory: connection?.workingDirectory,
-            shellStatus: connection?.shellStatus,
-            lastExitCode: connection?.lastExitCode,
-            brightness: theme.brightness,
-            themeSettings: terminalThemeSettings,
-            availableThemes: terminalThemes,
-            hostLightThemeId: hasHostThemeAccess
-                ? host.terminalThemeLightId
-                : null,
-            hostDarkThemeId: hasHostThemeAccess
-                ? host.terminalThemeDarkId
-                : null,
-            connectionLightThemeId: connection?.terminalThemeLightId,
-            connectionDarkThemeId: connection?.terminalThemeDarkId,
-          );
-        })
-        .toList(growable: false);
+    final isConnected = rowData.isConnected;
+    final isConnectionStarting = rowData.isConnectionStarting;
+    final connectionAttemptMessage = rowData.connectionAttemptMessage;
+    final connectionCount = rowData.connectionCount;
+    final isPinnedToHomeScreen = rowData.isPinnedToHomeScreen;
+    final previewEntries = rowData.previewEntries;
 
     return Material(
       color: Colors.transparent,
@@ -1086,10 +1039,10 @@ class _HostRow extends ConsumerWidget {
                             color: colorScheme.onSurface.withAlpha(100),
                           ),
                         ),
-                        if (connectionAttempt?.isInProgress ?? false) ...[
+                        if (connectionAttemptMessage != null) ...[
                           const SizedBox(height: 4),
                           Text(
-                            connectionAttempt!.latestMessage,
+                            connectionAttemptMessage,
                             style: theme.textTheme.bodySmall?.copyWith(
                               color: colorScheme.primary,
                               fontWeight: FontWeight.w500,
@@ -2260,12 +2213,6 @@ class _KeyRow extends ConsumerWidget {
   }
 }
 
-/// Provider for all snippets as stream.
-final _allSnippetsStreamProvider = StreamProvider<List<Snippet>>((ref) {
-  final repo = ref.watch(snippetRepositoryProvider);
-  return repo.watchAll();
-});
-
 /// Panel for displaying and managing snippets inline.
 class SnippetsPanel extends ConsumerWidget {
   /// Creates a [SnippetsPanel].
@@ -2275,7 +2222,7 @@ class SnippetsPanel extends ConsumerWidget {
   Widget build(BuildContext context, WidgetRef ref) {
     final theme = Theme.of(context);
     final colorScheme = theme.colorScheme;
-    final snippetsAsync = ref.watch(_allSnippetsStreamProvider);
+    final snippetsAsync = ref.watch(allSnippetsProvider);
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,

@@ -323,6 +323,22 @@ Widget buildRemoteTextEditorScreenForTesting({
   initialFontSize: initialFontSize,
 );
 
+/// Returns the cached selection caret X from [state], or null if not yet
+/// computed. For use in tests to verify cache hit/miss behaviour.
+@visibleForTesting
+double? cachedRemoteEditorSelectionCaretX(
+  State<RemoteTextEditorScreen> state,
+) => state is _RemoteTextEditorScreenState ? state._cachedCaretX : null;
+
+/// Returns the cached selection caret extent offset from [state], or null if
+/// not yet computed. For use in tests to verify cache correctness.
+@visibleForTesting
+int? cachedRemoteEditorSelectionCaretXExtentOffset(
+  State<RemoteTextEditorScreen> state,
+) => state is _RemoteTextEditorScreenState
+    ? state._cachedCaretXExtentOffset
+    : null;
+
 /// Full-screen editor used for editing remote text files over SFTP.
 class RemoteTextEditorScreen extends StatefulWidget {
   /// Creates a [RemoteTextEditorScreen].
@@ -382,6 +398,13 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   double? _cachedMeasuredWidthTextScale;
   String? _cachedMeasuredWidthFontFamily;
   double? _cachedMeasuredWidthFontSize;
+  String? _cachedCaretXText;
+  String? _cachedCaretXFontFamily;
+  double? _cachedCaretXFontSize;
+  TextDirection? _cachedCaretXTextDirection;
+  double? _cachedCaretXTextScale;
+  int? _cachedCaretXExtentOffset;
+  double? _cachedCaretX;
   late String _initialText;
 
   @override
@@ -418,6 +441,7 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
       _cachedMeasuredWidthText = null;
       _cachedMeasuredWidth = null;
       _cachedMeasuredTextPainter = null;
+      _cachedCaretX = null;
       _refreshCachedMetrics();
       _scheduleSelectionVisibilityUpdate();
     }
@@ -549,28 +573,47 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   }
 
   void _ensureSelectionVisible() {
+    final selection = widget.controller.selection;
+    if (!selection.isValid || _editorViewportWidth <= 0) {
+      return;
+    }
     final editorStyle = _buildEditorTextStyle(
       Theme.of(context),
       widget.terminalTheme,
     );
+    final textDirection = Directionality.of(context);
+    final textScaler = MediaQuery.textScalerOf(context);
     final measuredTextPainter = _layoutUnwrappedContentTextPainter(
       context,
       editorStyle,
     );
-    final targetOffset =
-        _resolveUnwrappedEditorTextPainterSelectionScrollOffset(
-          painter: measuredTextPainter,
-          selection: widget.controller.selection,
-          textLength: widget.controller.text.length,
-          viewportWidth: _editorViewportWidth,
-          currentOffset: _horizontalScrollController.offset,
-          trailingSlack: _unwrappedEditorTrailingSlack,
-        );
+    final caretX = _resolveCaretX(
+      painter: measuredTextPainter,
+      selection: selection,
+      style: editorStyle,
+      textDirection: textDirection,
+      textScale: textScaler.scale(1),
+    );
+    final currentOffset = _horizontalScrollController.offset;
+    final viewportEnd = currentOffset + _editorViewportWidth;
+    const trailingSlack = _unwrappedEditorTrailingSlack;
+    final caretLeadingEdge = caretX > trailingSlack
+        ? caretX - trailingSlack
+        : 0.0;
+    final caretTrailingEdge = caretX + trailingSlack;
+    final double targetOffset;
+    if (caretLeadingEdge < currentOffset) {
+      targetOffset = caretLeadingEdge;
+    } else if (caretTrailingEdge > viewportEnd) {
+      targetOffset = caretTrailingEdge - _editorViewportWidth;
+    } else {
+      return;
+    }
     final clampedOffset = targetOffset.clamp(
       0.0,
       _horizontalScrollController.position.maxScrollExtent,
     );
-    if ((clampedOffset - _horizontalScrollController.offset).abs() < 0.5) {
+    if ((clampedOffset - currentOffset).abs() < 0.5) {
       return;
     }
     _horizontalScrollController.jumpTo(clampedOffset);
@@ -727,6 +770,39 @@ class _RemoteTextEditorScreenState extends State<RemoteTextEditorScreen> {
   double _measureUnwrappedContentWidth(BuildContext context, TextStyle style) {
     _layoutUnwrappedContentTextPainter(context, style);
     return _cachedMeasuredWidth!;
+  }
+
+  /// Returns the caret's horizontal pixel position, caching the result when
+  /// text identity, style, direction, scale, and extent offset are unchanged.
+  double _resolveCaretX({
+    required TextPainter painter,
+    required TextSelection selection,
+    required TextStyle style,
+    required TextDirection textDirection,
+    required double textScale,
+  }) {
+    final text = widget.controller.text;
+    final extentOffset = selection.extentOffset.clamp(0, text.length);
+    if (_cachedCaretX != null &&
+        identical(_cachedCaretXText, text) &&
+        _cachedCaretXFontFamily == style.fontFamily &&
+        _cachedCaretXFontSize == style.fontSize &&
+        _cachedCaretXTextDirection == textDirection &&
+        _cachedCaretXTextScale == textScale &&
+        _cachedCaretXExtentOffset == extentOffset) {
+      return _cachedCaretX!;
+    }
+    final caretX = painter
+        .getOffsetForCaret(TextPosition(offset: extentOffset), Rect.zero)
+        .dx;
+    _cachedCaretXText = text;
+    _cachedCaretXFontFamily = style.fontFamily;
+    _cachedCaretXFontSize = style.fontSize;
+    _cachedCaretXTextDirection = textDirection;
+    _cachedCaretXTextScale = textScale;
+    _cachedCaretXExtentOffset = extentOffset;
+    _cachedCaretX = caretX;
+    return caretX;
   }
 
   @override

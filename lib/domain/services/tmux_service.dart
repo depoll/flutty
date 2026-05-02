@@ -96,6 +96,27 @@ class TmuxService {
     return 'tmux $optionText$command';
   }
 
+  /// Returns whether a tmux binary path cache entry exists for [connectionId].
+  @visibleForTesting
+  static bool hasTmuxPathCacheEntry(int connectionId) =>
+      _tmuxPathCache.containsKey(connectionId);
+
+  /// Returns whether an installed agent tools cache entry exists for
+  /// [connectionId].
+  @visibleForTesting
+  static bool hasInstalledAgentToolsCacheEntry(int connectionId) =>
+      _installedAgentToolsCache.containsKey(connectionId);
+
+  /// Returns whether a window snapshot cache entry exists for [connectionId].
+  @visibleForTesting
+  static bool hasWindowSnapshotCacheEntry(int connectionId) =>
+      _windowSnapshotCache.keys.any((k) => k.connectionId == connectionId);
+
+  /// Returns whether an exec-channel backoff entry exists for [connectionId].
+  @visibleForTesting
+  static bool hasExecChannelBackoffEntry(int connectionId) =>
+      _execChannelBackoffs.containsKey(connectionId);
+
   /// Clears the cached tmux path for a connection.
   void clearCache(int connectionId) {
     DiagnosticsLogService.instance.info(

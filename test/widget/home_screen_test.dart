@@ -19,6 +19,7 @@ import 'package:monkeyssh/domain/services/ssh_service.dart';
 import 'package:monkeyssh/domain/services/tmux_service.dart';
 import 'package:monkeyssh/domain/services/transfer_intent_service.dart';
 import 'package:monkeyssh/presentation/providers/entity_list_providers.dart';
+import 'package:monkeyssh/presentation/providers/host_row_providers.dart';
 import 'package:monkeyssh/presentation/screens/home_screen.dart';
 
 class _MockHostRepository extends Mock implements HostRepository {}
@@ -884,5 +885,228 @@ void main() {
     await tester.pump();
 
     expect(find.text('No active connections'), findsNothing);
+  });
+
+  group('HostRowData value equality', () {
+    test('equal when all fields are identical', () {
+      const a = HostRowData(
+        connectionIds: [1, 2],
+        isConnected: true,
+        isConnectionStarting: false,
+        connectionAttemptMessage: null,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: true,
+      );
+      const b = HostRowData(
+        connectionIds: [1, 2],
+        isConnected: true,
+        isConnectionStarting: false,
+        connectionAttemptMessage: null,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: true,
+      );
+
+      expect(a, equals(b));
+      expect(a.hashCode, equals(b.hashCode));
+    });
+
+    test('unequal when isConnected differs', () {
+      const a = HostRowData(
+        connectionIds: [],
+        isConnected: true,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+      const b = HostRowData(
+        connectionIds: [],
+        isConnected: false,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+
+      expect(a, isNot(equals(b)));
+    });
+
+    test('unequal when connectionIds differ', () {
+      const a = HostRowData(
+        connectionIds: [1],
+        isConnected: false,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+      const b = HostRowData(
+        connectionIds: [2],
+        isConnected: false,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+
+      expect(a, isNot(equals(b)));
+    });
+
+    test('unequal when connectionAttemptMessage differs', () {
+      const a = HostRowData(
+        connectionIds: [],
+        isConnected: false,
+        isConnectionStarting: true,
+        connectionAttemptMessage: 'Connecting…',
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+      const b = HostRowData(
+        connectionIds: [],
+        isConnected: false,
+        isConnectionStarting: true,
+        connectionAttemptMessage: 'Authenticating…',
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+
+      expect(a, isNot(equals(b)));
+    });
+
+    test('unequal when isPinnedToHomeScreen differs', () {
+      const a = HostRowData(
+        connectionIds: [],
+        isConnected: false,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: true,
+        hasHostThemeAccess: false,
+      );
+      const b = HostRowData(
+        connectionIds: [],
+        isConnected: false,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+
+      expect(a, isNot(equals(b)));
+    });
+
+    test('connectionCount reflects connectionIds length', () {
+      const data = HostRowData(
+        connectionIds: [10, 20, 30],
+        isConnected: true,
+        isConnectionStarting: false,
+        previewEntries: [],
+        isPinnedToHomeScreen: false,
+        hasHostThemeAccess: false,
+      );
+
+      expect(data.connectionCount, 3);
+    });
+  });
+
+  group('hostRowDataProvider per-host isolation', () {
+    testWidgets(
+      'host row shows connected indicator when its connection is active',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+
+        final sessionsNotifier = _MutableActiveSessionsNotifier(
+          initialConnections: [
+            _buildActiveConnection(
+              connectionId: 1,
+              hostId: 1,
+              state: SshConnectionState.connected,
+            ),
+          ],
+        );
+
+        await tester.pumpWidget(
+          buildMobileHomeScreen(
+            db: db,
+            overrides: [
+              activeSessionsProvider.overrideWith(() => sessionsNotifier),
+              allHostsProvider.overrideWith(
+                (ref) => Stream.value([
+                  _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+                  _buildHost(id: 2, label: 'Beta', sortOrder: 1),
+                ]),
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        // Host 1 has a connection, shown with a count badge.
+        expect(find.text('1'), findsOneWidget);
+        // Host 2 has no connection badge.
+        expect(find.text('2'), findsNothing);
+      },
+    );
+
+    testWidgets(
+      'adding a connection to host B does not remove host A connection badge',
+      (tester) async {
+        final db = AppDatabase.forTesting(NativeDatabase.memory());
+        addTearDown(db.close);
+
+        final sessionsNotifier = _MutableActiveSessionsNotifier(
+          initialConnections: [
+            _buildActiveConnection(
+              connectionId: 1,
+              hostId: 1,
+              state: SshConnectionState.connected,
+            ),
+          ],
+        );
+
+        await tester.pumpWidget(
+          buildMobileHomeScreen(
+            db: db,
+            overrides: [
+              activeSessionsProvider.overrideWith(() => sessionsNotifier),
+              allHostsProvider.overrideWith(
+                (ref) => Stream.value([
+                  _buildHost(id: 1, label: 'Alpha', sortOrder: 0),
+                  _buildHost(id: 2, label: 'Beta', sortOrder: 1),
+                ]),
+              ),
+            ],
+          ),
+        );
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        expect(find.text('1'), findsOneWidget);
+
+        // Add a connection for host 2. Host 1's badge must still be present.
+        sessionsNotifier.setActiveConnections([
+          _buildActiveConnection(
+            connectionId: 1,
+            hostId: 1,
+            state: SshConnectionState.connected,
+          ),
+          _buildActiveConnection(
+            connectionId: 2,
+            hostId: 2,
+            state: SshConnectionState.connected,
+          ),
+        ]);
+        await tester.pump();
+        await tester.pump(const Duration(milliseconds: 100));
+
+        // Both hosts should now show a connection count badge.
+        expect(find.text('1'), findsNWidgets(2));
+      },
+    );
   });
 }

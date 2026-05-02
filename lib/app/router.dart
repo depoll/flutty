@@ -27,6 +27,11 @@ final appNavigatorKey = GlobalKey<NavigatorState>(debugLabel: 'appNavigator');
 
 /// Provider for the app router.
 final routerProvider = Provider<GoRouter>((ref) {
+  // Keep this watch: rebuilding the router on auth transitions intentionally
+  // clears protected navigation history when the app locks.
+  // TODO(router): only switch to a persistent GoRouter/refreshListenable after
+  // tests prove locked routes cannot be revealed via back navigation and
+  // notification deep-link navigation remains compatible.
   final authState = ref.watch(authStateProvider);
 
   return GoRouter(

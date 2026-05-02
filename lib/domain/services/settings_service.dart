@@ -192,6 +192,35 @@ final settingsServiceProvider = Provider<SettingsService>(
   (ref) => SettingsService(ref.watch(databaseProvider)),
 );
 
+abstract class _AsyncSettingsNotifier<T> extends Notifier<T> {
+  late SettingsService _settings;
+  bool _disposed = false;
+
+  SettingsService get _settingsService => _settings;
+
+  bool get _isDisposed => _disposed;
+
+  T get _defaultValue;
+
+  Future<T> _loadValue();
+
+  @override
+  T build() {
+    _settings = ref.watch(settingsServiceProvider);
+    _disposed = false;
+    ref.onDispose(() => _disposed = true);
+    Future.microtask(_init);
+    return _defaultValue;
+  }
+
+  Future<void> _init() async {
+    if (_disposed) return;
+    final value = await _loadValue();
+    if (_disposed) return;
+    state = value;
+  }
+}
+
 /// Provider for theme mode setting.
 final themeModeProvider = FutureProvider<String>((ref) async {
   final settings = ref.watch(settingsServiceProvider);
@@ -199,23 +228,15 @@ final themeModeProvider = FutureProvider<String>((ref) async {
 });
 
 /// Notifier for theme mode with write capability.
-class ThemeModeNotifier extends Notifier<ThemeMode> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class ThemeModeNotifier extends _AsyncSettingsNotifier<ThemeMode> {
+  @override
+  ThemeMode get _defaultValue => ThemeMode.system;
 
   @override
-  ThemeMode build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return ThemeMode.system;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getString(SettingKeys.themeMode) ?? 'system';
-    if (_disposed) return;
-    state = _parseThemeMode(value);
+  Future<ThemeMode> _loadValue() async {
+    final value =
+        await _settingsService.getString(SettingKeys.themeMode) ?? 'system';
+    return _parseThemeMode(value);
   }
 
   /// Set the theme mode.
@@ -225,7 +246,7 @@ class ThemeModeNotifier extends Notifier<ThemeMode> {
       ThemeMode.dark => 'dark',
       ThemeMode.system => 'system',
     };
-    await _settings.setString(SettingKeys.themeMode, value);
+    await _settingsService.setString(SettingKeys.themeMode, value);
     state = mode;
   }
 
@@ -250,31 +271,19 @@ final terminalThemesApplyToAppProvider = FutureProvider<bool>((ref) async {
 });
 
 /// Notifier for terminal themes applying to app chrome.
-class TerminalThemesApplyToAppNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class TerminalThemesApplyToAppNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.terminalThemesApplyToApp,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.terminalThemesApplyToApp,
+    defaultValue: true,
+  );
 
   /// Set whether terminal themes also style app chrome.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(
+    await _settingsService.setBool(
       SettingKeys.terminalThemesApplyToApp,
       value: enabled,
     );
@@ -297,25 +306,17 @@ final fontSizeProvider = FutureProvider<double>((ref) async {
 });
 
 /// Notifier for font size with write capability.
-class FontSizeNotifier extends Notifier<double> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class FontSizeNotifier extends _AsyncSettingsNotifier<double> {
   Future<void> _writeChain = Future<void>.value();
   int _latestWriteToken = 0;
 
   @override
-  double build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return 14;
-  }
+  double get _defaultValue => 14;
 
-  Future<void> _init() async {
-    final value = await _settings.getInt(SettingKeys.terminalFontSize);
-    if (_disposed) return;
-    state = value?.toDouble() ?? 14.0;
+  @override
+  Future<double> _loadValue() async {
+    final value = await _settingsService.getInt(SettingKeys.terminalFontSize);
+    return value?.toDouble() ?? 14.0;
   }
 
   /// Set the font size.
@@ -323,10 +324,10 @@ class FontSizeNotifier extends Notifier<double> {
     state = size;
     final writeToken = ++_latestWriteToken;
     final nextWrite = _writeChain.catchError((Object _) {}).then((_) async {
-      if (_disposed || writeToken != _latestWriteToken) {
+      if (_isDisposed || writeToken != _latestWriteToken) {
         return;
       }
-      await _settings.setInt(SettingKeys.terminalFontSize, size.round());
+      await _settingsService.setInt(SettingKeys.terminalFontSize, size.round());
     });
     _writeChain = nextWrite;
     await nextWrite;
@@ -345,28 +346,17 @@ final fontFamilyProvider = FutureProvider<String>((ref) async {
 });
 
 /// Notifier for font family with write capability.
-class FontFamilyNotifier extends Notifier<String> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class FontFamilyNotifier extends _AsyncSettingsNotifier<String> {
+  @override
+  String get _defaultValue => 'monospace';
 
   @override
-  String build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return 'monospace';
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getString(SettingKeys.terminalFont);
-    if (_disposed) return;
-    state = value ?? 'monospace';
-  }
+  Future<String> _loadValue() async =>
+      await _settingsService.getString(SettingKeys.terminalFont) ?? 'monospace';
 
   /// Set the font family.
   Future<void> setFontFamily(String family) async {
-    await _settings.setString(SettingKeys.terminalFont, family);
+    await _settingsService.setString(SettingKeys.terminalFont, family);
     state = family;
   }
 }
@@ -383,28 +373,17 @@ final autoLockTimeoutProvider = FutureProvider<int>((ref) async {
 });
 
 /// Notifier for auto-lock timeout with write capability.
-class AutoLockTimeoutNotifier extends Notifier<int> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class AutoLockTimeoutNotifier extends _AsyncSettingsNotifier<int> {
+  @override
+  int get _defaultValue => 5;
 
   @override
-  int build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return 5;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getInt(SettingKeys.autoLockTimeout);
-    if (_disposed) return;
-    state = value ?? 5;
-  }
+  Future<int> _loadValue() async =>
+      await _settingsService.getInt(SettingKeys.autoLockTimeout) ?? 5;
 
   /// Set the auto-lock timeout in minutes.
   Future<void> setTimeout(int minutes) async {
-    await _settings.setInt(SettingKeys.autoLockTimeout, minutes);
+    await _settingsService.setInt(SettingKeys.autoLockTimeout, minutes);
     state = minutes;
   }
 }
@@ -420,31 +399,17 @@ final hapticFeedbackProvider = FutureProvider<bool>((ref) async {
 });
 
 /// Notifier for haptic feedback with write capability.
-class HapticFeedbackNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class HapticFeedbackNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.hapticFeedback,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() =>
+      _settingsService.getBool(SettingKeys.hapticFeedback, defaultValue: true);
 
   /// Set haptic feedback enabled.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.hapticFeedback, value: enabled);
+    await _settingsService.setBool(SettingKeys.hapticFeedback, value: enabled);
     state = enabled;
   }
 }
@@ -460,28 +425,17 @@ final cursorStyleProvider = FutureProvider<String>((ref) async {
 });
 
 /// Notifier for cursor style with write capability.
-class CursorStyleNotifier extends Notifier<String> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class CursorStyleNotifier extends _AsyncSettingsNotifier<String> {
+  @override
+  String get _defaultValue => 'block';
 
   @override
-  String build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return 'block';
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getString(SettingKeys.cursorStyle);
-    if (_disposed) return;
-    state = value ?? 'block';
-  }
+  Future<String> _loadValue() async =>
+      await _settingsService.getString(SettingKeys.cursorStyle) ?? 'block';
 
   /// Set the cursor style.
   Future<void> setCursorStyle(String style) async {
-    await _settings.setString(SettingKeys.cursorStyle, style);
+    await _settingsService.setString(SettingKeys.cursorStyle, style);
     state = style;
   }
 }
@@ -497,31 +451,17 @@ final bellSoundProvider = FutureProvider<bool>((ref) async {
 });
 
 /// Notifier for bell sound with write capability.
-class BellSoundNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class BellSoundNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.bellSound,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() =>
+      _settingsService.getBool(SettingKeys.bellSound, defaultValue: true);
 
   /// Set bell sound enabled.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.bellSound, value: enabled);
+    await _settingsService.setBool(SettingKeys.bellSound, value: enabled);
     state = enabled;
   }
 }
@@ -532,28 +472,20 @@ final bellSoundNotifierProvider = NotifierProvider<BellSoundNotifier, bool>(
 );
 
 /// Notifier for terminal wake lock with write capability.
-class TerminalWakeLockNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class TerminalWakeLockNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => false;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return false;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(SettingKeys.terminalWakeLock);
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() =>
+      _settingsService.getBool(SettingKeys.terminalWakeLock);
 
   /// Set terminal wake lock enabled.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.terminalWakeLock, value: enabled);
+    await _settingsService.setBool(
+      SettingKeys.terminalWakeLock,
+      value: enabled,
+    );
     state = enabled;
   }
 }
@@ -565,31 +497,22 @@ final terminalWakeLockNotifierProvider =
     );
 
 /// Notifier for terminal file path links with write capability.
-class TerminalPathLinksNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class TerminalPathLinksNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.terminalPathLinks,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.terminalPathLinks,
+    defaultValue: true,
+  );
 
   /// Sets terminal file path linking.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.terminalPathLinks, value: enabled);
+    await _settingsService.setBool(
+      SettingKeys.terminalPathLinks,
+      value: enabled,
+    );
     state = enabled;
   }
 }
@@ -601,31 +524,19 @@ final terminalPathLinksNotifierProvider =
     );
 
 /// Notifier for terminal file path underlines with write capability.
-class TerminalPathLinkUnderlinesNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class TerminalPathLinkUnderlinesNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.terminalPathLinkUnderlines,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.terminalPathLinkUnderlines,
+    defaultValue: true,
+  );
 
   /// Sets terminal file path underlines.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(
+    await _settingsService.setBool(
       SettingKeys.terminalPathLinkUnderlines,
       value: enabled,
     );
@@ -662,27 +573,20 @@ class TerminalThemeSettings {
 }
 
 /// Notifier for terminal theme settings.
-class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class TerminalThemeSettingsNotifier
+    extends _AsyncSettingsNotifier<TerminalThemeSettings> {
+  @override
+  TerminalThemeSettings get _defaultValue => const TerminalThemeSettings(
+    lightThemeId: TerminalThemes.defaultLightThemeId,
+    darkThemeId: TerminalThemes.defaultDarkThemeId,
+  );
 
   @override
-  TerminalThemeSettings build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return const TerminalThemeSettings(
-      lightThemeId: TerminalThemes.defaultLightThemeId,
-      darkThemeId: TerminalThemes.defaultDarkThemeId,
-    );
-  }
-
-  Future<void> _init() async {
-    final light = await _settings.getString(
+  Future<TerminalThemeSettings> _loadValue() async {
+    final light = await _settingsService.getString(
       SettingKeys.defaultTerminalThemeLight,
     );
-    final dark = await _settings.getString(
+    final dark = await _settingsService.getString(
       SettingKeys.defaultTerminalThemeDark,
     );
     final customThemeIds = await _getCustomTerminalThemeIds();
@@ -696,7 +600,7 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
       brightness: Brightness.dark,
       customThemeIds: customThemeIds,
     );
-    if (_disposed) return;
+    if (_isDisposed) return state;
     await _persistNormalizedThemeId(
       key: SettingKeys.defaultTerminalThemeLight,
       storedThemeId: light,
@@ -707,15 +611,16 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
       storedThemeId: dark,
       normalizedThemeId: darkThemeId,
     );
-    if (_disposed) return;
-    state = TerminalThemeSettings(
+    return TerminalThemeSettings(
       lightThemeId: lightThemeId,
       darkThemeId: darkThemeId,
     );
   }
 
   Future<Set<String>> _getCustomTerminalThemeIds() async {
-    final json = await _settings.getString(SettingKeys.customTerminalThemes);
+    final json = await _settingsService.getString(
+      SettingKeys.customTerminalThemes,
+    );
     if (json == null || json.isEmpty) {
       return const {};
     }
@@ -766,19 +671,25 @@ class TerminalThemeSettingsNotifier extends Notifier<TerminalThemeSettings> {
     required String normalizedThemeId,
   }) async {
     if (storedThemeId != null && storedThemeId != normalizedThemeId) {
-      await _settings.setString(key, normalizedThemeId);
+      await _settingsService.setString(key, normalizedThemeId);
     }
   }
 
   /// Set the light mode theme.
   Future<void> setLightTheme(String themeId) async {
-    await _settings.setString(SettingKeys.defaultTerminalThemeLight, themeId);
+    await _settingsService.setString(
+      SettingKeys.defaultTerminalThemeLight,
+      themeId,
+    );
     state = state.copyWith(lightThemeId: themeId);
   }
 
   /// Set the dark mode theme.
   Future<void> setDarkTheme(String themeId) async {
-    await _settings.setString(SettingKeys.defaultTerminalThemeDark, themeId);
+    await _settingsService.setString(
+      SettingKeys.defaultTerminalThemeDark,
+      themeId,
+    );
     state = state.copyWith(darkThemeId: themeId);
   }
 }
@@ -802,28 +713,17 @@ final sharedClipboardLocalReadProvider = FutureProvider<bool>((ref) async {
 });
 
 /// Notifier for shared clipboard remote-to-local writes.
-class SharedClipboardNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class SharedClipboardNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => false;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return false;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(SettingKeys.sharedClipboard);
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() =>
+      _settingsService.getBool(SettingKeys.sharedClipboard);
 
   /// Set shared clipboard enabled.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.sharedClipboard, value: enabled);
+    await _settingsService.setBool(SettingKeys.sharedClipboard, value: enabled);
     state = enabled;
   }
 }
@@ -835,28 +735,17 @@ final sharedClipboardNotifierProvider =
     );
 
 /// Notifier for local clipboard reads from the remote side.
-class SharedClipboardLocalReadNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class SharedClipboardLocalReadNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => false;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return false;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(SettingKeys.sharedClipboardLocalRead);
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() =>
+      _settingsService.getBool(SettingKeys.sharedClipboardLocalRead);
 
   /// Set whether the remote side can read the local clipboard.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(
+    await _settingsService.setBool(
       SettingKeys.sharedClipboardLocalRead,
       value: enabled,
     );
@@ -871,31 +760,22 @@ final sharedClipboardLocalReadNotifierProvider =
     );
 
 /// Notifier for tap-to-show-keyboard with write capability.
-class TapToShowKeyboardNotifier extends Notifier<bool> {
-  late SettingsService _settings;
-  bool _disposed = false;
+class TapToShowKeyboardNotifier extends _AsyncSettingsNotifier<bool> {
+  @override
+  bool get _defaultValue => true;
 
   @override
-  bool build() {
-    _settings = ref.watch(settingsServiceProvider);
-    _disposed = false;
-    ref.onDispose(() => _disposed = true);
-    Future.microtask(_init);
-    return true;
-  }
-
-  Future<void> _init() async {
-    final value = await _settings.getBool(
-      SettingKeys.tapToShowKeyboard,
-      defaultValue: true,
-    );
-    if (_disposed) return;
-    state = value;
-  }
+  Future<bool> _loadValue() => _settingsService.getBool(
+    SettingKeys.tapToShowKeyboard,
+    defaultValue: true,
+  );
 
   /// Set tap-to-show-keyboard enabled.
   Future<void> setEnabled({required bool enabled}) async {
-    await _settings.setBool(SettingKeys.tapToShowKeyboard, value: enabled);
+    await _settingsService.setBool(
+      SettingKeys.tapToShowKeyboard,
+      value: enabled,
+    );
     state = enabled;
   }
 }

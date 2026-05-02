@@ -918,6 +918,105 @@ void main() {
     });
   });
 
+  group('SshSession terminal output batching', () {
+    Future<
+      ({
+        Completer<void> done,
+        SshSession session,
+        StreamController<Uint8List> stderr,
+        StreamController<Uint8List> stdout,
+      })
+    >
+    openShell() async {
+      final client = _MockSshClient();
+      final shell = _MockExecSession();
+      final stdout = StreamController<Uint8List>();
+      final stderr = StreamController<Uint8List>();
+      final done = Completer<void>();
+      final session = SshSession(
+        connectionId: 91,
+        hostId: 2,
+        client: client,
+        config: const SshConnectionConfig(
+          hostname: 'example.com',
+          port: 22,
+          username: 'tester',
+        ),
+      );
+
+      when(
+        () => client.shell(pty: any(named: 'pty')),
+      ).thenAnswer((_) async => shell);
+      when(() => shell.stdout).thenAnswer((_) => stdout.stream);
+      when(() => shell.stderr).thenAnswer((_) => stderr.stream);
+      when(() => shell.done).thenAnswer((_) => done.future);
+
+      await session.getShell();
+      addTearDown(() async {
+        await session.closeShell(waitForStreams: false);
+        await stdout.close();
+        await stderr.close();
+        if (!done.isCompleted) {
+          done.complete();
+        }
+      });
+      return (done: done, session: session, stderr: stderr, stdout: stdout);
+    }
+
+    String firstLineText(Terminal terminal) => terminal.buffer.lines[0]
+        .getText(0, terminal.buffer.viewWidth)
+        .trimRight();
+
+    test('coalesces burst stdout into one terminal write per frame', () async {
+      final shell = await openShell();
+      final session = shell.session;
+      final terminal = session.terminal!;
+      final stdoutEvents = <String>[];
+      final stdoutSubscription = session.shellStdoutStream.listen(
+        stdoutEvents.add,
+      );
+      addTearDown(stdoutSubscription.cancel);
+
+      var terminalNotifications = 0;
+      terminal.addListener(() => terminalNotifications += 1);
+
+      shell.stdout
+        ..add(Uint8List.fromList(utf8.encode('hello ')))
+        ..add(Uint8List.fromList(utf8.encode('world')));
+      await pumpEventQueue();
+
+      expect(firstLineText(terminal), isNot(contains('hello')));
+      expect(stdoutEvents, isEmpty);
+
+      await Future<void>.delayed(const Duration(milliseconds: 25));
+
+      expect(firstLineText(terminal), 'hello world');
+      expect(stdoutEvents, ['hello world']);
+      expect(terminalNotifications, 1);
+    });
+
+    test('flushes pending terminal output before shell done event', () async {
+      final shell = await openShell();
+      final done = shell.done;
+      final session = shell.session;
+      final terminal = session.terminal!;
+      final lineWhenDone = Completer<String>();
+      final doneSubscription = session.shellDoneStream.listen((_) {
+        lineWhenDone.complete(firstLineText(terminal));
+      });
+      addTearDown(doneSubscription.cancel);
+
+      shell.stdout.add(Uint8List.fromList(utf8.encode('final prompt')));
+      await pumpEventQueue();
+
+      expect(firstLineText(terminal), isNot(contains('final prompt')));
+
+      done.complete();
+
+      expect(await lineWhenDone.future, 'final prompt');
+    });
+  });
+
   group('ActiveSessionsNotifier', () {
     late ProviderContainer container;
     late _FakeActiveSessionsSshService fakeSshService;

@@ -4,8 +4,8 @@ import 'package:go_router/go_router.dart';
 
 import '../../app/theme.dart';
 import '../../data/database/database.dart';
-import '../../data/repositories/host_repository.dart';
 import '../../data/repositories/port_forward_repository.dart';
+import '../providers/entity_list_providers.dart';
 
 /// Screen displaying list of port forwards grouped by host.
 class PortForwardsScreen extends ConsumerWidget {
@@ -14,8 +14,8 @@ class PortForwardsScreen extends ConsumerWidget {
 
   @override
   Widget build(BuildContext context, WidgetRef ref) {
-    final portForwardsAsync = ref.watch(_allPortForwardsProvider);
-    final hostsAsync = ref.watch(_allHostsProvider);
+    final portForwardsAsync = ref.watch(allPortForwardsProvider);
+    final hostsAsync = ref.watch(allHostsProvider);
     final theme = Theme.of(context);
 
     return Scaffold(
@@ -35,7 +35,7 @@ class PortForwardsScreen extends ConsumerWidget {
               const Text('Could not load port forwards.'),
               const SizedBox(height: FluttyTheme.spacingMd),
               FilledButton.icon(
-                onPressed: () => ref.invalidate(_allPortForwardsProvider),
+                onPressed: () => ref.invalidate(allPortForwardsProvider),
                 icon: const Icon(Icons.refresh, size: 18),
                 label: const Text('Retry'),
               ),
@@ -128,7 +128,6 @@ class PortForwardsScreen extends ConsumerWidget {
 
     if (confirmed ?? false) {
       await ref.read(portForwardRepositoryProvider).delete(portForward.id);
-      ref.invalidate(_allPortForwardsProvider);
       if (context.mounted) {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(content: Text('Deleted "${portForward.name}"')),
@@ -257,15 +256,3 @@ class _PortForwardListTile extends StatelessWidget {
     );
   }
 }
-
-/// Provider for all port forwards.
-final _allPortForwardsProvider = FutureProvider<List<PortForward>>((ref) async {
-  final repo = ref.watch(portForwardRepositoryProvider);
-  return repo.getAll();
-});
-
-/// Provider for all hosts.
-final _allHostsProvider = FutureProvider<List<Host>>((ref) async {
-  final repo = ref.watch(hostRepositoryProvider);
-  return repo.getAll();
-});
