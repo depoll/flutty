@@ -192,6 +192,9 @@ class KeyboardToolbar extends StatefulWidget {
     required this.terminal,
     this.controller,
     this.onKeyPressed,
+    this.onPasteRequested,
+    this.onPasteImageRequested,
+    this.onPasteFilesRequested,
     this.terminalFocusNode,
     super.key,
   });
@@ -204,6 +207,15 @@ class KeyboardToolbar extends StatefulWidget {
 
   /// Optional callback when any key is pressed.
   final VoidCallback? onKeyPressed;
+
+  /// Optional callback when the Paste key is tapped.
+  final FutureOr<void> Function()? onPasteRequested;
+
+  /// Optional callback when the Paste key's long-press image option is tapped.
+  final FutureOr<void> Function()? onPasteImageRequested;
+
+  /// Optional callback when the Paste key's long-press file option is tapped.
+  final FutureOr<void> Function()? onPasteFilesRequested;
 
   /// Optional focus node for the terminal. When provided, the toolbar
   /// re-requests focus after interactions so the soft keyboard stays visible.
@@ -338,6 +350,14 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     ),
     _ToolbarButton(label: '|', onTap: () => _sendText('|'), tooltip: 'Pipe'),
     _ToolbarButton(label: '/', onTap: () => _sendText('/'), tooltip: 'Slash'),
+    _ToolbarButton(label: '~', onTap: () => _sendText('~'), tooltip: 'Tilde'),
+    _ToolbarButton(
+      icon: Icons.paste_rounded,
+      label: 'Paste',
+      onTap: _pasteClipboard,
+      onLongPressStart: _showPasteOptions,
+      tooltip: 'Paste',
+    ),
     _ToolbarButton(
       icon: Icons.keyboard_return_rounded,
       label: '',
@@ -460,6 +480,71 @@ class KeyboardToolbarState extends State<KeyboardToolbar> {
     _refocusTerminal();
   }
 
+  void _pasteClipboard() {
+    HapticFeedback.lightImpact();
+    widget.onKeyPressed?.call();
+    _consumeOneShot();
+    unawaited(_runToolbarAction(widget.onPasteRequested));
+  }
+
+  void _showPasteOptions() {
+    HapticFeedback.mediumImpact();
+    widget.onKeyPressed?.call();
+    _consumeOneShot();
+    unawaited(_showPasteOptionsSheet());
+  }
+
+  Future<void> _showPasteOptionsSheet() async {
+    final action = await showModalBottomSheet<_PasteToolbarAction>(
+      context: context,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.image_outlined),
+              title: const Text('Paste Images'),
+              enabled: widget.onPasteImageRequested != null,
+              onTap: widget.onPasteImageRequested == null
+                  ? null
+                  : () => Navigator.pop(context, _PasteToolbarAction.images),
+            ),
+            ListTile(
+              leading: const Icon(Icons.attach_file_rounded),
+              title: const Text('Paste Files'),
+              enabled: widget.onPasteFilesRequested != null,
+              onTap: widget.onPasteFilesRequested == null
+                  ? null
+                  : () => Navigator.pop(context, _PasteToolbarAction.files),
+            ),
+          ],
+        ),
+      ),
+    );
+    if (!mounted) {
+      return;
+    }
+    if (action == null) {
+      _refocusTerminal();
+      return;
+    }
+
+    switch (action) {
+      case _PasteToolbarAction.images:
+        await _runToolbarAction(widget.onPasteImageRequested);
+      case _PasteToolbarAction.files:
+        await _runToolbarAction(widget.onPasteFilesRequested);
+    }
+  }
+
+  Future<void> _runToolbarAction(FutureOr<void> Function()? action) async {
+    if (action == null) {
+      _refocusTerminal();
+      return;
+    }
+    await action();
+  }
+
   void _consumeOneShot() {
     _controller.consumeOneShot();
     _refocusTerminal();
@@ -580,6 +665,8 @@ enum _Modifier { ctrl, alt, shift }
 
 enum _Arrow { up, down, left, right }
 
+enum _PasteToolbarAction { images, files }
+
 class _KeyRow extends StatelessWidget {
   const _KeyRow({required this.children});
 
@@ -689,10 +776,14 @@ class _ToolbarButtonState extends State<_ToolbarButton> {
               }
             }
           : null,
-      onLongPressEnd: widget.onLongPressRepeat != null
+      onLongPressEnd:
+          widget.onLongPressStart != null || widget.onLongPressRepeat != null
           ? (_) => _stopRepeat()
           : null,
-      onLongPressCancel: widget.onLongPressRepeat != null ? _stopRepeat : null,
+      onLongPressCancel:
+          widget.onLongPressStart != null || widget.onLongPressRepeat != null
+          ? _stopRepeat
+          : null,
       child: Container(
         margin: const EdgeInsets.all(2),
         decoration: BoxDecoration(

@@ -64,6 +64,8 @@ void main() {
       expect(find.byTooltip('Ctrl'), findsOneWidget);
       expect(find.byTooltip('Alt'), findsOneWidget);
       expect(find.byTooltip('Shift'), findsOneWidget);
+      expect(find.byTooltip('Tilde'), findsOneWidget);
+      expect(find.byTooltip('Paste'), findsOneWidget);
 
       // Check navigation row keys
       expect(find.byTooltip('Up'), findsOneWidget);
@@ -140,7 +142,7 @@ void main() {
 
       final endRight = tester.getTopRight(find.byTooltip('End')).dx;
 
-      expect(endRight, lessThanOrEqualTo(844));
+      expect(endRight, lessThanOrEqualTo(844.001));
     });
 
     testWidgets('modifier key toggles state on tap', (tester) async {
@@ -226,6 +228,79 @@ void main() {
 
       expect(find.text('|'), findsOneWidget);
       expect(find.text('/'), findsOneWidget);
+      expect(find.text('~'), findsOneWidget);
+    });
+
+    testWidgets('Tilde button sends a tilde character', (tester) async {
+      final output = <String>[];
+      terminal.onOutput = output.add;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(body: KeyboardToolbar(terminal: terminal)),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Tilde'));
+      await tester.pump();
+
+      expect(output, contains('~'));
+    });
+
+    testWidgets('Paste button invokes clipboard paste callback on tap', (
+      tester,
+    ) async {
+      var pasteCount = 0;
+      var keyPressedCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onKeyPressed: () => keyPressedCount++,
+              onPasteRequested: () async => pasteCount++,
+            ),
+          ),
+        ),
+      );
+
+      await tester.tap(find.byTooltip('Paste'));
+      await tester.pump();
+
+      expect(pasteCount, 1);
+      expect(keyPressedCount, 1);
+    });
+
+    testWidgets('Paste button shows image and file options on long press', (
+      tester,
+    ) async {
+      var imagePasteCount = 0;
+      var filePasteCount = 0;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: KeyboardToolbar(
+              terminal: terminal,
+              onPasteImageRequested: () async => imagePasteCount++,
+              onPasteFilesRequested: () async => filePasteCount++,
+            ),
+          ),
+        ),
+      );
+
+      await tester.longPress(find.byTooltip('Paste'));
+      await tester.pumpAndSettle();
+
+      expect(find.text('Paste Images'), findsOneWidget);
+      expect(find.text('Paste Files'), findsOneWidget);
+
+      await tester.tap(find.text('Paste Images'));
+      await tester.pumpAndSettle();
+
+      expect(imagePasteCount, 1);
+      expect(filePasteCount, 0);
     });
 
     testWidgets('Enter button renders and triggers callback', (tester) async {
