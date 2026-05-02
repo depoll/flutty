@@ -545,6 +545,21 @@ void main() {
     late WakelockPlusPlatformInterface originalWakelockPlatform;
     late _FakeWakelockPlusPlatform wakelockPlatform;
 
+    test('uses terminal theme brightness for keyboard appearance', () {
+      expect(
+        resolveTerminalKeyboardAppearance(
+          monkey_themes.TerminalThemes.defaultDarkTheme,
+        ),
+        Brightness.dark,
+      );
+      expect(
+        resolveTerminalKeyboardAppearance(
+          monkey_themes.TerminalThemes.githubLightDefault,
+        ),
+        Brightness.light,
+      );
+    });
+
     setUp(() {
       db = AppDatabase.forTesting(NativeDatabase.memory());
       hostRepository = _MockHostRepository();

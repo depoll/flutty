@@ -2799,6 +2799,11 @@ String selectedNativeOverlayText(TextEditingValue value) {
   return selection.textInside(value.text);
 }
 
+/// Chooses the platform keyboard appearance that best matches a terminal theme.
+@visibleForTesting
+Brightness resolveTerminalKeyboardAppearance(TerminalThemeData theme) =>
+    theme.isDark ? Brightness.dark : Brightness.light;
+
 /// Applies pasted or rendered text at the terminal cursor within a wrapped line.
 @visibleForTesting
 String applyTerminalCursorInsertion({
@@ -7414,6 +7419,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
     final terminalPathLinkUnderlinesEnabled = ref.watch(
       terminalPathLinkUnderlinesNotifierProvider,
     );
+    final keyboardAppearance = resolveTerminalKeyboardAppearance(terminalTheme);
     Widget terminalView = MonkeyTerminalView(
       key: _terminalViewKey,
       _terminal,
@@ -7431,6 +7437,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       theme: terminalTheme.toXtermTheme(),
       textStyle: terminalTextStyle,
+      keyboardAppearance: keyboardAppearance,
       padding: terminalViewportPadding,
       deleteDetection: !isMobile,
       autofocus: !isMobile,
@@ -7593,6 +7600,7 @@ class _TerminalScreenState extends ConsumerState<TerminalScreen>
       focusNode: _terminalFocusNode,
       controller: _terminalTextInputController,
       deleteDetection: true,
+      keyboardAppearance: keyboardAppearance,
       onUserInput: _followLiveOutput,
       onReviewInsertedText: _confirmKeyboardInsertion,
       buildReviewTextForInsertedText: _terminalCommandAfterInputDelta,
